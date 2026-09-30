@@ -56,6 +56,18 @@ describe('NoiseHeights', () => {
     }
   });
 
+  it('samples with a stride exactly like the full-resolution grid (lattice and direct paths)', () => {
+    for (const step of [1, 3, 16, 128, 512]) {
+      const n = 12;
+      const strided = src.heights(40_000, 70_000, n, n, step);
+      for (let j = 0; j < n; j++) {
+        for (let i = 0; i < n; i++) {
+          expect(strided[i + n * j]).toBe(src.heights(40_000 + i * step, 70_000 + j * step, 1, 1)[0]);
+        }
+      }
+    }
+  });
+
   it('stays within its declared bounds and has both plains and hills', () => {
     let plains = 0, hills = 0;
     for (let k = 0; k < 40; k++) {
@@ -239,6 +251,15 @@ describe('TerrainGenerator', () => {
     const floor = FLAT_WORLD_16KM.minYUnits / CHUNK_SIZE;
     expect(gen.generateChunk({ cx: 0, cy: floor - 1, cz: 0 }).blocks.every((b) => b === null)).toBe(true);
     expect(gen.generateChunk({ cx: 0, cy: floor, cz: 0 }).blocks.every((b) => b !== null)).toBe(true);
+  });
+
+  it('reports exact column ranges and grass surface samples', () => {
+    const gen = new TerrainGenerator(FLAT_WORLD_16KM, { minVoxelSize: 1, tolerance: 4 }, src);
+    const H = src.heights(hill.cx * CHUNK_SIZE, hill.cz * CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE);
+    expect(gen.columnRange(hill.cx, hill.cz)).toEqual({ minY: Math.min(...H), maxY: Math.max(...H) });
+    const s = gen.surfaceSamples(1000, 2000, 64, 8);
+    expect(s.heights).toEqual(src.heights(1000, 2000, 8, 8, 64));
+    expect([...new Set(s.materials)]).toEqual([Material.Grass]);
   });
 
   it('reports the surface height for spawning', () => {

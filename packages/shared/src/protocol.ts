@@ -1,7 +1,8 @@
+import { isValidTileLevel } from './tile.js';
 import type { WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 export type ClientMessage =
   | {
@@ -13,7 +14,11 @@ export type ClientMessage =
        */
       tolerance?: number;
     }
-  | { type: 'requestChunk'; cx: number; cy: number; cz: number };
+  | { type: 'requestChunk'; cx: number; cy: number; cz: number }
+  /** Low-detail tile for distant terrain; answered with a Tile binary frame. */
+  | { type: 'requestTile'; level: number; tx: number; tz: number }
+  /** Ground height range of a chunk column; answered with a `column` message. */
+  | { type: 'requestColumn'; cx: number; cz: number };
 
 export type ServerMessage =
   | {
@@ -25,6 +30,10 @@ export type ServerMessage =
       /** Tolerance actually used for this connection's terrain; null for non-adaptive worlds. */
       tolerance: number | null;
     }
+  /** Reply to requestColumn. minY/maxY are null for columns outside the world. */
+  | { type: 'column'; cx: number; cz: number; minY: number | null; maxY: number | null }
+  /** Reply to requestTile for a tile entirely outside the world. */
+  | { type: 'tileUnavailable'; level: number; tx: number; tz: number }
   /** Reply to requestChunk for a chunk outside the world. */
   | { type: 'chunkUnavailable'; cx: number; cy: number; cz: number }
   | { type: 'error'; code: string; message: string };
@@ -36,6 +45,8 @@ export type ServerMessage =
 export const BinaryTag = {
   /** Payload: an encoded chunk (see chunkcodec.ts). */
   Chunk: 1,
+  /** Payload: an encoded tile (see tile.ts). */
+  Tile: 2,
 } as const;
 
 export function encodeMessage(msg: ClientMessage | ServerMessage): string {
@@ -70,6 +81,12 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   }
   if (msg.type === 'requestChunk' && isInt32(msg.cx) && isInt32(msg.cy) && isInt32(msg.cz)) {
     return { type: 'requestChunk', cx: msg.cx, cy: msg.cy, cz: msg.cz };
+  }
+  if (msg.type === 'requestTile' && isValidTileLevel(msg.level) && isInt32(msg.tx) && isInt32(msg.tz)) {
+    return { type: 'requestTile', level: msg.level, tx: msg.tx, tz: msg.tz };
+  }
+  if (msg.type === 'requestColumn' && isInt32(msg.cx) && isInt32(msg.cz)) {
+    return { type: 'requestColumn', cx: msg.cx, cz: msg.cz };
   }
   return null;
 }

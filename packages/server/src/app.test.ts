@@ -10,6 +10,7 @@ import {
   defaultNoiseTerrain,
   PROTOCOL_VERSION,
   decodeChunk,
+  decodeTile,
   defaultFlatGen,
   type ServerMessage,
 } from '@super-vox/shared';
@@ -154,6 +155,33 @@ describe('chunk requests', () => {
       const chunk = decodeChunk(f.binary.subarray(1));
       expect({ cx: chunk.cx, cy: chunk.cy, cz: chunk.cz }).toEqual(coords[i]);
     });
+    ws.close();
+  });
+});
+
+describe('tiles and columns', () => {
+  it('answers tile requests with a tagged tile frame, or tileUnavailable', async () => {
+    const ws = await greeted();
+    const frame = nextFrame(ws);
+    ws.send(JSON.stringify({ type: 'requestTile', level: 2, tx: 100, tz: 100 }));
+    const f = await frame;
+    if (!('binary' in f)) throw new Error('expected binary');
+    expect(f.binary[0]).toBe(BinaryTag.Tile);
+    expect(decodeTile(f.binary.subarray(1))).toMatchObject({ level: 2, tx: 100, tz: 100 });
+    const reply = nextMessage(ws);
+    ws.send(JSON.stringify({ type: 'requestTile', level: 2, tx: -5, tz: 0 }));
+    expect(await reply).toEqual({ type: 'tileUnavailable', level: 2, tx: -5, tz: 0 });
+    ws.close();
+  });
+
+  it('answers column requests with the height range', async () => {
+    const ws = await greeted();
+    const reply = nextMessage(ws);
+    ws.send(JSON.stringify({ type: 'requestColumn', cx: 3, cz: 4 }));
+    expect(await reply).toEqual({ type: 'column', cx: 3, cz: 4, minY: 0, maxY: 0 });
+    const outside = nextMessage(ws);
+    ws.send(JSON.stringify({ type: 'requestColumn', cx: -3, cz: 4 }));
+    expect(await outside).toEqual({ type: 'column', cx: -3, cz: 4, minY: null, maxY: null });
     ws.close();
   });
 });

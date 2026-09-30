@@ -130,6 +130,14 @@ export interface ChunkGenerator {
   generateChunk(coord: ChunkCoord): Chunk;
   /** Y (units) of the top of the ground at unit column (x, z), for spawning. */
   surfaceHeightAt(x: number, z: number): number;
+  /**
+   * Ground heights and top materials for an n x n grid of unit columns,
+   * sample (i, j) at column (x0 + i * step, z0 + j * step); used for distant
+   * low-detail tiles. Row-major (i + n * j).
+   */
+  surfaceSamples(x0: number, z0: number, step: number, n: number): { heights: Int32Array; materials: Uint16Array };
+  /** Lowest and highest ground height (units) over every column of chunk column (cx, cz). */
+  columnRange(cx: number, cz: number): { minY: number; maxY: number };
 }
 
 export interface Chunk extends ChunkCoord {

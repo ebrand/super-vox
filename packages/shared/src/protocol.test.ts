@@ -39,4 +39,17 @@ describe('protocol', () => {
       expect(decodeClientMessage(`{"type":"hello","protocolVersion":5,"tolerance":${t}}`)).toBeNull();
     }
   });
+
+  it('validates tile and column requests', () => {
+    expect(decodeClientMessage('{"type":"requestTile","level":3,"tx":-4,"tz":9}')).toEqual({ type: 'requestTile', level: 3, tx: -4, tz: 9 });
+    expect(decodeClientMessage('{"type":"requestColumn","cx":5,"cz":-6}')).toEqual({ type: 'requestColumn', cx: 5, cz: -6 });
+    for (const raw of [
+      '{"type":"requestTile","level":0,"tx":0,"tz":0}',
+      '{"type":"requestTile","level":7,"tx":0,"tz":0}',
+      '{"type":"requestTile","level":2,"tx":0.5,"tz":0}',
+      '{"type":"requestColumn","cx":1}',
+    ]) {
+      expect(decodeClientMessage(raw)).toBeNull();
+    }
+  });
 });

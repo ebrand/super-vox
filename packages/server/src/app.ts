@@ -27,6 +27,12 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
 
   app.get('/ws', { websocket: true }, (socket) => {
     const send = (msg: ServerMessage) => socket.send(encodeMessage(msg));
+    const sendBinary = (tag: number, bytes: Uint8Array) => {
+      const frame = new Uint8Array(1 + bytes.byteLength);
+      frame[0] = tag;
+      frame.set(bytes, 1);
+      socket.send(frame);
+    };
     let greeted = false;
     let world = opts.world;
 
@@ -70,10 +76,28 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             send({ type: 'chunkUnavailable', cx: msg.cx, cy: msg.cy, cz: msg.cz });
             return;
           }
-          const frame = new Uint8Array(1 + bytes.byteLength);
-          frame[0] = BinaryTag.Chunk;
-          frame.set(bytes, 1);
-          socket.send(frame);
+          sendBinary(BinaryTag.Chunk, bytes);
+          break;
+        }
+
+        case 'requestTile': {
+          if (!greeted) {
+            send({ type: 'error', code: 'not_ready', message: 'send hello first' });
+            return;
+          }
+          const bytes = world.getEncodedTile(msg);
+          if (!bytes) send({ type: 'tileUnavailable', level: msg.level, tx: msg.tx, tz: msg.tz });
+          else sendBinary(BinaryTag.Tile, bytes);
+          break;
+        }
+
+        case 'requestColumn': {
+          if (!greeted) {
+            send({ type: 'error', code: 'not_ready', message: 'send hello first' });
+            return;
+          }
+          const range = world.columnRange(msg.cx, msg.cz);
+          send({ type: 'column', cx: msg.cx, cz: msg.cz, minY: range?.minY ?? null, maxY: range?.maxY ?? null });
           break;
         }
       }

@@ -84,6 +84,17 @@ export class FlatGenerator implements ChunkGenerator {
     return this.gen.surfaceY;
   }
 
+  surfaceSamples(_x0: number, _z0: number, _step: number, n: number): { heights: Int32Array; materials: Uint16Array } {
+    return {
+      heights: new Int32Array(n * n).fill(this.gen.surfaceY),
+      materials: new Uint16Array(n * n).fill(this.gen.layers[0]!.material),
+    };
+  }
+
+  columnRange(): { minY: number; maxY: number } {
+    return { minY: this.gen.surfaceY, maxY: this.gen.surfaceY };
+  }
+
   /** Material of the ground at unit Y, independent of X/Z. */
   materialAtY(y: number): MaterialId {
     if (y >= this.gen.surfaceY || y < this.world.minYUnits) return Material.Air;

@@ -1,7 +1,6 @@
-import * as THREE from 'three';
+import type * as THREE from 'three';
 import {
   CHUNK_SIZE,
-  UNITS_PER_METER,
   chunkKey,
   readChunkHeader,
   resolveChunk,
@@ -10,171 +9,210 @@ import {
   type ClientMessage,
   type WorldConfig,
 } from '@super-vox/shared';
+import type { ColumnCoord } from './lod.js';
+import { createPackedMesh, disposePackedMesh, meshGpuBytes, meshQuads } from './meshFactory.js';
 import { DIRS } from './mesher.js';
-import type { MeshRequest, MeshResponse } from './mesher.worker.js';
+import type { MeshWorkerPool } from './workerPool.js';
 
-export interface StreamOptions {
-  /** Horizontal radius, in chunks, that is rendered around the focus. */
-  radius: number;
-  /** Vertical radius, in chunks, that is rendered around the focus. */
-  verticalRadius: number;
-  /** Maximum outstanding chunk requests. */
-  maxInFlight: number;
-}
-
-export interface StreamStats {
+export interface ChunkStats {
+  columns: number;
   loaded: number;
   inFlight: number;
   queued: number;
   meshed: number;
   meshing: number;
   triangles: number;
+  gpuBytes: number;
   errors: number;
-  /** Average worker time per meshed chunk. */
-  meshMsAvg: number;
-  /** Milliseconds from the last focus change until everything in range was loaded and meshed; null while busy. */
-  settledMs: number | null;
 }
 
-const CHUNK_METERS = CHUNK_SIZE / UNITS_PER_METER;
+/** Horizontal directions (indices into DIRS) and their column offsets. */
+const HORIZONTAL = [
+  { dir: 0, dx: 1, dz: 0 },
+  { dir: 1, dx: -1, dz: 0 },
+  { dir: 4, dx: 0, dz: 1 },
+  { dir: 5, dx: 0, dz: -1 },
+] as const;
+
+/** Chunk layers to render for a column whose ground spans [minY, maxY] (units). */
+export function columnLayers(minY: number, maxY: number): { lo: number; hi: number } {
+  // Surface voxels occupy units up to maxY - 1; allow 1 m either way for
+  // voxelization rounding (tolerance <= 16 units).
+  return { lo: Math.floor((minY - 17) / CHUNK_SIZE), hi: Math.floor((maxY + 16) / CHUNK_SIZE) };
+}
+
+const colKey = (cx: number, cz: number) => `${cx},${cz}`;
 
 /**
- * Streams chunks around a focus point and keeps one mesh per chunk. Chunks
- * are loaded one ring beyond the render radius so every rendered chunk has
- * all six neighbors available for face culling.
+ * Full-detail chunks for a region of chunk columns. For each column it asks
+ * the server for the ground's height range and renders only the chunk layers
+ * that contain the surface. Chunks on the region's edge are meshed with their
+ * outside neighbours treated as empty, so they draw walls that meet the
+ * low-detail tiles beyond. Meshes that leave the region stay visible until
+ * `retireStale()` so nothing disappears before its replacement is ready.
  */
 export class ChunkManager {
+  private region = new Set<string>();
+  /** Chunk-layer range per column; null for columns outside the world. */
+  private readonly ranges = new Map<string, { lo: number; hi: number } | null>();
+  private readonly columnRequested = new Set<string>();
+  private columnQueue: ColumnCoord[] = [];
+
   /** Encoded chunk bytes; null means known empty (outside the world). */
   private readonly data = new Map<string, Uint8Array | null>();
-  /** Summary per loaded chunk; outside-the-world chunks count as air. */
   private readonly kinds = new Map<string, 'air' | 'solid' | 'mixed'>();
   private readonly coords = new Map<string, ChunkCoord>();
   private readonly requested = new Set<string>();
   private queue: ChunkCoord[] = [];
   private inFlight = 0;
 
-  private readonly meshes = new Map<string, THREE.Mesh>();
-  /** key -> id of the outstanding mesh job; results for other ids are stale. */
-  private readonly meshJobs = new Map<string, number>();
-  /** Chunks meshed with no visible faces. */
-  private readonly emptyMeshes = new Set<string>();
-  private readonly jobKeys = new Map<number, string>();
-  private nextJobId = 1;
-  private nextWorker = 0;
-  private readonly workers: Worker[];
-
-  private focusKey = '';
+  private render = new Set<string>();
   private wanted = new Set<string>();
-  private renderSet = new Set<string>();
-  private triangles = 0;
+  /** Current mesh per rendered chunk (null = no visible faces) and the open-side mask it was built with. */
+  private readonly meshes = new Map<string, { mesh: THREE.Mesh | null; mask: number }>();
+  private readonly jobs = new Map<string, { token: number; mask: number }>();
+  private readonly stale = new Map<string, THREE.Mesh>();
+  private nextToken = 1;
   private errors = 0;
-  private retargetAt = 0;
-  private meshMsTotal = 0;
-  private meshCount = 0;
-  private settledMs: number | null = null;
+  private focusX = 0;
+  private focusZ = 0;
 
   constructor(
     private readonly world: WorldConfig,
     private readonly scene: THREE.Scene,
     private readonly material: THREE.Material,
     private readonly send: (msg: ClientMessage) => void,
-    private readonly opts: StreamOptions,
-  ) {
-    const count = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
-    this.workers = Array.from({ length: count }, () => {
-      const w = new Worker(new URL('./mesher.worker.ts', import.meta.url), { type: 'module' });
-      w.onmessage = (ev: MessageEvent<MeshResponse>) => this.onMeshed(ev.data);
-      return w;
-    });
-  }
+    private readonly pool: MeshWorkerPool,
+    private readonly maxInFlight: number,
+    private readonly onChange: () => void,
+  ) {}
 
-  get stats(): StreamStats {
+  get stats(): ChunkStats {
+    let triangles = 0, gpuBytes = 0, meshed = 0;
+    const count = (m: THREE.Mesh) => {
+      triangles += meshQuads(m) * 2;
+      gpuBytes += meshGpuBytes(m);
+    };
+    for (const { mesh } of this.meshes.values()) {
+      meshed++;
+      if (mesh) count(mesh);
+    }
+    for (const m of this.stale.values()) count(m);
     return {
+      columns: this.region.size,
       loaded: this.data.size,
       inFlight: this.inFlight,
-      queued: this.queue.length,
-      meshed: this.meshes.size + this.emptyMeshes.size,
-      meshing: this.meshJobs.size,
-      triangles: this.triangles,
+      queued: this.queue.length + this.columnQueue.length,
+      meshed,
+      meshing: this.jobs.size,
+      triangles,
+      gpuBytes,
       errors: this.errors,
-      settledMs: this.settledMs,
-      meshMsAvg: this.meshCount ? this.meshMsTotal / this.meshCount : 0,
     };
   }
 
-  /** Call every frame with the point to stream around (world meters). */
-  update(focus: THREE.Vector3): void {
-    const fc = {
-      cx: Math.floor(focus.x / CHUNK_METERS),
-      cy: Math.floor(focus.y / CHUNK_METERS),
-      cz: Math.floor(focus.z / CHUNK_METERS),
-    };
-    const key = chunkKey(fc);
-    if (key !== this.focusKey) {
-      this.focusKey = key;
-      this.retarget(fc);
+  /** True when nothing is queued, in flight, or being meshed. */
+  get idle(): boolean {
+    return this.queue.length === 0 && this.columnQueue.length === 0 && this.inFlight === 0 && this.jobs.size === 0;
+  }
+
+  get staleCount(): number {
+    return this.stale.size;
+  }
+
+  /** Sets the full-detail region; `focusX/Z` (units) orders loading nearest first. */
+  setRegion(columns: ColumnCoord[], focusX: number, focusZ: number): void {
+    this.focusX = focusX;
+    this.focusZ = focusZ;
+    this.region = new Set(columns.map((c) => colKey(c.cx, c.cz)));
+    for (const key of [...this.ranges.keys()]) if (!this.region.has(key)) this.ranges.delete(key);
+    const d = (c: ColumnCoord) => Math.hypot((c.cx + 0.5) * CHUNK_SIZE - focusX, (c.cz + 0.5) * CHUNK_SIZE - focusZ);
+    this.columnQueue = columns
+      .filter((c) => !this.ranges.has(colKey(c.cx, c.cz)) && !this.columnRequested.has(colKey(c.cx, c.cz)))
+      .sort((a, b) => d(a) - d(b));
+    this.recompute();
+  }
+
+  onColumn(msg: { cx: number; cz: number; minY: number | null; maxY: number | null }): void {
+    const key = colKey(msg.cx, msg.cz);
+    if (this.columnRequested.delete(key)) this.inFlight--;
+    if (this.region.has(key)) {
+      this.ranges.set(key, msg.minY === null || msg.maxY === null ? null : columnLayers(msg.minY, msg.maxY));
+      this.recompute();
+    } else {
+      this.pump();
     }
-    this.pump();
+    this.onChange();
   }
 
   onChunkBytes(bytes: Uint8Array): void {
     const coord = readChunkHeader(bytes);
     const key = chunkKey(coord);
-    this.settleRequest(key);
+    if (this.requested.delete(key)) this.inFlight--;
     if (this.wanted.has(key)) this.store(key, coord, bytes);
-    this.checkSettled();
+    this.pump();
+    this.onChange();
   }
 
   onChunkUnavailable(coord: ChunkCoord): void {
     const key = chunkKey(coord);
-    this.settleRequest(key);
+    if (this.requested.delete(key)) this.inFlight--;
     if (this.wanted.has(key)) this.store(key, coord, null);
-    this.checkSettled();
+    this.pump();
+    this.onChange();
   }
 
   /** Forget everything in flight, e.g. after a reconnect. */
   resetRequests(): void {
     this.requested.clear();
+    this.columnRequested.clear();
     this.inFlight = 0;
-    this.focusKey = '';
+  }
+
+  /** Removes meshes that left the region (call once replacements are in place). */
+  retireStale(): void {
+    for (const m of this.stale.values()) disposePackedMesh(m);
+    this.stale.clear();
   }
 
   dispose(): void {
-    for (const w of this.workers) w.terminate();
-    for (const key of [...this.meshes.keys()]) this.dropMesh(key);
+    this.retireStale();
+    for (const { mesh } of this.meshes.values()) if (mesh) disposePackedMesh(mesh);
+    this.meshes.clear();
   }
 
-  /** Marks a request answered and immediately sends more, so loading does not wait for the next frame. */
-  private settleRequest(key: string): void {
-    if (this.requested.delete(key)) this.inFlight--;
-    this.pump();
+  /** Bit d set when the horizontal neighbour in direction d lies outside the region. */
+  private openMask(c: ChunkCoord): number {
+    let mask = 0;
+    for (const { dir, dx, dz } of HORIZONTAL) if (!this.region.has(colKey(c.cx + dx, c.cz + dz))) mask |= 1 << dir;
+    return mask;
   }
 
-  private retarget(fc: ChunkCoord): void {
-    this.retargetAt = performance.now();
-    this.settledMs = null;
-    const { radius: r, verticalRadius: vr } = this.opts;
-    const wanted = new Set<string>();
+  private recompute(): void {
     const render = new Set<string>();
-    const toLoad: { c: ChunkCoord; d: number }[] = [];
-    for (let dy = -(vr + 1); dy <= vr + 1; dy++) {
-      for (let dz = -(r + 1); dz <= r + 1; dz++) {
-        for (let dx = -(r + 1); dx <= r + 1; dx++) {
-          const c = { cx: fc.cx + dx, cy: fc.cy + dy, cz: fc.cz + dz };
-          const key = chunkKey(c);
-          wanted.add(key);
-          if (Math.abs(dx) <= r && Math.abs(dz) <= r && Math.abs(dy) <= vr) render.add(key);
-          if (this.data.has(key) || this.requested.has(key)) continue;
-          if (!resolveChunk(this.world, c)) {
-            this.store(key, c, null, false);
-            continue;
-          }
-          toLoad.push({ c, d: dx * dx + dz * dz + 4 * dy * dy });
+    const wanted = new Set<string>();
+    const coords = new Map<string, ChunkCoord>();
+    const want = (c: ChunkCoord) => {
+      const k = chunkKey(c);
+      wanted.add(k);
+      coords.set(k, c);
+      return k;
+    };
+    for (const key of this.region) {
+      const range = this.ranges.get(key);
+      if (!range) continue;
+      const [cx, cz] = key.split(',').map(Number) as [number, number];
+      for (let cy = range.lo; cy <= range.hi; cy++) {
+        render.add(want({ cx, cy, cz }));
+        want({ cx, cy: cy - 1, cz });
+        want({ cx, cy: cy + 1, cz });
+        for (const { dx, dz } of HORIZONTAL) {
+          if (this.region.has(colKey(cx + dx, cz + dz))) want({ cx: cx + dx, cy, cz: cz + dz });
         }
       }
     }
+    this.render = render;
     this.wanted = wanted;
-    this.renderSet = render;
 
     for (const key of [...this.data.keys()]) {
       if (!wanted.has(key)) {
@@ -183,27 +221,46 @@ export class ChunkManager {
         this.coords.delete(key);
       }
     }
-    for (const key of [...this.meshes.keys(), ...this.emptyMeshes]) {
-      if (!render.has(key)) this.dropMesh(key);
+    for (const [key, { mesh }] of [...this.meshes]) {
+      if (render.has(key)) continue;
+      this.meshes.delete(key);
+      if (mesh) this.retire(key, mesh);
     }
-    for (const key of [...this.meshJobs.keys()]) {
-      if (!render.has(key)) this.meshJobs.delete(key);
-    }
+    for (const key of [...this.jobs.keys()]) if (!render.has(key)) this.jobs.delete(key);
 
+    const toLoad: { c: ChunkCoord; d: number }[] = [];
+    for (const key of wanted) {
+      if (this.data.has(key) || this.requested.has(key)) continue;
+      const c = coords.get(key)!;
+      if (!resolveChunk(this.world, c)) {
+        this.store(key, c, null, false);
+        continue;
+      }
+      const d = Math.hypot((c.cx + 0.5) * CHUNK_SIZE - this.focusX, (c.cz + 0.5) * CHUNK_SIZE - this.focusZ);
+      toLoad.push({ c, d });
+    }
     toLoad.sort((a, b) => a.d - b.d);
     this.queue = toLoad.map((t) => t.c);
-    // Chunks that were already loaded may now be renderable.
     for (const key of render) this.tryMesh(key);
-    this.checkSettled();
+    this.pump();
   }
 
-  private checkSettled(): void {
-    if (this.settledMs !== null || this.queue.length > 0 || this.inFlight > 0 || this.meshJobs.size > 0) return;
-    this.settledMs = performance.now() - this.retargetAt;
+  private retire(key: string, mesh: THREE.Mesh): void {
+    const old = this.stale.get(key);
+    if (old) disposePackedMesh(old);
+    this.stale.set(key, mesh);
   }
 
   private pump(): void {
-    while (this.inFlight < this.opts.maxInFlight && this.queue.length > 0) {
+    while (this.inFlight < this.maxInFlight && this.columnQueue.length > 0) {
+      const c = this.columnQueue.shift()!;
+      const key = colKey(c.cx, c.cz);
+      if (!this.region.has(key) || this.ranges.has(key) || this.columnRequested.has(key)) continue;
+      this.columnRequested.add(key);
+      this.inFlight++;
+      this.send({ type: 'requestColumn', cx: c.cx, cz: c.cz });
+    }
+    while (this.inFlight < this.maxInFlight && this.queue.length > 0) {
       const c = this.queue.shift()!;
       const key = chunkKey(c);
       if (this.data.has(key) || this.requested.has(key) || !this.wanted.has(key)) continue;
@@ -219,13 +276,7 @@ export class ChunkManager {
     this.coords.set(key, coord);
     if (!meshNeighbors) return;
     this.tryMesh(key);
-    for (const { axis, sign } of DIRS) {
-      const n = { ...coord };
-      if (axis === 0) n.cx += sign;
-      else if (axis === 1) n.cy += sign;
-      else n.cz += sign;
-      this.tryMesh(chunkKey(n));
-    }
+    for (const n of this.neighborCoords(coord)) this.tryMesh(chunkKey(n));
   }
 
   private neighborCoords(c: ChunkCoord): ChunkCoord[] {
@@ -237,17 +288,24 @@ export class ChunkManager {
   }
 
   private tryMesh(key: string): void {
-    if (!this.renderSet.has(key) || this.meshes.has(key) || this.emptyMeshes.has(key) || this.meshJobs.has(key)) return;
-    const center = this.data.get(key);
+    if (!this.render.has(key)) return;
     const coord = this.coords.get(key);
-    if (center === undefined || !coord) return;
+    const center = this.data.get(key);
+    if (!coord || center === undefined) return;
+    const mask = this.openMask(coord);
+    if (this.meshes.get(key)?.mask === mask || this.jobs.get(key)?.mask === mask) return;
+
     if (center === null || this.kinds.get(key) === 'air') {
-      this.emptyMeshes.add(key);
+      this.setMesh(key, null, mask);
       return;
     }
     const neighbors: (Uint8Array | null)[] = [];
-    let buried = this.kinds.get(key) === 'solid';
-    for (const n of this.neighborCoords(coord)) {
+    let buried = this.kinds.get(key) === 'solid' && mask === 0;
+    for (const [d, n] of this.neighborCoords(coord).entries()) {
+      if (mask & (1 << d)) {
+        neighbors.push(null);
+        continue;
+      }
       const nk = chunkKey(n);
       const bytes = this.data.get(nk);
       if (bytes === undefined) return; // not loaded yet
@@ -255,64 +313,34 @@ export class ChunkManager {
       if (this.kinds.get(nk) !== 'solid') buried = false;
     }
     if (buried) {
-      // Solid and enclosed by solid chunks: no face can be visible.
-      this.emptyMeshes.add(key);
+      this.setMesh(key, null, mask);
       return;
     }
-    const id = this.nextJobId++;
-    this.meshJobs.set(key, id);
-    this.jobKeys.set(id, key);
-    const req: MeshRequest = { id, center, neighbors };
-    this.workers[this.nextWorker++ % this.workers.length]!.postMessage(req);
+    const token = this.nextToken++;
+    this.jobs.set(key, { token, mask });
+    void this.pool.run({ kind: 'chunk', center, neighbors }).then((res) => {
+      if (this.jobs.get(key)?.token !== token) return; // superseded or no longer rendered
+      this.jobs.delete(key);
+      if (res.error) {
+        this.errors++;
+        console.error(`[super-vox] meshing chunk ${key} failed: ${res.error}`);
+      } else {
+        const origin = { x: coord.cx * CHUNK_SIZE, y: coord.cy * CHUNK_SIZE, z: coord.cz * CHUNK_SIZE };
+        this.setMesh(key, res.buffers ? createPackedMesh(res.buffers, origin, this.material, `chunk ${key}`) : null, mask);
+      }
+      this.onChange();
+    });
   }
 
-  private onMeshed(res: MeshResponse): void {
-    this.meshMsTotal += res.ms;
-    this.meshCount++;
-    this.handleMeshed(res);
-    this.checkSettled();
-  }
-
-  private handleMeshed(res: MeshResponse): void {
-    const key = this.jobKeys.get(res.id);
-    this.jobKeys.delete(res.id);
-    if (key === undefined || this.meshJobs.get(key) !== res.id) return; // stale
-    this.meshJobs.delete(key);
-    if (res.error) {
-      this.errors++;
-      console.error(`[super-vox] meshing ${key} failed: ${res.error}`);
-      return;
+  private setMesh(key: string, mesh: THREE.Mesh | null, mask: number): void {
+    const prev = this.meshes.get(key)?.mesh;
+    if (prev) disposePackedMesh(prev);
+    const stale = this.stale.get(key);
+    if (stale) {
+      disposePackedMesh(stale);
+      this.stale.delete(key);
     }
-    const coord = this.coords.get(key);
-    if (!coord || !res.buffers) {
-      this.emptyMeshes.add(key);
-      return;
-    }
-    const b = res.buffers;
-    const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.BufferAttribute(b.positions, 3));
-    geom.setAttribute('normal', new THREE.BufferAttribute(b.normals, 3));
-    geom.setAttribute('color', new THREE.BufferAttribute(b.colors, 3));
-    geom.setAttribute('voxelSize', new THREE.BufferAttribute(b.voxelSizes, 1));
-    geom.setIndex(new THREE.BufferAttribute(b.indices, 1));
-    geom.computeBoundingSphere();
-    const mesh = new THREE.Mesh(geom, this.material);
-    mesh.position.set(coord.cx * CHUNK_METERS, coord.cy * CHUNK_METERS, coord.cz * CHUNK_METERS);
-    mesh.matrixAutoUpdate = false;
-    mesh.updateMatrix();
-    mesh.name = `chunk ${key}`;
-    this.scene.add(mesh);
-    this.meshes.set(key, mesh);
-    this.triangles += b.indices.length / 3;
-  }
-
-  private dropMesh(key: string): void {
-    this.emptyMeshes.delete(key);
-    const mesh = this.meshes.get(key);
-    if (!mesh) return;
-    this.scene.remove(mesh);
-    this.triangles -= (mesh.geometry.index?.count ?? 0) / 3;
-    mesh.geometry.dispose();
-    this.meshes.delete(key);
+    if (mesh) this.scene.add(mesh);
+    this.meshes.set(key, { mesh, mask });
   }
 }

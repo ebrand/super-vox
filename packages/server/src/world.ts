@@ -1,8 +1,16 @@
 import {
   CHUNK_SIZE,
+  NO_GROUND,
+  TILE_SAMPLES,
   chunkKey,
   encodeChunk,
+  encodeTile,
   resolveChunk,
+  tileInWorld,
+  tileKey,
+  tileSizeUnits,
+  tileStep,
+  type TileCoord,
   type ChunkCoord,
   type ChunkGenerator,
   type WorldConfig,
@@ -15,6 +23,7 @@ import {
  */
 export class World {
   private readonly cache = new Map<string, Uint8Array>();
+  private readonly tileCache = new Map<string, Uint8Array>();
   readonly spawn: { x: number; y: number; z: number };
   private readonly cacheSize: number;
   /** Adaptive voxelization tolerance, or null for non-adaptive generators. */
@@ -53,6 +62,37 @@ export class World {
     return bytes;
   }
 
+  /** Encoded low-detail tile, or null if the tile lies entirely outside the world. */
+  getEncodedTile(t: TileCoord): Uint8Array | null {
+    if (!tileInWorld(this.config, t)) return null;
+    const key = tileKey(t);
+    const hit = lruGet(this.tileCache, key);
+    if (hit) return hit;
+    const size = tileSizeUnits(t.level);
+    const step = tileStep(t.level);
+    // Sample each cell at its centre column.
+    const x0 = t.tx * size + Math.floor(step / 2);
+    const z0 = t.tz * size + Math.floor(step / 2);
+    const s = this.generator.surfaceSamples(x0, z0, step, TILE_SAMPLES);
+    const heights = new Int16Array(TILE_SAMPLES * TILE_SAMPLES);
+    for (let j = 0; j < TILE_SAMPLES; j++) {
+      for (let i = 0; i < TILE_SAMPLES; i++) {
+        const x = x0 + i * step, z = z0 + j * step;
+        const outside = (!this.config.wrapX && (x < 0 || x >= this.config.widthUnits)) || z < 0 || z >= this.config.depthUnits;
+        heights[i + TILE_SAMPLES * j] = outside ? NO_GROUND : Math.max(-32767, Math.min(32767, s.heights[i + TILE_SAMPLES * j]!));
+      }
+    }
+    const bytes = encodeTile({ ...t, heights, materials: s.materials });
+    lruSet(this.tileCache, key, bytes, this.cacheSize);
+    return bytes;
+  }
+
+  /** Ground height range of a chunk column, or null outside the world. */
+  columnRange(cx: number, cz: number): { minY: number; maxY: number } | null {
+    const resolved = resolveChunk(this.config, { cx, cy: 0, cz });
+    return resolved ? this.generator.columnRange(resolved.cx, resolved.cz) : null;
+  }
+
   get cachedChunkCount(): number {
     return this.cache.size;
   }
@@ -89,4 +129,18 @@ export function findSpawn(config: WorldConfig, generator: ChunkGenerator): { x: 
     if (y > best.y) best = { x, y, z };
   }
   return best;
+}
+
+function lruGet<V>(map: Map<string, V>, key: string): V | undefined {
+  const hit = map.get(key);
+  if (hit !== undefined) {
+    map.delete(key);
+    map.set(key, hit);
+  }
+  return hit;
+}
+
+function lruSet<V>(map: Map<string, V>, key: string, value: V, max: number): void {
+  map.set(key, value);
+  if (map.size > max) map.delete(map.keys().next().value!);
 }

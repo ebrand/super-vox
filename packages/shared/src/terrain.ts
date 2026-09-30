@@ -21,8 +21,11 @@ import { CHUNK_SIZE, type ChunkCoord, type WorldConfig } from './world.js';
  * On wrapping worlds a source must be periodic in X with the world width.
  */
 export interface HeightSource {
-  /** Integer surface heights (units) for w x d unit columns from (x0, z0), row-major (x + w * z). */
-  heights(x0: number, z0: number, w: number, d: number): Int32Array;
+  /**
+   * Integer surface heights (units) for w x d unit columns, row-major
+   * (i + w * j): sample (i, j) is the column at (x0 + i * step, z0 + j * step).
+   */
+  heights(x0: number, z0: number, w: number, d: number, step?: number): Int32Array;
   /** Bounds every returned height lies within. */
   readonly minHeight: number;
   readonly maxHeight: number;
@@ -137,9 +140,9 @@ export class NoiseHeights implements HeightSource {
     this.maxHeight = Math.ceil(config.baseHeight + config.hillHeight + config.detailHeight);
   }
 
-  heights(x0: number, z0: number, w: number, d: number): Int32Array {
-    const hills = fractalGrid(this.hills, x0, z0, w, d);
-    const detail = fractalGrid(this.detail, x0, z0, w, d);
+  heights(x0: number, z0: number, w: number, d: number, step = 1): Int32Array {
+    const hills = fractalGrid(this.hills, x0, z0, w, d, step);
+    const detail = fractalGrid(this.detail, x0, z0, w, d, step);
     const out = new Int32Array(w * d);
     const g = this.config;
     for (let i = 0; i < out.length; i++) {
@@ -177,6 +180,21 @@ export class TerrainGenerator implements ChunkGenerator {
 
   surfaceHeightAt(x: number, z: number): number {
     return this.source.heights(x, z, 1, 1)[0]!;
+  }
+
+  surfaceSamples(x0: number, z0: number, step: number, n: number): { heights: Int32Array; materials: Uint16Array } {
+    // The voxelizer always makes exposed voxels grass.
+    return { heights: this.source.heights(x0, z0, n, n, step), materials: new Uint16Array(n * n).fill(Material.Grass) };
+  }
+
+  columnRange(cx: number, cz: number): { minY: number; maxY: number } {
+    const H = this.chunkColumn(cx, cz);
+    let minY = Infinity, maxY = -Infinity;
+    for (const h of H) {
+      if (h < minY) minY = h;
+      if (h > maxY) maxY = h;
+    }
+    return { minY, maxY };
   }
 
   private chunkColumn(cx: number, cz: number): Int32Array {

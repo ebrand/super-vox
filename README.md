@@ -28,6 +28,17 @@ tolerance per page load with `?tolerance=N` (integer 0..16), e.g.
 http://localhost:5173/?tolerance=0. The overlay shows the tolerance in use and
 how long the view took to settle. Production servers ignore the override.
 
+## Distant terrain
+
+Around the orbit focus the client renders full-detail voxel chunks within
+`?detail=N` chunks (default 4). Beyond that, out to `?view=M` metres (default
+2048), it renders low-detail tiles chosen by a quadtree: 32 m tiles next to
+the full-detail area, doubling in size with distance up to 1 km. A tile is a
+32 x 32 grid of ground heights drawn as stepped columns, with skirts along its
+edges to hide cracks between levels. For full-detail chunk columns the server
+reports each column's exact ground height range, so only chunk layers that
+contain the surface are loaded.
+
 Heights currently come from simple value noise (`NoiseHeights`). The voxelizer
 only depends on the `HeightSource` interface, so a different source (e.g.
 tectonic plates) can replace it. `WORLD_GENERATOR=flat` with
@@ -57,7 +68,7 @@ tectonic plates) can replace it. `WORLD_GENERATOR=flat` with
 ```sh
 npm install
 npm run dev:server   # http://127.0.0.1:8787 (see Terrain for settings)
-npm run dev:client   # http://localhost:5173 (proxies /api and /ws to the server)
+npm run dev:client   # http://localhost:5173 (?detail=4&view=2048&tolerance=4; proxies /api and /ws)
 npm test
 npm run typecheck
 npm run build

@@ -1,7 +1,6 @@
 import {
   BLOCK_SIZE,
   BLOCKS_PER_AXIS,
-  UNITS_PER_METER,
   blockIndex,
   gridCellIndex,
   rasterizeVoxels,
@@ -303,15 +302,20 @@ export function mergeFaces(faces: Quad[]): Quad[] {
       minU = Math.min(minU, f.u); minV = Math.min(minV, f.v);
       maxU = Math.max(maxU, f.u + f.du); maxV = Math.max(maxV, f.v + f.dv);
     }
-    // Work on the coarsest lattice all rectangles align to.
-    let g = 0;
-    for (const f of group) g = gcd(gcd(gcd(gcd(g, f.u - minU), f.v - minV), f.du), f.dv);
-    const w = (maxU - minU) / g;
-    const h = (maxV - minV) / g;
+    // Work on the coarsest lattice all rectangles align to, per axis: on
+    // tiles, walls span arbitrary heights on one axis but whole cells on the
+    // other, and a shared divisor would make the mask enormous.
+    let gu = 0, gv = 0;
+    for (const f of group) {
+      gu = gcd(gcd(gu, f.u - minU), f.du);
+      gv = gcd(gcd(gv, f.v - minV), f.dv);
+    }
+    const w = (maxU - minU) / gu;
+    const h = (maxV - minV) / gv;
     const mask = new Uint8Array(w * h);
     for (const f of group) {
-      const u0 = (f.u - minU) / g, v0 = (f.v - minV) / g;
-      for (let j = v0; j < v0 + f.dv / g; j++) mask.fill(1, j * w + u0, j * w + u0 + f.du / g);
+      const u0 = (f.u - minU) / gu, v0 = (f.v - minV) / gv;
+      for (let j = v0; j < v0 + f.dv / gv; j++) mask.fill(1, j * w + u0, j * w + u0 + f.du / gu);
     }
     for (let j = 0; j < h; j++) {
       for (let i = 0; i < w; i++) {
@@ -324,56 +328,67 @@ export function mergeFaces(faces: Quad[]): Quad[] {
           dv++;
         }
         for (let jj = j; jj < j + dv; jj++) mask.fill(0, jj * w + i, jj * w + i + du);
-        out.push({ ...first, u: minU + i * g, v: minV + j * g, du: du * g, dv: dv * g });
+        out.push({ ...first, u: minU + i * gu, v: minV + j * gv, du: du * gu, dv: dv * gv });
       }
     }
   }
   return out;
 }
 
+/**
+ * Packed mesh data, 10 bytes per vertex and 4 vertices per quad:
+ * - `positions`: chunk-local units (0..256) as u16 x, y, z.
+ * - `faces`: u8 direction (0..5), voxel size (1..16), material low byte,
+ *   material high byte; the same for all 4 vertices of a quad.
+ * Corners are ordered so every quad is drawn with the same index pattern
+ * (see quadIndexPattern) and faces outward.
+ */
 export interface MeshBuffers {
-  /** Chunk-local meters. */
-  positions: Float32Array;
-  normals: Float32Array;
-  colors: Float32Array;
-  /** Voxel edge in units, per vertex. */
-  voxelSizes: Float32Array;
-  indices: Uint32Array;
+  positions: Uint16Array;
+  faces: Uint8Array;
+  quadCount: number;
 }
 
-/** Turns quads into indexed triangle buffers with counter-clockwise front faces. */
-export function buildBuffers(quads: Quad[], colorOf: (m: MaterialId) => readonly [number, number, number]): MeshBuffers {
+export const BYTES_PER_QUAD = 4 * (3 * 2 + 4);
+
+/** Triangle indices for quad q: every quad uses this pattern offset by 4q. */
+export const QUAD_INDEX_PATTERN = [0, 1, 2, 0, 2, 3] as const;
+
+/** Builds an index buffer covering `quads` quads. */
+export function quadIndices(quads: number): Uint32Array {
+  const out = new Uint32Array(quads * 6);
+  for (let q = 0; q < quads; q++) {
+    for (let k = 0; k < 6; k++) out[q * 6 + k] = q * 4 + QUAD_INDEX_PATTERN[k]!;
+  }
+  return out;
+}
+
+/** Packs quads into vertex buffers. */
+export function packQuads(quads: Quad[]): MeshBuffers {
   const n = quads.length;
-  const positions = new Float32Array(n * 12);
-  const normals = new Float32Array(n * 12);
-  const colors = new Float32Array(n * 12);
-  const voxelSizes = new Float32Array(n * 4);
-  const indices = new Uint32Array(n * 6);
+  const positions = new Uint16Array(n * 12);
+  const faces = new Uint8Array(n * 16);
   const p = [0, 0, 0];
   quads.forEach((q, qi) => {
     const { axis, sign } = DIRS[q.dir]!;
     const ua = U_AXIS[axis]!;
     const va = V_AXIS[axis]!;
-    const corners = [
-      [q.u, q.v],
-      [q.u + q.du, q.v],
-      [q.u + q.du, q.v + q.dv],
-      [q.u, q.v + q.dv],
-    ] as const;
-    const color = colorOf(q.material);
+    // Counter-clockwise seen from outside: U then V for +dirs, V then U for -dirs.
+    const corners =
+      sign > 0
+        ? [[q.u, q.v], [q.u + q.du, q.v], [q.u + q.du, q.v + q.dv], [q.u, q.v + q.dv]]
+        : [[q.u, q.v], [q.u, q.v + q.dv], [q.u + q.du, q.v + q.dv], [q.u + q.du, q.v]];
     corners.forEach(([u, v], k) => {
-      p[axis] = q.plane; p[ua] = u; p[va] = v;
-      const o = (qi * 4 + k) * 3;
-      for (let a = 0; a < 3; a++) {
-        positions[o + a] = p[a]! / UNITS_PER_METER;
-        normals[o + a] = a === axis ? sign : 0;
-        colors[o + a] = color[a]!;
-      }
-      voxelSizes[qi * 4 + k] = q.size;
+      p[axis] = q.plane; p[ua] = u!; p[va] = v!;
+      const vi = qi * 4 + k;
+      positions[vi * 3] = p[0]!;
+      positions[vi * 3 + 1] = p[1]!;
+      positions[vi * 3 + 2] = p[2]!;
+      faces[vi * 4] = q.dir;
+      faces[vi * 4 + 1] = q.size;
+      faces[vi * 4 + 2] = q.material & 0xff;
+      faces[vi * 4 + 3] = q.material >> 8;
     });
-    const base = qi * 4;
-    const tri = sign > 0 ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2];
-    tri.forEach((t, k) => (indices[qi * 6 + k] = base + t));
   });
-  return { positions, normals, colors, voxelSizes, indices };
+  return { positions, faces, quadCount: n };
 }

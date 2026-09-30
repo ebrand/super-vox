@@ -18,7 +18,7 @@ import {
   type Block,
   type Chunk,
 } from '@super-vox/shared';
-import { DIRS, buildBuffers, mergeFaces, visibleFaces, type Neighbors, type Quad } from './mesher.js';
+import { DIRS, QUAD_INDEX_PATTERN, mergeFaces, packQuads, quadIndices, visibleFaces, type Neighbors, type Quad } from './mesher.js';
 
 function rng(seed: number): () => number {
   let s = seed >>> 0;
@@ -291,29 +291,45 @@ describe('adaptive terrain meshing', () => {
   }
 });
 
-describe('buildBuffers', () => {
-  it('winds every triangle counter-clockwise around its normal', () => {
-    const chunk = randomChunk(21);
-    const quads = mergeFaces(visibleFaces(chunk, NO_NEIGHBORS));
-    const buf = buildBuffers(quads, () => [1, 1, 1]);
-    expect(buf.indices.length).toBe(quads.length * 6);
+describe('packQuads', () => {
+  const NORMALS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+
+  it('winds every triangle counter-clockwise around its face direction with the shared index pattern', () => {
+    const quads = mergeFaces(visibleFaces(randomChunk(21), NO_NEIGHBORS));
+    const buf = packQuads(quads);
+    const indices = quadIndices(buf.quadCount);
+    expect(buf.quadCount).toBe(quads.length);
     const P = (i: number) => [buf.positions[i * 3]!, buf.positions[i * 3 + 1]!, buf.positions[i * 3 + 2]!];
-    for (let t = 0; t < buf.indices.length; t += 3) {
-      const [a, b, c] = [P(buf.indices[t]!), P(buf.indices[t + 1]!), P(buf.indices[t + 2]!)];
+    for (let t = 0; t < indices.length; t += 3) {
+      const [a, b, c] = [P(indices[t]!), P(indices[t + 1]!), P(indices[t + 2]!)];
       const e1 = [b[0]! - a[0]!, b[1]! - a[1]!, b[2]! - a[2]!];
       const e2 = [c[0]! - a[0]!, c[1]! - a[1]!, c[2]! - a[2]!];
       const cross = [e1[1]! * e2[2]! - e1[2]! * e2[1]!, e1[2]! * e2[0]! - e1[0]! * e2[2]!, e1[0]! * e2[1]! - e1[1]! * e2[0]!];
-      const i = buf.indices[t]! * 3;
-      const dot = cross[0]! * buf.normals[i]! + cross[1]! * buf.normals[i + 1]! + cross[2]! * buf.normals[i + 2]!;
-      expect(dot).toBeGreaterThan(0);
+      const n = NORMALS[buf.faces[indices[t]! * 4]!]!;
+      expect(cross[0]! * n[0]! + cross[1]! * n[1]! + cross[2]! * n[2]!).toBeGreaterThan(0);
     }
   });
 
-  it('converts units to meters', () => {
-    const buf = buildBuffers([{ dir: 2, plane: 32, u: 0, v: 0, du: 16, dv: 8, material: 1, size: 1 }], () => [0, 0, 0]);
-    const ys = new Set<number>();
-    for (let i = 1; i < buf.positions.length; i += 3) ys.add(buf.positions[i]!);
-    expect([...ys]).toEqual([2]);
-    expect(Math.max(...buf.positions)).toBe(2);
+  it('round-trips every quad field through the packed buffers', () => {
+    const quads = mergeFaces(visibleFaces(randomChunk(22), randomNeighbors(22)));
+    quads.push({ dir: 4, plane: 256, u: 0, v: 0, du: 256, dv: 256, material: 0x1234, size: 16 });
+    const buf = packQuads(quads);
+    const U = [1, 2, 0], V = [2, 0, 1];
+    quads.forEach((q, qi) => {
+      const axis = DIRS[q.dir]!.axis;
+      const vs = [0, 1, 2, 3].map((k) => [buf.positions[(qi * 4 + k) * 3]!, buf.positions[(qi * 4 + k) * 3 + 1]!, buf.positions[(qi * 4 + k) * 3 + 2]!]);
+      for (const v of vs) expect(v[axis]).toBe(q.plane);
+      const us = vs.map((v) => v[U[axis]!]!), ws = vs.map((v) => v[V[axis]!]!);
+      expect([Math.min(...us), Math.max(...us), Math.min(...ws), Math.max(...ws)]).toEqual([q.u, q.u + q.du, q.v, q.v + q.dv]);
+      for (let k = 0; k < 4; k++) {
+        const f = buf.faces.subarray((qi * 4 + k) * 4, (qi * 4 + k) * 4 + 4);
+        expect([f[0], f[1], f[2]! | (f[3]! << 8)]).toEqual([q.dir, q.size, q.material]);
+      }
+    });
+  });
+
+  it('builds a shared index buffer from one repeating pattern', () => {
+    const idx = quadIndices(3);
+    expect([...idx]).toEqual([...QUAD_INDEX_PATTERN, ...QUAD_INDEX_PATTERN.map((i) => i + 4), ...QUAD_INDEX_PATTERN.map((i) => i + 8)]);
   });
 });

@@ -5,8 +5,13 @@ import {
   NoiseHeights,
   ROUND_WORLD_16x8KM,
   TerrainGenerator,
+  NO_GROUND,
+  TILE_SAMPLES,
   decodeChunk,
+  decodeTile,
   defaultFlatGen,
+  tileSizeUnits,
+  tileStep,
   defaultNoiseTerrain,
 } from '@super-vox/shared';
 import { World, findSpawn } from './world.js';
@@ -85,5 +90,41 @@ describe('World', () => {
     }
     // Deterministic.
     expect(findSpawn(FLAT_WORLD_16KM, gen)).toEqual(spawn);
+  });
+
+  describe('tiles and column ranges', () => {
+    const source = new NoiseHeights(FLAT_WORLD_16KM, defaultNoiseTerrain(1));
+    const world = new World(FLAT_WORLD_16KM, new TerrainGenerator(FLAT_WORLD_16KM, { minVoxelSize: 1, tolerance: 4 }, source));
+
+    it('samples each tile cell at its centre column', () => {
+      for (const level of [1, 3, 6]) {
+        const t = { level, tx: Math.floor(128_000 / tileSizeUnits(level)), tz: Math.floor(128_000 / tileSizeUnits(level)) };
+        const tile = decodeTile(world.getEncodedTile(t)!);
+        const step = tileStep(level);
+        for (const [i, j] of [[0, 0], [31, 31], [5, 20]] as const) {
+          const x = t.tx * tileSizeUnits(level) + i * step + Math.floor(step / 2);
+          const z = t.tz * tileSizeUnits(level) + j * step + Math.floor(step / 2);
+          expect(tile.heights[i + TILE_SAMPLES * j]).toBe(source.heights(x, z, 1, 1)[0]);
+        }
+      }
+    });
+
+    it('marks samples beyond the world edge as having no ground', () => {
+      const level = 4;
+      const tx = Math.floor(FLAT_WORLD_16KM.widthUnits / tileSizeUnits(level)); // overhangs the east edge
+      const tile = decodeTile(world.getEncodedTile({ level, tx, tz: 0 })!);
+      const step = tileStep(level);
+      for (let i = 0; i < TILE_SAMPLES; i++) {
+        const x = tx * tileSizeUnits(level) + i * step + Math.floor(step / 2);
+        expect(tile.heights[i] === NO_GROUND).toBe(x >= FLAT_WORLD_16KM.widthUnits);
+      }
+      expect(world.getEncodedTile({ level, tx: tx + 1, tz: 0 })).toBeNull();
+    });
+
+    it('reports exact column ranges and null outside the world', () => {
+      const H = source.heights(590 * 256, 498 * 256, 256, 256);
+      expect(world.columnRange(590, 498)).toEqual({ minY: Math.min(...H), maxY: Math.max(...H) });
+      expect(world.columnRange(-1, 0)).toBeNull();
+    });
   });
 });
