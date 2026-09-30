@@ -121,12 +121,12 @@ describe('chunk requests', () => {
     ws.close();
   });
 
-  it('reports out-of-world chunks as errors and keeps the connection', async () => {
+  it('answers out-of-world chunks with chunkUnavailable and keeps the connection', async () => {
     const ws = await greeted();
     for (const c of [{ cx: -1, cy: 0, cz: 0 }, { cx: 0, cy: 9999, cz: 0 }, { cx: 0, cy: 0, cz: 1000 }]) {
       const reply = nextMessage(ws);
       ws.send(JSON.stringify({ type: 'requestChunk', ...c }));
-      expect(await reply).toMatchObject({ type: 'error', code: 'out_of_world' });
+      expect(await reply).toEqual({ type: 'chunkUnavailable', ...c });
     }
     expect(ws.readyState).toBe(WebSocket.OPEN);
     ws.close();

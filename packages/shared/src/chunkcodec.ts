@@ -1,4 +1,5 @@
 import { BLOCK_SIZE, BLOCKS_PER_CHUNK, isGridSize, type Block, type Chunk } from './chunk.js';
+import type { ChunkCoord } from './world.js';
 
 /**
  * Binary chunk format (little-endian):
@@ -71,6 +72,15 @@ export function encodeChunk(chunk: Chunk): Uint8Array {
     view.setUint16(o, idx, true); o += 2;
   }
   return buf;
+}
+
+/** Reads just the coordinates from an encoded chunk without decoding it. */
+export function readChunkHeader(bytes: Uint8Array): ChunkCoord {
+  if (bytes.byteLength < 13) throw new ChunkDecodeError('truncated chunk data');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const version = view.getUint8(0);
+  if (version !== CHUNK_FORMAT_VERSION) throw new ChunkDecodeError(`unsupported chunk format ${version}`);
+  return { cx: view.getInt32(1, true), cy: view.getInt32(5, true), cz: view.getInt32(9, true) };
 }
 
 export function decodeChunk(bytes: Uint8Array): Chunk {

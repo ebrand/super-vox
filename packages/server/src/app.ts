@@ -53,11 +53,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           }
           const bytes = world.getEncodedChunk(msg);
           if (!bytes) {
-            send({
-              type: 'error',
-              code: 'out_of_world',
-              message: `chunk ${msg.cx},${msg.cy},${msg.cz} is outside the world`,
-            });
+            send({ type: 'chunkUnavailable', cx: msg.cx, cy: msg.cy, cz: msg.cz });
             return;
           }
           const frame = new Uint8Array(1 + bytes.byteLength);

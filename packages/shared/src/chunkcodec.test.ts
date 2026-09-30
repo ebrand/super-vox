@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BLOCKS_PER_CHUNK, GRID_SIZES, emptyChunk, type Block, type Chunk } from './chunk.js';
-import { ChunkDecodeError, decodeChunk, encodeChunk } from './chunkcodec.js';
+import { ChunkDecodeError, decodeChunk, encodeChunk, readChunkHeader } from './chunkcodec.js';
 import { FlatGenerator, defaultFlatGen } from './flatgen.js';
 import { FLAT_WORLD_16KM } from './world.js';
 
@@ -107,5 +107,14 @@ describe('chunk codec', () => {
 
   it('refuses to encode a chunk with the wrong block count', () => {
     expect(() => encodeChunk({ cx: 0, cy: 0, cz: 0, blocks: [] })).toThrow(RangeError);
+  });
+
+  it('reads the header without decoding', () => {
+    const bytes = encodeChunk(randomChunk(4));
+    expect(readChunkHeader(bytes)).toEqual({ cx: -7, cy: 3, cz: 2 ** 31 - 1 });
+    expect(() => readChunkHeader(bytes.subarray(0, 12))).toThrow(ChunkDecodeError);
+    const bad = bytes.slice();
+    bad[0] = 2;
+    expect(() => readChunkHeader(bad)).toThrow(/format/);
   });
 });

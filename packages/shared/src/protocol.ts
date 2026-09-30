@@ -1,7 +1,7 @@
 import type { WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 export type ClientMessage =
   | { type: 'hello'; protocolVersion: number }
@@ -9,6 +9,8 @@ export type ClientMessage =
 
 export type ServerMessage =
   | { type: 'welcome'; protocolVersion: number; world: WorldConfig }
+  /** Reply to requestChunk for a chunk outside the world. */
+  | { type: 'chunkUnavailable'; cx: number; cy: number; cz: number }
   | { type: 'error'; code: string; message: string };
 
 /**
