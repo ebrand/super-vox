@@ -31,11 +31,15 @@ how long the view took to settle. Production servers ignore the override.
 ## Controls
 
 Click the view to capture the mouse; then moving the mouse looks around and
-Esc releases it. (Without capturing, dragging with a mouse button also looks.) W/A/S/D move along
-the ground in the direction you face, Space or E rises, Q or C descends, Shift
-moves 5x faster, and the mouse wheel changes the base speed (default 2 m/s).
-You collide with terrain as a 0.6 x 1.8 m body (eyes at 1.62 m), slide along
-walls, and step up ledges up to 1/2 m automatically. N toggles no-clip.
+Esc releases it. (Without capturing, dragging with a mouse button also looks.)
+
+You start **walking**: W/A/S/D move in the direction you face, Space jumps
+(about 1.25 m, enough to get onto a 1 m voxel), gravity pulls you down, and
+ledges up to 1/2 m are climbed automatically. **F** switches to **flying**
+(Space or E rises, Q or C descends) and back. Shift moves 5x faster and the
+mouse wheel changes the base speed (default 2 m/s). You collide with terrain
+as a 0.6 x 1.8 m body (eyes at 1.62 m); **N** toggles no-clip, which flies
+through everything. Gravity waits until the ground below you has loaded.
 
 Editing has three modes; Tab cycles hybrid -> dig -> place (the overlay shows
 the current one). Aim with the crosshair (reach 32 m) while the mouse is

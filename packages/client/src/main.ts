@@ -7,7 +7,7 @@ import { FlyControls } from './flyControls.js';
 import { selectLod } from './lod.js';
 import { TileManager } from './tileManager.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
-import { moveAabb, playerBox } from './physics.js';
+import { PLAYER, moveAabb, playerBox } from './physics.js';
 import { MeshWorkerPool } from './workerPool.js';
 import { solidAtFor } from './worldQuery.js';
 
@@ -115,16 +115,32 @@ connection = connect({
           tiles = new TileManager(scene, material, send, pool, 32, onProgress);
           const solidAt = solidAtFor(chunks);
           const eyeUnits = () => [camera.position.x * UNITS_PER_METER, camera.position.y * UNITS_PER_METER, camera.position.z * UNITS_PER_METER] as const;
-          const collide = (_position: THREE.Vector3, delta: THREE.Vector3) => {
-            const d = delta.clone().multiplyScalar(UNITS_PER_METER);
-            const r = moveAabb(playerBox(eyeUnits()), [d.x, d.y, d.z], solidAt);
-            return new THREE.Vector3(...r.delta).divideScalar(UNITS_PER_METER);
+          const collide = (d: [number, number, number]) => {
+            const r = moveAabb(playerBox(eyeUnits()), [d[0] * UNITS_PER_METER, d[1] * UNITS_PER_METER, d[2] * UNITS_PER_METER], solidAt);
+            return {
+              delta: [r.delta[0] / UNITS_PER_METER, r.delta[1] / UNITS_PER_METER, r.delta[2] / UNITS_PER_METER] as [number, number, number],
+              blocked: r.blocked,
+            };
           };
           controls.collide = collide;
-          // N toggles no-clip (flying through terrain).
+          controls.walking = true;
+          // Gravity waits until the chunks under the player's feet (and the layer below) have loaded.
+          controls.groundLoaded = () => {
+            const [x, y, z] = eyeUnits();
+            const feet = y - PLAYER.eye;
+            const at = (uy: number) => chunks!.chunkAt({ cx: Math.floor(x / CHUNK_SIZE), cy: Math.floor(uy / CHUNK_SIZE), cz: Math.floor(z / CHUNK_SIZE) });
+            return at(feet) !== undefined && at(feet - CHUNK_SIZE) !== undefined;
+          };
           window.addEventListener('keydown', (e) => {
-            if (e.code !== 'KeyN' || e.repeat || e.metaKey || e.ctrlKey) return;
-            controls.collide = controls.collide ? null : collide;
+            if (e.repeat || e.metaKey || e.ctrlKey) return;
+            if (e.code === 'KeyN') {
+              // No-clip: fly through terrain (walking needs collision, so it flies).
+              controls.collide = controls.collide ? null : collide;
+              if (!controls.collide) controls.walking = false;
+            } else if (e.code === 'KeyF') {
+              controls.walking = !controls.walking;
+              if (controls.walking) controls.collide = collide;
+            } else return;
             updateHud();
           });
           editTool = new EditTool(scene, camera, chunks, send, () => (controls.collide ? playerBox(eyeUnits()) : null));
@@ -196,8 +212,11 @@ function updateHud(): void {
     `${worldLine || 'connecting…'}\n` +
     `camera ${f.x.toFixed(1)}, ${f.y.toFixed(1)}, ${f.z.toFixed(1)} m, speed ${controls.speed.toFixed(0)} m/s\n` +
     (controls.pointerLocked ? 'mouse: look · Esc: release mouse' : 'click: capture mouse (or drag to look)') +
-    ' · WASD: move · Space/E: up · Q/C: down · Shift: 5x · wheel: speed (⌘+wheel: voxel size)' +
-    ` · N: no-clip (${controls.collide ? 'off' : 'on'})\n` +
+    (controls.walking
+      ? ' · walking: WASD move · Space: jump'
+      : ' · flying: WASD move · Space/E: up · Q/C: down') +
+    ' · Shift: 5x · wheel: speed (⌘+wheel: voxel size)' +
+    ` · F: ${controls.walking ? 'fly' : 'walk'} · N: no-clip (${controls.collide ? 'off' : 'on'})\n` +
     (editTool ? `${editTool.hudLines()}\n` : '') +
     (c && t
       ? `chunks ${c.loaded} loaded (${c.columns} columns), ${c.inFlight} in flight, ${c.queued} queued, ${c.meshing} meshing\n` +

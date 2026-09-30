@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { walkStep, type Mover, type WalkState } from './walking.js';
 
 /** Keys currently held, by KeyboardEvent.code. */
 export type HeldKeys = ReadonlySet<string>;
@@ -32,12 +33,13 @@ export function applyLook(yaw: number, pitch: number, dx: number, dy: number, se
 }
 
 /**
- * Free-flying camera. Click the view to capture the mouse (pointer lock);
+ * First-person camera that walks (gravity, Space to jump) or flies. Click the view to capture the mouse (pointer lock);
  * while captured, moving the mouse looks around and button presses are
  * reported through `onClick`. Esc releases it. Uncaptured, dragging with the
  * left or right button still looks around. WASD moves, Space/E up, Q/C down,
  * Shift for 5x speed, mouse wheel changes the base speed (with Command held
- * it goes to `onModifiedWheel` instead). No collision.
+ * it goes to `onModifiedWheel` instead). Flying: Space/E up, Q/C down.
+ * Collision comes from `collide`; walking needs it.
  */
 export class FlyControls {
   yaw = 0;
@@ -48,10 +50,16 @@ export class FlyControls {
   /** Lowest camera height allowed (metres). */
   minY = -Infinity;
   /**
-   * Collision: given the camera position and a desired move (metres),
-   * returns the move actually allowed. Null = fly through everything.
+   * Collision: given a desired move (metres) from the camera's position,
+   * returns the move actually allowed and which axes were blocked.
+   * Null = fly through everything (no-clip).
    */
-  collide: ((position: THREE.Vector3, delta: THREE.Vector3) => THREE.Vector3) | null = null;
+  collide: Mover | null = null;
+  /** Walking (gravity, jumping) instead of flying. Needs `collide`. */
+  walking = false;
+  /** Whether the world below the camera has loaded (gravity waits for it). */
+  groundLoaded: () => boolean = () => true;
+  private walk: WalkState = { vy: 0, grounded: false };
   private readonly keys = new Set<string>();
   private dragging = false;
   /** Mouse travel (pixels) since the button went down, to tell clicks from drags. */
@@ -149,8 +157,26 @@ export class FlyControls {
   /** Moves and orients the camera; `dt` in seconds. */
   update(dt: number): void {
     const step = Math.min(dt, 0.1) * this.speed * (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 5 : 1);
-    const delta = moveDirection(this.yaw, this.keys).multiplyScalar(step);
-    this.camera.position.add(this.collide ? this.collide(this.camera.position, delta) : delta);
+    if (this.walking && this.collide) {
+      // Walk along the ground in the facing direction; Space jumps.
+      const dir = moveDirection(this.yaw, this.keys);
+      dir.y = 0;
+      if (dir.lengthSq() > 0) dir.normalize();
+      const speed = step / Math.max(Math.min(dt, 0.1), 1e-6);
+      const r = walkStep(
+        this.walk,
+        { dx: dir.x, dz: dir.z, speed, jump: this.keys.has('Space') },
+        Math.min(dt, 0.1),
+        this.collide,
+        this.groundLoaded(),
+      );
+      this.walk = r.state;
+      this.camera.position.add(new THREE.Vector3(...r.delta));
+    } else {
+      this.walk = { vy: 0, grounded: false };
+      const delta = moveDirection(this.yaw, this.keys).multiplyScalar(step);
+      this.camera.position.add(this.collide ? new THREE.Vector3(...this.collide([delta.x, delta.y, delta.z]).delta) : delta);
+    }
     if (this.camera.position.y < this.minY) this.camera.position.y = this.minY;
     this.apply();
   }
