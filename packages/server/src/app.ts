@@ -9,7 +9,7 @@ import {
   type ServerMessage,
 } from '@super-vox/shared';
 import type { WebSocket } from 'ws';
-import type { World } from './world.js';
+import type { EditResult, World } from './world.js';
 
 export interface AppOptions {
   world: World;
@@ -104,7 +104,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             send({ type: 'error', code: 'not_ready', message: 'send hello first' });
             return;
           }
-          let result: ReturnType<World['applyEdit']>;
+          let result: EditResult;
           try {
             result = world.applyEdit(msg.edit);
           } catch (err) {
@@ -113,15 +113,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             return;
           }
           send({ type: 'editResult', id: msg.id, ok: true });
-          // Everyone viewing this world gets the new chunk (and column range if it grew).
-          const chunkFrame = frame(BinaryTag.Chunk, result.bytes);
-          const column: ServerMessage | null = result.columnRange
-            ? { type: 'column', cx: result.coord.cx, cz: result.coord.cz, ...result.columnRange }
-            : null;
+          // Everyone viewing this world gets the new chunks (column ranges first, so
+          // clients load any newly needed layers before the chunk data arrives).
+          const frames = result.changes.map((c) => frame(BinaryTag.Chunk, c.bytes));
+          const columns = result.columns.map((c) => encodeMessage({ type: 'column', ...c }));
           for (const [client, w] of clients) {
             if (w !== world || client.readyState !== client.OPEN) continue;
-            if (column) client.send(encodeMessage(column));
-            client.send(chunkFrame);
+            for (const m of columns) client.send(m);
+            for (const f of frames) client.send(f);
           }
           break;
         }

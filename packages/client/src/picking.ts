@@ -100,3 +100,18 @@ export function placementBox(hit: RayHit, target: Box, size: number, fine = fals
   const [x, y, z] = corner as [number, number, number];
   return { x, y, z, size, valid: voxelFitsInBlock(x, y, z, size) };
 }
+
+/**
+ * The dig box: a cube of `size` just behind the face `hit` points at (inside
+ * the solid), positioned on the face's plane like placementBox (aligned or
+ * fine). Unlike a voxel it may cross 1 m gridlines.
+ */
+export function digBox(hit: RayHit, target: Box, size: number, fine = false): Box {
+  const outside = placementBox(hit, target, size, fine);
+  const axis = hit.normal[0] !== 0 ? 0 : hit.normal[1] !== 0 ? 1 : 2;
+  const corner = [outside.x, outside.y, outside.z];
+  // Mirror across the face: the face plane is where the placed voxel would start (+) or end (-).
+  corner[axis] = hit.normal[axis]! > 0 ? corner[axis]! - size : corner[axis]! + size;
+  const [x, y, z] = corner as [number, number, number];
+  return { x, y, z, size };
+}

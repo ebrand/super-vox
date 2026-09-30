@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { placementBox, raycastVoxels, type RayHit, type SolidAt } from './picking.js';
+import { digBox, placementBox, raycastVoxels, type RayHit, type SolidAt } from './picking.js';
 
 /** Ground: every cell with y < 0 is solid; one pillar at x 10..13, z 0..3, y 0..7. */
 const world: SolidAt = (x, y, z) => y < 0 || (x >= 10 && x < 14 && z >= 0 && z < 4 && y < 8);
@@ -101,5 +101,27 @@ describe('placementBox', () => {
     const h: RayHit = { cell: [0, 4, 0], normal: [0, 1, 0], point: [0.5, 5, 0.5], distance: 1 };
     expect(placementBox(h, { x: 0, y: 4, z: 0, size: 1 }, 16).valid).toBe(false);
     expect(placementBox(h, { x: 0, y: 4, z: 0, size: 1 }, 11).valid).toBe(true);
+  });
+});
+
+describe('digBox', () => {
+  const top = (x: number, z: number): RayHit => ({ cell: [Math.floor(x), -1, Math.floor(z)], normal: [0, 1, 0], point: [x, 0, z], distance: 1 });
+
+  it('sits just below the face aimed at, aligned or fine', () => {
+    expect(digBox(top(5.2, 9.9), { x: 0, y: -16, z: 0, size: 16 }, 8)).toEqual({ x: 0, y: -8, z: 8, size: 8 });
+    expect(digBox(top(5.3, 9.9), { x: 0, y: -16, z: 0, size: 16 }, 8, true)).toEqual({ x: 1, y: -8, z: 6, size: 8 });
+  });
+
+  it('goes into the solid for sideways and downward faces too', () => {
+    const side: RayHit = { cell: [10, 3, 1], normal: [-1, 0, 0], point: [10, 3.5, 1.5], distance: 1 };
+    expect(digBox(side, { x: 10, y: 0, z: 0, size: 4 }, 2)).toEqual({ x: 10, y: 2, z: 0, size: 2 });
+    const below: RayHit = { cell: [3, 5, 3], normal: [0, -1, 0], point: [3.5, 5, 3.5], distance: 1 };
+    expect(digBox(below, { x: 2, y: 5, z: 2, size: 2 }, 4)).toEqual({ x: 0, y: 5, z: 0, size: 4 });
+  });
+
+  it('may extend past the target and across gridlines', () => {
+    // Aiming at the top of a 1/16 m voxel at y = 4 with a 1 m box: y = 5 - 16 = -11.
+    const h: RayHit = { cell: [0, 4, 0], normal: [0, 1, 0], point: [0.5, 5, 0.5], distance: 1 };
+    expect(digBox(h, { x: 0, y: 4, z: 0, size: 1 }, 16)).toEqual({ x: 0, y: -11, z: 0, size: 16 });
   });
 });

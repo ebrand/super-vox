@@ -151,11 +151,11 @@ describe('World', () => {
       const world = flatWorld();
       // Ground top is y = 0, so the grass block at y -16..0 is in chunk cy = -1.
       const r = world.applyEdit({ op: 'remove', x: 100, y: -1, z: 200 });
-      expect(r.coord).toEqual({ cx: 0, cy: -1, cz: 0 });
+      expect(r.changes.map((c) => c.coord)).toEqual([{ cx: 0, cy: -1, cz: 0 }]);
       const chunk = decodeChunk(world.getEncodedChunk({ cx: 0, cy: -1, cz: 0 })!);
       expect(voxelAt(chunk, 100, 255, 200)).toBeNull();
       expect(voxelAt(chunk, 100, 239, 200)).not.toBeNull();
-      expect(decodeChunk(r.bytes)).toEqual(chunk);
+      expect(decodeChunk(r.changes[0]!.bytes)).toEqual(chunk);
     });
 
     it('rejects invalid edits and edits outside the world without changing anything', () => {
@@ -184,10 +184,32 @@ describe('World', () => {
       const world = flatWorld();
       expect(world.columnRange(0, 0)).toEqual({ minY: 0, maxY: 0 });
       const r = world.applyEdit({ op: 'place', x: 0, y: 300, z: 0, size: 4, material: 1 });
-      expect(r.coord.cy).toBe(1);
-      expect(r.columnRange).toEqual({ minY: 0, maxY: 512 });
+      expect(r.changes[0]!.coord.cy).toBe(1);
+      expect(r.columns).toEqual([{ cx: 0, cz: 0, minY: 0, maxY: 512 }]);
       expect(world.columnRange(0, 0)).toEqual({ minY: 0, maxY: 512 });
-      expect(world.applyEdit({ op: 'place', x: 4, y: 300, z: 0, size: 4, material: 1 }).columnRange).toBeNull();
+      expect(world.applyEdit({ op: 'place', x: 4, y: 300, z: 0, size: 4, material: 1 }).columns).toEqual([]);
+    });
+
+    it('removes a box across chunk borders as one edit, saving every changed chunk', () => {
+      const dir = tmp();
+      const world = flatWorld(dir);
+      // Straddles chunks cx 0/1 and cz 0/1 at the surface (ground top y = 0, 1 m voxels).
+      const r = world.applyEdit({ op: 'removeBox', x: 250, y: -4, z: 250, size: 12 });
+      expect(r.changes.map((c) => `${c.coord.cx},${c.coord.cz}`).sort()).toEqual(['0,0', '0,1', '1,0', '1,1']);
+      expect(readdirSync(dir)).toHaveLength(4);
+      // The 1 m voxels touched in each chunk are gone; neighbours are not.
+      const at = (cx: number, cz: number) => decodeChunk(world.getEncodedChunk({ cx, cy: -1, cz })!);
+      expect(voxelAt(at(0, 0), 250, 255, 250)).toBeNull();
+      expect(voxelAt(at(1, 1), 0, 255, 0)).toBeNull();
+      expect(voxelAt(at(0, 0), 239, 255, 250)).not.toBeNull();
+      expect(voxelAt(at(0, 0), 250, 239, 250)).not.toBeNull();
+    });
+
+    it('rejects a removeBox that touches nothing, changing nothing', () => {
+      const world = flatWorld();
+      expect(() => world.applyEdit({ op: 'removeBox', x: 0, y: 100, z: 0, size: 8 })).toThrow(/nothing/);
+      expect(() => world.applyEdit({ op: 'removeBox', x: 0, y: -8, z: 0, size: 20 })).toThrow(/size/);
+      expect(world.editedChunkCount).toBe(0);
     });
 
     it('does not let edits leak between worlds sharing a generator', () => {

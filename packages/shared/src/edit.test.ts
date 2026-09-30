@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { blockIndex, emptyChunk, voxelAt, type Chunk } from './chunk.js';
 import { decodeChunk, encodeChunk } from './chunkcodec.js';
-import { EditError, applyEdit, blockVoxels, editChunk, type Edit } from './edit.js';
+import { EditError, applyEdit, blockVoxels, editChunk, removeBoxChunks, removeBoxFromChunk, type Edit } from './edit.js';
 import { FlatGenerator, defaultFlatGen } from './flatgen.js';
 import { Material } from './materials.js';
 import { FLAT_WORLD_16KM } from './world.js';
@@ -153,5 +153,66 @@ describe('applyEdit', () => {
 describe('editChunk', () => {
   it('finds the chunk for negative coordinates too', () => {
     expect(editChunk({ op: 'remove', x: -1, y: -256, z: 255 })).toEqual({ cx: -1, cy: -1, cz: 0 });
+  });
+});
+
+describe('removeBox', () => {
+  it('lists every chunk the box overlaps', () => {
+    expect(removeBoxChunks({ op: 'removeBox', x: 0, y: 0, z: 0, size: 16 })).toEqual([{ cx: 0, cy: 0, cz: 0 }]);
+    expect(removeBoxChunks({ op: 'removeBox', x: 250, y: -3, z: 255, size: 8 })).toHaveLength(8);
+  });
+
+  it('removes exactly the voxels with any part inside the box, whole', () => {
+    const rand = rng(11);
+    for (let trial = 0; trial < 40; trial++) {
+      // A chunk whose block (0,0,0) holds random non-overlapping voxels of any size.
+      let c = chunkWith(null);
+      for (let k = 0; k < 40; k++) {
+        const size = 1 + Math.floor(rand() * 8);
+        const [x, y, z] = [0, 0, 0].map(() => Math.floor(rand() * (17 - size)));
+        try {
+          c = applyEdit(c, { op: 'place', ...at(x!, y!, z!), size, material: 1 + (k % 3) });
+        } catch {
+          // occupied: skip
+        }
+      }
+      const before = blockVoxels(c.blocks[0]!);
+      const size = 1 + Math.floor(rand() * 16);
+      const [bx, by, bz] = [0, 0, 0].map(() => Math.floor(rand() * 20) - 6) as [number, number, number];
+      const box = { op: 'removeBox' as const, ...at(bx, by, bz), size };
+      const hits = (v: { x: number; y: number; z: number; size: number }) =>
+        v.x < bx + size && bx < v.x + v.size && v.y < by + size && by < v.y + v.size && v.z < bz + size && bz < v.z + v.size;
+      const expected = before.filter((v) => !hits(v));
+      const next = removeBoxFromChunk(c, box);
+      if (expected.length === before.length) {
+        expect(next).toBeNull();
+        continue;
+      }
+      const after = next?.blocks[0] ? blockVoxels(next.blocks[0]) : [];
+      const key = (v: { x: number; y: number; z: number; size: number; material: number }) => `${v.x},${v.y},${v.z},${v.size},${v.material}`;
+      expect(after.map(key).sort()).toEqual(expected.map(key).sort());
+    }
+  });
+
+  it('works on uniform and grid blocks and leaves shared blocks alone', () => {
+    const gen = new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4));
+    const a = gen.generateChunk({ cx: 0, cy: -1, cz: 0 });
+    const shared = a.blocks[blockIndex(0, 15, 0)]!;
+    const before = encodeChunk(a);
+    // A 1/2 m cube at the surface, offset by 2: covers size-4 voxels from 0..12 on x and z, and y -8..0.
+    const next = removeBoxFromChunk(a, { op: 'removeBox', x: 2, y: -8, z: 2, size: 8 })!;
+    expect(encodeChunk(a)).toEqual(before);
+    expect(a.blocks[blockIndex(0, 15, 0)]).toBe(shared);
+    for (const [x, z] of [[0, 0], [11, 11], [4, 8]] as const) {
+      expect(voxelAt(next, x, 255, z)).toBeNull();
+      expect(voxelAt(next, x, 248, z)).toBeNull();
+    }
+    expect(voxelAt(next, 12, 255, 0)).not.toBeNull(); // x 12..15 untouched
+    expect(voxelAt(next, 0, 247, 0)).not.toBeNull(); // below the box untouched
+  });
+
+  it('refuses invalid sizes and reports nothing to remove through applyEdit', () => {
+    expect(() => removeBoxFromChunk(chunkWith(null), { op: 'removeBox', ...at(0, 0, 0), size: 17 })).toThrow(/size/);
+    expect(() => applyEdit(chunkWith(null), { op: 'removeBox', ...at(0, 0, 0), size: 4 })).toThrow(/nothing/);
   });
 });

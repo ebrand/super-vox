@@ -25,7 +25,20 @@ import { CHUNK_SIZE } from './world.js';
 export type Edit =
   | { op: 'remove'; x: number; y: number; z: number }
   | { op: 'break'; x: number; y: number; z: number; pieceSize: number }
-  | { op: 'place'; x: number; y: number; z: number; size: number; material: MaterialId };
+  | { op: 'place'; x: number; y: number; z: number; size: number; material: MaterialId }
+  | RemoveBoxEdit;
+
+/**
+ * Removes every voxel with any part inside the cube [x, x+size)^3 (world
+ * units). Unlike a voxel, the cube may cross 1 m gridlines and chunk borders.
+ */
+export interface RemoveBoxEdit {
+  op: 'removeBox';
+  x: number;
+  y: number;
+  z: number;
+  size: number;
+}
 
 export class EditError extends Error {}
 
@@ -105,6 +118,12 @@ export function applyEdit(chunk: Chunk, edit: Edit): Chunk {
   const block = chunk.blocks[bi] ?? null;
   const [bx, by, bz] = [mod(lx, BLOCK_SIZE), mod(ly, BLOCK_SIZE), mod(lz, BLOCK_SIZE)];
 
+  if (edit.op === 'removeBox') {
+    const next = removeBoxFromChunk(chunk, edit);
+    if (!next) throw new EditError('nothing to remove there');
+    return next;
+  }
+
   let voxels: BlockVoxel[];
   switch (edit.op) {
     case 'remove': {
@@ -156,6 +175,56 @@ export function applyEdit(chunk: Chunk, edit: Edit): Chunk {
   const blocks = chunk.blocks.slice();
   blocks[bi] = blockFromVoxels(voxels);
   return { cx: chunk.cx, cy: chunk.cy, cz: chunk.cz, blocks };
+}
+
+/** Throws EditError unless `box` is a valid removeBox cube. */
+export function validateRemoveBox(box: RemoveBoxEdit): void {
+  if (!isValidVoxelSize(box.size)) throw new EditError(`invalid box size ${box.size}`);
+}
+
+/** Chunks overlapped by a removeBox cube. */
+export function removeBoxChunks(box: RemoveBoxEdit): { cx: number; cy: number; cz: number }[] {
+  const lo = [box.x, box.y, box.z].map((v) => Math.floor(v / CHUNK_SIZE));
+  const hi = [box.x, box.y, box.z].map((v) => Math.floor((v + box.size - 1) / CHUNK_SIZE));
+  const out: { cx: number; cy: number; cz: number }[] = [];
+  for (let cy = lo[1]!; cy <= hi[1]!; cy++) {
+    for (let cz = lo[2]!; cz <= hi[2]!; cz++) {
+      for (let cx = lo[0]!; cx <= hi[0]!; cx++) out.push({ cx, cy, cz });
+    }
+  }
+  return out;
+}
+
+/**
+ * Removes from one chunk every voxel with any part inside the box. Returns
+ * the new chunk, or null if nothing in this chunk was touched.
+ */
+export function removeBoxFromChunk(chunk: Chunk, box: RemoveBoxEdit): Chunk | null {
+  validateRemoveBox(box);
+  const x0 = chunk.cx * CHUNK_SIZE, y0 = chunk.cy * CHUNK_SIZE, z0 = chunk.cz * CHUNK_SIZE;
+  // The box in chunk-local units, clipped to the chunk.
+  const lo = [box.x - x0, box.y - y0, box.z - z0].map((v) => Math.max(0, v));
+  const hi = [box.x - x0, box.y - y0, box.z - z0].map((v) => Math.min(CHUNK_SIZE, v + box.size));
+  if (lo.some((v, a) => v >= hi[a]!)) return null;
+  let blocks: Chunk['blocks'] | null = null;
+  for (let by = Math.floor(lo[1]! / BLOCK_SIZE); by * BLOCK_SIZE < hi[1]!; by++) {
+    for (let bz = Math.floor(lo[2]! / BLOCK_SIZE); bz * BLOCK_SIZE < hi[2]!; bz++) {
+      for (let bx = Math.floor(lo[0]! / BLOCK_SIZE); bx * BLOCK_SIZE < hi[0]!; bx++) {
+        const bi = blockIndex(bx, by, bz);
+        const block = chunk.blocks[bi] ?? null;
+        if (!block) continue;
+        const origin = [bx * BLOCK_SIZE, by * BLOCK_SIZE, bz * BLOCK_SIZE];
+        const inBox = (v: BlockVoxel) =>
+          [v.x, v.y, v.z].every((c, a) => origin[a]! + c < hi[a]! && lo[a]! < origin[a]! + c + v.size);
+        const all = blockVoxels(block);
+        const kept = all.filter((v) => !inBox(v));
+        if (kept.length === all.length) continue;
+        blocks ??= chunk.blocks.slice();
+        blocks[bi] = blockFromVoxels(kept);
+      }
+    }
+  }
+  return blocks ? { cx: chunk.cx, cy: chunk.cy, cz: chunk.cz, blocks } : null;
 }
 
 /** The chunk containing the unit cell an edit targets. */

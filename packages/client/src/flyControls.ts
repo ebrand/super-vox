@@ -51,8 +51,11 @@ export class FlyControls {
   private dragging = false;
   /** Mouse travel (pixels) since the button went down, to tell clicks from drags. */
   private dragTravel = 0;
-  /** Called for a mouse button press while the mouse is captured; 0 = left, 2 = right. */
-  onClick: ((button: number) => void) | null = null;
+  /**
+   * Called for a mouse button press while the mouse is captured (0 = left,
+   * 1 = middle, 2 = right), with the modifier keys held at that moment.
+   */
+  onClick: ((button: number, mods: { meta: boolean; alt: boolean }) => void) | null = null;
   /** Receives wheel movement (deltaY) while Command is held, instead of changing speed. */
   onModifiedWheel: ((deltaY: number) => void) | null = null;
   /** Called when the mouse is captured or released, with an error message if capture failed. */
@@ -70,7 +73,7 @@ export class FlyControls {
     on(element, 'mousedown', (e: MouseEvent) => {
       if (this.pointerLocked) {
         // Captured: buttons are actions, not look-drags.
-        this.onClick?.(e.button);
+        this.onClick?.(e.button, { meta: e.metaKey, alt: e.altKey });
         return;
       }
       if (e.button === 0 || e.button === 2) {

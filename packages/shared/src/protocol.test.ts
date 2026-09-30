@@ -59,6 +59,9 @@ describe('protocol', () => {
     });
     expect(decodeClientMessage('{"type":"edit","id":0,"edit":{"op":"break","x":1,"y":2,"z":3,"pieceSize":4}}')).toMatchObject({ edit: { op: 'break', pieceSize: 4 } });
     expect(decodeClientMessage('{"type":"edit","id":1,"edit":{"op":"place","x":1,"y":2,"z":3,"size":5,"material":2}}')).toMatchObject({ edit: { op: 'place', size: 5, material: 2 } });
+    expect(decodeClientMessage('{"type":"edit","id":2,"edit":{"op":"removeBox","x":1,"y":2,"z":3,"size":8}}')).toEqual({
+      type: 'edit', id: 2, edit: { op: 'removeBox', x: 1, y: 2, z: 3, size: 8 },
+    });
     for (const raw of [
       '{"type":"edit","id":-1,"edit":{"op":"remove","x":1,"y":2,"z":3}}',
       '{"type":"edit","id":1.5,"edit":{"op":"remove","x":1,"y":2,"z":3}}',

@@ -3,7 +3,7 @@ import { isValidTileLevel } from './tile.js';
 import type { WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 export type ClientMessage =
   | {
@@ -108,6 +108,7 @@ function decodeEdit(data: unknown): Edit | null {
   if (e.op === 'remove') return { op: 'remove', x, y, z };
   if (e.op === 'break' && isInt32(e.pieceSize)) return { op: 'break', x, y, z, pieceSize: e.pieceSize };
   if (e.op === 'place' && isInt32(e.size) && isInt32(e.material)) return { op: 'place', x, y, z, size: e.size, material: e.material };
+  if (e.op === 'removeBox' && isInt32(e.size)) return { op: 'removeBox', x, y, z, size: e.size };
   return null;
 }
 

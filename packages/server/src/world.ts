@@ -5,6 +5,9 @@ import {
   applyEdit,
   decodeChunk,
   editChunk,
+  removeBoxChunks,
+  removeBoxFromChunk,
+  validateRemoveBox,
   normalizeX,
   TILE_SAMPLES,
   chunkKey,
@@ -23,6 +26,12 @@ import {
   type WorldConfig,
 } from '@super-vox/shared';
 import type { ChunkStore } from './chunkStore.js';
+
+/** What an edit changed: the new chunks, and columns whose height range widened. */
+export interface EditResult {
+  changes: { coord: ChunkCoord; bytes: Uint8Array }[];
+  columns: { cx: number; cz: number; minY: number; maxY: number }[];
+}
 
 /**
  * Server-side world: generates chunks on demand and keeps recently used
@@ -76,24 +85,57 @@ export class World {
   }
 
   /**
-   * Applies an edit and returns the updated chunk. Throws EditError if the
-   * edit is invalid or outside the world. `columnRange` is set when the edit
-   * widened its column's height range.
+   * Applies an edit and returns the chunks it changed (one, or up to eight
+   * for a removeBox) plus any column whose height range widened. Throws
+   * EditError, changing nothing, if the edit is invalid, outside the world,
+   * or (for removeBox) removes nothing.
    */
-  applyEdit(edit: Edit): { coord: ChunkCoord; bytes: Uint8Array; columnRange: { minY: number; maxY: number } | null } {
+  applyEdit(edit: Edit): EditResult {
+    if (edit.op === 'removeBox') {
+      validateRemoveBox(edit);
+      const changed: Chunk[] = [];
+      for (const c of removeBoxChunks(edit)) {
+        const resolved = resolveChunk(this.config, c);
+        if (!resolved) continue;
+        // On a wrapping world the box may cross the seam: shift it into this chunk's copy of X.
+        const shift = (resolved.cx - c.cx) * CHUNK_SIZE;
+        const next = removeBoxFromChunk(this.current(resolved), { ...edit, x: edit.x + shift });
+        if (next) changed.push(next);
+      }
+      if (changed.length === 0) throw new EditError('nothing to remove there');
+      return this.commit(changed);
+    }
     const e = { ...edit, x: normalizeX(this.config, edit.x) };
     const resolved = resolveChunk(this.config, editChunk(e));
     if (!resolved) throw new EditError('outside the world');
-    const key = chunkKey(resolved);
-    const before = this.columnRange(resolved.cx, resolved.cz);
-    const next = applyEdit(this.edited.get(key) ?? this.generator.generateChunk(resolved), e);
-    this.recordEdited(next);
-    const bytes = encodeChunk(next);
-    lruSet(this.cache, key, bytes, this.cacheSize);
-    this.store?.save(resolved, bytes);
-    const after = this.columnRange(resolved.cx, resolved.cz)!;
-    const widened = !before || after.minY !== before.minY || after.maxY !== before.maxY;
-    return { coord: resolved, bytes, columnRange: widened ? after : null };
+    return this.commit([applyEdit(this.current(resolved), e)]);
+  }
+
+  private current(coord: ChunkCoord): Chunk {
+    return this.edited.get(chunkKey(coord)) ?? this.generator.generateChunk(coord);
+  }
+
+  /** Stores, caches, and saves edited chunks; reports widened column ranges. */
+  private commit(chunks: Chunk[]): EditResult {
+    const columns = new Map<string, { cx: number; cz: number; before: { minY: number; maxY: number } | null }>();
+    for (const c of chunks) {
+      const k = `${c.cx},${c.cz}`;
+      if (!columns.has(k)) columns.set(k, { cx: c.cx, cz: c.cz, before: this.columnRange(c.cx, c.cz) });
+    }
+    const changes = chunks.map((chunk) => {
+      this.recordEdited(chunk);
+      const coord = { cx: chunk.cx, cy: chunk.cy, cz: chunk.cz };
+      const bytes = encodeChunk(chunk);
+      lruSet(this.cache, chunkKey(coord), bytes, this.cacheSize);
+      this.store?.save(coord, bytes);
+      return { coord, bytes };
+    });
+    const widened: EditResult['columns'] = [];
+    for (const { cx, cz, before } of columns.values()) {
+      const after = this.columnRange(cx, cz)!;
+      if (!before || after.minY !== before.minY || after.maxY !== before.maxY) widened.push({ cx, cz, ...after });
+    }
+    return { changes, columns: widened };
   }
 
   get editedChunkCount(): number {
