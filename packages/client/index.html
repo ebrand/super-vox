@@ -11,10 +11,19 @@
         font: 12px/1.4 ui-monospace, monospace; color: #e6e6e6;
         background: rgba(0, 0, 0, 0.55); border-radius: 4px; white-space: pre;
       }
+      #crosshair {
+        position: fixed; left: 50%; top: 50%; width: 14px; height: 14px;
+        margin: -7px 0 0 -7px; pointer-events: none;
+        background:
+          linear-gradient(#fff, #fff) center / 2px 14px no-repeat,
+          linear-gradient(#fff, #fff) center / 14px 2px no-repeat;
+        mix-blend-mode: difference;
+      }
     </style>
   </head>
   <body>
     <div id="status">connecting…</div>
+    <div id="crosshair"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

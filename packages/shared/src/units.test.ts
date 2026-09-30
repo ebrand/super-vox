@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { breakSizesFor, isValidVoxelSize, metersToUnits, unitsToMeters } from './units.js';
+import { breakSizesFor, isValidVoxelSize, metersToUnits, nextBreakSize, unitsToMeters } from './units.js';
 
 describe('voxel sizes', () => {
   it('accepts exactly the integers 1..16', () => {
@@ -13,6 +13,18 @@ describe('voxel sizes', () => {
     expect(breakSizesFor(15)).toEqual([1, 3, 5]);
     expect(breakSizesFor(13)).toEqual([1]);
     expect(breakSizesFor(1)).toEqual([]);
+  });
+
+  it('steps down to the largest proper divisor', () => {
+    const chain: number[] = [];
+    for (let s: number | null = 16; s !== null; s = nextBreakSize(s)) chain.push(s);
+    expect(chain).toEqual([16, 8, 4, 2, 1]);
+    expect(nextBreakSize(12)).toBe(6);
+    expect(nextBreakSize(15)).toBe(5);
+    expect(nextBreakSize(9)).toBe(3);
+    expect(nextBreakSize(13)).toBe(1);
+    expect(nextBreakSize(1)).toBeNull();
+    for (let s = 2; s <= 16; s++) expect(s % nextBreakSize(s)!).toBe(0);
   });
 
   it('rejects invalid sizes', () => {

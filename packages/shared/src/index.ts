@@ -7,5 +7,6 @@ export * from './noise.js';
 export * from './terrain.js';
 export * from './chunkcodec.js';
 export * from './tile.js';
+export * from './edit.js';
 export * from './world.js';
 export * from './protocol.js';

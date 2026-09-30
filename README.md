@@ -30,10 +30,21 @@ how long the view took to settle. Production servers ignore the override.
 
 ## Controls
 
-Drag with the left or right mouse button to look around. W/A/S/D move along
+Click the view to capture the mouse; then moving the mouse looks around and
+Esc releases it. (Without capturing, dragging with a mouse button also looks.) W/A/S/D move along
 the ground in the direction you face, Space or E rises, Q or C descends, Shift
-moves 5x faster, and the mouse wheel changes the base speed. There is no
+moves 5x faster, and the mouse wheel changes the base speed (default 2 m/s). There is no
 collision yet: you can fly through terrain.
+
+Editing works on the voxel under the crosshair (within 32 m) while the mouse
+is captured: click (or X) removes it; middle-click breaks it into the next
+smaller size that divides it (1 m -> 8 x 1/2 m -> 64 x 1/4 m ...); right-click places a voxel of the selected size against the face you aim at
+(hold Command to see where it will go), and B breaks it into pieces of the selected size (which must divide it).
+Command + mouse wheel (or `[` and `]`) chooses the size from the five
+standard sizes (1/16, 1/8, 1/4, 1/2, 1 m; the wheel wraps around), 1-3 the material (stone, dirt,
+grass). The server validates and applies edits, sends changed chunks to every
+connected client, and saves edited chunks under `WORLD_DATA_DIR` (default
+`./data`, gitignored) so they survive restarts.
 
 ## Distant terrain
 

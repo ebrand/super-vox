@@ -12,6 +12,7 @@ import {
   decodeChunk,
   decodeTile,
   defaultFlatGen,
+  voxelAt,
   type ServerMessage,
 } from '@super-vox/shared';
 import { buildApp } from './app.js';
@@ -182,6 +183,50 @@ describe('tiles and columns', () => {
     const outside = nextMessage(ws);
     ws.send(JSON.stringify({ type: 'requestColumn', cx: -3, cz: 4 }));
     expect(await outside).toEqual({ type: 'column', cx: -3, cz: 4, minY: null, maxY: null });
+    ws.close();
+  });
+});
+
+describe('edits', () => {
+  it('applies an edit, answers the sender, and sends the new chunk to every client', async () => {
+    const a = await greeted();
+    const b = await greeted();
+    const toA: Frame[] = [], toB: Frame[] = [];
+    const collect = (ws: WebSocket, into: Frame[]) =>
+      ws.on('message', (data, isBinary) =>
+        into.push(isBinary ? { binary: new Uint8Array(data as Buffer) } : { text: JSON.parse(String(data)) as ServerMessage }),
+      );
+    collect(a, toA);
+    collect(b, toB);
+    a.send(JSON.stringify({ type: 'edit', id: 41, edit: { op: 'remove', x: 1000, y: -1, z: 1000 } }));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(toA.filter((f) => 'text' in f).map((f) => (f as { text: ServerMessage }).text)).toContainEqual({ type: 'editResult', id: 41, ok: true });
+    for (const frames of [toA, toB]) {
+      const bin = frames.find((f) => 'binary' in f) as { binary: Uint8Array } | undefined;
+      expect(bin?.binary[0]).toBe(BinaryTag.Chunk);
+      const chunk = decodeChunk(bin!.binary.subarray(1));
+      expect(chunk).toMatchObject({ cx: 3, cy: -1, cz: 3 });
+      expect(voxelAt(chunk, 1000 - 768, 255, 1000 - 768)).toBeNull();
+    }
+    // B never sent anything, so it gets no editResult.
+    expect(toB.some((f) => 'text' in f && f.text.type === 'editResult')).toBe(false);
+    a.close();
+    b.close();
+  });
+
+  it('reports invalid edits to the sender only, with no broadcast', async () => {
+    const a = await greeted();
+    const reply = nextFrame(a);
+    a.send(JSON.stringify({ type: 'edit', id: 9, edit: { op: 'break', x: 0, y: -1, z: 0, pieceSize: 3 } }));
+    expect(await reply).toEqual({ text: { type: 'editResult', id: 9, ok: false, error: 'a 4/16 m voxel cannot be broken into 3/16 m pieces' } });
+    a.close();
+  });
+
+  it('refuses edits before hello', async () => {
+    const ws = await connect();
+    const reply = nextMessage(ws);
+    ws.send(JSON.stringify({ type: 'edit', id: 1, edit: { op: 'remove', x: 0, y: -1, z: 0 } }));
+    expect(await reply).toMatchObject({ type: 'error', code: 'not_ready' });
     ws.close();
   });
 });

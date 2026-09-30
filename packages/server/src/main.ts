@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import {
   FLAT_WORLD_16KM,
   FlatGenerator,
@@ -8,6 +9,7 @@ import {
   defaultVoxelize,
 } from '@super-vox/shared';
 import { buildApp } from './app.js';
+import { FileChunkStore } from './chunkStore.js';
 import { World } from './world.js';
 
 const port = Number(process.env.PORT ?? 8787);
@@ -27,13 +29,19 @@ interface WorldSetup {
   settings: Record<string, unknown>;
 }
 
+/** Where edited chunks are saved: WORLD_DATA_DIR (default ./data) / <world config>. */
+function dataDir(name: string): string {
+  return join(process.env.WORLD_DATA_DIR ?? 'data', name);
+}
+
 // WORLD_GENERATOR: "terrain" (default) or "flat".
 function makeWorld(): WorldSetup {
   const kind = process.env.WORLD_GENERATOR ?? 'terrain';
   if (kind === 'flat') {
     // Generated voxel edge in 1/16 m units: 1, 2, 4, 8 or 16.
     const gen = defaultFlatGen(numberEnv('WORLD_RESOLUTION', 16));
-    return { world: new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, gen)), settings: { kind, resolution: gen.resolution } };
+    const store = new FileChunkStore(dataDir(`flat-r${gen.resolution}`));
+    return { world: new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, gen), { store }), settings: { kind, resolution: gen.resolution } };
   }
   if (kind === 'terrain') {
     const voxelize = {
@@ -47,10 +55,17 @@ function makeWorld(): WorldSetup {
         tolerance,
         ...(cacheSize !== undefined ? { cacheSize } : {}),
       });
-    const world = build(voxelize.tolerance);
+    // Edits are saved per generator configuration: they replace generated chunks.
+    const store = new FileChunkStore(dataDir(`terrain-s${noise.seed}-m${voxelize.minVoxelSize}-t${voxelize.tolerance}`));
+    const world = new World(
+      FLAT_WORLD_16KM,
+      new TerrainGenerator(FLAT_WORLD_16KM, voxelize, heights),
+      { tolerance: voxelize.tolerance, store },
+    );
     const setup: WorldSetup = { world, settings: { kind, seed: noise.seed, ...voxelize } };
     if (process.env.NODE_ENV !== 'production') {
       // Development: per-connection tolerance overrides (?tolerance=N in the client URL).
+      // Their edits are kept in memory only.
       const variants = new Map<number, World>([[voxelize.tolerance, world]]);
       setup.worldWithTolerance = (tolerance) => {
         let w = variants.get(tolerance);

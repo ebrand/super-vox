@@ -1,6 +1,11 @@
 import {
   CHUNK_SIZE,
+  EditError,
   NO_GROUND,
+  applyEdit,
+  decodeChunk,
+  editChunk,
+  normalizeX,
   TILE_SAMPLES,
   chunkKey,
   encodeChunk,
@@ -10,11 +15,14 @@ import {
   tileKey,
   tileSizeUnits,
   tileStep,
+  type Chunk,
+  type Edit,
   type TileCoord,
   type ChunkCoord,
   type ChunkGenerator,
   type WorldConfig,
 } from '@super-vox/shared';
+import type { ChunkStore } from './chunkStore.js';
 
 /**
  * Server-side world: generates chunks on demand and keeps recently used
@@ -24,6 +32,11 @@ import {
 export class World {
   private readonly cache = new Map<string, Uint8Array>();
   private readonly tileCache = new Map<string, Uint8Array>();
+  /** Chunks changed by edits; these replace generated chunks and are never evicted. */
+  private readonly edited = new Map<string, Chunk>();
+  /** Per chunk column ("cx,cz"), the vertical span of edited chunks (units). */
+  private readonly editSpans = new Map<string, { minY: number; maxY: number }>();
+  private readonly store: ChunkStore | null;
   readonly spawn: { x: number; y: number; z: number };
   private readonly cacheSize: number;
   /** Adaptive voxelization tolerance, or null for non-adaptive generators. */
@@ -32,10 +45,18 @@ export class World {
   constructor(
     readonly config: WorldConfig,
     private readonly generator: ChunkGenerator,
-    opts: { cacheSize?: number; tolerance?: number | null } = {},
+    opts: { cacheSize?: number; tolerance?: number | null; store?: ChunkStore } = {},
   ) {
     this.cacheSize = opts.cacheSize ?? 4096;
     this.tolerance = opts.tolerance ?? null;
+    this.store = opts.store ?? null;
+    for (const { coord, bytes } of this.store?.loadAll() ?? []) {
+      const chunk = decodeChunk(bytes);
+      if (chunk.cx !== coord.cx || chunk.cy !== coord.cy || chunk.cz !== coord.cz) {
+        throw new Error(`stored chunk ${chunkKey(coord)} contains chunk ${chunkKey(chunk)}`);
+      }
+      this.recordEdited(chunk);
+    }
     if (config.widthUnits % CHUNK_SIZE !== 0 || config.depthUnits % CHUNK_SIZE !== 0) {
       throw new RangeError('world width and depth must be multiples of the chunk size');
     }
@@ -47,19 +68,45 @@ export class World {
     const resolved = resolveChunk(this.config, coord);
     if (!resolved) return null;
     const key = chunkKey(resolved);
-    const hit = this.cache.get(key);
-    if (hit) {
-      // Re-insert to mark as most recently used.
-      this.cache.delete(key);
-      this.cache.set(key, hit);
-      return hit;
-    }
-    const bytes = encodeChunk(this.generator.generateChunk(resolved));
-    this.cache.set(key, bytes);
-    if (this.cache.size > this.cacheSize) {
-      this.cache.delete(this.cache.keys().next().value!);
-    }
+    const hit = lruGet(this.cache, key);
+    if (hit) return hit;
+    const bytes = encodeChunk(this.edited.get(key) ?? this.generator.generateChunk(resolved));
+    lruSet(this.cache, key, bytes, this.cacheSize);
     return bytes;
+  }
+
+  /**
+   * Applies an edit and returns the updated chunk. Throws EditError if the
+   * edit is invalid or outside the world. `columnRange` is set when the edit
+   * widened its column's height range.
+   */
+  applyEdit(edit: Edit): { coord: ChunkCoord; bytes: Uint8Array; columnRange: { minY: number; maxY: number } | null } {
+    const e = { ...edit, x: normalizeX(this.config, edit.x) };
+    const resolved = resolveChunk(this.config, editChunk(e));
+    if (!resolved) throw new EditError('outside the world');
+    const key = chunkKey(resolved);
+    const before = this.columnRange(resolved.cx, resolved.cz);
+    const next = applyEdit(this.edited.get(key) ?? this.generator.generateChunk(resolved), e);
+    this.recordEdited(next);
+    const bytes = encodeChunk(next);
+    lruSet(this.cache, key, bytes, this.cacheSize);
+    this.store?.save(resolved, bytes);
+    const after = this.columnRange(resolved.cx, resolved.cz)!;
+    const widened = !before || after.minY !== before.minY || after.maxY !== before.maxY;
+    return { coord: resolved, bytes, columnRange: widened ? after : null };
+  }
+
+  get editedChunkCount(): number {
+    return this.edited.size;
+  }
+
+  private recordEdited(chunk: Chunk): void {
+    this.edited.set(chunkKey(chunk), chunk);
+    // Render the whole edited chunk layer: edits can raise or dig anywhere in it.
+    const col = `${chunk.cx},${chunk.cz}`;
+    const span = this.editSpans.get(col);
+    const minY = chunk.cy * CHUNK_SIZE, maxY = (chunk.cy + 1) * CHUNK_SIZE;
+    this.editSpans.set(col, { minY: Math.min(minY, span?.minY ?? minY), maxY: Math.max(maxY, span?.maxY ?? maxY) });
   }
 
   /** Encoded low-detail tile, or null if the tile lies entirely outside the world. */
@@ -90,7 +137,10 @@ export class World {
   /** Ground height range of a chunk column, or null outside the world. */
   columnRange(cx: number, cz: number): { minY: number; maxY: number } | null {
     const resolved = resolveChunk(this.config, { cx, cy: 0, cz });
-    return resolved ? this.generator.columnRange(resolved.cx, resolved.cz) : null;
+    if (!resolved) return null;
+    const range = this.generator.columnRange(resolved.cx, resolved.cz);
+    const span = this.editSpans.get(`${resolved.cx},${resolved.cz}`);
+    return span ? { minY: Math.min(range.minY, span.minY), maxY: Math.max(range.maxY, span.maxY) } : range;
   }
 
   get cachedChunkCount(): number {

@@ -2,9 +2,11 @@ import type * as THREE from 'three';
 import {
   CHUNK_SIZE,
   chunkKey,
+  decodeChunk,
   readChunkHeader,
   resolveChunk,
   summarizeChunk,
+  type Chunk,
   type ChunkCoord,
   type ClientMessage,
   type WorldConfig,
@@ -61,6 +63,8 @@ export class ChunkManager {
   /** Encoded chunk bytes; null means known empty (outside the world). */
   private readonly data = new Map<string, Uint8Array | null>();
   private readonly kinds = new Map<string, 'air' | 'solid' | 'mixed'>();
+  /** Decoded chunks for picking, built on demand and dropped when data changes. */
+  private readonly decoded = new Map<string, Chunk | null>();
   private readonly coords = new Map<string, ChunkCoord>();
   private readonly requested = new Set<string>();
   private queue: ChunkCoord[] = [];
@@ -219,6 +223,7 @@ export class ChunkManager {
         this.data.delete(key);
         this.kinds.delete(key);
         this.coords.delete(key);
+        this.decoded.delete(key);
       }
     }
     for (const [key, { mesh }] of [...this.meshes]) {
@@ -270,7 +275,32 @@ export class ChunkManager {
     }
   }
 
+  /**
+   * The decoded chunk for picking: a Chunk, null if known empty, or
+   * undefined if it isn't loaded.
+   */
+  chunkAt(coord: ChunkCoord): Chunk | null | undefined {
+    const key = chunkKey(coord);
+    if (this.decoded.has(key)) return this.decoded.get(key);
+    const bytes = this.data.get(key);
+    if (bytes === undefined) return undefined;
+    const chunk = bytes ? decodeChunk(bytes) : null;
+    this.decoded.set(key, chunk);
+    return chunk;
+  }
+
   private store(key: string, coord: ChunkCoord, bytes: Uint8Array | null, meshNeighbors = true): void {
+    const previous = this.data.get(key);
+    this.decoded.delete(key);
+    if (previous !== undefined) {
+      // An update (e.g. an edit): rebuild this chunk's mesh and its neighbours',
+      // whose border faces may change. Old meshes stay until replaced.
+      for (const k of [key, ...this.neighborCoords(coord).map(chunkKey)]) {
+        const m = this.meshes.get(k);
+        if (m) m.mask = -1;
+        this.jobs.delete(k);
+      }
+    }
     this.data.set(key, bytes);
     this.kinds.set(key, bytes ? summarizeChunk(bytes) : 'air');
     this.coords.set(key, coord);

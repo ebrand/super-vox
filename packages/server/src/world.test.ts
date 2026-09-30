@@ -14,6 +14,12 @@ import {
   tileStep,
   defaultNoiseTerrain,
 } from '@super-vox/shared';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach } from 'vitest';
+import { EditError, voxelAt } from '@super-vox/shared';
+import { FileChunkStore } from './chunkStore.js';
 import { World, findSpawn } from './world.js';
 
 describe('World', () => {
@@ -125,6 +131,70 @@ describe('World', () => {
       const H = source.heights(590 * 256, 498 * 256, 256, 256);
       expect(world.columnRange(590, 498)).toEqual({ minY: Math.min(...H), maxY: Math.max(...H) });
       expect(world.columnRange(-1, 0)).toBeNull();
+    });
+  });
+
+  describe('edits', () => {
+    const dirs: string[] = [];
+    const tmp = () => {
+      const d = mkdtempSync(join(tmpdir(), 'super-vox-test-'));
+      dirs.push(d);
+      return d;
+    };
+    afterEach(() => {
+      for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+    });
+    const flatWorld = (dir?: string) =>
+      new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(16)), dir ? { store: new FileChunkStore(dir) } : {});
+
+    it('serves edited chunks instead of generated ones', () => {
+      const world = flatWorld();
+      // Ground top is y = 0, so the grass block at y -16..0 is in chunk cy = -1.
+      const r = world.applyEdit({ op: 'remove', x: 100, y: -1, z: 200 });
+      expect(r.coord).toEqual({ cx: 0, cy: -1, cz: 0 });
+      const chunk = decodeChunk(world.getEncodedChunk({ cx: 0, cy: -1, cz: 0 })!);
+      expect(voxelAt(chunk, 100, 255, 200)).toBeNull();
+      expect(voxelAt(chunk, 100, 239, 200)).not.toBeNull();
+      expect(decodeChunk(r.bytes)).toEqual(chunk);
+    });
+
+    it('rejects invalid edits and edits outside the world without changing anything', () => {
+      const world = flatWorld();
+      expect(() => world.applyEdit({ op: 'remove', x: 100, y: 50, z: 200 })).toThrow(EditError);
+      expect(() => world.applyEdit({ op: 'remove', x: -5, y: -1, z: 200 })).toThrow(/outside/);
+      expect(() => world.applyEdit({ op: 'place', x: 100, y: -1, z: 200, size: 1, material: 1 })).toThrow(/occupied/);
+      expect(world.editedChunkCount).toBe(0);
+    });
+
+    it('saves edits and loads them back after a restart', () => {
+      const dir = tmp();
+      const a = flatWorld(dir);
+      a.applyEdit({ op: 'place', x: 16, y: 0, z: 16, size: 5, material: 2 });
+      a.applyEdit({ op: 'break', x: 32, y: -1, z: 32, pieceSize: 4 });
+      expect(readdirSync(dir).sort()).toEqual(['0_-1_0.chunk', '0_0_0.chunk']);
+      const b = flatWorld(dir);
+      expect(b.editedChunkCount).toBe(2);
+      for (const coord of [{ cx: 0, cy: 0, cz: 0 }, { cx: 0, cy: -1, cz: 0 }]) {
+        expect(b.getEncodedChunk(coord)).toEqual(a.getEncodedChunk(coord));
+      }
+      expect(voxelAt(decodeChunk(b.getEncodedChunk({ cx: 0, cy: 0, cz: 0 })!), 16, 0, 16)).toEqual({ material: 2, size: 5 });
+    });
+
+    it('widens the column range when building above the ground, and reports it once', () => {
+      const world = flatWorld();
+      expect(world.columnRange(0, 0)).toEqual({ minY: 0, maxY: 0 });
+      const r = world.applyEdit({ op: 'place', x: 0, y: 300, z: 0, size: 4, material: 1 });
+      expect(r.coord.cy).toBe(1);
+      expect(r.columnRange).toEqual({ minY: 0, maxY: 512 });
+      expect(world.columnRange(0, 0)).toEqual({ minY: 0, maxY: 512 });
+      expect(world.applyEdit({ op: 'place', x: 4, y: 300, z: 0, size: 4, material: 1 }).columnRange).toBeNull();
+    });
+
+    it('does not let edits leak between worlds sharing a generator', () => {
+      const gen = new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(16));
+      const a = new World(FLAT_WORLD_16KM, gen), b = new World(FLAT_WORLD_16KM, gen);
+      a.applyEdit({ op: 'remove', x: 100, y: -1, z: 200 });
+      expect(voxelAt(decodeChunk(b.getEncodedChunk({ cx: 0, cy: -1, cz: 0 })!), 100, 255, 200)).not.toBeNull();
     });
   });
 });

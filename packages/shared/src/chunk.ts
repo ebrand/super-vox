@@ -66,6 +66,8 @@ export function unpackVoxel(p: number): { x: number; y: number; z: number; size:
 export interface BlockRaster {
   materials: Uint16Array;
   sizes: Uint8Array;
+  /** Index + 1 of the voxel covering each unit cell in `packed`; 0 for air. */
+  index: Uint16Array;
 }
 
 const rasterCache = new WeakMap<VoxelsBlock, BlockRaster>();
@@ -86,6 +88,7 @@ export function rasterizeVoxels(block: VoxelsBlock): BlockRaster {
   }
   const materials = new Uint16Array(BLOCK_SIZE ** 3);
   const sizes = new Uint8Array(BLOCK_SIZE ** 3);
+  const index = new Uint16Array(BLOCK_SIZE ** 3);
   for (let i = 0; i < block.packed.length; i++) {
     const { x, y, z, size } = unpackVoxel(block.packed[i]!);
     const m = block.materials[i]!;
@@ -100,11 +103,12 @@ export function rasterizeVoxels(block: VoxelsBlock): BlockRaster {
           if (materials[idx] !== 0) throw new RangeError(`voxels block: voxel ${i} overlaps another`);
           materials[idx] = m;
           sizes[idx] = size;
+          index[idx] = i + 1;
         }
       }
     }
   }
-  const raster = { materials, sizes };
+  const raster = { materials, sizes, index };
   rasterCache.set(block, raster);
   return raster;
 }

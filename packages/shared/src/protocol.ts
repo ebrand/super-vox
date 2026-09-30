@@ -1,8 +1,9 @@
+import type { Edit } from './edit.js';
 import { isValidTileLevel } from './tile.js';
 import type { WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 export type ClientMessage =
   | {
@@ -18,7 +19,9 @@ export type ClientMessage =
   /** Low-detail tile for distant terrain; answered with a Tile binary frame. */
   | { type: 'requestTile'; level: number; tx: number; tz: number }
   /** Ground height range of a chunk column; answered with a `column` message. */
-  | { type: 'requestColumn'; cx: number; cz: number };
+  | { type: 'requestColumn'; cx: number; cz: number }
+  /** A voxel edit; answered with `editResult`. `id` is chosen by the client to match the reply. */
+  | { type: 'edit'; id: number; edit: Edit };
 
 export type ServerMessage =
   | {
@@ -36,6 +39,8 @@ export type ServerMessage =
   | { type: 'tileUnavailable'; level: number; tx: number; tz: number }
   /** Reply to requestChunk for a chunk outside the world. */
   | { type: 'chunkUnavailable'; cx: number; cy: number; cz: number }
+  | { type: 'editResult'; id: number; ok: true }
+  | { type: 'editResult'; id: number; ok: false; error: string }
   | { type: 'error'; code: string; message: string };
 
 /**
@@ -88,6 +93,21 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   if (msg.type === 'requestColumn' && isInt32(msg.cx) && isInt32(msg.cz)) {
     return { type: 'requestColumn', cx: msg.cx, cz: msg.cz };
   }
+  if (msg.type === 'edit' && typeof msg.id === 'number' && Number.isInteger(msg.id) && msg.id >= 0 && msg.id < 2 ** 32) {
+    const edit = decodeEdit(msg.edit);
+    if (edit) return { type: 'edit', id: msg.id, edit };
+  }
+  return null;
+}
+
+function decodeEdit(data: unknown): Edit | null {
+  if (typeof data !== 'object' || data === null) return null;
+  const e = data as Record<string, unknown>;
+  if (!isInt32(e.x) || !isInt32(e.y) || !isInt32(e.z)) return null;
+  const { x, y, z } = e;
+  if (e.op === 'remove') return { op: 'remove', x, y, z };
+  if (e.op === 'break' && isInt32(e.pieceSize)) return { op: 'break', x, y, z, pieceSize: e.pieceSize };
+  if (e.op === 'place' && isInt32(e.size) && isInt32(e.material)) return { op: 'place', x, y, z, size: e.size, material: e.material };
   return null;
 }
 

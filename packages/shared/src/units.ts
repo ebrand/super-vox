@@ -45,3 +45,13 @@ export function breakSizesFor(size: VoxelSize): VoxelSize[] {
   }
   return sizes;
 }
+
+/**
+ * The next size down a voxel of `size` breaks into: its largest proper
+ * divisor (16 -> 8 -> 4 -> 2 -> 1, 12 -> 6, 15 -> 5, 13 -> 1), or null for
+ * the smallest voxel.
+ */
+export function nextBreakSize(size: VoxelSize): VoxelSize | null {
+  const sizes = breakSizesFor(size);
+  return sizes.length ? sizes[sizes.length - 1]! : null;
+}

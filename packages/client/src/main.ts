@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { CHUNK_SIZE, UNITS_PER_METER, isValidTolerance, unitsToMeters, type WorldConfig } from '@super-vox/shared';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
+import { EditTool } from './editTool.js';
 import { FlyControls } from './flyControls.js';
 import { selectLod } from './lod.js';
 import { TileManager } from './tileManager.js';
@@ -47,6 +48,7 @@ let world: WorldConfig | null = null;
 let pool: MeshWorkerPool | null = null;
 let chunks: ChunkManager | null = null;
 let tiles: TileManager | null = null;
+let editTool: EditTool | null = null;
 let connection: ReturnType<typeof connect> | null = null;
 let worldLine = '';
 
@@ -109,7 +111,17 @@ connection = connect({
           pool = new MeshWorkerPool();
           chunks = new ChunkManager(w, scene, material, send, pool, 64, onProgress);
           tiles = new TileManager(scene, material, send, pool, 32, onProgress);
-          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod };
+          editTool = new EditTool(scene, camera, chunks, send);
+          controls.onClick = (button) => editTool?.click(button);
+          controls.onModifiedWheel = (deltaY) => {
+            editTool?.scrollSize(deltaY);
+            updateHud();
+          };
+          controls.onPointerLockChange = (_locked, error) => {
+            if (error) editTool?.say(error);
+            updateHud();
+          };
+          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool };
           // Start loading now rather than on the first frame (frames pause in hidden tabs).
           updateLod(true);
         }
@@ -124,6 +136,9 @@ connection = connect({
         break;
       case 'tileUnavailable':
         tiles?.onTileUnavailable(msg);
+        break;
+      case 'editResult':
+        editTool?.onServerMessage(msg);
         break;
       case 'error':
         console.error(`[super-vox] server error ${msg.code}: ${msg.message}`);
@@ -157,7 +172,9 @@ function updateHud(): void {
   statusEl.textContent =
     `${worldLine || 'connecting…'}\n` +
     `camera ${f.x.toFixed(1)}, ${f.y.toFixed(1)}, ${f.z.toFixed(1)} m, speed ${controls.speed.toFixed(0)} m/s\n` +
-    'drag: look · WASD: move · Space/E: up · Q/C: down · Shift: 5x · wheel: speed\n' +
+    (controls.pointerLocked ? 'mouse: look · Esc: release mouse' : 'click: capture mouse (or drag to look)') +
+    ' · WASD: move · Space/E: up · Q/C: down · Shift: 5x · wheel: speed (⌘+wheel: voxel size)\n' +
+    (editTool ? `${editTool.hudLines()}\n` : '') +
     (c && t
       ? `chunks ${c.loaded} loaded (${c.columns} columns), ${c.inFlight} in flight, ${c.queued} queued, ${c.meshing} meshing\n` +
         `tiles ${t.loaded}/${t.tiles}, ${t.inFlight} in flight, ${t.queued} queued, ${t.meshing} meshing\n` +
@@ -176,6 +193,7 @@ renderer.setAnimationLoop(() => {
   controls.update((frameStart - lastFrame) / 1000);
   lastFrame = frameStart;
   updateLod();
+  editTool?.update();
   renderer.render(scene, camera);
 
   frames++;

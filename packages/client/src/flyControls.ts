@@ -32,20 +32,31 @@ export function applyLook(yaw: number, pitch: number, dx: number, dy: number, se
 }
 
 /**
- * Free-flying camera: drag with the left or right mouse button to look,
- * WASD to move, Space/E up, Q/C down, Shift for 5x speed, mouse wheel to
- * change the base speed. No collision.
+ * Free-flying camera. Click the view to capture the mouse (pointer lock);
+ * while captured, moving the mouse looks around and button presses are
+ * reported through `onClick`. Esc releases it. Uncaptured, dragging with the
+ * left or right button still looks around. WASD moves, Space/E up, Q/C down,
+ * Shift for 5x speed, mouse wheel changes the base speed (with Command held
+ * it goes to `onModifiedWheel` instead). No collision.
  */
 export class FlyControls {
   yaw = 0;
   pitch = 0;
-  /** Base speed in metres per second. */
-  speed = 10;
+  /** Base speed in metres per second (the wheel changes it, 1..500). */
+  speed = 2;
   sensitivity = 0.0035;
   /** Lowest camera height allowed (metres). */
   minY = -Infinity;
   private readonly keys = new Set<string>();
   private dragging = false;
+  /** Mouse travel (pixels) since the button went down, to tell clicks from drags. */
+  private dragTravel = 0;
+  /** Called for a mouse button press while the mouse is captured; 0 = left, 2 = right. */
+  onClick: ((button: number) => void) | null = null;
+  /** Receives wheel movement (deltaY) while Command is held, instead of changing speed. */
+  onModifiedWheel: ((deltaY: number) => void) | null = null;
+  /** Called when the mouse is captured or released, with an error message if capture failed. */
+  onPointerLockChange: ((locked: boolean, error?: string) => void) | null = null;
   private readonly listeners: [EventTarget, string, EventListener][] = [];
 
   constructor(
@@ -57,16 +68,40 @@ export class FlyControls {
       this.listeners.push([target, type, fn as EventListener]);
     };
     on(element, 'mousedown', (e: MouseEvent) => {
-      if (e.button === 0 || e.button === 2) this.dragging = true;
+      if (this.pointerLocked) {
+        // Captured: buttons are actions, not look-drags.
+        this.onClick?.(e.button);
+        return;
+      }
+      if (e.button === 0 || e.button === 2) {
+        this.dragging = true;
+        this.dragTravel = 0;
+      }
     });
-    on(window, 'mouseup', () => (this.dragging = false));
-    on(window, 'mousemove', (e: MouseEvent) => {
-      if (!this.dragging) return;
+    on(window, 'mouseup', () => {
+      // Uncaptured: a click (not a drag) captures the mouse.
+      if (this.dragging && this.dragTravel < 5) this.requestPointerLock();
+      this.dragging = false;
+    });
+    on(document, 'mousemove', (e: MouseEvent) => {
+      if (!this.pointerLocked && !this.dragging) return;
+      if (this.dragging) this.dragTravel += Math.abs(e.movementX) + Math.abs(e.movementY);
       ({ yaw: this.yaw, pitch: this.pitch } = applyLook(this.yaw, this.pitch, e.movementX, e.movementY, this.sensitivity));
     });
+    on(document, 'pointerlockchange', () => {
+      this.dragging = false;
+      this.onPointerLockChange?.(this.pointerLocked);
+    });
+    on(document, 'pointerlockerror', () => this.onPointerLockChange?.(false, 'the browser refused to capture the mouse; wait a moment and click again'));
     on(element, 'contextmenu', (e: Event) => e.preventDefault());
     on(element, 'wheel', (e: WheelEvent) => {
       e.preventDefault();
+      if (e.metaKey && this.onModifiedWheel) {
+        // Normalize to pixels: some devices report lines or pages.
+        const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
+        this.onModifiedWheel(e.deltaY * scale);
+        return;
+      }
       this.speed = Math.max(1, Math.min(500, this.speed * (e.deltaY > 0 ? 1 / 1.15 : 1.15)));
     });
     on(window, 'keydown', (e: KeyboardEvent) => {
@@ -77,6 +112,22 @@ export class FlyControls {
     on(window, 'keyup', (e: KeyboardEvent) => this.keys.delete(e.code));
     // Releasing keys while the window is unfocused would leave them "held".
     on(window, 'blur', () => this.keys.clear());
+  }
+
+  /** Whether the mouse is captured (pointer lock) by this view. */
+  get pointerLocked(): boolean {
+    return document.pointerLockElement === this.element;
+  }
+
+  /** Captures the mouse so moving it looks around; Esc releases it. */
+  requestPointerLock(): void {
+    try {
+      // Chrome returns a promise that rejects if re-locking too soon after Esc.
+      const r = this.element.requestPointerLock() as unknown;
+      if (r instanceof Promise) r.catch(() => this.onPointerLockChange?.(false, 'the browser refused to capture the mouse; wait a moment and click again'));
+    } catch {
+      this.onPointerLockChange?.(false, 'this browser cannot capture the mouse; drag to look instead');
+    }
   }
 
   /** Points the camera at a world position (metres). */
