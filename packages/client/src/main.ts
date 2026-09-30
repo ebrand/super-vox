@@ -7,7 +7,9 @@ import { FlyControls } from './flyControls.js';
 import { selectLod } from './lod.js';
 import { TileManager } from './tileManager.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
+import { moveAabb, playerBox } from './physics.js';
 import { MeshWorkerPool } from './workerPool.js';
+import { solidAtFor } from './worldQuery.js';
 
 const statusEl = document.getElementById('status')!;
 const params = new URLSearchParams(location.search);
@@ -111,7 +113,21 @@ connection = connect({
           pool = new MeshWorkerPool();
           chunks = new ChunkManager(w, scene, material, send, pool, 64, onProgress);
           tiles = new TileManager(scene, material, send, pool, 32, onProgress);
-          editTool = new EditTool(scene, camera, chunks, send);
+          const solidAt = solidAtFor(chunks);
+          const eyeUnits = () => [camera.position.x * UNITS_PER_METER, camera.position.y * UNITS_PER_METER, camera.position.z * UNITS_PER_METER] as const;
+          const collide = (_position: THREE.Vector3, delta: THREE.Vector3) => {
+            const d = delta.clone().multiplyScalar(UNITS_PER_METER);
+            const r = moveAabb(playerBox(eyeUnits()), [d.x, d.y, d.z], solidAt);
+            return new THREE.Vector3(...r.delta).divideScalar(UNITS_PER_METER);
+          };
+          controls.collide = collide;
+          // N toggles no-clip (flying through terrain).
+          window.addEventListener('keydown', (e) => {
+            if (e.code !== 'KeyN' || e.repeat || e.metaKey || e.ctrlKey) return;
+            controls.collide = controls.collide ? null : collide;
+            updateHud();
+          });
+          editTool = new EditTool(scene, camera, chunks, send, () => (controls.collide ? playerBox(eyeUnits()) : null));
           const modeTag = document.getElementById('mode')!;
           editTool.onModeChange = (mode) => {
             modeTag.textContent = mode.toUpperCase();
@@ -180,7 +196,8 @@ function updateHud(): void {
     `${worldLine || 'connecting…'}\n` +
     `camera ${f.x.toFixed(1)}, ${f.y.toFixed(1)}, ${f.z.toFixed(1)} m, speed ${controls.speed.toFixed(0)} m/s\n` +
     (controls.pointerLocked ? 'mouse: look · Esc: release mouse' : 'click: capture mouse (or drag to look)') +
-    ' · WASD: move · Space/E: up · Q/C: down · Shift: 5x · wheel: speed (⌘+wheel: voxel size)\n' +
+    ' · WASD: move · Space/E: up · Q/C: down · Shift: 5x · wheel: speed (⌘+wheel: voxel size)' +
+    ` · N: no-clip (${controls.collide ? 'off' : 'on'})\n` +
     (editTool ? `${editTool.hudLines()}\n` : '') +
     (c && t
       ? `chunks ${c.loaded} loaded (${c.columns} columns), ${c.inFlight} in flight, ${c.queued} queued, ${c.meshing} meshing\n` +

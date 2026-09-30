@@ -33,8 +33,9 @@ how long the view took to settle. Production servers ignore the override.
 Click the view to capture the mouse; then moving the mouse looks around and
 Esc releases it. (Without capturing, dragging with a mouse button also looks.) W/A/S/D move along
 the ground in the direction you face, Space or E rises, Q or C descends, Shift
-moves 5x faster, and the mouse wheel changes the base speed (default 2 m/s). There is no
-collision yet: you can fly through terrain.
+moves 5x faster, and the mouse wheel changes the base speed (default 2 m/s).
+You collide with terrain as a 0.6 x 1.8 m body (eyes at 1.62 m), slide along
+walls, and step up ledges up to 1/2 m automatically. N toggles no-clip.
 
 Editing has three modes; Tab cycles hybrid -> dig -> place (the overlay shows
 the current one). Aim with the crosshair (reach 32 m) while the mouse is
@@ -106,6 +107,7 @@ tectonic plates) can replace it. `WORLD_GENERATOR=flat` with
 
 ```sh
 npm install
+npm run dev          # server + client together (Ctrl+C stops both)
 npm run dev:server   # http://127.0.0.1:8787 (see Terrain for settings)
 npm run dev:client   # http://localhost:5173 (?detail=4&view=2048&tolerance=4; proxies /api and /ws)
 npm test

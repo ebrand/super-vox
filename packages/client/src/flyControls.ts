@@ -47,6 +47,11 @@ export class FlyControls {
   sensitivity = 0.0035;
   /** Lowest camera height allowed (metres). */
   minY = -Infinity;
+  /**
+   * Collision: given the camera position and a desired move (metres),
+   * returns the move actually allowed. Null = fly through everything.
+   */
+  collide: ((position: THREE.Vector3, delta: THREE.Vector3) => THREE.Vector3) | null = null;
   private readonly keys = new Set<string>();
   private dragging = false;
   /** Mouse travel (pixels) since the button went down, to tell clicks from drags. */
@@ -144,7 +149,8 @@ export class FlyControls {
   /** Moves and orients the camera; `dt` in seconds. */
   update(dt: number): void {
     const step = Math.min(dt, 0.1) * this.speed * (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 5 : 1);
-    this.camera.position.addScaledVector(moveDirection(this.yaw, this.keys), step);
+    const delta = moveDirection(this.yaw, this.keys).multiplyScalar(step);
+    this.camera.position.add(this.collide ? this.collide(this.camera.position, delta) : delta);
     if (this.camera.position.y < this.minY) this.camera.position.y = this.minY;
     this.apply();
   }

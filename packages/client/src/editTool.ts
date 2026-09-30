@@ -9,13 +9,14 @@ import {
   blockVoxelContaining,
   breakSizesFor,
   nextBreakSize,
-  voxelAt,
   type ClientMessage,
   type Edit,
   type ServerMessage,
 } from '@super-vox/shared';
 import type { ChunkManager } from './chunkManager.js';
+import type { Aabb } from './physics.js';
 import { digBox, placementBox, raycastVoxels, type Box, type SolidAt } from './picking.js';
+import { solidAtFor } from './worldQuery.js';
 
 /** While scrolling continuously, wheel travel (pixels) per further voxel-size step. */
 const WHEEL_STEP = 30;
@@ -117,7 +118,10 @@ export class EditTool {
     private readonly camera: THREE.Camera,
     private readonly chunks: ChunkManager,
     private readonly send: (msg: ClientMessage) => void,
+    /** The player's body (units), which placement must not overlap; null if not colliding. */
+    private readonly body: () => Aabb | null = () => null,
   ) {
+    this.solidAt = solidAtFor(chunks);
     const box = new THREE.BoxGeometry(1, 1, 1);
     this.outline = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0xffffff }));
     this.previewMaterial = new THREE.MeshBasicMaterial({ color: 0x40ff60, transparent: true, opacity: 0.3, depthWrite: false });
@@ -391,12 +395,7 @@ export class EditTool {
     this.send({ type: 'edit', id, edit });
   }
 
-  private readonly solidAt: SolidAt = (x, y, z) => {
-    const chunk = this.chunks.chunkAt({ cx: floorDiv(x, CHUNK_SIZE), cy: floorDiv(y, CHUNK_SIZE), cz: floorDiv(z, CHUNK_SIZE) });
-    if (chunk === undefined) return undefined;
-    if (chunk === null) return false;
-    return voxelAt(chunk, mod(x, CHUNK_SIZE), mod(y, CHUNK_SIZE), mod(z, CHUNK_SIZE)) !== null;
-  };
+  private readonly solidAt: SolidAt;
 
   /** World box of the voxel covering unit cell `cell`. */
   private voxelBox([x, y, z]: [number, number, number]): Box | null {
@@ -409,8 +408,13 @@ export class EditTool {
     return { x: x - mod(x, BLOCK_SIZE) + v.x, y: y - mod(y, BLOCK_SIZE) + v.y, z: z - mod(z, BLOCK_SIZE) + v.z, size: v.size };
   }
 
-  /** '' if every cell of the box is loaded and empty, else why not. */
+  /** '' if every cell of the box is loaded and empty and clear of the player, else why not. */
   private occupied(b: Box): string {
+    const body = this.body();
+    if (body && [0, 1, 2].every((a) => {
+      const lo = [b.x, b.y, b.z][a]!;
+      return lo < body.max[a]! && body.min[a]! < lo + b.size;
+    })) return "you're standing there";
     for (let y = b.y; y < b.y + b.size; y++) {
       for (let z = b.z; z < b.z + b.size; z++) {
         for (let x = b.x; x < b.x + b.size; x++) {

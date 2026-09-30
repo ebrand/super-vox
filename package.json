@@ -14,12 +14,14 @@
     "build": "npm run build -w @super-vox/shared && npm run build -w @super-vox/server && npm run build -w @super-vox/client",
     "typecheck": "npm run typecheck --workspaces",
     "test": "vitest run",
+    "dev": "concurrently --kill-others --names server,client --prefix-colors blue,green \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "npm run dev -w @super-vox/server",
     "dev:client": "npm run dev -w @super-vox/client"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
     "@types/ws": "^8.18.2",
+    "concurrently": "^10.0.5",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3",
