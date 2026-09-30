@@ -5,6 +5,7 @@ export * from './chunk.js';
 export * from './flatgen.js';
 export * from './noise.js';
 export * from './terrain.js';
+export * from './plates.js';
 export * from './chunkcodec.js';
 export * from './tile.js';
 export * from './edit.js';

@@ -54,6 +54,20 @@ let editTool: EditTool | null = null;
 let connection: ReturnType<typeof connect> | null = null;
 let worldLine = '';
 
+/** Translucent sea surface at sea level, kept centred under the camera. */
+let sea: THREE.Mesh | null = null;
+function addSea(seaLevelUnits: number): void {
+  sea = new THREE.Mesh(
+    new THREE.PlaneGeometry(view * 2.5, view * 2.5),
+    new THREE.MeshBasicMaterial({ color: 0x2f6d9c, transparent: true, opacity: 0.6, depthWrite: false, fog: true, side: THREE.DoubleSide }),
+  );
+  sea.rotation.x = -Math.PI / 2;
+  sea.position.y = seaLevelUnits / UNITS_PER_METER;
+  sea.renderOrder = 5;
+  sea.name = 'sea';
+  scene.add(sea);
+}
+
 /** Chunk column of the last LOD selection; reselect when the focus leaves it. */
 let lodColumn = '';
 let lodChangedAt = 0;
@@ -104,6 +118,7 @@ connection = connect({
           `\ndetail ${detail} chunks, view ${view} m`;
         if (!chunks) {
           world = w;
+          if (msg.seaLevel !== null) addSea(msg.seaLevel);
           // Start above and behind the spawn point, looking at it.
           const spawn = new THREE.Vector3(unitsToMeters(msg.spawn.x), unitsToMeters(msg.spawn.y), unitsToMeters(msg.spawn.z));
           camera.position.set(spawn.x, spawn.y + 12, spawn.z + 24);
@@ -237,6 +252,7 @@ renderer.setAnimationLoop(() => {
   lastFrame = frameStart;
   updateLod();
   editTool?.update();
+  if (sea) sea.position.set(camera.position.x, sea.position.y, camera.position.z);
   renderer.render(scene, camera);
 
   frames++;

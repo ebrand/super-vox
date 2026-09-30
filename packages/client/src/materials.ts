@@ -8,6 +8,8 @@ const COLORS: Record<number, readonly [number, number, number]> = {
   [Material.Stone]: [0.32, 0.32, 0.34],
   [Material.Dirt]: [0.33, 0.2, 0.1],
   [Material.Grass]: [0.18, 0.4, 0.1],
+  [Material.Sand]: [0.62, 0.55, 0.36],
+  [Material.Snow]: [0.86, 0.88, 0.9],
 };
 
 const UNKNOWN = [1, 0, 1] as const;

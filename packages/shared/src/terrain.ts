@@ -29,6 +29,20 @@ export interface HeightSource {
   /** Bounds every returned height lies within. */
   readonly minHeight: number;
   readonly maxHeight: number;
+  /**
+   * Optional top material for the same columns, given their heights. Without
+   * it the surface is grass over dirt over stone.
+   */
+  materials?(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): Uint16Array;
+  /** Y (units) of the sea surface, if this terrain has a sea. */
+  readonly seaLevel?: number;
+}
+
+/** What lies beneath a surface material, down to DIRT_DEPTH. */
+function subsurface(top: MaterialId): MaterialId {
+  if (top === Material.Grass) return Material.Dirt;
+  if (top === Material.Sand) return Material.Sand;
+  return Material.Stone;
 }
 
 /**
@@ -161,7 +175,8 @@ type Node = number | Node[];
 
 /** Voxelizes any HeightSource adaptively into chunks. */
 export class TerrainGenerator implements ChunkGenerator {
-  private readonly columns = new Map<string, Int32Array>();
+  /** Per chunk column: surface heights and (if the source provides them) top materials. */
+  private readonly columns = new Map<string, { H: Int32Array; M: Uint16Array | null }>();
   private readonly uniform = new Map<MaterialId, UniformBlock>();
   private readonly grassSlack: number;
 
@@ -178,17 +193,22 @@ export class TerrainGenerator implements ChunkGenerator {
     }
   }
 
+  get seaLevel(): number | null {
+    return this.source.seaLevel ?? null;
+  }
+
   surfaceHeightAt(x: number, z: number): number {
     return this.source.heights(x, z, 1, 1)[0]!;
   }
 
   surfaceSamples(x0: number, z0: number, step: number, n: number): { heights: Int32Array; materials: Uint16Array } {
-    // The voxelizer always makes exposed voxels grass.
-    return { heights: this.source.heights(x0, z0, n, n, step), materials: new Uint16Array(n * n).fill(Material.Grass) };
+    const heights = this.source.heights(x0, z0, n, n, step);
+    const materials = this.source.materials?.(x0, z0, n, n, step, heights) ?? new Uint16Array(n * n).fill(Material.Grass);
+    return { heights, materials };
   }
 
   columnRange(cx: number, cz: number): { minY: number; maxY: number } {
-    const H = this.chunkColumn(cx, cz);
+    const { H } = this.chunkColumn(cx, cz);
     let minY = Infinity, maxY = -Infinity;
     for (const h of H) {
       if (h < minY) minY = h;
@@ -197,30 +217,33 @@ export class TerrainGenerator implements ChunkGenerator {
     return { minY, maxY };
   }
 
-  private chunkColumn(cx: number, cz: number): Int32Array {
+  private chunkColumn(cx: number, cz: number): { H: Int32Array; M: Uint16Array | null } {
     const key = `${cx},${cz}`;
-    let h = this.columns.get(key);
-    if (h) {
+    let col = this.columns.get(key);
+    if (col) {
       this.columns.delete(key);
-      this.columns.set(key, h);
-      return h;
+      this.columns.set(key, col);
+      return col;
     }
-    h = this.source.heights(cx * CHUNK_SIZE, cz * CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE);
-    this.columns.set(key, h);
+    const x0 = cx * CHUNK_SIZE, z0 = cz * CHUNK_SIZE;
+    const H = this.source.heights(x0, z0, CHUNK_SIZE, CHUNK_SIZE);
+    col = { H, M: this.source.materials?.(x0, z0, CHUNK_SIZE, CHUNK_SIZE, 1, H) ?? null };
+    this.columns.set(key, col);
     if (this.columns.size > this.columnCacheSize) this.columns.delete(this.columns.keys().next().value!);
-    return h;
+    return col;
   }
 
   /**
    * Material of a solid voxel whose top is at `top`, over columns whose lowest
-   * surface is `minH`. Voxelization can round the surface down by up to
-   * `grassSlack` (the tolerance, or half a smallest voxel), leaving a voxel
-   * that lies slightly below the true surface exposed, so those are grass too.
+   * surface is `minH` with top material `surface`. Voxelization can round the
+   * surface down by up to `grassSlack` (the tolerance, or half a smallest
+   * voxel), leaving a voxel that lies slightly below the true surface
+   * exposed, so those get the surface material too.
    */
-  private materialFor(minH: number, top: number): MaterialId {
+  private materialFor(minH: number, top: number, surface: MaterialId): MaterialId {
     const depth = minH - top;
-    if (depth <= this.grassSlack) return Material.Grass;
-    if (depth < DIRT_DEPTH) return Material.Dirt;
+    if (depth <= this.grassSlack) return surface;
+    if (depth < DIRT_DEPTH) return subsurface(surface);
     return Material.Stone;
   }
 
@@ -239,15 +262,20 @@ export class TerrainGenerator implements ChunkGenerator {
     if (x0 < 0 || x0 >= w.widthUnits || z0 < 0 || z0 >= w.depthUnits) return chunk;
     if (y0 < w.minYUnits || y0 >= w.maxYUnits) return chunk;
 
-    const H = this.chunkColumn(coord.cx, coord.cz);
-    // Per block column: min / max surface height.
+    const { H, M } = this.chunkColumn(coord.cx, coord.cz);
+    // Per block column: min / max surface height, and the top material at the minimum.
     const bMin = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(2 ** 31 - 1);
     const bMax = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(-(2 ** 31));
+    const bMat = new Uint16Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(Material.Grass);
     for (let z = 0; z < CHUNK_SIZE; z++) {
       for (let x = 0; x < CHUNK_SIZE; x++) {
-        const h = H[x + CHUNK_SIZE * z]!;
+        const i = x + CHUNK_SIZE * z;
+        const h = H[i]!;
         const k = (x >> 4) + BLOCKS_PER_AXIS * (z >> 4);
-        if (h < bMin[k]!) bMin[k] = h;
+        if (h < bMin[k]!) {
+          bMin[k] = h;
+          if (M) bMat[k] = M[i]!;
+        }
         if (h > bMax[k]!) bMax[k] = h;
       }
     }
@@ -261,8 +289,8 @@ export class TerrainGenerator implements ChunkGenerator {
           if (by0 >= maxH) break; // this and every block above is air
           chunk.blocks[blockIndex(bx, by, bz)] =
             by0 + BLOCK_SIZE <= minH
-              ? this.uniformBlock(this.materialFor(minH, by0 + BLOCK_SIZE))
-              : this.buildBlock(H, bx * BLOCK_SIZE, by0, bz * BLOCK_SIZE);
+              ? this.uniformBlock(this.materialFor(minH, by0 + BLOCK_SIZE, bMat[k]!))
+              : this.buildBlock(H, M, bx * BLOCK_SIZE, by0, bz * BLOCK_SIZE);
         }
       }
     }
@@ -270,8 +298,8 @@ export class TerrainGenerator implements ChunkGenerator {
   }
 
   /** Voxelizes the block whose corner is at chunk-local (lx, lz) and world y `y0`. */
-  private buildBlock(H: Int32Array, lx: number, y0: number, lz: number): Block {
-    const root = this.buildNode(H, lx, y0, lz, BLOCK_SIZE);
+  private buildBlock(H: Int32Array, M: Uint16Array | null, lx: number, y0: number, lz: number): Block {
+    const root = this.buildNode(H, M, lx, y0, lz, BLOCK_SIZE);
     if (typeof root === 'number') return root === 0 ? null : this.uniformBlock(root);
     const packed: number[] = [];
     const materials: number[] = [];
@@ -294,31 +322,36 @@ export class TerrainGenerator implements ChunkGenerator {
    * Builds the octree node for the cube at chunk-local columns [lx, lx+s) x
    * [lz, lz+s) and world heights [y, y+s).
    */
-  private buildNode(H: Int32Array, lx: number, y: number, lz: number, s: number): Node {
-    let minH = Infinity, maxH = -Infinity, sum = 0;
+  private buildNode(H: Int32Array, M: Uint16Array | null, lx: number, y: number, lz: number, s: number): Node {
+    let minH = Infinity, maxH = -Infinity, sum = 0, minAt = 0;
     for (let z = lz; z < lz + s; z++) {
       for (let x = lx; x < lx + s; x++) {
-        const h = H[x + CHUNK_SIZE * z]!;
-        if (h < minH) minH = h;
+        const i = x + CHUNK_SIZE * z;
+        const h = H[i]!;
+        if (h < minH) {
+          minH = h;
+          minAt = i;
+        }
         if (h > maxH) maxH = h;
         sum += h;
       }
     }
+    const surface = M ? M[minAt]! : Material.Grass;
     const top = y + s;
     const tol = this.voxelize.tolerance;
-    if (minH >= top) return this.materialFor(minH, top);
+    if (minH >= top) return this.materialFor(minH, top, surface);
     if (maxH <= y) return 0;
     if (s <= this.voxelize.minVoxelSize) {
       // Smallest allowed voxel: solid if the mean surface covers at least half of it.
-      return sum / (s * s) - y >= s / 2 ? this.materialFor(minH, top) : 0;
+      return sum / (s * s) - y >= s / 2 ? this.materialFor(minH, top, surface) : 0;
     }
-    if (top - minH <= tol) return this.materialFor(minH, top);
+    if (top - minH <= tol) return this.materialFor(minH, top, surface);
     if (maxH - y <= tol) return 0;
 
     const t = s / 2;
     const children: Node[] = [];
     for (let i = 0; i < 8; i++) {
-      children.push(this.buildNode(H, lx + (i & 1) * t, y + ((i >> 2) & 1) * t, lz + ((i >> 1) & 1) * t, t));
+      children.push(this.buildNode(H, M, lx + (i & 1) * t, y + ((i >> 2) & 1) * t, lz + ((i >> 1) & 1) * t, t));
     }
     const first = children[0];
     if (typeof first === 'number' && children.every((c) => c === first)) return first;

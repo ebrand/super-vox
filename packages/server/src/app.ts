@@ -71,6 +71,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             world: world.config,
             spawn: world.spawn,
             tolerance: world.tolerance,
+            seaLevel: world.seaLevel,
           });
           break;
 

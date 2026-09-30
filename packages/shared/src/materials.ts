@@ -4,6 +4,8 @@ export const Material = {
   Stone: 1,
   Dirt: 2,
   Grass: 3,
+  Sand: 4,
+  Snow: 5,
 } as const;
 
 export type MaterialId = number;

@@ -3,7 +3,7 @@ import { isValidTileLevel } from './tile.js';
 import type { WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 10;
 
 export type ClientMessage =
   | {
@@ -32,6 +32,8 @@ export type ServerMessage =
       spawn: { x: number; y: number; z: number };
       /** Tolerance actually used for this connection's terrain; null for non-adaptive worlds. */
       tolerance: number | null;
+      /** Y (units) of the sea surface; null if the world has no sea. */
+      seaLevel: number | null;
     }
   /** Reply to requestColumn. minY/maxY are null for columns outside the world. */
   | { type: 'column'; cx: number; cz: number; minY: number | null; maxY: number | null }

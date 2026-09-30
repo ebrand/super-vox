@@ -142,6 +142,8 @@ export interface ChunkGenerator {
   surfaceSamples(x0: number, z0: number, step: number, n: number): { heights: Int32Array; materials: Uint16Array };
   /** Lowest and highest ground height (units) over every column of chunk column (cx, cz). */
   columnRange(cx: number, cz: number): { minY: number; maxY: number };
+  /** Y (units) of the sea surface, or null for worlds without a sea. */
+  readonly seaLevel: number | null;
 }
 
 export interface Chunk extends ChunkCoord {

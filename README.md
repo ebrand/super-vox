@@ -10,67 +10,46 @@ voxel can be broken into smaller voxels whose size evenly divides its own.
 - Generated terrain uses one of five sizes, the ones that tile a 1 m block:
   1/16, 1/8, 1/4, 1/2 or 1 m.
 
-## Terrain
+## Worlds and terrain
 
-The default generator (`WORLD_GENERATOR=terrain`) voxelizes a heightmap
-adaptively: a 1 m block is halved (1 → 1/2 → 1/4 → 1/8 → 1/16 m) only where
-the ground surface passes through it and a coarser voxel would misplace the
-surface by more than the tolerance. Flat ground on a 1 m line stays 1 m voxels.
+Each world lives in `WORLD_DATA_DIR` (default: the repository's `data/`, gitignored) under its name
+(`WORLD_NAME`, default `dev`): `world.json` records the settings it was created
+with, and `chunks/` holds its saved edits. The settings are only used the first
+time a name is opened; after that the world always uses its saved settings (the
+server warns if the environment asks for something different), so terrain never
+changes under existing edits. Delete a world's folder to regenerate it.
+
+Settings for a new world:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `WORLD_SEED` | 1 | Noise seed |
+| `WORLD_GENERATOR` | plates | `plates`, `noise` (old rolling hills), or `flat` |
+| `WORLD_SEED` | 1 | Seed |
+| `WORLD_MAJOR_PLATES` | 7 | Large tectonic plates (1..40) |
+| `WORLD_MINOR_PLATES` | 12 | Small plates crowding the seams (0..100) |
+| `WORLD_WATER` | 70 | Percent of the world under the sea (exact) |
+| `WORLD_SHORE_FRACTAL` | 50 | Coastline raggedness, 0 (smooth) .. 100 (broken, many islands) |
 | `WORLD_MIN_VOXEL` | 1 | Smallest generated voxel, in 1/16 m units (1, 2, 4, 8, 16) |
-| `WORLD_TOLERANCE` | 4 | Allowed surface error in 1/16 m units; voxels no larger than this are never split |
+| `WORLD_TOLERANCE` | 4 | Allowed surface error in 1/16 m units |
+| `WORLD_RESOLUTION` | 16 | Voxel size for the flat generator |
+
+**Plates**: continental plates become land and oceanic plates sea floor; where
+plates collide, mountains rise along the seam (coastal ranges and offshore
+trenches where ocean meets continent, island arcs between oceanic plates); where
+they pull apart, rift valleys and ocean ridges form. Relief runs from -150 m to
++300 m around a sea at y = 0, drawn as a translucent plane. Sand lines the
+shore and sea floor, grass covers lowland, bare rock shows on steep and high
+ground, and snow caps peaks above 220 m. The plate map is built once at startup
+on a 32 m grid (a few hundred ms); heights between grid points are interpolated
+with small-scale roughness.
+
+Terrain is voxelized adaptively: a 1 m block is halved (1 -> 1/2 -> 1/4 -> 1/8
+-> 1/16 m) only where the surface passes through it and a coarser voxel would
+misplace it by more than the tolerance.
 
 In development (`NODE_ENV` not `production`) the client can override the
-tolerance per page load with `?tolerance=N` (integer 0..16), e.g.
-http://localhost:5173/?tolerance=0. The overlay shows the tolerance in use and
-how long the view took to settle. Production servers ignore the override.
-
-## Controls
-
-Click the view to capture the mouse; then moving the mouse looks around and
-Esc releases it. (Without capturing, dragging with a mouse button also looks.)
-
-You start **walking**: W/A/S/D move in the direction you face, Space jumps
-(about 1.25 m, enough to get onto a 1 m voxel), gravity pulls you down, and
-ledges up to 1/2 m are climbed automatically. **F** switches to **flying**
-(Space or E rises, Q or C descends) and back. Shift moves 5x faster and the
-mouse wheel changes the base speed (default 2 m/s). You collide with terrain
-as a 0.6 x 1.8 m body (eyes at 1.62 m); **N** toggles no-clip, which flies
-through everything. Gravity waits until the ground below you has loaded.
-
-Editing has three modes; Tab cycles hybrid -> dig -> place (the overlay shows
-the current one). Aim with the crosshair (reach 32 m) while the mouse is
-captured.
-
-- **hybrid** (default, Minecraft-like): click removes the voxel you aim at;
-  right-click places a voxel the same size as the one you aim at against the
-  face you aim at, snapped to that size so voxels stack simply. To place a
-  different size, hold Command and scroll (or press `[` / `]`) before
-  right-clicking; the preview shows while Command is held, and the choice
-  applies to that one placement. Only the target outline
-  shows. Interactive voxels (doors, TNT, ...) will hook in here later.
-- **dig**: click removes the voxel you aim at. Hold Command to show the dig
-  box (the selected size, just inside the surface you aim at; its entry face
-  is marked on that surface); Command + click removes every voxel with any
-  part inside it.
-- **place**: a preview of the selected size shows against the face you aim
-  at (green if it fits, red if not); click places it.
-
-In dig and place (not hybrid), hold Option to move the box in 1/16 m steps instead of
-snapping to its size; it can then cross 1 m gridlines. A placed cube that
-crosses a gridline is stored as block-sized pieces (the largest standard
-cubes that fit in each block), so every voxel still lies in one block; the
-dig box is a region and simply removes whatever it overlaps. In every mode, middle-click breaks the aimed voxel into the next
-smaller size that divides it (1 m -> 8 x 1/2 m -> 64 x 1/4 m ...), B breaks
-it into the selected size, X removes it. Command + mouse wheel (or `[` and
-`]`) chooses the size from the five standard sizes (1/16, 1/8, 1/4, 1/2, 1 m;
-the wheel wraps), 1-3 the material (stone, dirt, grass).
-The server validates and applies edits, sends changed chunks to every
-connected client, and saves edited chunks under `WORLD_DATA_DIR` (default
-`./data`, gitignored) so they survive restarts.
+tolerance per page load with `?tolerance=N` (integer 0..16); those edits stay
+in memory.
 
 ## Distant terrain
 

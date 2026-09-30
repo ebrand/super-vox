@@ -84,6 +84,7 @@ describe('WebSocket handshake', () => {
       world: FLAT_WORLD_16KM,
       spawn: { x: 128_000, y: 0, z: 128_000 },
       tolerance: null,
+      seaLevel: null,
     });
     ws.close();
   });

@@ -80,6 +80,8 @@ export class FlatGenerator implements ChunkGenerator {
     validateFlatGen(world, gen);
   }
 
+  readonly seaLevel = null;
+
   surfaceHeightAt(): number {
     return this.gen.surfaceY;
   }

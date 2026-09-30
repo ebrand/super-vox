@@ -51,6 +51,8 @@ export class World {
   private readonly cacheSize: number;
   /** Adaptive voxelization tolerance, or null for non-adaptive generators. */
   readonly tolerance: number | null;
+  /** Sea level (units), or null without a sea. */
+  readonly seaLevel: number | null;
 
   constructor(
     readonly config: WorldConfig,
@@ -70,6 +72,7 @@ export class World {
     if (config.widthUnits % CHUNK_SIZE !== 0 || config.depthUnits % CHUNK_SIZE !== 0) {
       throw new RangeError('world width and depth must be multiples of the chunk size');
     }
+    this.seaLevel = generator.seaLevel;
     this.spawn = findSpawn(config, generator);
   }
 
@@ -204,35 +207,60 @@ export class World {
   }
 }
 
-/** How far from the world's centre to look for a spawn point, and how densely (units). */
-const SPAWN_SEARCH_RADIUS = 2000 * 16;
+/** How far around the chosen land to look for high ground, and how densely (units). */
+const SPAWN_SEARCH_RADIUS = 1000 * 16;
 const SPAWN_SEARCH_STEP = 32 * 16;
+/** Sampling step when searching the whole world for land (units). */
+const LAND_SEARCH_STEP = 128 * 16;
 
 /**
- * Spawn on the highest ground within SPAWN_SEARCH_RADIUS of the world's
- * centre (so, among hills when there are any). Ties go to the point nearest
- * the centre, so a flat world spawns at its centre.
+ * Spawn on land: find the land nearest the world's centre (anywhere, if
+ * there's no sea every point is land), then the highest ground within
+ * SPAWN_SEARCH_RADIUS of it. Ties go to the point nearest the centre, so a
+ * flat world spawns at its centre. A world with no land at all spawns at the
+ * centre.
  */
 export function findSpawn(config: WorldConfig, generator: ChunkGenerator): { x: number; y: number; z: number } {
   const cx = config.widthUnits / 2;
   const cz = config.depthUnits / 2;
+  const sea = generator.seaLevel;
+  const isLand = (y: number) => sea === null || y > sea + 16;
+
+  // 1. The land sample nearest the centre (the centre itself if it's land).
+  let anchor = { x: cx, z: cz };
+  if (!isLand(generator.surfaceHeightAt(cx, cz))) {
+    let best = Infinity;
+    const cols = Math.floor(config.widthUnits / LAND_SEARCH_STEP), rows = Math.floor(config.depthUnits / LAND_SEARCH_STEP);
+    const H = generator.surfaceSamples(LAND_SEARCH_STEP / 2, LAND_SEARCH_STEP / 2, LAND_SEARCH_STEP, Math.max(cols, rows)).heights;
+    const n = Math.max(cols, rows);
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < cols; i++) {
+        if (!isLand(H[i + n * j]!)) continue;
+        const x = LAND_SEARCH_STEP / 2 + i * LAND_SEARCH_STEP, z = LAND_SEARCH_STEP / 2 + j * LAND_SEARCH_STEP;
+        const d = (x - cx) ** 2 + (z - cz) ** 2;
+        if (d < best) [best, anchor] = [d, { x, z }];
+      }
+    }
+  }
+
+  // 2. The highest land within the search radius of it, nearest first so ties keep the anchor.
   const n = Math.floor(SPAWN_SEARCH_RADIUS / SPAWN_SEARCH_STEP);
   const samples: { x: number; z: number; d: number }[] = [];
   for (let j = -n; j <= n; j++) {
     for (let i = -n; i <= n; i++) {
       const d = i * i + j * j;
       if (d > n * n) continue;
-      const x = cx + i * SPAWN_SEARCH_STEP;
-      const z = cz + j * SPAWN_SEARCH_STEP;
+      const x = anchor.x + i * SPAWN_SEARCH_STEP;
+      const z = anchor.z + j * SPAWN_SEARCH_STEP;
       if (x < 0 || x >= config.widthUnits || z < 0 || z >= config.depthUnits) continue;
       samples.push({ x, z, d });
     }
   }
   samples.sort((a, b) => a.d - b.d);
-  let best = { x: cx, y: generator.surfaceHeightAt(cx, cz), z: cz };
+  let best = { x: anchor.x, y: generator.surfaceHeightAt(anchor.x, anchor.z), z: anchor.z };
   for (const { x, z } of samples) {
     const y = generator.surfaceHeightAt(x, z);
-    if (y > best.y) best = { x, y, z };
+    if (isLand(y) && y > best.y) best = { x, y, z };
   }
   return best;
 }

@@ -3,7 +3,9 @@ import {
   FLAT_WORLD_16KM,
   FlatGenerator,
   NoiseHeights,
+  PlateHeights,
   ROUND_WORLD_16x8KM,
+  defaultPlateTerrain,
   TerrainGenerator,
   NO_GROUND,
   TILE_SAMPLES,
@@ -79,6 +81,18 @@ describe('World', () => {
     }
   });
 
+  it('spawns on land on a mostly-ocean plate world', () => {
+    const gen = new TerrainGenerator(
+      FLAT_WORLD_16KM,
+      { minVoxelSize: 1, tolerance: 4 },
+      new PlateHeights(FLAT_WORLD_16KM, { ...defaultPlateTerrain(3), waterPercent: 85 }),
+    );
+    const spawn = findSpawn(FLAT_WORLD_16KM, gen);
+    expect(gen.seaLevel).toBe(0);
+    expect(spawn.y).toBeGreaterThan(16);
+    expect(spawn.y).toBe(gen.surfaceHeightAt(spawn.x, spawn.z));
+  });
+
   it('spawns on the highest ground near the centre of hilly terrain', () => {
     const source = new NoiseHeights(FLAT_WORLD_16KM, defaultNoiseTerrain(1));
     const gen = new TerrainGenerator(FLAT_WORLD_16KM, { minVoxelSize: 1, tolerance: 4 }, source);
@@ -86,11 +100,11 @@ describe('World', () => {
     // On the surface, in the hills, within the 2 km search radius.
     expect(spawn.y).toBe(gen.surfaceHeightAt(spawn.x, spawn.z));
     expect(spawn.y).toBeGreaterThan(10 * 16);
-    expect(Math.hypot(spawn.x - 128_000, spawn.z - 128_000)).toBeLessThanOrEqual(2000 * 16);
-    // Nothing on the search grid (every 32 m from the centre) is higher.
-    for (let j = -62; j <= 62; j++) {
-      for (let i = -62; i <= 62; i++) {
-        if (i * i + j * j > 62 * 62) continue;
+    expect(Math.hypot(spawn.x - 128_000, spawn.z - 128_000)).toBeLessThanOrEqual(1000 * 16);
+    // Nothing on the search grid (every 32 m within 1 km of the centre) is higher.
+    for (let j = -31; j <= 31; j++) {
+      for (let i = -31; i <= 31; i++) {
+        if (i * i + j * j > 31 * 31) continue;
         expect(gen.surfaceHeightAt(128_000 + i * 512, 128_000 + j * 512)).toBeLessThanOrEqual(spawn.y);
       }
     }
