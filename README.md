@@ -29,6 +29,7 @@ Settings for a new world:
 | `WORLD_MINOR_PLATES` | 12 | Small plates crowding the seams (0..100) |
 | `WORLD_WATER` | 70 | Percent of the world under the sea (exact) |
 | `WORLD_SHORE_FRACTAL` | 50 | Coastline raggedness, 0 (smooth) .. 100 (broken, many islands) |
+| `WORLD_MOUNTAIN_HEIGHT` | 150 | Height of the tallest peaks, in metres (20..600) |
 | `WORLD_MIN_VOXEL` | 1 | Smallest generated voxel, in 1/16 m units (1, 2, 4, 8, 16) |
 | `WORLD_TOLERANCE` | 4 | Allowed surface error in 1/16 m units |
 | `WORLD_RESOLUTION` | 16 | Voxel size for the flat generator |
@@ -37,9 +38,10 @@ Settings for a new world:
 plates collide, mountains rise along the seam (coastal ranges and offshore
 trenches where ocean meets continent, island arcs between oceanic plates); where
 they pull apart, rift valleys and ocean ridges form. Relief runs from -150 m to
-+300 m around a sea at y = 0, drawn as a translucent plane. Sand lines the
-shore and sea floor, grass covers lowland, bare rock shows on steep and high
-ground, and snow caps peaks above 220 m. The plate map is built once at startup
+the configured mountain height around a sea at y = 0, drawn as a translucent
+plane. Sand lines the shore and sea floor, grass covers lowland, bare rock
+shows on steep ground and above 60% of the peak height, and snow caps the top
+20%. The plate map is built once at startup
 on a 32 m grid (a few hundred ms); heights between grid points are interpolated
 with small-scale roughness.
 

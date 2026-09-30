@@ -8,6 +8,7 @@ import {
   TerrainGenerator,
   defaultFlatGen,
   defaultNoiseTerrain,
+  defaultPlateTerrain,
   validatePlateTerrain,
   validateVoxelize,
   type ChunkGenerator,
@@ -60,6 +61,8 @@ export function openWorld(dataRoot: string, name: string, specForNew: WorldSpec)
   if (existsSync(path)) {
     const file = JSON.parse(readFileSync(path, 'utf8')) as WorldFile;
     if (file.version !== 1) throw new Error(`${path}: unsupported world file version ${file.version}`);
+    // Settings added after a world was created take their defaults.
+    if (file.spec.generator === 'plates') file.spec.plates = { ...defaultPlateTerrain(file.spec.plates.seed), ...file.spec.plates };
     validateWorldSpec(file.spec);
     return { file, dir, created: false, ignored: JSON.stringify(file.spec) !== JSON.stringify(specForNew) };
   }

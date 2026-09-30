@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { voxelAt, type Chunk } from './chunk.js';
 import { Material } from './materials.js';
-import { MAX_MOUNTAIN, OCEAN_DEPTH, PLATE_CELL, PlateHeights, defaultPlateTerrain, validatePlateTerrain, type PlateTerrainConfig } from './plates.js';
+import { DEFAULT_MOUNTAIN_HEIGHT, OCEAN_DEPTH, PLATE_CELL, PlateHeights, defaultPlateTerrain, validatePlateTerrain, type PlateTerrainConfig } from './plates.js';
 import { TerrainGenerator } from './terrain.js';
 import { CHUNK_SIZE, FLAT_WORLD_16KM, ROUND_WORLD_16x8KM } from './world.js';
 
@@ -36,6 +36,9 @@ describe('validatePlateTerrain', () => {
     expect(() => validatePlateTerrain({ ...ok, minorPlates: 2.5 })).toThrow(/minorPlates/);
     expect(() => validatePlateTerrain({ ...ok, waterPercent: 101 })).toThrow(/waterPercent/);
     expect(() => validatePlateTerrain({ ...ok, shoreFractal: -1 })).toThrow(/shoreFractal/);
+    expect(() => validatePlateTerrain({ ...ok, mountainHeight: 10 })).toThrow(/mountainHeight/);
+    const { mountainHeight: _omit, ...older } = ok;
+    expect(() => validatePlateTerrain(older)).not.toThrow(); // worlds created before the setting existed
   });
 });
 
@@ -79,15 +82,37 @@ describe('PlateHeights', () => {
     const p = plates();
     let lo = Infinity, hi = -Infinity;
     for (const h of p.elevation) { lo = Math.min(lo, h); hi = Math.max(hi, h); }
-    // The strongest uplift makes the tallest peak, close to (never above) MAX_MOUNTAIN.
-    expect(hi).toBeLessThanOrEqual(MAX_MOUNTAIN);
-    expect(hi).toBeGreaterThan(MAX_MOUNTAIN * 0.85);
+    // The strongest uplift makes the tallest peak, close to (never above) the configured height.
+    const peak = DEFAULT_MOUNTAIN_HEIGHT * 16;
+    expect(p.peak).toBe(peak);
+    expect(hi).toBeLessThanOrEqual(peak);
+    expect(hi).toBeGreaterThan(peak * 0.85);
     expect(lo).toBeCloseTo(-OCEAN_DEPTH, 0);
     const H = p.heights(0, 0, 500, 500, 512);
     for (const h of H) {
       expect(h).toBeGreaterThanOrEqual(p.minHeight);
       expect(h).toBeLessThanOrEqual(p.maxHeight);
     }
+  });
+
+  it('scales mountains with the configured height, and keeps them gentle', () => {
+    for (const mountainHeight of [80, 150, 400]) {
+      const p = plates({ mountainHeight });
+      let hi = -Infinity;
+      for (const h of p.elevation) hi = Math.max(hi, h);
+      expect(hi).toBeLessThanOrEqual(mountainHeight * 16);
+      expect(hi).toBeGreaterThan(mountainHeight * 16 * 0.85);
+    }
+    // At the default height, no land step between neighbouring 32 m cells is a cliff: at most
+    // ~26 m (slope 0.8). Before shore ramps and smoothing, coastal ranges made steps of 136 m (4.3).
+    const p = plates();
+    let steepest = 0;
+    for (let r = 1; r < p.rows - 1; r++) for (let c = 1; c < p.cols - 1; c++) {
+      const i = c + p.cols * r;
+      if (p.elevation[i]! <= 0) continue;
+      steepest = Math.max(steepest, Math.abs(p.elevation[i + 1]! - p.elevation[i]!) / PLATE_CELL, Math.abs(p.elevation[i + p.cols]! - p.elevation[i]!) / PLATE_CELL);
+    }
+    expect(steepest).toBeLessThan(0.8);
   });
 
   it('raises high ground only near plate seams', () => {
@@ -98,7 +123,7 @@ describe('PlateHeights', () => {
     for (let r = R; r < p.rows - R; r++) {
       for (let c = R; c < p.cols - R; c++) {
         const i = c + p.cols * r;
-        if (p.elevation[i]! < 150 * 16) continue;
+        if (p.elevation[i]! < p.peak / 2) continue;
         high++;
         let seam = false;
         for (let dr = -R; dr <= R && !seam; dr += 2) for (let dc = -R; dc <= R && !seam; dc += 2) {
@@ -145,12 +170,12 @@ describe('PlateHeights', () => {
     const probe = (h: number) => p.materials(100_000, 100_000, 1, 1, 1, Int32Array.of(h))[0];
     expect(probe(-500)).toBe(Material.Sand);
     expect(probe(16)).toBe(Material.Sand);
-    expect(probe(240 * 16)).toBe(Material.Snow);
-    expect(probe(190 * 16)).toBe(Material.Stone);
+    expect(probe(Math.ceil(p.peak * 0.85))).toBe(Material.Snow);
+    expect(probe(Math.ceil(p.peak * 0.7))).toBe(Material.Stone);
     // Lowland grass somewhere flat: find a low land cell with gentle slope.
     const H = p.heights(0, 0, 500, 500, 512);
     const M = p.materials(0, 0, 500, 500, 512, H);
-    expect([...M].filter((m, k) => m === Material.Grass && H[k]! > 64 && H[k]! < 60 * 16).length).toBeGreaterThan(100);
+    expect([...M].filter((m, k) => m === Material.Grass && H[k]! > 64 && H[k]! < 50 * 16).length).toBeGreaterThan(100);
   });
 });
 

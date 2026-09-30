@@ -40,6 +40,7 @@ function specForNewWorld(): WorldSpec {
         minorPlates: numberEnv('WORLD_MINOR_PLATES', d.minorPlates),
         waterPercent: numberEnv('WORLD_WATER', d.waterPercent),
         shoreFractal: numberEnv('WORLD_SHORE_FRACTAL', d.shoreFractal),
+        mountainHeight: numberEnv('WORLD_MOUNTAIN_HEIGHT', d.mountainHeight!),
       },
       voxelize,
     };

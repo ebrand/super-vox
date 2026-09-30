@@ -19,10 +19,14 @@ export interface PlateTerrainConfig {
   waterPercent: number;
   /** How ragged coastlines are, 0 (smooth) .. 100 (heavily broken, many islands). */
   shoreFractal: number;
+  /** Height of the tallest peaks above sea level, in metres (20..600). Optional for older worlds. */
+  mountainHeight?: number;
 }
 
+export const DEFAULT_MOUNTAIN_HEIGHT = 150;
+
 export function defaultPlateTerrain(seed = 1): PlateTerrainConfig {
-  return { seed, majorPlates: 7, minorPlates: 12, waterPercent: 70, shoreFractal: 50 };
+  return { seed, majorPlates: 7, minorPlates: 12, waterPercent: 70, shoreFractal: 50, mountainHeight: DEFAULT_MOUNTAIN_HEIGHT };
 }
 
 export function validatePlateTerrain(c: PlateTerrainConfig): void {
@@ -34,13 +38,14 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   int(c.minorPlates, 0, 100, 'minorPlates');
   if (!(c.waterPercent >= 0 && c.waterPercent <= 100)) throw new RangeError(`waterPercent must be 0..100; got ${c.waterPercent}`);
   if (!(c.shoreFractal >= 0 && c.shoreFractal <= 100)) throw new RangeError(`shoreFractal must be 0..100; got ${c.shoreFractal}`);
+  const mh = c.mountainHeight ?? DEFAULT_MOUNTAIN_HEIGHT;
+  if (!(mh >= 20 && mh <= 600)) throw new RangeError(`mountainHeight must be 20..600 m; got ${mh}`);
 }
 
 /** Coarse grid cell (units): 32 m. Heights between cells are interpolated. */
 export const PLATE_CELL = 512;
 const M = 16; // units per metre
-/** Highest mountains and deepest sea floor, relative to sea level (units). */
-export const MAX_MOUNTAIN = 300 * M;
+/** Deepest sea floor, relative to sea level (units). */
 export const OCEAN_DEPTH = 150 * M;
 /** Land just above the shore, typical lowland inland, and rolling hills on top (units). */
 const COAST_RISE = 3 * M;
@@ -49,10 +54,10 @@ const HILLS = 25 * M;
 /** Largest small-scale roughness (units), reached on mountains. */
 const DETAIL_MAX = 6 * M;
 const DETAIL_MIN = 0.4 * M;
-/** Sand up to this height above the sea; bare rock and snow on high ground. */
+/** Sand up to this height above the sea. Bare rock and snow start at these fractions of the peak height. */
 const BEACH = 2 * M;
-const ROCK_LINE = 170 * M;
-const SNOW_LINE = 220 * M;
+const ROCK_FRACTION = 0.6;
+const SNOW_FRACTION = 0.8;
 
 interface Plate {
   x: number;
@@ -85,7 +90,11 @@ function rng(seed: number): () => number {
 export class PlateHeights implements HeightSource {
   readonly seaLevel = 0;
   readonly minHeight = -OCEAN_DEPTH - DETAIL_MAX - 1;
-  readonly maxHeight = MAX_MOUNTAIN + DETAIL_MAX + 1;
+  readonly maxHeight: number;
+  /** Tallest peak (units). */
+  readonly peak: number;
+  private readonly rockLine: number;
+  private readonly snowLine: number;
   readonly cols: number;
   readonly rows: number;
   /** Surface height per grid cell (units, sea level 0). */
@@ -103,6 +112,11 @@ export class PlateHeights implements HeightSource {
     readonly config: PlateTerrainConfig,
   ) {
     validatePlateTerrain(config);
+    this.peak = (config.mountainHeight ?? DEFAULT_MOUNTAIN_HEIGHT) * M;
+    this.maxHeight = this.peak + DETAIL_MAX + 1;
+    this.rockLine = this.peak * ROCK_FRACTION;
+    this.snowLine = this.peak * SNOW_FRACTION;
+    const MAX_MOUNTAIN = this.peak;
     if (world.widthUnits % PLATE_CELL || world.depthUnits % PLATE_CELL) {
       throw new RangeError(`world size must be a multiple of ${PLATE_CELL} units`);
     }
@@ -275,6 +289,7 @@ export class PlateHeights implements HeightSource {
     const g = (d: number, w: number) => Math.exp(-((d / w) ** 2));
     const land = new Float32Array(n);
     const upAt = new Float32Array(n);
+    const downAt = new Float32Array(n);
     const rough = (this.rough = new Float32Array(n));
     for (let i = 0; i < n; i++) {
       const p = plates[plateOf[i]!]!;
@@ -286,19 +301,26 @@ export class PlateHeights implements HeightSource {
         const conv = ((p.vx - q.vx) * nx + (p.vz - q.vz) * nz) / len / 2;
         const d = dist[i]! * PLATE_CELL / M; // metres
         if (conv > 0.1) {
-          if (p.continental && q.continental) up += conv * g(d, 700);
-          else if (p.continental) up += 0.8 * conv * g(d - 250, 450); // coastal range inland of a trench
+          if (p.continental && q.continental) up += conv * g(d, 1300);
+          else if (p.continental) up += 0.8 * conv * g(d - 700, 800); // coastal range, well inland of a trench
           else if (q.continental) down += conv * g(d, 350); // ocean-side trench
-          else if (plateOf[i]! < other[i]!) up += 0.55 * conv * g(d, 400); // island arc
+          else if (plateOf[i]! < other[i]!) up += 0.55 * conv * g(d, 700); // island arc
           else down += conv * g(d, 300);
         } else if (conv < -0.1) {
-          if (p.continental) down += 0.3 * -conv * g(d, 300); // rift valley
-          else up += 0.2 * -conv * g(d, 500); // mid-ocean ridge
+          if (p.continental) down += 0.3 * -conv * g(d, 500); // rift valley
+          else up += 0.2 * -conv * g(d, 800); // mid-ocean ridge
         }
       }
-      up *= 0.65 + 0.35 * rangeVar[i]!;
-      upAt[i] = up;
-      land[i] = base[i]! * 0.5 + swell[i]! * 0.3 + up - down * 0.8;
+      upAt[i] = up * (0.65 + 0.35 * rangeVar[i]!);
+      downAt[i] = down;
+    }
+    // Smooth uplift and trenches: the nearest seam can switch abruptly between neighbouring
+    // plates, which would otherwise leave sharp creases.
+    const upSmooth = blur(blur(upAt, cols, rows, 3, this.wrap), cols, rows, 3, this.wrap);
+    const downSmooth = blur(blur(downAt, cols, rows, 3, this.wrap), cols, rows, 3, this.wrap);
+    for (let i = 0; i < n; i++) {
+      upAt[i] = upSmooth[i]!;
+      land[i] = base[i]! * 0.5 + swell[i]! * 0.3 + upSmooth[i]! - downSmooth[i]! * 0.8;
     }
     // Fractalize around every shoreline (outer coasts and inland seas alike): find where the
     // waterline falls without it, then roughen a band ~700 m either side of that line only.
@@ -333,6 +355,7 @@ export class PlateHeights implements HeightSource {
     for (let i = 0; i < n; i++) if (land[i]! <= tau) toSea[i] = 0;
     chamfer(toSea, cols, rows, this.wrap);
     const INLAND_CELLS = (1500 * M) / PLATE_CELL;
+    const MOUNTAIN_RAMP_CELLS = (500 * M) / PLATE_CELL;
     const elevation = (this.elevation = new Float32Array(n));
     for (let i = 0; i < n; i++) {
       const v = land[i]!;
@@ -342,7 +365,8 @@ export class PlateHeights implements HeightSource {
         const inland = smoothstep(0, INLAND_CELLS, toSea[i]!);
         const lowland = COAST_RISE + (LOWLAND - COAST_RISE) * inland;
         const rolling = HILLS * inland * (0.5 + 0.5 * hills[i]!);
-        const m = Math.max(0, upAt[i]!) / upMax;
+        // Mountains ramp up over the first ~500 m from any shore, so coasts don't end in cliffs.
+        const m = (Math.max(0, upAt[i]!) / upMax) * smoothstep(0, MOUNTAIN_RAMP_CELLS, toSea[i]!);
         const mountains = (MAX_MOUNTAIN - lowland - rolling) * m ** 1.4;
         elevation[i] = lowland + rolling + mountains;
         rough[i] = Math.min(1, m * 1.5);
@@ -429,8 +453,8 @@ export class PlateHeights implements HeightSource {
       const slope = Math.hypot(east[k]! - west[k]!, south[k]! - north[k]!) / (2 * e);
       out[k] =
         h <= BEACH ? Material.Sand
-        : h >= SNOW_LINE ? Material.Snow
-        : h >= ROCK_LINE || slope > 0.9 ? Material.Stone
+        : h >= this.snowLine ? Material.Snow
+        : h >= this.rockLine || slope > 0.9 ? Material.Stone
         : Material.Grass;
     }
     return out;
