@@ -8,7 +8,30 @@ voxel can be broken into smaller voxels whose size evenly divides its own.
 - A voxel never crosses a 1 m gridline: it lies entirely inside one 1 m block.
 - Placed voxels may be any of the 16 sizes (1/16 m to 1 m).
 - Generated terrain uses one of five sizes, the ones that tile a 1 m block:
-  1/16, 1/8, 1/4, 1/2 or 1 m (`WORLD_RESOLUTION` = 1, 2, 4, 8 or 16 units).
+  1/16, 1/8, 1/4, 1/2 or 1 m.
+
+## Terrain
+
+The default generator (`WORLD_GENERATOR=terrain`) voxelizes a heightmap
+adaptively: a 1 m block is halved (1 → 1/2 → 1/4 → 1/8 → 1/16 m) only where
+the ground surface passes through it and a coarser voxel would misplace the
+surface by more than the tolerance. Flat ground on a 1 m line stays 1 m voxels.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `WORLD_SEED` | 1 | Noise seed |
+| `WORLD_MIN_VOXEL` | 1 | Smallest generated voxel, in 1/16 m units (1, 2, 4, 8, 16) |
+| `WORLD_TOLERANCE` | 4 | Allowed surface error in 1/16 m units; voxels no larger than this are never split |
+
+In development (`NODE_ENV` not `production`) the client can override the
+tolerance per page load with `?tolerance=N` (integer 0..16), e.g.
+http://localhost:5173/?tolerance=0. The overlay shows the tolerance in use and
+how long the view took to settle. Production servers ignore the override.
+
+Heights currently come from simple value noise (`NoiseHeights`). The voxelizer
+only depends on the `HeightSource` interface, so a different source (e.g.
+tectonic plates) can replace it. `WORLD_GENERATOR=flat` with
+`WORLD_RESOLUTION=1|2|4|8|16` gives the original flat world.
 
 ## Layout
 
@@ -33,7 +56,7 @@ voxel can be broken into smaller voxels whose size evenly divides its own.
 
 ```sh
 npm install
-npm run dev:server   # http://127.0.0.1:8787 (WORLD_RESOLUTION=1|2|4|8|16, default 16)
+npm run dev:server   # http://127.0.0.1:8787 (see Terrain for settings)
 npm run dev:client   # http://localhost:5173 (proxies /api and /ws to the server)
 npm test
 npm run typecheck

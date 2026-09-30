@@ -4,6 +4,9 @@ import {
   UNITS_PER_METER,
   blockIndex,
   gridCellIndex,
+  rasterizeVoxels,
+  unitIndex,
+  unpackVoxel,
   type Block,
   type Chunk,
   type GridBlock,
@@ -71,6 +74,44 @@ function gridCell(block: GridBlock, axis: number, layer: number, cu: number, cv:
 }
 
 /**
+ * Unit-resolution coverage test against a rasterized block: emits the whole
+ * square if nothing covers it, otherwise each uncovered unit square.
+ * `layer` is the unit coordinate along `axis` of the covering cells.
+ */
+function emitUncoveredUnits(
+  raster: Uint16Array,
+  axis: number,
+  layer: number,
+  u0: number,
+  v0: number,
+  size: number,
+  emit: (u: number, v: number, du: number, dv: number) => void,
+): void {
+  const c = [0, 0, 0];
+  c[axis] = layer;
+  const ua = U_AXIS[axis]!;
+  const va = V_AXIS[axis]!;
+  let covered = 0;
+  for (let u = u0; u < u0 + size; u++) {
+    for (let v = v0; v < v0 + size; v++) {
+      c[ua] = u; c[va] = v;
+      if (raster[unitIndex(c[0]!, c[1]!, c[2]!)] !== 0) covered++;
+    }
+  }
+  if (covered === 0) {
+    emit(u0, v0, size, size);
+    return;
+  }
+  if (covered === size * size) return;
+  for (let u = u0; u < u0 + size; u++) {
+    for (let v = v0; v < v0 + size; v++) {
+      c[ua] = u; c[va] = v;
+      if (raster[unitIndex(c[0]!, c[1]!, c[2]!)] === 0) emit(u, v, 1, 1);
+    }
+  }
+}
+
+/**
  * Calls `emit(u, v, du, dv)` (block-local units) for each part of the square
  * [u0, u0+size)^2 on the face of a block in direction `dir` that is not
  * covered by the solid voxels of the adjacent block `nb`.
@@ -89,15 +130,20 @@ function forUncovered(
   }
   if (nb.kind === 'uniform') return;
   const { axis, sign } = DIRS[dir]!;
-  const s2 = nb.size;
-  const layer = sign > 0 ? 0 : BLOCK_SIZE / s2 - 1;
-  if (s2 >= size) {
-    if (gridCell(nb, axis, layer, Math.floor(u0 / s2), Math.floor(v0 / s2)) === 0) emit(u0, v0, size, size);
+  if (nb.kind === 'voxels') {
+    emitUncoveredUnits(rasterizeVoxels(nb).materials, axis, sign > 0 ? 0 : BLOCK_SIZE - 1, u0, v0, size, emit);
     return;
   }
-  for (let u = u0; u < u0 + size; u += s2) {
-    for (let v = v0; v < v0 + size; v += s2) {
-      if (gridCell(nb, axis, layer, u / s2, v / s2) === 0) emit(u, v, s2, s2);
+  // Walk every neighbor grid cell the square overlaps and emit the overlap
+  // wherever that cell is empty. Works for any square size and alignment.
+  const s2 = nb.size;
+  const layer = sign > 0 ? 0 : BLOCK_SIZE / s2 - 1;
+  const u1 = u0 + size, v1 = v0 + size;
+  for (let cu = Math.floor(u0 / s2); cu * s2 < u1; cu++) {
+    for (let cv = Math.floor(v0 / s2); cv * s2 < v1; cv++) {
+      if (gridCell(nb, axis, layer, cu, cv) !== 0) continue;
+      const a = Math.max(u0, cu * s2), b = Math.max(v0, cv * s2);
+      emit(a, b, Math.min(u1, (cu + 1) * s2) - a, Math.min(v1, (cv + 1) * s2) - b);
     }
   }
 }
@@ -117,6 +163,29 @@ function blockFaces(block: Exclude<Block, null>, nbBlocks: readonly Block[]): Qu
       forUncovered(nbBlocks[d]!, d, 0, 0, BLOCK_SIZE, (u, v, du, dv) =>
         out.push({ dir: d, plane, u, v, du, dv, material: block.material, size: block.size }),
       );
+    }
+    return out;
+  }
+
+  if (block.kind === 'voxels') {
+    const raster = rasterizeVoxels(block).materials;
+    const c = [0, 0, 0];
+    for (let i = 0; i < block.packed.length; i++) {
+      const { x, y, z, size } = unpackVoxel(block.packed[i]!);
+      const material = block.materials[i]!;
+      c[0] = x; c[1] = y; c[2] = z;
+      for (let d = 0; d < 6; d++) {
+        const axis = AXIS_OF[d]!;
+        const sign = SIGN_OF[d]!;
+        const u = c[U_AXIS[axis]]!;
+        const v = c[V_AXIS[axis]]!;
+        const plane = c[axis]! + (sign > 0 ? size : 0);
+        const layer = sign > 0 ? c[axis]! + size : c[axis]! - 1;
+        const emit = (fu: number, fv: number, du: number, dv: number) =>
+          out.push({ dir: d, plane, u: fu, v: fv, du, dv, material, size });
+        if (layer >= 0 && layer < BLOCK_SIZE) emitUncoveredUnits(raster, axis, layer, u, v, size, emit);
+        else forUncovered(nbBlocks[d]!, d, u, v, size, emit);
+      }
     }
     return out;
   }

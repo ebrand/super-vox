@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { unitsToMeters } from '@super-vox/shared';
+import { isValidTolerance, unitsToMeters } from '@super-vox/shared';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
@@ -8,6 +8,14 @@ import { createVoxelMaterial } from './voxelMaterial.js';
 const statusEl = document.getElementById('status')!;
 const params = new URLSearchParams(location.search);
 const radius = Math.max(1, Math.min(32, Number(params.get('radius') ?? 8)));
+// Development: ?tolerance=N (integer 1/16 m units, 0..16) asks the server for
+// terrain voxelized with that tolerance.
+const toleranceParam = params.get('tolerance');
+const requestedTolerance = toleranceParam === null ? undefined : Number(toleranceParam);
+const toleranceWarning =
+  requestedTolerance !== undefined && !isValidTolerance(requestedTolerance)
+    ? `ignoring ?tolerance=${toleranceParam} (use an integer 0..16)`
+    : '';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
@@ -33,26 +41,36 @@ let connection: ReturnType<typeof connect> | null = null;
 let worldLine = '';
 
 connection = connect({
+  ...(requestedTolerance !== undefined && !toleranceWarning ? { hello: { tolerance: requestedTolerance } } : {}),
   onMessage: (msg) => {
     if (msg.type === 'welcome') {
       const w = msg.world;
       worldLine =
         `world ${unitsToMeters(w.widthUnits) / 1000} x ${unitsToMeters(w.depthUnits) / 1000} km` +
-        (w.wrapX ? ', wraps east-west' : '');
+        (w.wrapX ? ', wraps east-west' : '') +
+        (msg.tolerance !== null ? `\ntolerance ${msg.tolerance}/16 m` : '') +
+        (requestedTolerance !== undefined && !toleranceWarning && msg.tolerance !== requestedTolerance
+          ? ` (server ignored ?tolerance=${requestedTolerance})`
+          : '') +
+        (toleranceWarning ? `\n${toleranceWarning}` : '');
       if (!chunks) {
-        // Start at the middle of the world, just above the ground.
-        const cx = unitsToMeters(w.widthUnits) / 2;
-        const cz = unitsToMeters(w.depthUnits) / 2;
-        controls.target.set(cx, 0, cz);
-        camera.position.set(cx + 12, 10, cz + 12);
+        // Start at the server's spawn point, looking at the ground.
+        const sx = unitsToMeters(msg.spawn.x);
+        const sy = unitsToMeters(msg.spawn.y);
+        const sz = unitsToMeters(msg.spawn.z);
+        controls.target.set(sx, sy, sz);
+        camera.position.set(sx + 12, sy + 10, sz + 12);
         controls.update();
         chunks = new ChunkManager(w, scene, material, (m) => connection?.send(m), {
           radius,
-          verticalRadius: 2,
+          verticalRadius: 3,
           maxInFlight: 64,
         });
-        (window as unknown as { superVox: unknown }).superVox = { chunks, camera, controls };
+        (window as unknown as { superVox: unknown }).superVox = { chunks, camera, controls, renderer, scene };
+        // Start loading now rather than on the first frame (frames pause in hidden tabs).
+        chunks.update(controls.target);
       }
+      updateHud();
     } else if (msg.type === 'chunkUnavailable') {
       chunks?.onChunkUnavailable(msg);
     } else if (msg.type === 'error') {
@@ -76,6 +94,22 @@ let frames = 0;
 let fps = 0;
 let lastFpsTime = performance.now();
 
+function updateHud(): void {
+  const s = chunks?.stats;
+  const t = controls.target;
+  statusEl.textContent =
+    `${worldLine || 'connecting…'}\n` +
+    `focus ${t.x.toFixed(1)}, ${t.y.toFixed(1)}, ${t.z.toFixed(1)} m\n` +
+    (s
+      ? `chunks ${s.loaded} loaded, ${s.inFlight} in flight, ${s.queued} queued\n` +
+        `meshes ${s.meshed} (${s.meshing} pending), ${s.triangles} tris` +
+        (s.errors ? `, ${s.errors} errors` : '') +
+        (s.settledMs !== null ? `\nsettled in ${(s.settledMs / 1000).toFixed(2)} s` : '') +
+        '\n'
+      : '') +
+    `${fps.toFixed(0)} fps`;
+}
+
 renderer.setAnimationLoop(() => {
   controls.update();
   chunks?.update(controls.target);
@@ -87,17 +121,6 @@ renderer.setAnimationLoop(() => {
     fps = (frames * 1000) / (now - lastFpsTime);
     frames = 0;
     lastFpsTime = now;
-    const s = chunks?.stats;
-    const t = controls.target;
-    statusEl.textContent =
-      `${worldLine || 'connecting…'}\n` +
-      `focus ${t.x.toFixed(1)}, ${t.y.toFixed(1)}, ${t.z.toFixed(1)} m\n` +
-      (s
-        ? `chunks ${s.loaded} loaded, ${s.inFlight} in flight, ${s.queued} queued\n` +
-          `meshes ${s.meshed} (${s.meshing} pending), ${s.triangles} tris` +
-          (s.errors ? `, ${s.errors} errors` : '') +
-          '\n'
-        : '') +
-      `${fps.toFixed(0)} fps`;
+    updateHud();
   }
 });

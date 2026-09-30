@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { BLOCKS_PER_CHUNK, GRID_SIZES, emptyChunk, type Block, type Chunk } from './chunk.js';
-import { ChunkDecodeError, decodeChunk, encodeChunk, readChunkHeader } from './chunkcodec.js';
+import { BLOCKS_PER_CHUNK, GRID_SIZES, emptyChunk, packVoxel, type Block, type Chunk, type VoxelsBlock } from './chunk.js';
+import { ChunkDecodeError, decodeChunk, encodeChunk, readChunkHeader, summarizeChunk } from './chunkcodec.js';
 import { FlatGenerator, defaultFlatGen } from './flatgen.js';
 import { FLAT_WORLD_16KM } from './world.js';
 
@@ -22,6 +22,18 @@ function randomChunk(seed: number): Chunk {
     const size = GRID_SIZES[Math.floor(rand() * GRID_SIZES.length)]!;
     if (roll < 0.3) {
       block = { kind: 'uniform', size, material: 1 + Math.floor(rand() * 0xfffe) };
+    } else if (roll < 0.4) {
+      // A few non-overlapping voxels stacked along X, any sizes that fit.
+      const packed: number[] = [];
+      const materials: number[] = [];
+      let x = 0;
+      while (x < 16) {
+        const size = 1 + Math.floor(rand() * (16 - x));
+        packed.push(packVoxel(x, Math.floor(rand() * (17 - size)), Math.floor(rand() * (17 - size)), size));
+        materials.push(1 + Math.floor(rand() * 0xfffe));
+        x += size;
+      }
+      block = { kind: 'voxels', packed: Uint16Array.from(packed), materials: Uint16Array.from(materials) };
     } else if (roll < 0.5) {
       const n = 16 / size;
       const materials = new Uint16Array(n ** 3);
@@ -116,5 +128,81 @@ describe('chunk codec', () => {
     const bad = bytes.slice();
     bad[0] = 2;
     expect(() => readChunkHeader(bad)).toThrow(/format/);
+  });
+
+  describe('voxels blocks', () => {
+    const one = (packed: number[], materials: number[]): Chunk => {
+      const chunk = emptyChunk({ cx: 1, cy: 2, cz: 3 });
+      chunk.blocks[5] = { kind: 'voxels', packed: Uint16Array.from(packed), materials: Uint16Array.from(materials) };
+      return chunk;
+    };
+
+    it('round-trips, including a block of 4096 unit voxels', () => {
+      const full: number[] = [];
+      for (let y = 0; y < 16; y++) for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) full.push(packVoxel(x, y, z, 1));
+      for (const chunk of [one([packVoxel(0, 0, 0, 16)], [9]), one([packVoxel(3, 4, 5, 3), packVoxel(0, 0, 0, 3)], [1, 2]), one(full, full.map((_, i) => 1 + (i % 7)))]) {
+        expect(decodeChunk(encodeChunk(chunk))).toEqual(chunk);
+      }
+    });
+
+    /** Encodes without validation by building a valid chunk, then patching bytes. */
+    const tamper = (voxels: [number, number][]) => {
+      const bytes = encodeChunk(one(voxels.map(() => packVoxel(0, 0, 0, 1)).map((_, i) => packVoxel(i, 0, 0, 1)), voxels.map(() => 1)));
+      const v = new DataView(bytes.buffer);
+      // Palette entry 0 at offset 15: kind, pad, u16 count, then (packed, material) pairs.
+      voxels.forEach(([p, m], i) => {
+        v.setUint16(19 + i * 4, p, true);
+        v.setUint16(21 + i * 4, m, true);
+      });
+      return bytes;
+    };
+
+    it('rejects overlapping, out-of-block, and air voxels', () => {
+      expect(() => decodeChunk(tamper([[packVoxel(0, 0, 0, 4), 1], [packVoxel(3, 3, 3, 2), 1]]))).toThrow(/overlap/);
+      expect(() => decodeChunk(tamper([[packVoxel(14, 0, 0, 4), 1]]))).toThrow(/boundary/);
+      expect(() => decodeChunk(tamper([[packVoxel(0, 0, 0, 4), 0]]))).toThrow(/air/);
+      expect(decodeChunk(tamper([[packVoxel(12, 0, 0, 4), 1]])).blocks[5]).toBeTruthy();
+    });
+
+    it('refuses to encode an empty voxels block', () => {
+      expect(() => encodeChunk(one([], []))).toThrow(RangeError);
+    });
+
+    it('decodes voxels blocks as independent, valid objects', () => {
+      const chunk = one([packVoxel(0, 0, 0, 8)], [4]);
+      const block = decodeChunk(encodeChunk(chunk)).blocks[5] as VoxelsBlock;
+      expect(block.kind).toBe('voxels');
+      expect(block).not.toBe(chunk.blocks[5]);
+    });
+  });
+
+  it('summarizes chunks without decoding them', () => {
+    const flat = new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(16));
+    expect(summarizeChunk(encodeChunk(flat.generateChunk({ cx: 0, cy: 3, cz: 0 })))).toBe('air');
+    expect(summarizeChunk(encodeChunk(flat.generateChunk({ cx: 0, cy: -9, cz: 0 })))).toBe('solid');
+    // The default surface (y = 0) sits exactly on a chunk's top edge, so that chunk is solid.
+    expect(summarizeChunk(encodeChunk(flat.generateChunk({ cx: 0, cy: -1, cz: 0 })))).toBe('solid');
+    // A surface inside the chunk: uniform blocks below, air above.
+    const raised = new FlatGenerator(FLAT_WORLD_16KM, { ...defaultFlatGen(16), surfaceY: 32 });
+    expect(summarizeChunk(encodeChunk(raised.generateChunk({ cx: 0, cy: 0, cz: 0 })))).toBe('mixed');
+    // Several uniform materials still count as solid.
+    const two = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    two.blocks.fill({ kind: 'uniform', size: 16, material: 1 });
+    two.blocks[7] = { kind: 'uniform', size: 4, material: 2 };
+    expect(summarizeChunk(encodeChunk(two))).toBe('solid');
+    // Grid and voxels blocks may contain air.
+    const fine = new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(1));
+    expect(summarizeChunk(encodeChunk(fine.generateChunk({ cx: 0, cy: -1, cz: 0 })))).toBe('mixed');
+    for (const seed of [1, 2, 3]) expect(summarizeChunk(encodeChunk(randomChunk(seed)))).toBe('mixed');
+  });
+
+  it('agrees with a full decode on every summary', () => {
+    const flat = new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(2));
+    for (let cy = -3; cy <= 1; cy++) {
+      const bytes = encodeChunk(flat.generateChunk({ cx: 0, cy, cz: 0 }));
+      const blocks = decodeChunk(bytes).blocks;
+      const expected = blocks.every((b) => b === null) ? 'air' : blocks.every((b) => b?.kind === 'uniform') ? 'solid' : 'mixed';
+      expect(summarizeChunk(bytes)).toBe(expected);
+    }
   });
 });

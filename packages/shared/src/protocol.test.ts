@@ -31,4 +31,12 @@ describe('protocol', () => {
       expect(decodeClientMessage(raw)).toBeNull();
     }
   });
+
+  it('accepts an optional integer tolerance 0..16 in hello', () => {
+    expect(decodeClientMessage('{"type":"hello","protocolVersion":5,"tolerance":0}')).toEqual({ type: 'hello', protocolVersion: 5, tolerance: 0 });
+    expect(decodeClientMessage('{"type":"hello","protocolVersion":5,"tolerance":16}')).toEqual({ type: 'hello', protocolVersion: 5, tolerance: 16 });
+    for (const t of ['-1', '17', '2.5', '"4"', 'null', '1e9']) {
+      expect(decodeClientMessage(`{"type":"hello","protocolVersion":5,"tolerance":${t}}`)).toBeNull();
+    }
+  });
 });

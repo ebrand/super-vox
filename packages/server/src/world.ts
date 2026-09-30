@@ -1,11 +1,10 @@
 import {
   CHUNK_SIZE,
-  FlatGenerator,
   chunkKey,
   encodeChunk,
   resolveChunk,
   type ChunkCoord,
-  type FlatGenConfig,
+  type ChunkGenerator,
   type WorldConfig,
 } from '@super-vox/shared';
 
@@ -15,22 +14,23 @@ import {
  * regenerated from the config.
  */
 export class World {
-  private readonly generator: FlatGenerator;
   private readonly cache = new Map<string, Uint8Array>();
+  readonly spawn: { x: number; y: number; z: number };
+  private readonly cacheSize: number;
+  /** Adaptive voxelization tolerance, or null for non-adaptive generators. */
+  readonly tolerance: number | null;
 
   constructor(
     readonly config: WorldConfig,
-    gen: FlatGenConfig,
-    private readonly cacheSize = 4096,
+    private readonly generator: ChunkGenerator,
+    opts: { cacheSize?: number; tolerance?: number | null } = {},
   ) {
+    this.cacheSize = opts.cacheSize ?? 4096;
+    this.tolerance = opts.tolerance ?? null;
     if (config.widthUnits % CHUNK_SIZE !== 0 || config.depthUnits % CHUNK_SIZE !== 0) {
       throw new RangeError('world width and depth must be multiples of the chunk size');
     }
-    this.generator = new FlatGenerator(config, gen);
-  }
-
-  get gen(): FlatGenConfig {
-    return this.generator.gen;
+    this.spawn = findSpawn(config, generator);
   }
 
   /** Encoded chunk, or null if the coordinate is outside the world. */
@@ -56,4 +56,37 @@ export class World {
   get cachedChunkCount(): number {
     return this.cache.size;
   }
+}
+
+/** How far from the world's centre to look for a spawn point, and how densely (units). */
+const SPAWN_SEARCH_RADIUS = 2000 * 16;
+const SPAWN_SEARCH_STEP = 32 * 16;
+
+/**
+ * Spawn on the highest ground within SPAWN_SEARCH_RADIUS of the world's
+ * centre (so, among hills when there are any). Ties go to the point nearest
+ * the centre, so a flat world spawns at its centre.
+ */
+export function findSpawn(config: WorldConfig, generator: ChunkGenerator): { x: number; y: number; z: number } {
+  const cx = config.widthUnits / 2;
+  const cz = config.depthUnits / 2;
+  const n = Math.floor(SPAWN_SEARCH_RADIUS / SPAWN_SEARCH_STEP);
+  const samples: { x: number; z: number; d: number }[] = [];
+  for (let j = -n; j <= n; j++) {
+    for (let i = -n; i <= n; i++) {
+      const d = i * i + j * j;
+      if (d > n * n) continue;
+      const x = cx + i * SPAWN_SEARCH_STEP;
+      const z = cz + j * SPAWN_SEARCH_STEP;
+      if (x < 0 || x >= config.widthUnits || z < 0 || z >= config.depthUnits) continue;
+      samples.push({ x, z, d });
+    }
+  }
+  samples.sort((a, b) => a.d - b.d);
+  let best = { x: cx, y: generator.surfaceHeightAt(cx, cz), z: cz };
+  for (const { x, z } of samples) {
+    const y = generator.surfaceHeightAt(x, z);
+    if (y > best.y) best = { x, y, z };
+  }
+  return best;
 }

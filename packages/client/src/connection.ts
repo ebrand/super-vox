@@ -8,6 +8,8 @@ import {
 } from '@super-vox/shared';
 
 export interface ConnectionHandlers {
+  /** Extra hello fields, e.g. a development tolerance override. */
+  hello?: { tolerance?: number };
   onMessage: (msg: ServerMessage) => void;
   onChunk: (bytes: Uint8Array) => void;
   onClose: () => void;
@@ -22,7 +24,7 @@ export function connect(handlers: ConnectionHandlers): Connection {
   const ws = new WebSocket(`${scheme}://${location.host}/ws`);
   ws.binaryType = 'arraybuffer';
   ws.addEventListener('open', () => {
-    ws.send(encodeMessage({ type: 'hello', protocolVersion: PROTOCOL_VERSION }));
+    ws.send(encodeMessage({ type: 'hello', protocolVersion: PROTOCOL_VERSION, ...handlers.hello }));
   });
   ws.addEventListener('message', (ev) => {
     if (ev.data instanceof ArrayBuffer) {

@@ -7,6 +7,7 @@ import {
   isGridSize,
   type Block,
   type Chunk,
+  type ChunkGenerator,
 } from './chunk.js';
 import { Material, type MaterialId } from './materials.js';
 import type { VoxelSize } from './units.js';
@@ -68,7 +69,7 @@ export function validateFlatGen(world: WorldConfig, gen: FlatGenConfig): void {
  * Generates chunks for a flat world. Terrain depends only on Y, so each distinct
  * block row is built once and shared between chunks.
  */
-export class FlatGenerator {
+export class FlatGenerator implements ChunkGenerator {
   /** Blocks keyed by their per-layer materials, so identical rows share one object. */
   private readonly rowCache = new Map<string, Block>();
 
@@ -77,6 +78,10 @@ export class FlatGenerator {
     readonly gen: FlatGenConfig,
   ) {
     validateFlatGen(world, gen);
+  }
+
+  surfaceHeightAt(): number {
+    return this.gen.surfaceY;
   }
 
   /** Material of the ground at unit Y, independent of X/Z. */

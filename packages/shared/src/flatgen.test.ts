@@ -63,7 +63,7 @@ describe('FlatGenerator', () => {
 
       it('uses voxels of exactly the configured size', () => {
         const chunk = gen.generateChunk({ cx: 0, cy: -1, cz: 0 });
-        for (const b of chunk.blocks) if (b) expect(b.size).toBe(r);
+        for (const b of chunk.blocks) if (b) expect(b.kind !== 'voxels' && b.size).toBe(r);
       });
 
       it('shares blocks so a surface chunk has only a few distinct blocks', () => {

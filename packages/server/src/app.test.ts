@@ -5,6 +5,9 @@ import {
   BinaryTag,
   FLAT_WORLD_16KM,
   FlatGenerator,
+  NoiseHeights,
+  TerrainGenerator,
+  defaultNoiseTerrain,
   PROTOCOL_VERSION,
   decodeChunk,
   defaultFlatGen,
@@ -17,7 +20,7 @@ let app: FastifyInstance;
 let wsUrl: string;
 
 beforeEach(async () => {
-  app = await buildApp({ world: new World(FLAT_WORLD_16KM, defaultFlatGen(4)) });
+  app = await buildApp({ world: new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4))) });
   const address = await app.listen({ port: 0, host: '127.0.0.1' });
   wsUrl = address.replace(/^http/, 'ws') + '/ws';
 });
@@ -77,6 +80,8 @@ describe('WebSocket handshake', () => {
       type: 'welcome',
       protocolVersion: PROTOCOL_VERSION,
       world: FLAT_WORLD_16KM,
+      spawn: { x: 128_000, y: 0, z: 128_000 },
+      tolerance: null,
     });
     ws.close();
   });
@@ -150,5 +155,62 @@ describe('chunk requests', () => {
       expect({ cx: chunk.cx, cy: chunk.cy, cz: chunk.cz }).toEqual(coords[i]);
     });
     ws.close();
+  });
+});
+
+describe('tolerance override', () => {
+  const make = (tolerance: number) =>
+    new World(
+      FLAT_WORLD_16KM,
+      new TerrainGenerator(FLAT_WORLD_16KM, { minVoxelSize: 1, tolerance }, new NoiseHeights(FLAT_WORLD_16KM, defaultNoiseTerrain(1))),
+      { tolerance },
+    );
+
+  async function session(appOpts: Parameters<typeof buildApp>[0], hello: object) {
+    const a = await buildApp(appOpts);
+    const url = (await a.listen({ port: 0, host: '127.0.0.1' })).replace(/^http/, 'ws') + '/ws';
+    const ws = await new Promise<WebSocket>((resolve, reject) => {
+      const s = new WebSocket(url);
+      s.once('open', () => resolve(s));
+      s.once('error', reject);
+    });
+    const welcome = nextMessage(ws);
+    ws.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION, ...hello }));
+    return { a, ws, welcome: await welcome };
+  }
+
+  it('serves the requested tolerance when the server allows overrides', async () => {
+    const requested: number[] = [];
+    const variants = new Map<number, World>();
+    const { a, ws, welcome } = await session(
+      { world: make(4), worldWithTolerance: (t) => (requested.push(t), variants.get(t) ?? variants.set(t, make(t)).get(t)!) },
+      { tolerance: 0 },
+    );
+    expect(requested).toEqual([0]);
+    expect(welcome).toMatchObject({ type: 'welcome', tolerance: 0 });
+    // Chunk bytes come from the tolerance-0 world, not the default one.
+    const coord = { cx: 492, cy: 0, cz: 510 };
+    const frame = nextFrame(ws);
+    ws.send(JSON.stringify({ type: 'requestChunk', ...coord }));
+    const f = await frame;
+    if (!('binary' in f)) throw new Error('expected binary');
+    expect(f.binary.subarray(1)).toEqual(variants.get(0)!.getEncodedChunk(coord));
+    expect(f.binary.subarray(1)).not.toEqual(make(4).getEncodedChunk(coord));
+    ws.close();
+    await a.close();
+  });
+
+  it('ignores requested tolerances when overrides are not enabled, and says so', async () => {
+    const { a, ws, welcome } = await session({ world: make(4) }, { tolerance: 0 });
+    expect(welcome).toMatchObject({ type: 'welcome', tolerance: 4 });
+    ws.close();
+    await a.close();
+  });
+
+  it('rejects out-of-range tolerances as malformed', async () => {
+    const { a, ws, welcome } = await session({ world: make(4), worldWithTolerance: make }, { tolerance: 99 });
+    expect(welcome).toMatchObject({ type: 'error', code: 'bad_message' });
+    ws.close();
+    await a.close();
   });
 });

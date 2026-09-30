@@ -6,10 +6,15 @@ import {
   FLAT_WORLD_16KM,
   FlatGenerator,
   GRID_SIZES,
+  NoiseHeights,
+  TerrainGenerator,
   blockIndex,
   defaultFlatGen,
+  defaultNoiseTerrain,
   emptyChunk,
   materialAt,
+  packVoxel,
+  voxelAt,
   type Block,
   type Chunk,
 } from '@super-vox/shared';
@@ -23,7 +28,29 @@ function rng(seed: number): () => number {
   };
 }
 
+/** Random non-overlapping voxels of any size 1..16, each inside the block. */
+function randomVoxelsBlock(rand: () => number): Block {
+  const occ = new Uint8Array(16 ** 3);
+  const packed: number[] = [];
+  const materials: number[] = [];
+  for (let tries = 0; tries < 60; tries++) {
+    const size = 1 + Math.floor(rand() * (rand() < 0.5 ? 4 : 16));
+    const [x, y, z] = [0, 0, 0].map(() => Math.floor(rand() * (17 - size))) as [number, number, number];
+    let free = true;
+    for (let a = x; a < x + size && free; a++)
+      for (let b = y; b < y + size && free; b++)
+        for (let c = z; c < z + size && free; c++) if (occ[a + 16 * (c + 16 * b)]) free = false;
+    if (!free) continue;
+    for (let a = x; a < x + size; a++)
+      for (let b = y; b < y + size; b++) for (let c = z; c < z + size; c++) occ[a + 16 * (c + 16 * b)] = 1;
+    packed.push(packVoxel(x, y, z, size));
+    materials.push(1 + Math.floor(rand() * 3));
+  }
+  return { kind: 'voxels', packed: Uint16Array.from(packed), materials: Uint16Array.from(materials) };
+}
+
 function randomBlock(rand: () => number): Block {
+  if (rand() < 0.3) return randomVoxelsBlock(rand);
   const size = GRID_SIZES[Math.floor(rand() * GRID_SIZES.length)]!;
   if (rand() < 0.35) return { kind: 'uniform', size, material: 1 + Math.floor(rand() * 3) };
   const n = BLOCK_SIZE / size;
@@ -62,8 +89,7 @@ function randomNeighbors(seed: number): Neighbors {
 }
 
 function sizeAt(chunk: Chunk, x: number, y: number, z: number): number {
-  const block = chunk.blocks[blockIndex(Math.floor(x / 16), Math.floor(y / 16), Math.floor(z / 16))];
-  return block ? block.size : 0;
+  return voxelAt(chunk, x, y, z)?.size ?? 0;
 }
 
 /** Brute force: every exposed unit face, keyed "dir,x,y,z,material,size" by the solid cell it belongs to. */
@@ -227,6 +253,42 @@ describe('flat world meshing', () => {
     const stone = gen.generateChunk({ cx: 0, cy: -5, cz: 0 });
     expect(visibleFaces(stone, DIRS.map(() => stone))).toHaveLength(0);
   });
+});
+
+describe('adaptive terrain meshing', () => {
+  const src = new NoiseHeights(FLAT_WORLD_16KM, defaultNoiseTerrain(3));
+  for (const tolerance of [0, 4]) {
+    it(`matches the oracle on real terrain chunks (tolerance ${tolerance})`, () => {
+      const gen = new TerrainGenerator(FLAT_WORLD_16KM, { minVoxelSize: 1, tolerance }, src);
+      // Find a hilly chunk column near the centre, then mesh its surface chunk.
+      let found = false;
+      for (let i = 0; i < 400 && !found; i++) {
+        const cx = 400 + (i % 20) * 7;
+        const cz = 400 + Math.floor(i / 20) * 7;
+        const H = src.heights(cx * 256, cz * 256, 256, 256);
+        let lo = Infinity, hi = -Infinity;
+        for (const h of H) { lo = Math.min(lo, h); hi = Math.max(hi, h); }
+        if (hi - lo < 64) continue;
+        const at = (x: number, y: number, z: number) => gen.generateChunk({ cx: x, cy: y, cz: z });
+        // The chunk layer holding the most mixed-size blocks.
+        let cy = Math.floor(lo / 256), best = -1;
+        for (let y = Math.floor(lo / 256); y <= Math.floor(hi / 256); y++) {
+          const n = at(cx, y, cz).blocks.filter((b) => b?.kind === 'voxels').length;
+          if (n > best) [best, cy] = [n, y];
+        }
+        if (best <= 0) continue;
+        found = true;
+        const center = at(cx, cy, cz);
+        const neighbors = [at(cx + 1, cy, cz), at(cx - 1, cy, cz), at(cx, cy + 1, cz), at(cx, cy - 1, cz), at(cx, cy, cz + 1), at(cx, cy, cz - 1)];
+        expect(center.blocks.some((b) => b?.kind === 'voxels')).toBe(true);
+        const expected = oracleFaces(center, neighbors);
+        const r = rasterize(mergeFaces(visibleFaces(center, neighbors)));
+        expectSameFaces(r.faces, expected);
+        expect(r.area).toBe(expected.size);
+      }
+      expect(found).toBe(true);
+    }, 60_000); // brute-force oracle over thousands of solid blocks
+  }
 });
 
 describe('buildBuffers', () => {

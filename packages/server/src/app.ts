@@ -11,11 +11,15 @@ import type { World } from './world.js';
 
 export interface AppOptions {
   world: World;
+  /**
+   * Development only: the world voxelized with a client-requested tolerance.
+   * When absent, requested tolerances are ignored.
+   */
+  worldWithTolerance?: (tolerance: number) => World;
   logger?: boolean;
 }
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
-  const { world } = opts;
   const app = Fastify({ logger: opts.logger ?? false });
   await app.register(websocket);
 
@@ -24,6 +28,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   app.get('/ws', { websocket: true }, (socket) => {
     const send = (msg: ServerMessage) => socket.send(encodeMessage(msg));
     let greeted = false;
+    let world = opts.world;
 
     socket.on('message', (data, isBinary) => {
       const msg = isBinary ? null : decodeClientMessage(data.toString());
@@ -43,7 +48,16 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             return;
           }
           greeted = true;
-          send({ type: 'welcome', protocolVersion: PROTOCOL_VERSION, world: world.config });
+          if (msg.tolerance !== undefined && opts.worldWithTolerance) {
+            world = opts.worldWithTolerance(msg.tolerance);
+          }
+          send({
+            type: 'welcome',
+            protocolVersion: PROTOCOL_VERSION,
+            world: world.config,
+            spawn: world.spawn,
+            tolerance: world.tolerance,
+          });
           break;
 
         case 'requestChunk': {

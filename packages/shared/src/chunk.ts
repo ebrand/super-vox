@@ -35,8 +35,102 @@ export interface GridBlock {
   materials: Uint16Array;
 }
 
+/**
+ * A block holding an explicit list of non-overlapping voxels of any valid
+ * size (1..16), each inside the block. Space not covered by a voxel is air.
+ * `packed[i]` = x | y << 4 | z << 8 | (size - 1) << 12 (block-local units);
+ * `materials[i]` is voxel i's material (never 0).
+ */
+export interface VoxelsBlock {
+  kind: 'voxels';
+  packed: Uint16Array;
+  materials: Uint16Array;
+}
+
 /** `null` is an empty (all-air) block. */
-export type Block = UniformBlock | GridBlock | null;
+export type Block = UniformBlock | GridBlock | VoxelsBlock | null;
+
+export function packVoxel(x: number, y: number, z: number, size: number): number {
+  return x | (y << 4) | (z << 8) | ((size - 1) << 12);
+}
+
+export function unpackVoxel(p: number): { x: number; y: number; z: number; size: number } {
+  return { x: p & 15, y: (p >> 4) & 15, z: (p >> 8) & 15, size: ((p >> 12) & 15) + 1 };
+}
+
+/**
+ * Unit-resolution view of a voxels block: for each of the 16^3 unit cells
+ * (index x + 16 * (z + 16 * y)), the material and the size of the voxel
+ * covering it (0 = air).
+ */
+export interface BlockRaster {
+  materials: Uint16Array;
+  sizes: Uint8Array;
+}
+
+const rasterCache = new WeakMap<VoxelsBlock, BlockRaster>();
+
+export function unitIndex(x: number, y: number, z: number): number {
+  return x + BLOCK_SIZE * (z + BLOCK_SIZE * y);
+}
+
+/**
+ * Rasterizes a voxels block (cached per block object). Throws if voxels
+ * overlap, leave the block, or have invalid sizes or materials.
+ */
+export function rasterizeVoxels(block: VoxelsBlock): BlockRaster {
+  const cached = rasterCache.get(block);
+  if (cached) return cached;
+  if (block.packed.length !== block.materials.length) {
+    throw new RangeError('voxels block: packed/materials length mismatch');
+  }
+  const materials = new Uint16Array(BLOCK_SIZE ** 3);
+  const sizes = new Uint8Array(BLOCK_SIZE ** 3);
+  for (let i = 0; i < block.packed.length; i++) {
+    const { x, y, z, size } = unpackVoxel(block.packed[i]!);
+    const m = block.materials[i]!;
+    if (m === 0) throw new RangeError(`voxels block: voxel ${i} has air material`);
+    if (x + size > BLOCK_SIZE || y + size > BLOCK_SIZE || z + size > BLOCK_SIZE) {
+      throw new RangeError(`voxels block: voxel ${i} crosses the block boundary`);
+    }
+    for (let yy = y; yy < y + size; yy++) {
+      for (let zz = z; zz < z + size; zz++) {
+        for (let xx = x; xx < x + size; xx++) {
+          const idx = unitIndex(xx, yy, zz);
+          if (materials[idx] !== 0) throw new RangeError(`voxels block: voxel ${i} overlaps another`);
+          materials[idx] = m;
+          sizes[idx] = size;
+        }
+      }
+    }
+  }
+  const raster = { materials, sizes };
+  rasterCache.set(block, raster);
+  return raster;
+}
+
+/** Material and voxel size at block-local unit coordinates (0..15); null for air. */
+export function blockVoxelAt(block: Block, x: number, y: number, z: number): { material: MaterialId; size: number } | null {
+  if (!block) return null;
+  if (block.kind === 'uniform') return { material: block.material, size: block.size };
+  if (block.kind === 'grid') {
+    const n = BLOCK_SIZE / block.size;
+    const m =
+      block.materials[gridCellIndex(n, Math.floor(x / block.size), Math.floor(y / block.size), Math.floor(z / block.size))] ?? 0;
+    return m === 0 ? null : { material: m, size: block.size };
+  }
+  const r = rasterizeVoxels(block);
+  const idx = unitIndex(x, y, z);
+  const m = r.materials[idx]!;
+  return m === 0 ? null : { material: m, size: r.sizes[idx]! };
+}
+
+/** Generates chunks for a world. */
+export interface ChunkGenerator {
+  generateChunk(coord: ChunkCoord): Chunk;
+  /** Y (units) of the top of the ground at unit column (x, z), for spawning. */
+  surfaceHeightAt(x: number, z: number): number;
+}
 
 export interface Chunk extends ChunkCoord {
   /** BLOCKS_PER_CHUNK entries, indexed by blockIndex(). May share Block objects. */
@@ -60,15 +154,14 @@ export function emptyChunk(coord: ChunkCoord): Chunk {
  * (0..CHUNK_SIZE-1 on each axis).
  */
 export function materialAt(chunk: Chunk, lx: number, ly: number, lz: number): MaterialId {
+  return voxelAt(chunk, lx, ly, lz)?.material ?? 0;
+}
+
+/** Material and size of the voxel covering a chunk-local unit cell; null for air. */
+export function voxelAt(chunk: Chunk, lx: number, ly: number, lz: number): { material: MaterialId; size: number } | null {
   const block =
     chunk.blocks[
       blockIndex(Math.floor(lx / BLOCK_SIZE), Math.floor(ly / BLOCK_SIZE), Math.floor(lz / BLOCK_SIZE))
-    ];
-  if (!block) return 0;
-  if (block.kind === 'uniform') return block.material;
-  const n = BLOCK_SIZE / block.size;
-  const cx = Math.floor((lx % BLOCK_SIZE) / block.size);
-  const cy = Math.floor((ly % BLOCK_SIZE) / block.size);
-  const cz = Math.floor((lz % BLOCK_SIZE) / block.size);
-  return block.materials[gridCellIndex(n, cx, cy, cz)] ?? 0;
+    ] ?? null;
+  return blockVoxelAt(block, lx % BLOCK_SIZE, ly % BLOCK_SIZE, lz % BLOCK_SIZE);
 }

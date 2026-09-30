@@ -3,6 +3,8 @@ export * from './materials.js';
 export * from './voxel.js';
 export * from './chunk.js';
 export * from './flatgen.js';
+export * from './noise.js';
+export * from './terrain.js';
 export * from './chunkcodec.js';
 export * from './world.js';
 export * from './protocol.js';

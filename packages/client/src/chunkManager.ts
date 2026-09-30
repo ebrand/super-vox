@@ -5,6 +5,7 @@ import {
   chunkKey,
   readChunkHeader,
   resolveChunk,
+  summarizeChunk,
   type ChunkCoord,
   type ClientMessage,
   type WorldConfig,
@@ -29,6 +30,10 @@ export interface StreamStats {
   meshing: number;
   triangles: number;
   errors: number;
+  /** Average worker time per meshed chunk. */
+  meshMsAvg: number;
+  /** Milliseconds from the last focus change until everything in range was loaded and meshed; null while busy. */
+  settledMs: number | null;
 }
 
 const CHUNK_METERS = CHUNK_SIZE / UNITS_PER_METER;
@@ -41,6 +46,8 @@ const CHUNK_METERS = CHUNK_SIZE / UNITS_PER_METER;
 export class ChunkManager {
   /** Encoded chunk bytes; null means known empty (outside the world). */
   private readonly data = new Map<string, Uint8Array | null>();
+  /** Summary per loaded chunk; outside-the-world chunks count as air. */
+  private readonly kinds = new Map<string, 'air' | 'solid' | 'mixed'>();
   private readonly coords = new Map<string, ChunkCoord>();
   private readonly requested = new Set<string>();
   private queue: ChunkCoord[] = [];
@@ -61,6 +68,10 @@ export class ChunkManager {
   private renderSet = new Set<string>();
   private triangles = 0;
   private errors = 0;
+  private retargetAt = 0;
+  private meshMsTotal = 0;
+  private meshCount = 0;
+  private settledMs: number | null = null;
 
   constructor(
     private readonly world: WorldConfig,
@@ -86,6 +97,8 @@ export class ChunkManager {
       meshing: this.meshJobs.size,
       triangles: this.triangles,
       errors: this.errors,
+      settledMs: this.settledMs,
+      meshMsAvg: this.meshCount ? this.meshMsTotal / this.meshCount : 0,
     };
   }
 
@@ -108,15 +121,15 @@ export class ChunkManager {
     const coord = readChunkHeader(bytes);
     const key = chunkKey(coord);
     this.settleRequest(key);
-    if (!this.wanted.has(key)) return;
-    this.store(key, coord, bytes);
+    if (this.wanted.has(key)) this.store(key, coord, bytes);
+    this.checkSettled();
   }
 
   onChunkUnavailable(coord: ChunkCoord): void {
     const key = chunkKey(coord);
     this.settleRequest(key);
-    if (!this.wanted.has(key)) return;
-    this.store(key, coord, null);
+    if (this.wanted.has(key)) this.store(key, coord, null);
+    this.checkSettled();
   }
 
   /** Forget everything in flight, e.g. after a reconnect. */
@@ -138,6 +151,8 @@ export class ChunkManager {
   }
 
   private retarget(fc: ChunkCoord): void {
+    this.retargetAt = performance.now();
+    this.settledMs = null;
     const { radius: r, verticalRadius: vr } = this.opts;
     const wanted = new Set<string>();
     const render = new Set<string>();
@@ -164,6 +179,7 @@ export class ChunkManager {
     for (const key of [...this.data.keys()]) {
       if (!wanted.has(key)) {
         this.data.delete(key);
+        this.kinds.delete(key);
         this.coords.delete(key);
       }
     }
@@ -178,6 +194,12 @@ export class ChunkManager {
     this.queue = toLoad.map((t) => t.c);
     // Chunks that were already loaded may now be renderable.
     for (const key of render) this.tryMesh(key);
+    this.checkSettled();
+  }
+
+  private checkSettled(): void {
+    if (this.settledMs !== null || this.queue.length > 0 || this.inFlight > 0 || this.meshJobs.size > 0) return;
+    this.settledMs = performance.now() - this.retargetAt;
   }
 
   private pump(): void {
@@ -193,6 +215,7 @@ export class ChunkManager {
 
   private store(key: string, coord: ChunkCoord, bytes: Uint8Array | null, meshNeighbors = true): void {
     this.data.set(key, bytes);
+    this.kinds.set(key, bytes ? summarizeChunk(bytes) : 'air');
     this.coords.set(key, coord);
     if (!meshNeighbors) return;
     this.tryMesh(key);
@@ -218,15 +241,23 @@ export class ChunkManager {
     const center = this.data.get(key);
     const coord = this.coords.get(key);
     if (center === undefined || !coord) return;
-    if (center === null) {
+    if (center === null || this.kinds.get(key) === 'air') {
       this.emptyMeshes.add(key);
       return;
     }
     const neighbors: (Uint8Array | null)[] = [];
+    let buried = this.kinds.get(key) === 'solid';
     for (const n of this.neighborCoords(coord)) {
-      const bytes = this.data.get(chunkKey(n));
+      const nk = chunkKey(n);
+      const bytes = this.data.get(nk);
       if (bytes === undefined) return; // not loaded yet
       neighbors.push(bytes);
+      if (this.kinds.get(nk) !== 'solid') buried = false;
+    }
+    if (buried) {
+      // Solid and enclosed by solid chunks: no face can be visible.
+      this.emptyMeshes.add(key);
+      return;
     }
     const id = this.nextJobId++;
     this.meshJobs.set(key, id);
@@ -236,6 +267,13 @@ export class ChunkManager {
   }
 
   private onMeshed(res: MeshResponse): void {
+    this.meshMsTotal += res.ms;
+    this.meshCount++;
+    this.handleMeshed(res);
+    this.checkSettled();
+  }
+
+  private handleMeshed(res: MeshResponse): void {
     const key = this.jobKeys.get(res.id);
     this.jobKeys.delete(res.id);
     if (key === undefined || this.meshJobs.get(key) !== res.id) return; // stale
