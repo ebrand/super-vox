@@ -1,0 +1,28 @@
+{
+  "name": "super-vox",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "packages/server",
+    "packages/client"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "npm run build -w @super-vox/shared && npm run build -w @super-vox/server && npm run build -w @super-vox/client",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "vitest run",
+    "dev:server": "npm run dev -w @super-vox/server",
+    "dev:client": "npm run dev -w @super-vox/client"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3",
+    "ws": "^8.22.0"
+  }
+}
