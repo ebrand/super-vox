@@ -6,26 +6,71 @@ import {
   PROTOCOL_VERSION,
   decodeClientMessage,
   encodeMessage,
+  isValidWorldName,
+  parsePlateTerrain,
   type ServerMessage,
 } from '@super-vox/shared';
 import type { WebSocket } from 'ws';
-import type { EditResult, World } from './world.js';
+import { encodeWorldMap, type EditResult, type World } from './world.js';
+import { WorldExistsError } from './worldFile.js';
+import { singleWorld, type WorldCatalog } from './worlds.js';
 
-export interface AppOptions {
-  world: World;
-  /**
-   * Development only: the world voxelized with a client-requested tolerance.
-   * When absent, requested tolerances are ignored.
-   */
-  worldWithTolerance?: (tolerance: number) => World;
-  logger?: boolean;
-}
+export type AppOptions = (
+  | { catalog: WorldCatalog }
+  | {
+      world: World;
+      /**
+       * Development only: the world voxelized with a client-requested tolerance.
+       * When absent, requested tolerances are ignored.
+       */
+      worldWithTolerance?: (tolerance: number) => World;
+    }
+) & { logger?: boolean };
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
   await app.register(websocket);
+  const catalog = 'catalog' in opts ? opts.catalog : singleWorld(opts.world, opts.worldWithTolerance);
 
   app.get('/api/health', async () => ({ ok: true, protocolVersion: PROTOCOL_VERSION }));
+
+  // Top-down map of a world's generated terrain (see encodeWorldMap). ?width=64..2048 samples,
+  // ?world=name (the default world when omitted).
+  app.get<{ Querystring: { width?: string; world?: string } }>('/api/world/map', async (req, reply) => {
+    const width = req.query.width === undefined ? 1024 : Number(req.query.width);
+    if (!Number.isInteger(width) || width < 64 || width > 2048) {
+      return reply.code(400).send({ error: 'width must be an integer 64..2048' });
+    }
+    const world = catalog.get(req.query.world);
+    if (!world) return reply.code(404).send({ error: 'no such world' });
+    const bytes = encodeWorldMap(world.getMap(width));
+    return reply.type('application/octet-stream').send(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  });
+
+  // The worlds on this server and how each was generated.
+  app.get('/api/worlds', async () => ({ default: catalog.defaultName, canCreate: catalog.create !== undefined, worlds: catalog.list() }));
+
+  // Development only (no accounts yet): create a plate world. Body: { name, plates }.
+  app.post<{ Body: unknown }>('/api/worlds', async (req, reply) => {
+    if (!catalog.create) return reply.code(403).send({ error: 'creating worlds is not enabled on this server' });
+    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { name?: unknown; plates?: unknown };
+    if (!isValidWorldName(body.name)) {
+      return reply.code(400).send({ error: 'name must be 1-64 lower-case letters, digits, "-" or "_", starting with a letter or digit' });
+    }
+    let plates;
+    try {
+      plates = parsePlateTerrain(body.plates);
+    } catch (err) {
+      if (err instanceof RangeError) return reply.code(400).send({ error: err.message });
+      throw err;
+    }
+    try {
+      return reply.code(201).send(catalog.create(body.name, plates));
+    } catch (err) {
+      if (err instanceof WorldExistsError) return reply.code(409).send({ error: err.message });
+      throw err;
+    }
+  });
 
   /** Connected, greeted clients and the world each is viewing. */
   const clients = new Map<WebSocket, World>();
@@ -40,7 +85,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const send = (msg: ServerMessage) => socket.send(encodeMessage(msg));
     const sendBinary = (tag: number, bytes: Uint8Array) => socket.send(frame(tag, bytes));
     let greeted = false;
-    let world = opts.world;
+    let world: World;
     socket.on('close', () => clients.delete(socket));
 
     socket.on('message', (data, isBinary) => {
@@ -60,10 +105,16 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             socket.close(1002, 'protocol mismatch');
             return;
           }
-          greeted = true;
-          if (msg.tolerance !== undefined && opts.worldWithTolerance) {
-            world = opts.worldWithTolerance(msg.tolerance);
+          {
+            const w = catalog.get(msg.world, msg.tolerance);
+            if (!w) {
+              send({ type: 'error', code: 'unknown_world', message: `no world named "${msg.world}"` });
+              socket.close(1008, 'unknown world');
+              return;
+            }
+            world = w;
           }
+          greeted = true;
           clients.set(socket, world);
           send({
             type: 'welcome',

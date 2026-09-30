@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   FLAT_WORLD_16KM,
@@ -6,9 +6,10 @@ import {
   NoiseHeights,
   PlateHeights,
   TerrainGenerator,
+  WORLD_NAME_PATTERN,
   defaultFlatGen,
   defaultNoiseTerrain,
-  defaultPlateTerrain,
+  parsePlateTerrain,
   validatePlateTerrain,
   validateVoxelize,
   type ChunkGenerator,
@@ -32,7 +33,7 @@ export interface WorldFile {
   spec: WorldSpec;
 }
 
-const NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+export class WorldExistsError extends Error {}
 
 export function validateWorldSpec(spec: WorldSpec): void {
   if (spec.generator === 'plates') {
@@ -48,6 +49,51 @@ export function validateWorldSpec(spec: WorldSpec): void {
   }
 }
 
+function checkName(name: string): void {
+  if (!WORLD_NAME_PATTERN.test(name)) throw new RangeError(`world name must match ${WORLD_NAME_PATTERN}; got "${name}"`);
+}
+
+/** Reads data/<name>/world.json, or null if there's no such world. */
+export function readWorld(dataRoot: string, name: string): WorldFile | null {
+  checkName(name);
+  const path = join(dataRoot, name, 'world.json');
+  if (!existsSync(path)) return null;
+  const file = JSON.parse(readFileSync(path, 'utf8')) as WorldFile;
+  if (file.version !== 1) throw new Error(`${path}: unsupported world file version ${file.version}`);
+  // Settings added (or renamed) after a world was created take their defaults.
+  if (file.spec.generator === 'plates') file.spec.plates = parsePlateTerrain(file.spec.plates);
+  validateWorldSpec(file.spec);
+  return file;
+}
+
+/** Creates world `name` with `spec`; throws WorldExistsError if it already exists. */
+export function createWorld(dataRoot: string, name: string, spec: WorldSpec): WorldFile {
+  checkName(name);
+  validateWorldSpec(spec);
+  const dir = join(dataRoot, name);
+  if (existsSync(join(dir, 'world.json'))) throw new WorldExistsError(`world "${name}" already exists`);
+  mkdirSync(dir, { recursive: true });
+  const file: WorldFile = { version: 1, name, createdAt: new Date().toISOString(), spec };
+  writeFileSync(join(dir, 'world.json'), JSON.stringify(file, null, 2) + '\n', { flag: 'wx' });
+  return file;
+}
+
+/** Every readable world under `dataRoot`, by name. Folders without a valid world.json are skipped. */
+export function listWorlds(dataRoot: string): WorldFile[] {
+  if (!existsSync(dataRoot)) return [];
+  const out: WorldFile[] = [];
+  for (const entry of readdirSync(dataRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !WORLD_NAME_PATTERN.test(entry.name)) continue;
+    try {
+      const file = readWorld(dataRoot, entry.name);
+      if (file) out.push(file);
+    } catch {
+      // Unreadable or invalid world: not listed.
+    }
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /**
  * Opens world `name` under `dataRoot`, creating it from `specForNew` if it
  * doesn't exist yet. An existing world always uses the spec it was created
@@ -55,22 +101,10 @@ export function validateWorldSpec(spec: WorldSpec): void {
  * whether `specForNew` differed from it.
  */
 export function openWorld(dataRoot: string, name: string, specForNew: WorldSpec): { file: WorldFile; dir: string; created: boolean; ignored: boolean } {
-  if (!NAME.test(name)) throw new RangeError(`world name must match ${NAME}; got "${name}"`);
   const dir = join(dataRoot, name);
-  const path = join(dir, 'world.json');
-  if (existsSync(path)) {
-    const file = JSON.parse(readFileSync(path, 'utf8')) as WorldFile;
-    if (file.version !== 1) throw new Error(`${path}: unsupported world file version ${file.version}`);
-    // Settings added after a world was created take their defaults.
-    if (file.spec.generator === 'plates') file.spec.plates = { ...defaultPlateTerrain(file.spec.plates.seed), ...file.spec.plates };
-    validateWorldSpec(file.spec);
-    return { file, dir, created: false, ignored: JSON.stringify(file.spec) !== JSON.stringify(specForNew) };
-  }
-  validateWorldSpec(specForNew);
-  mkdirSync(dir, { recursive: true });
-  const file: WorldFile = { version: 1, name, createdAt: new Date().toISOString(), spec: specForNew };
-  writeFileSync(path, JSON.stringify(file, null, 2) + '\n');
-  return { file, dir, created: true, ignored: false };
+  const file = readWorld(dataRoot, name);
+  if (file) return { file, dir, created: false, ignored: JSON.stringify(file.spec) !== JSON.stringify(specForNew) };
+  return { file: createWorld(dataRoot, name, specForNew), dir, created: true, ignored: false };
 }
 
 /** Builds the generator (and its height source, for tolerance variants) for a spec. */

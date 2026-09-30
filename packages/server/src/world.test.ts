@@ -85,7 +85,7 @@ describe('World', () => {
     const gen = new TerrainGenerator(
       FLAT_WORLD_16KM,
       { minVoxelSize: 1, tolerance: 4 },
-      new PlateHeights(FLAT_WORLD_16KM, { ...defaultPlateTerrain(3), waterPercent: 85 }),
+      new PlateHeights(FLAT_WORLD_16KM, { ...defaultPlateTerrain(3), landPercent: 15 }),
     );
     const spawn = findSpawn(FLAT_WORLD_16KM, gen);
     expect(gen.seaLevel).toBe(0);
@@ -258,6 +258,24 @@ describe('World', () => {
       const a = new World(FLAT_WORLD_16KM, gen), b = new World(FLAT_WORLD_16KM, gen);
       a.applyEdit({ op: 'remove', x: 100, y: -1, z: 200 });
       expect(voxelAt(decodeChunk(b.getEncodedChunk({ cx: 0, cy: -1, cz: 0 })!), 100, 255, 200)).not.toBeNull();
+    });
+  });
+
+  describe('map', () => {
+    it('samples the plate terrain across the whole world, including the sea', () => {
+      const heights = new PlateHeights(FLAT_WORLD_16KM, defaultPlateTerrain(1));
+      const world = new World(FLAT_WORLD_16KM, new TerrainGenerator(FLAT_WORLD_16KM, { minVoxelSize: 1, tolerance: 4 }, heights));
+      const m = world.getMap(512);
+      expect([m.cols, m.rows, m.step, m.seaLevel]).toEqual([512, 512, 500, 0]);
+      expect(world.getMap(512)).toBe(m); // cached
+      for (const [i, j] of [[0, 0], [511, 511], [200, 300]] as const) {
+        const x = 250 + i * 500, z = 250 + j * 500;
+        expect(m.heights[i + 512 * j]).toBe(heights.heights(x, z, 1, 1)[0]);
+      }
+      let land = 0;
+      for (const h of m.heights) if (h > 0) land++;
+      expect(land / m.heights.length).toBeCloseTo(0.3, 1);
+      expect(new Set(m.materials).size).toBeGreaterThan(2);
     });
   });
 });

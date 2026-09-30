@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { voxelAt, type Chunk } from './chunk.js';
 import { Material } from './materials.js';
-import { DEFAULT_MOUNTAIN_HEIGHT, OCEAN_DEPTH, PLATE_CELL, PlateHeights, defaultPlateTerrain, validatePlateTerrain, type PlateTerrainConfig } from './plates.js';
+import { PLATE_CELL, PlateHeights, defaultPlateTerrain, validatePlateTerrain, type PlateTerrainConfig } from './plates.js';
 import { TerrainGenerator } from './terrain.js';
 import { CHUNK_SIZE, FLAT_WORLD_16KM, ROUND_WORLD_16x8KM } from './world.js';
 
@@ -34,26 +34,60 @@ describe('validatePlateTerrain', () => {
     expect(() => validatePlateTerrain({ ...ok, majorPlates: 0 })).toThrow(/majorPlates/);
     expect(() => validatePlateTerrain({ ...ok, minorPlates: -1 })).toThrow(/minorPlates/);
     expect(() => validatePlateTerrain({ ...ok, minorPlates: 2.5 })).toThrow(/minorPlates/);
-    expect(() => validatePlateTerrain({ ...ok, waterPercent: 101 })).toThrow(/waterPercent/);
+    expect(() => validatePlateTerrain({ ...ok, plateSizeRatio: 0.5 })).toThrow(/plateSizeRatio/);
+    expect(() => validatePlateTerrain({ ...ok, landPercent: 101 })).toThrow(/landPercent/);
     expect(() => validatePlateTerrain({ ...ok, shoreFractal: -1 })).toThrow(/shoreFractal/);
-    expect(() => validatePlateTerrain({ ...ok, mountainHeight: 10 })).toThrow(/mountainHeight/);
-    const { mountainHeight: _omit, ...older } = ok;
-    expect(() => validatePlateTerrain(older)).not.toThrow(); // worlds created before the setting existed
+    expect(() => validatePlateTerrain({ ...ok, noiseScale: 50 })).toThrow(/noiseScale/);
+    expect(() => validatePlateTerrain({ ...ok, noiseRoughness: 101 })).toThrow(/noiseRoughness/);
+    expect(() => validatePlateTerrain({ ...ok, maxHeight: 1001 })).toThrow(/maxHeight/);
+    expect(() => validatePlateTerrain({ ...ok, terrainSeed: 1.5 })).toThrow(/terrainSeed/);
+    // The sea must lie strictly between the lowest and highest ground.
+    expect(() => validatePlateTerrain({ ...ok, seaLevel: 300 })).toThrow(/maxHeight/);
+    expect(() => validatePlateTerrain({ ...ok, seaLevel: -300 })).toThrow(/minHeight/);
+    expect(() => validatePlateTerrain({ ...ok, minHeight: 10, seaLevel: 20, maxHeight: 30 })).not.toThrow();
   });
 });
 
+const areas = (p: PlateHeights) => {
+  const a = new Array<number>(p.plates.length).fill(0);
+  for (const k of p.plateOf) a[k]!++;
+  return a;
+};
+const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
+
 describe('PlateHeights', () => {
-  it('creates the configured number of major and minor plates', () => {
-    const p = plates({ majorPlates: 5, minorPlates: 9 });
-    expect(p.plates).toHaveLength(14);
-    expect(p.plates.filter((q) => q.weight === 1)).toHaveLength(5);
-    expect(new Set(p.plateOf).size).toBeGreaterThan(5);
+  it('defaults to 7 major and 15 minor plates, 6:1, -300..300 m, sea at 0, 30% land', () => {
+    expect(defaultPlateTerrain(5)).toMatchObject({
+      seed: 5, terrainSeed: 5, majorPlates: 7, minorPlates: 15, plateSizeRatio: 6,
+      minHeight: -300, maxHeight: 300, seaLevel: 0, landPercent: 30,
+    });
   });
 
-  it('puts exactly the configured share of the world under water', () => {
-    for (const waterPercent of [0, 30, 50, 70, 100]) {
-      expect(plates({ waterPercent }).landFraction()).toBeCloseTo(1 - waterPercent / 100, 2);
+  it('creates the configured number of major and minor plates, none squeezed out', () => {
+    const p = plates({ majorPlates: 5, minorPlates: 9 });
+    expect(p.plates).toHaveLength(14);
+    expect(p.plates.filter((q) => q.major)).toHaveLength(5);
+    expect(areas(p).every((a) => a > 0)).toBe(true);
+  });
+
+  it('sizes major plates plateSizeRatio times the minor ones', () => {
+    for (const plateSizeRatio of [1, 6, 20]) {
+      const p = plates({ plateSizeRatio });
+      const a = areas(p);
+      const major = a.filter((_, k) => p.plates[k]!.major), minor = a.filter((_, k) => !p.plates[k]!.major);
+      expect(mean(major) / mean(minor)).toBeCloseTo(plateSizeRatio, 0);
+      // Individual plates, not just the averages: each within 15% of its share.
+      for (const m of minor) expect(Math.abs(m / mean(minor) - 1)).toBeLessThan(0.15);
+      for (const m of major) expect(Math.abs(m / mean(major) - 1)).toBeLessThan(0.15);
     }
+  });
+
+  it('puts exactly the configured share of the world above the sea', () => {
+    for (const landPercent of [0, 30, 50, 70, 100]) {
+      expect(plates({ landPercent }).landFraction()).toBeCloseTo(landPercent / 100, 2);
+    }
+    // Also with the sea somewhere other than 0.
+    expect(plates({ seaLevel: 40, landPercent: 45 }).landFraction()).toBeCloseTo(0.45, 2);
   });
 
   it('makes coastlines more ragged as shoreline fractalization rises', () => {
@@ -64,47 +98,43 @@ describe('PlateHeights', () => {
     expect(ragged).toBeGreaterThan(some * 1.1);
   });
 
-  it('keeps continental interiors above beach level at every fractalization', () => {
+  it('keeps most land clear of the beach at every fractalization', () => {
     for (const shoreFractal of [0, 50, 100]) {
       const p = plates({ shoreFractal });
-      let land = 0, lowland = 0;
+      let land = 0, raised = 0;
       for (const h of p.elevation) {
         if (h <= 0) continue;
         land++;
-        if (h > 5 * 16) lowland++;
+        if (h > 5 * 16) raised++;
       }
-      // Beaches are a thin fringe: most land sits well above the sea.
-      expect(lowland / land).toBeGreaterThan(0.7);
+      expect(raised / land).toBeGreaterThan(0.7);
     }
   });
 
-  it('stays within its height bounds, reaching both the peak and the deepest sea', () => {
-    const p = plates();
-    let lo = Infinity, hi = -Infinity;
-    for (const h of p.elevation) { lo = Math.min(lo, h); hi = Math.max(hi, h); }
-    // The strongest uplift makes the tallest peak, close to (never above) the configured height.
-    const peak = DEFAULT_MOUNTAIN_HEIGHT * 16;
-    expect(p.peak).toBe(peak);
-    expect(hi).toBeLessThanOrEqual(peak);
-    expect(hi).toBeGreaterThan(peak * 0.85);
-    expect(lo).toBeCloseTo(-OCEAN_DEPTH, 0);
-    const H = p.heights(0, 0, 500, 500, 512);
-    for (const h of H) {
-      expect(h).toBeGreaterThanOrEqual(p.minHeight);
-      expect(h).toBeLessThanOrEqual(p.maxHeight);
+  it('stretches the terrain to exactly the configured lowest and highest ground', () => {
+    for (const [minHeight, seaLevel, maxHeight] of [[-300, 0, 300], [-80, 20, 450], [100, 150, 200]] as const) {
+      const p = plates({ minHeight, seaLevel, maxHeight });
+      let lo = Infinity, hi = -Infinity;
+      for (const h of p.elevation) { lo = Math.min(lo, h); hi = Math.max(hi, h); }
+      expect(lo).toBe(minHeight * 16);
+      expect(hi).toBe(maxHeight * 16);
+      expect(p.seaLevel).toBe(seaLevel * 16);
+      // Sampled heights, detail included, never leave the range.
+      const H = p.heights(0, 0, 500, 500, 512);
+      for (const h of H) {
+        expect(h).toBeGreaterThanOrEqual(minHeight * 16);
+        expect(h).toBeLessThanOrEqual(maxHeight * 16);
+      }
     }
   });
 
-  it('scales mountains with the configured height, and keeps them gentle', () => {
-    for (const mountainHeight of [80, 150, 400]) {
-      const p = plates({ mountainHeight });
-      let hi = -Infinity;
-      for (const h of p.elevation) hi = Math.max(hi, h);
-      expect(hi).toBeLessThanOrEqual(mountainHeight * 16);
-      expect(hi).toBeGreaterThan(mountainHeight * 16 * 0.85);
-    }
-    // At the default height, no land step between neighbouring 32 m cells is a cliff: at most
-    // ~26 m (slope 0.8). Before shore ramps and smoothing, coastal ranges made steps of 136 m (4.3).
+  it('keeps land above and sea floor below the sea level', () => {
+    const p = plates({ seaLevel: 40 });
+    for (const h of p.elevation) expect(h === p.seaLevel).toBe(false);
+  });
+
+  it('has no cliffs at the default settings', () => {
+    // No step between neighbouring 32 m cells steeper than slope 0.8 on land.
     const p = plates();
     let steepest = 0;
     for (let r = 1; r < p.rows - 1; r++) for (let c = 1; c < p.cols - 1; c++) {
@@ -115,25 +145,39 @@ describe('PlateHeights', () => {
     expect(steepest).toBeLessThan(0.8);
   });
 
-  it('raises high ground only near plate seams', () => {
-    const p = plates({ waterPercent: 40 });
-    // For every high cell (> 150 m), is there a plate boundary within ~1.5 km?
-    const R = Math.round((1500 * 16) / PLATE_CELL);
-    let high = 0, nearSeam = 0;
-    for (let r = R; r < p.rows - R; r++) {
-      for (let c = R; c < p.cols - R; c++) {
-        const i = c + p.cols * r;
-        if (p.elevation[i]! < p.peak / 2) continue;
-        high++;
-        let seam = false;
-        for (let dr = -R; dr <= R && !seam; dr += 2) for (let dc = -R; dc <= R && !seam; dc += 2) {
-          seam = p.plateOf[c + dc + p.cols * (r + dr)] !== p.plateOf[i];
-        }
-        if (seam) nearSeam++;
-      }
+  it('blends neighbouring plates at their seams (no steps along borders)', () => {
+    // Height steps across plate borders are no larger than steps inside plates.
+    const p = plates({ landPercent: 60 });
+    const across: number[] = [], within: number[] = [];
+    for (let r = 1; r < p.rows - 1; r++) for (let c = 1; c < p.cols - 1; c++) {
+      const i = c + p.cols * r;
+      if (p.elevation[i]! <= 0 || p.elevation[i + 1]! <= 0) continue;
+      (p.plateOf[i] !== p.plateOf[i + 1] ? across : within).push(Math.abs(p.elevation[i + 1]! - p.elevation[i]!));
     }
-    expect(high).toBeGreaterThan(100);
-    expect(nearSeam / high).toBeGreaterThan(0.95);
+    expect(across.length).toBeGreaterThan(100);
+    expect(mean(across)).toBeLessThan(mean(within) * 1.5);
+  });
+
+  it('rerolls relief with terrainSeed but keeps the plate layout', () => {
+    const a = plates({ terrainSeed: 1 });
+    const b = plates({ terrainSeed: 2 });
+    expect(b.plateOf).toEqual(a.plateOf);
+    expect(b.elevation).not.toEqual(a.elevation);
+    // A different layout seed moves the plates.
+    expect(plates({ seed: 2, terrainSeed: 1 }).plateOf).not.toEqual(a.plateOf);
+  });
+
+  it('makes finer relief with smaller noise features and more roughness', () => {
+    // Mean absolute curvature (second difference) along rows of land cells: small features
+    // raise it, while the steady rise inland from the coast barely does.
+    const curvature = (p: PlateHeights) => {
+      const e = p.elevation, s: number[] = [];
+      for (let i = 1; i < e.length - 1; i++) if (e[i - 1]! > 0 && e[i]! > 0 && e[i + 1]! > 0) s.push(Math.abs(e[i - 1]! - 2 * e[i]! + e[i + 1]!));
+      return mean(s);
+    };
+    const at = (over: Partial<PlateTerrainConfig>) => curvature(plates({ landPercent: 60, ...over }));
+    expect(at({ noiseScale: 500 })).toBeGreaterThan(at({ noiseScale: 8000 }) * 1.5);
+    expect(at({ noiseRoughness: 100 })).toBeGreaterThan(at({ noiseRoughness: 0 }) * 1.5);
   });
 
   it('is deterministic and seed-dependent', () => {
@@ -165,17 +209,17 @@ describe('PlateHeights', () => {
     }
   });
 
-  it('assigns sand at the shore, snow on peaks, rock high up, grass on lowland', () => {
-    const p = plates();
+  it('assigns sand at the shore, snow on the heights, rock high up, grass on lowland', () => {
+    const p = plates({ seaLevel: 20 });
+    const sea = 20 * 16, top = 300 * 16;
     const probe = (h: number) => p.materials(100_000, 100_000, 1, 1, 1, Int32Array.of(h))[0];
-    expect(probe(-500)).toBe(Material.Sand);
-    expect(probe(16)).toBe(Material.Sand);
-    expect(probe(Math.ceil(p.peak * 0.85))).toBe(Material.Snow);
-    expect(probe(Math.ceil(p.peak * 0.7))).toBe(Material.Stone);
-    // Lowland grass somewhere flat: find a low land cell with gentle slope.
+    expect(probe(sea - 500)).toBe(Material.Sand);
+    expect(probe(sea + 16)).toBe(Material.Sand);
+    expect(probe(Math.ceil(sea + (top - sea) * 0.85))).toBe(Material.Snow);
+    expect(probe(Math.ceil(sea + (top - sea) * 0.7))).toBe(Material.Stone);
     const H = p.heights(0, 0, 500, 500, 512);
     const M = p.materials(0, 0, 500, 500, 512, H);
-    expect([...M].filter((m, k) => m === Material.Grass && H[k]! > 64 && H[k]! < 50 * 16).length).toBeGreaterThan(100);
+    expect([...M].filter((m, k) => m === Material.Grass && H[k]! > sea + 64 && H[k]! < sea + 100 * 16).length).toBeGreaterThan(100);
   });
 });
 
@@ -200,7 +244,7 @@ describe('TerrainGenerator on plate heights', () => {
     for (let r = 10; r < p.rows - 10 && !found; r++) {
       for (let c = 10; c < p.cols - 10 && !found; c++) {
         const i = c + p.cols * r;
-        if (p.elevation[i]! > 48 && p.elevation[i + 1]! < -48) {
+        if (p.elevation[i]! > 0 && p.elevation[i + 1]! < 0) {
           found = { cx: Math.floor(((c + 1) * PLATE_CELL) / CHUNK_SIZE), cz: Math.floor(((r + 0.5) * PLATE_CELL) / CHUNK_SIZE) };
         }
       }

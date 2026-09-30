@@ -9,7 +9,7 @@ import {
 
 export interface ConnectionHandlers {
   /** Extra hello fields, e.g. a development tolerance override. */
-  hello?: { tolerance?: number };
+  hello?: { tolerance?: number; world?: string };
   onMessage: (msg: ServerMessage) => void;
   onChunk: (bytes: Uint8Array) => void;
   onTile: (bytes: Uint8Array) => void;

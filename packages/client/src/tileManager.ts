@@ -81,6 +81,9 @@ export class TileManager {
       this.loaded.delete(key);
       if (mesh) this.retire(key, mesh);
     }
+    // A tile dropped mid-mesh has no mesh yet: forget it arrived so it is
+    // requested again if it comes back into the selection.
+    for (const key of [...this.loaded]) if (!this.wanted.has(key)) this.loaded.delete(key);
     for (const key of [...this.jobs.keys()]) if (!this.wanted.has(key)) this.jobs.delete(key);
     const d = (t: TileCoord) => {
       const s = tileSizeUnits(t.level);

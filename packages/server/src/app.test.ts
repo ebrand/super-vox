@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import WebSocket from 'ws';
@@ -12,11 +15,14 @@ import {
   decodeChunk,
   decodeTile,
   defaultFlatGen,
+  defaultPlateTerrain,
   voxelAt,
   type ServerMessage,
 } from '@super-vox/shared';
 import { buildApp } from './app.js';
 import { World } from './world.js';
+import { createWorld, readWorld } from './worldFile.js';
+import { FileWorldCatalog } from './worlds.js';
 
 let app: FastifyInstance;
 let wsUrl: string;
@@ -70,6 +76,29 @@ describe('HTTP', () => {
     const res = await app.inject({ method: 'GET', url: '/api/health' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true, protocolVersion: PROTOCOL_VERSION });
+  });
+});
+
+describe('world map', () => {
+  it('returns surface samples for the whole world', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/world/map?width=256' });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('application/octet-stream');
+    const buf = new Uint8Array(res.rawPayload);
+    const v = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const cols = v.getUint16(0, true), rows = v.getUint16(2, true), step = v.getUint32(4, true);
+    expect([cols, rows, step]).toEqual([256, 256, 1000]);
+    expect(v.getInt32(8, true)).toBe(-(2 ** 31)); // flat test world: no sea
+    expect(buf.byteLength).toBe(12 + cols * rows * 3);
+    // Flat world at resolution 4: ground top at y = 0, grass on top.
+    expect(v.getInt16(12, true)).toBe(0);
+    expect(buf[12 + cols * rows * 2]).toBe(3);
+  });
+
+  it('rejects silly sizes', async () => {
+    for (const width of ['10', '5000', 'abc']) {
+      expect((await app.inject({ method: 'GET', url: `/api/world/map?width=${width}` })).statusCode).toBe(400);
+    }
   });
 });
 
@@ -285,6 +314,100 @@ describe('tolerance override', () => {
     const { a, ws, welcome } = await session({ world: make(4), worldWithTolerance: make }, { tolerance: 99 });
     expect(welcome).toMatchObject({ type: 'error', code: 'bad_message' });
     ws.close();
+    await a.close();
+  });
+});
+
+describe('named worlds', () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const d of roots.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  /** A data folder with two flat worlds, "home" (resolution 4) and "other" (resolution 8). */
+  async function catalogApp(dev = true) {
+    const root = mkdtempSync(join(tmpdir(), 'super-vox-app-'));
+    roots.push(root);
+    createWorld(root, 'home', { generator: 'flat', resolution: 4 });
+    createWorld(root, 'other', { generator: 'flat', resolution: 8 });
+    const a = await buildApp({ catalog: new FileWorldCatalog(root, 'home', { dev }) });
+    const url = (await a.listen({ port: 0, host: '127.0.0.1' })).replace(/^http/, 'ws') + '/ws';
+    return { a, url, root };
+  }
+  async function hello(url: string, extra: object) {
+    const ws = await new Promise<WebSocket>((resolve, reject) => {
+      const s = new WebSocket(url);
+      s.once('open', () => resolve(s));
+      s.once('error', reject);
+    });
+    const reply = nextMessage(ws);
+    const closed = new Promise<number>((resolve) => ws.once('close', (code) => resolve(code)));
+    ws.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION, ...extra }));
+    return { ws, reply: await reply, closed };
+  }
+  /** The top voxel's size in the chunk under the world's centre: tells the two flat worlds apart. */
+  async function groundVoxelSize(ws: WebSocket) {
+    const frame = nextFrame(ws);
+    ws.send(JSON.stringify({ type: 'requestChunk', cx: 500, cy: -1, cz: 500 }));
+    const f = await frame;
+    if (!('binary' in f)) throw new Error('expected binary');
+    return voxelAt(decodeChunk(f.binary.subarray(1)), 0, 255, 0)!.size;
+  }
+
+  it('joins the world named in hello, or the default one', async () => {
+    const { a, url } = await catalogApp();
+    const home = await hello(url, {});
+    expect(home.reply.type).toBe('welcome');
+    expect(await groundVoxelSize(home.ws)).toBe(4);
+    const other = await hello(url, { world: 'other' });
+    expect(other.reply.type).toBe('welcome');
+    expect(await groundVoxelSize(other.ws)).toBe(8);
+    home.ws.close();
+    other.ws.close();
+    await a.close();
+  });
+
+  it('refuses unknown worlds and malformed names', async () => {
+    const { a, url } = await catalogApp();
+    const unknown = await hello(url, { world: 'nope' });
+    expect(unknown.reply).toMatchObject({ type: 'error', code: 'unknown_world' });
+    expect(await unknown.closed).toBe(1008);
+    const bad = await hello(url, { world: '../home' });
+    expect(bad.reply).toMatchObject({ type: 'error', code: 'bad_message' });
+    bad.ws.close();
+    await a.close();
+  });
+
+  it('lists worlds and draws the map of the one asked for', async () => {
+    const { a } = await catalogApp();
+    const list = (await a.inject({ method: 'GET', url: '/api/worlds' })).json();
+    expect(list).toMatchObject({ default: 'home', canCreate: true });
+    expect(list.worlds.map((w: { name: string }) => w.name)).toEqual(['home', 'other']);
+    expect((await a.inject({ method: 'GET', url: '/api/world/map?width=64&world=other' })).statusCode).toBe(200);
+    expect((await a.inject({ method: 'GET', url: '/api/world/map?width=64&world=nope' })).statusCode).toBe(404);
+    await a.close();
+  });
+
+  it('creates plate worlds from settings, filling in defaults, and refuses bad requests', async () => {
+    const { a, root } = await catalogApp();
+    const post = (body: object) => a.inject({ method: 'POST', url: '/api/worlds', payload: body });
+    const created = await post({ name: 'fresh', plates: { seed: 9, landPercent: 45, junk: true } });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().spec.plates).toEqual({ ...defaultPlateTerrain(9), landPercent: 45 });
+    expect(readWorld(root, 'fresh')!.spec).toEqual(created.json().spec);
+    expect((await post({ name: 'fresh', plates: {} })).statusCode).toBe(409);
+    expect((await post({ name: 'Bad Name', plates: {} })).statusCode).toBe(400);
+    const invalid = await post({ name: 'bad', plates: { landPercent: 120 } });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().error).toMatch(/landPercent/);
+    expect(readWorld(root, 'bad')).toBeNull();
+    await a.close();
+  });
+
+  it('does not create worlds outside development', async () => {
+    const { a, root } = await catalogApp(false);
+    expect((await a.inject({ method: 'GET', url: '/api/worlds' })).json().canCreate).toBe(false);
+    expect((await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'x', plates: {} } })).statusCode).toBe(403);
+    expect(readWorld(root, 'x')).toBeNull();
     await a.close();
   });
 });

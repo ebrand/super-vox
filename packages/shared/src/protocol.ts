@@ -3,7 +3,7 @@ import { isValidTileLevel } from './tile.js';
 import type { WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 10;
+export const PROTOCOL_VERSION = 11;
 
 export type ClientMessage =
   | {
@@ -14,6 +14,8 @@ export type ClientMessage =
        * (integer units, 0..16). Servers in production ignore it.
        */
       tolerance?: number;
+      /** Which world to join (see WORLD_NAME_PATTERN); the server's default when omitted. */
+      world?: string;
     }
   | { type: 'requestChunk'; cx: number; cy: number; cz: number }
   /** Low-detail tile for distant terrain; answered with a Tile binary frame. */
@@ -67,6 +69,13 @@ export function isValidTolerance(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= MAX_REQUESTED_TOLERANCE;
 }
 
+/** World names: lower-case letters, digits, '-' and '_', starting with a letter or digit. */
+export const WORLD_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+export function isValidWorldName(v: unknown): v is string {
+  return typeof v === 'string' && WORLD_NAME_PATTERN.test(v);
+}
+
 function isInt32(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= -(2 ** 31) && v < 2 ** 31;
 }
@@ -82,9 +91,16 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   if (typeof data !== 'object' || data === null) return null;
   const msg = data as Record<string, unknown>;
   if (msg.type === 'hello' && typeof msg.protocolVersion === 'number') {
-    if (msg.tolerance === undefined) return { type: 'hello', protocolVersion: msg.protocolVersion };
-    if (!isValidTolerance(msg.tolerance)) return null;
-    return { type: 'hello', protocolVersion: msg.protocolVersion, tolerance: msg.tolerance };
+    const hello: ClientMessage = { type: 'hello', protocolVersion: msg.protocolVersion };
+    if (msg.tolerance !== undefined) {
+      if (!isValidTolerance(msg.tolerance)) return null;
+      hello.tolerance = msg.tolerance;
+    }
+    if (msg.world !== undefined) {
+      if (!isValidWorldName(msg.world)) return null;
+      hello.world = msg.world;
+    }
+    return hello;
   }
   if (msg.type === 'requestChunk' && isInt32(msg.cx) && isInt32(msg.cy) && isInt32(msg.cz)) {
     return { type: 'requestChunk', cx: msg.cx, cy: msg.cy, cz: msg.cz };

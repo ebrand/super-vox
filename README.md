@@ -12,38 +12,60 @@ voxel can be broken into smaller voxels whose size evenly divides its own.
 
 ## Worlds and terrain
 
-Each world lives in `WORLD_DATA_DIR` (default: the repository's `data/`, gitignored) under its name
-(`WORLD_NAME`, default `dev`): `world.json` records the settings it was created
-with, and `chunks/` holds its saved edits. The settings are only used the first
-time a name is opened; after that the world always uses its saved settings (the
-server warns if the environment asks for something different), so terrain never
-changes under existing edits. Delete a world's folder to regenerate it.
+Each world lives in `WORLD_DATA_DIR` (default: the repository's `data/`, gitignored) under its
+name: `world.json` records the settings it was created with, and `chunks/` holds its saved
+edits. A world's settings never change after it is created, so terrain never changes under
+existing edits. Delete a world's folder to regenerate it.
 
-Settings for a new world:
+The server serves every world in the data folder; `WORLD_NAME` (default `dev`) is the default
+one, created from the `WORLD_*` settings below if it doesn't exist yet (the server warns if the
+environment asks for something different from an existing world). Open another world with
+`?world=name`, e.g. http://localhost:5173/?world=archipelago.
+
+**World generator**: http://localhost:5173/generator.html previews a plate world as you change
+its settings (the preview is exactly the terrain the world gets), shows plate borders or plate
+colours (minor plates hatched), and creates a named world from the settings. It also lists the
+server's worlds, with links to play them or load their settings. Settings are kept in the page
+URL, so a link reproduces a preview. Creating worlds (`POST /api/worlds`) is only enabled in
+development (`NODE_ENV` not `production`) until there are accounts.
+
+Settings for a new world from the environment:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `WORLD_GENERATOR` | plates | `plates`, `noise` (old rolling hills), or `flat` |
-| `WORLD_SEED` | 1 | Seed |
-| `WORLD_MAJOR_PLATES` | 7 | Large tectonic plates (1..40) |
-| `WORLD_MINOR_PLATES` | 12 | Small plates crowding the seams (0..100) |
-| `WORLD_WATER` | 70 | Percent of the world under the sea (exact) |
+| `WORLD_SEED` | 1 | Plate layout: positions, sizes, which plates are continents |
+| `WORLD_TERRAIN_SEED` | = seed | Each plate's noise; change it to reroll the relief and keep the plates |
+| `WORLD_MAJOR_PLATES` | 7 | Large plates (1..40) |
+| `WORLD_MINOR_PLATES` | 15 | Small plates along the seams between major plates (0..100) |
+| `WORLD_PLATE_SIZE_RATIO` | 6 | Area of a major plate over a minor one (1..50) |
+| `WORLD_LAND` | 30 | Percent of the world above the sea (exact); the rest is sea |
+| `WORLD_SEA_LEVEL` | 0 | Sea surface, in metres |
+| `WORLD_MAX_HEIGHT` | 300 | Highest land, in metres (-1000..1000, above the sea) |
+| `WORLD_MIN_HEIGHT` | -300 | Deepest sea floor, in metres (-1000..1000, below the sea) |
 | `WORLD_SHORE_FRACTAL` | 50 | Coastline raggedness, 0 (smooth) .. 100 (broken, many islands) |
-| `WORLD_MOUNTAIN_HEIGHT` | 150 | Height of the tallest peaks, in metres (20..600) |
+| `WORLD_NOISE_SCALE` | 2000 | Size of the largest features in each plate's noise, in metres (100..16000) |
+| `WORLD_NOISE_ROUGHNESS` | 50 | Fine detail in each plate's noise, 0 (smooth swells) .. 100 (rugged) |
 | `WORLD_MIN_VOXEL` | 1 | Smallest generated voxel, in 1/16 m units (1, 2, 4, 8, 16) |
 | `WORLD_TOLERANCE` | 4 | Allowed surface error in 1/16 m units |
 | `WORLD_RESOLUTION` | 16 | Voxel size for the flat generator |
 
-**Plates**: continental plates become land and oceanic plates sea floor; where
-plates collide, mountains rise along the seam (coastal ranges and offshore
-trenches where ocean meets continent, island arcs between oceanic plates); where
-they pull apart, rift valleys and ocean ridges form. Relief runs from -150 m to
-the configured mountain height around a sea at y = 0, drawn as a translucent
-plane. Sand lines the shore and sea floor, grass covers lowland, bare rock
-shows on steep ground and above 60% of the peak height, and snow caps the top
-20%. The plate map is built once at startup
-on a 32 m grid (a few hundred ms); heights between grid points are interpolated
-with small-scale roughness.
+**Plates**: major plates are placed spread out and form a power diagram (a weighted Voronoi
+diagram) whose weights are tuned until every major plate has the same area. Minor plates are
+then placed on the seams between majors, spaced apart (spilling inland only once the seams are
+crowded), and all plates are re-tuned together so each major plate is `WORLD_PLATE_SIZE_RATIO`
+times the area of each minor plate. Borders are warped by noise so they wander. Enough major
+plates (with the minors on them) become continents to cover the land share; the rest is ocean
+floor. Each plate's relief comes from its own seeded noise field, blended with its neighbours'
+over ~400 m either side of their seam. Land rises from the coast inland and the sea floor
+deepens away from it, stretched so the highest land is exactly `WORLD_MAX_HEIGHT` and the
+deepest sea floor exactly `WORLD_MIN_HEIGHT`; the coastline is then chosen so exactly
+`WORLD_LAND` percent is above the sea, drawn as a translucent plane. Sand lines the shore and
+sea floor, grass covers lowland, bare rock shows on steep ground and above 60% of the land's
+height range, and snow caps the top 20%. The plate map is built once when a world is opened, on
+a 32 m grid (a few hundred ms); heights between grid points are interpolated with small-scale
+roughness. Worlds made before these settings existed keep their plate counts, seed, shoreline
+and water share (as `100 - land`); their other settings take the defaults above.
 
 Terrain is voxelized adaptively: a 1 m block is halved (1 -> 1/2 -> 1/4 -> 1/8
 -> 1/16 m) only where the surface passes through it and a coarser voxel would
@@ -52,6 +74,57 @@ misplace it by more than the tolerance.
 In development (`NODE_ENV` not `production`) the client can override the
 tolerance per page load with `?tolerance=N` (integer 0..16); those edits stay
 in memory.
+
+## Controls
+
+Click the view to capture the mouse; then moving the mouse looks around and
+Esc releases it. (Without capturing, dragging with a mouse button also looks.)
+
+You start **walking**: W/A/S/D move in the direction you face, Space jumps
+(about 1.25 m, enough to get onto a 1 m voxel), gravity pulls you down, and
+ledges up to 1/2 m are climbed automatically. **F** switches to **flying**
+(Space or E rises, Q or C descends) and back. Shift moves 5x faster and the
+mouse wheel changes the base speed (default 2 m/s). You collide with terrain
+as a 0.6 x 1.8 m body (eyes at 1.62 m); **N** toggles no-clip, which flies
+through everything. Gravity waits until the ground below you has loaded.
+
+**M** opens a map of the whole world (generated terrain; edits aren't shown),
+in the same colours the game renders, with your position and facing, the spawn
+point, a 1 km grid, and a scale bar. Hover for coordinates, ground height, and
+surface; click to go there. M or Esc closes it. The server serves it at
+`/api/world/map?width=N` (64..2048 samples across, default 1024).
+
+Editing has three modes; Tab cycles hybrid -> dig -> place (the overlay shows
+the current one). Aim with the crosshair (reach 32 m) while the mouse is
+captured.
+
+- **hybrid** (default, Minecraft-like): click removes the voxel you aim at;
+  right-click places a voxel the same size as the one you aim at against the
+  face you aim at, snapped to that size so voxels stack simply. To place a
+  different size, hold Command and scroll (or press `[` / `]`) before
+  right-clicking; the preview shows while Command is held, and the choice
+  applies to that one placement. Only the target outline
+  shows. Interactive voxels (doors, TNT, ...) will hook in here later.
+- **dig**: click removes the voxel you aim at. Hold Command to show the dig
+  box (the selected size, just inside the surface you aim at; its entry face
+  is marked on that surface); Command + click removes every voxel with any
+  part inside it.
+- **place**: a preview of the selected size shows against the face you aim
+  at (green if it fits, red if not); click places it.
+
+In dig and place (not hybrid), hold Option to move the box in 1/16 m steps instead of
+snapping to its size; it can then cross 1 m gridlines. A placed cube that
+crosses a gridline is stored as block-sized pieces (the largest standard
+cubes that fit in each block), so every voxel still lies in one block; the
+dig box is a region and simply removes whatever it overlaps. In every mode, middle-click breaks the aimed voxel into the next
+smaller size that divides it (1 m -> 8 x 1/2 m -> 64 x 1/4 m ...), B breaks
+it into the selected size, X removes it. Command + mouse wheel (or `[` and
+`]`) chooses the size from the five standard sizes (1/16, 1/8, 1/4, 1/2, 1 m;
+the wheel wraps), 1-3 the material (stone, dirt, grass).
+
+The server validates and applies edits, sends changed chunks to every
+connected client, and saves edited chunks in the world's folder (see Worlds and
+terrain) so they survive restarts.
 
 ## Distant terrain
 

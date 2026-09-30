@@ -9,6 +9,7 @@ import { TileManager } from './tileManager.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
 import { PLAYER, moveAabb, playerBox } from './physics.js';
 import { MeshWorkerPool } from './workerPool.js';
+import { WorldMapOverlay } from './worldMap.js';
 import { solidAtFor } from './worldQuery.js';
 
 const statusEl = document.getElementById('status')!;
@@ -31,6 +32,9 @@ const toleranceWarning =
   requestedTolerance !== undefined && !isValidTolerance(requestedTolerance)
     ? `ignoring ?tolerance=${toleranceParam} (use an integer 0..16)`
     : '';
+/** ?world=name: which of the server's worlds to join (its default when omitted). */
+const worldName = params.get('world') ?? undefined;
+let joinError = '';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
@@ -51,6 +55,7 @@ let pool: MeshWorkerPool | null = null;
 let chunks: ChunkManager | null = null;
 let tiles: TileManager | null = null;
 let editTool: EditTool | null = null;
+let worldMap: WorldMapOverlay | null = null;
 let connection: ReturnType<typeof connect> | null = null;
 let worldLine = '';
 
@@ -102,13 +107,16 @@ function onProgress(): void {
 }
 
 connection = connect({
-  ...(requestedTolerance !== undefined && !toleranceWarning ? { hello: { tolerance: requestedTolerance } } : {}),
+  hello: {
+    ...(requestedTolerance !== undefined && !toleranceWarning ? { tolerance: requestedTolerance } : {}),
+    ...(worldName !== undefined ? { world: worldName } : {}),
+  },
   onMessage: (msg) => {
     switch (msg.type) {
       case 'welcome': {
         const w = msg.world;
         worldLine =
-          `world ${unitsToMeters(w.widthUnits) / 1000} x ${unitsToMeters(w.depthUnits) / 1000} km` +
+          `world ${worldName ?? '(default)'}, ${unitsToMeters(w.widthUnits) / 1000} x ${unitsToMeters(w.depthUnits) / 1000} km` +
           (w.wrapX ? ', wraps east-west' : '') +
           (msg.tolerance !== null ? `\ntolerance ${msg.tolerance}/16 m` : '') +
           (requestedTolerance !== undefined && !toleranceWarning && msg.tolerance !== requestedTolerance
@@ -146,8 +154,27 @@ connection = connect({
             const at = (uy: number) => chunks!.chunkAt({ cx: Math.floor(x / CHUNK_SIZE), cy: Math.floor(uy / CHUNK_SIZE), cz: Math.floor(z / CHUNK_SIZE) });
             return at(feet) !== undefined && at(feet - CHUNK_SIZE) !== undefined;
           };
+          worldMap = new WorldMapOverlay(
+            { width: w.widthUnits, depth: w.depthUnits },
+            () => ({ x: camera.position.x * UNITS_PER_METER, z: camera.position.z * UNITS_PER_METER, yaw: controls.yaw }),
+            { x: msg.spawn.x, z: msg.spawn.z },
+            (x, z, surfaceY) => {
+              // Land on the ground there (a little above it; walking settles onto it).
+              const ground = Math.max(surfaceY, msg.seaLevel ?? surfaceY);
+              camera.position.set(x / UNITS_PER_METER, ground / UNITS_PER_METER + PLAYER.eye / UNITS_PER_METER + 2, z / UNITS_PER_METER);
+              updateLod();
+            },
+            `/api/world/map?width=1024${worldName !== undefined ? `&world=${encodeURIComponent(worldName)}` : ''}`,
+          );
           window.addEventListener('keydown', (e) => {
             if (e.repeat || e.metaKey || e.ctrlKey) return;
+            if (e.code === 'KeyM' || (e.code === 'Escape' && worldMap?.isOpen)) {
+              if (e.code === 'KeyM' && !worldMap!.isOpen && controls.pointerLocked) document.exitPointerLock();
+              if (e.code === 'Escape') worldMap!.close();
+              else worldMap!.toggle();
+              return;
+            }
+            if (worldMap?.isOpen) return;
             if (e.code === 'KeyN') {
               // No-clip: fly through terrain (walking needs collision, so it flies).
               controls.collide = controls.collide ? null : collide;
@@ -196,13 +223,20 @@ connection = connect({
         break;
       case 'error':
         console.error(`[super-vox] server error ${msg.code}: ${msg.message}`);
+        // Refused at hello (e.g. no such world): the server closes the connection.
+        if (!chunks && (msg.code === 'unknown_world' || msg.code === 'bad_message')) {
+          joinError = `${msg.message}${worldName !== undefined ? ' (check ?world=)' : ''}`;
+          worldLine = joinError;
+          updateHud();
+        }
         break;
     }
   },
   onChunk: (bytes) => chunks?.onChunkBytes(bytes),
   onTile: (bytes) => tiles?.onTileBytes(bytes),
   onClose: () => {
-    worldLine = 'disconnected';
+    worldLine = joinError || 'disconnected';
+    updateHud();
     chunks?.resetRequests();
     tiles?.resetRequests();
   },
@@ -231,7 +265,7 @@ function updateHud(): void {
       ? ' · walking: WASD move · Space: jump'
       : ' · flying: WASD move · Space/E: up · Q/C: down') +
     ' · Shift: 5x · wheel: speed (⌘+wheel: voxel size)' +
-    ` · F: ${controls.walking ? 'fly' : 'walk'} · N: no-clip (${controls.collide ? 'off' : 'on'})\n` +
+    ` · F: ${controls.walking ? 'fly' : 'walk'} · N: no-clip (${controls.collide ? 'off' : 'on'}) · M: map\n` +
     (editTool ? `${editTool.hudLines()}\n` : '') +
     (c && t
       ? `chunks ${c.loaded} loaded (${c.columns} columns), ${c.inFlight} in flight, ${c.queued} queued, ${c.meshing} meshing\n` +
@@ -248,10 +282,12 @@ let lastFrame = performance.now();
 
 renderer.setAnimationLoop(() => {
   const frameStart = performance.now();
-  controls.update((frameStart - lastFrame) / 1000);
+  // Movement and editing pause while the map is open.
+  if (!worldMap?.isOpen) controls.update((frameStart - lastFrame) / 1000);
   lastFrame = frameStart;
   updateLod();
-  editTool?.update();
+  if (!worldMap?.isOpen) editTool?.update();
+  worldMap?.update();
   if (sea) sea.position.set(camera.position.x, sea.position.y, camera.position.z);
   renderer.render(scene, camera);
 

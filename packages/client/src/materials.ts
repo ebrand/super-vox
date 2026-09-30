@@ -22,3 +22,15 @@ export function materialColor(id: MaterialId): readonly [number, number, number]
 export function paletteColors(): (readonly [number, number, number])[] {
   return Array.from({ length: PALETTE_SIZE }, (_, id) => materialColor(id));
 }
+
+const NAMES: Record<number, string> = {
+  [Material.Stone]: 'stone',
+  [Material.Dirt]: 'dirt',
+  [Material.Grass]: 'grass',
+  [Material.Sand]: 'sand',
+  [Material.Snow]: 'snow',
+};
+
+export function materialName(id: MaterialId): string {
+  return NAMES[id] ?? `material ${id}`;
+}

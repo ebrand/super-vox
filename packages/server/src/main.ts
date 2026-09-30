@@ -1,15 +1,8 @@
-import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  FLAT_WORLD_16KM,
-  TerrainGenerator,
-  defaultPlateTerrain,
-  defaultVoxelize,
-} from '@super-vox/shared';
+import { FLAT_WORLD_16KM, defaultPlateTerrain, defaultVoxelize } from '@super-vox/shared';
 import { buildApp } from './app.js';
-import { FileChunkStore } from './chunkStore.js';
-import { World } from './world.js';
-import { generatorFor, openWorld, type WorldSpec } from './worldFile.js';
+import { openWorld, type WorldSpec } from './worldFile.js';
+import { FileWorldCatalog } from './worlds.js';
 
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? '127.0.0.1';
@@ -36,11 +29,17 @@ function specForNewWorld(): WorldSpec {
       generator: 'plates',
       plates: {
         seed,
+        terrainSeed: numberEnv('WORLD_TERRAIN_SEED', seed),
         majorPlates: numberEnv('WORLD_MAJOR_PLATES', d.majorPlates),
         minorPlates: numberEnv('WORLD_MINOR_PLATES', d.minorPlates),
-        waterPercent: numberEnv('WORLD_WATER', d.waterPercent),
+        plateSizeRatio: numberEnv('WORLD_PLATE_SIZE_RATIO', d.plateSizeRatio),
+        minHeight: numberEnv('WORLD_MIN_HEIGHT', d.minHeight),
+        maxHeight: numberEnv('WORLD_MAX_HEIGHT', d.maxHeight),
+        seaLevel: numberEnv('WORLD_SEA_LEVEL', d.seaLevel),
+        landPercent: numberEnv('WORLD_LAND', d.landPercent),
         shoreFractal: numberEnv('WORLD_SHORE_FRACTAL', d.shoreFractal),
-        mountainHeight: numberEnv('WORLD_MOUNTAIN_HEIGHT', d.mountainHeight!),
+        noiseScale: numberEnv('WORLD_NOISE_SCALE', d.noiseScale),
+        noiseRoughness: numberEnv('WORLD_NOISE_ROUGHNESS', d.noiseRoughness),
       },
       voxelize,
     };
@@ -57,28 +56,11 @@ const dataRoot = process.env.WORLD_DATA_DIR ?? fileURLToPath(new URL('../../../d
 const name = process.env.WORLD_NAME ?? 'dev';
 const opened = openWorld(dataRoot, name, specForNewWorld());
 const spec = opened.file.spec;
-const { generator, heights } = generatorFor(spec, FLAT_WORLD_16KM);
-const tolerance = spec.generator === 'flat' ? null : spec.voxelize.tolerance;
-const world = new World(FLAT_WORLD_16KM, generator, {
-  tolerance,
-  store: new FileChunkStore(join(opened.dir, 'chunks')),
-});
-
-// Development: per-connection tolerance overrides (?tolerance=N); their edits stay in memory.
-let worldWithTolerance: ((t: number) => World) | undefined;
-if (process.env.NODE_ENV !== 'production' && heights && spec.generator !== 'flat') {
-  const variants = new Map<number, World>([[spec.voxelize.tolerance, world]]);
-  worldWithTolerance = (t) => {
-    let w = variants.get(t);
-    if (!w) {
-      const gen = new TerrainGenerator(FLAT_WORLD_16KM, { ...spec.voxelize, tolerance: t }, heights);
-      variants.set(t, (w = new World(FLAT_WORLD_16KM, gen, { tolerance: t, cacheSize: 1024 })));
-    }
-    return w;
-  };
-}
-
-const app = await buildApp({ world, ...(worldWithTolerance ? { worldWithTolerance } : {}), logger: true });
+// Other worlds under dataRoot are served too (?world=name). In development, clients may ask for
+// other tolerances (?tolerance=N; those edits stay in memory) and new worlds can be created.
+const catalog = new FileWorldCatalog(dataRoot, name, { dev: process.env.NODE_ENV !== 'production', config: FLAT_WORLD_16KM });
+const world = catalog.get(name)!;
+const app = await buildApp({ catalog, logger: true });
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {

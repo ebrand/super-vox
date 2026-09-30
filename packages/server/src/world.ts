@@ -28,6 +28,35 @@ import {
 } from '@super-vox/shared';
 import type { ChunkStore } from './chunkStore.js';
 
+/** Surface samples covering the whole world (see World.getMap). */
+export interface WorldMap {
+  cols: number;
+  rows: number;
+  /** Units between samples. */
+  step: number;
+  seaLevel: number | null;
+  heights: Int16Array;
+  materials: Uint8Array;
+}
+
+/**
+ * Binary map format (little-endian): u16 cols, u16 rows, u32 step (units),
+ * i32 sea level (-2^31 = no sea), then cols*rows i16 heights, then cols*rows
+ * u8 materials, row-major (x fastest).
+ */
+export function encodeWorldMap(m: WorldMap): Uint8Array {
+  const n = m.cols * m.rows;
+  const buf = new Uint8Array(12 + n * 3);
+  const v = new DataView(buf.buffer);
+  v.setUint16(0, m.cols, true);
+  v.setUint16(2, m.rows, true);
+  v.setUint32(4, m.step, true);
+  v.setInt32(8, m.seaLevel ?? -(2 ** 31), true);
+  for (let i = 0; i < n; i++) v.setInt16(12 + i * 2, m.heights[i]!, true);
+  buf.set(m.materials, 12 + n * 2);
+  return buf;
+}
+
 /** What an edit changed: the new chunks, and columns whose height range widened. */
 export interface EditResult {
   changes: { coord: ChunkCoord; bytes: Uint8Array }[];
@@ -42,6 +71,7 @@ export interface EditResult {
 export class World {
   private readonly cache = new Map<string, Uint8Array>();
   private readonly tileCache = new Map<string, Uint8Array>();
+  private readonly maps = new Map<number, WorldMap>();
   /** Chunks changed by edits; these replace generated chunks and are never evicted. */
   private readonly edited = new Map<string, Chunk>();
   /** Per chunk column ("cx,cz"), the vertical span of edited chunks (units). */
@@ -200,6 +230,32 @@ export class World {
     const range = this.generator.columnRange(resolved.cx, resolved.cz);
     const span = this.editSpans.get(`${resolved.cx},${resolved.cz}`);
     return span ? { minY: Math.min(range.minY, span.minY), maxY: Math.max(range.maxY, span.maxY) } : range;
+  }
+
+  /**
+   * A top-down map of generated terrain (edits aren't included): `cols` x
+   * `rows` surface samples, one per `step` units at each cell's centre.
+   * Cached per requested width.
+   */
+  getMap(width: number): WorldMap {
+    const hit = this.maps.get(width);
+    if (hit) return hit;
+    const step = Math.ceil(this.config.widthUnits / width);
+    const cols = Math.ceil(this.config.widthUnits / step);
+    const rows = Math.ceil(this.config.depthUnits / step);
+    const n = Math.max(cols, rows);
+    const s = this.generator.surfaceSamples(Math.floor(step / 2), Math.floor(step / 2), step, n);
+    const heights = new Int16Array(cols * rows);
+    const materials = new Uint8Array(cols * rows);
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < cols; i++) {
+        heights[i + cols * j] = Math.max(-32767, Math.min(32767, s.heights[i + n * j]!));
+        materials[i + cols * j] = Math.min(255, s.materials[i + n * j]!);
+      }
+    }
+    const map = { cols, rows, step, seaLevel: this.seaLevel, heights, materials };
+    this.maps.set(width, map);
+    return map;
   }
 
   get cachedChunkCount(): number {

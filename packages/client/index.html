@@ -20,6 +20,17 @@
       #mode[data-mode="dig"] { border-left-color: #ff8a20; }
       #mode[data-mode="place"] { border-left-color: #40ff60; }
       #mode:empty { display: none; }
+      #worldmap {
+        position: fixed; inset: 0; z-index: 20; display: none;
+        flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+        background: rgba(8, 10, 14, 0.82);
+      }
+      #worldmap.open { display: flex; }
+      #worldmap .frame { position: relative; width: min(88vh, 92vw); aspect-ratio: 1; }
+      #worldmap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+      #worldmap canvas.image { image-rendering: pixelated; border: 1px solid rgba(255,255,255,0.25); }
+      #worldmap canvas.marks { cursor: crosshair; }
+      #worldmap .info { font: 12px/1.4 ui-monospace, monospace; color: #e6e6e6; min-height: 1.4em; }
       #crosshair {
         position: fixed; left: 50%; top: 50%; width: 14px; height: 14px;
         margin: -7px 0 0 -7px; pointer-events: none;
