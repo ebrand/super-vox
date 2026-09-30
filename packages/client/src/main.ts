@@ -112,6 +112,13 @@ connection = connect({
           chunks = new ChunkManager(w, scene, material, send, pool, 64, onProgress);
           tiles = new TileManager(scene, material, send, pool, 32, onProgress);
           editTool = new EditTool(scene, camera, chunks, send);
+          const modeTag = document.getElementById('mode')!;
+          editTool.onModeChange = (mode) => {
+            modeTag.textContent = mode.toUpperCase();
+            modeTag.dataset.mode = mode;
+            updateHud();
+          };
+          editTool.onModeChange(editTool.mode);
           controls.onClick = (button, mods) => editTool?.click(button, mods);
           controls.onModifiedWheel = (deltaY) => {
             editTool?.scrollSize(deltaY);

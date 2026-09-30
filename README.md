@@ -36,19 +36,29 @@ the ground in the direction you face, Space or E rises, Q or C descends, Shift
 moves 5x faster, and the mouse wheel changes the base speed (default 2 m/s). There is no
 collision yet: you can fly through terrain.
 
-Editing has three modes; Tab cycles off -> dig -> place (the overlay shows
+Editing has three modes; Tab cycles hybrid -> dig -> place (the overlay shows
 the current one). Aim with the crosshair (reach 32 m) while the mouse is
 captured.
 
-- **off**: no editing.
+- **hybrid** (default, Minecraft-like): click removes the voxel you aim at;
+  right-click places a voxel the same size as the one you aim at against the
+  face you aim at, snapped to that size so voxels stack simply. To place a
+  different size, hold Command and scroll (or press `[` / `]`) before
+  right-clicking; the preview shows while Command is held, and the choice
+  applies to that one placement. Only the target outline
+  shows. Interactive voxels (doors, TNT, ...) will hook in here later.
 - **dig**: click removes the voxel you aim at. Hold Command to show the dig
-  box (the selected size, just inside the surface you aim at);
-  Command + click removes every voxel with any part inside it.
+  box (the selected size, just inside the surface you aim at; its entry face
+  is marked on that surface); Command + click removes every voxel with any
+  part inside it.
 - **place**: a preview of the selected size shows against the face you aim
   at (green if it fits, red if not); click places it.
 
-In dig and place, hold Option to move the box in 1/16 m steps instead of
-snapping to its size. Middle-click breaks the aimed voxel into the next
+In dig and place (not hybrid), hold Option to move the box in 1/16 m steps instead of
+snapping to its size; it can then cross 1 m gridlines. A placed cube that
+crosses a gridline is stored as block-sized pieces (the largest standard
+cubes that fit in each block), so every voxel still lies in one block; the
+dig box is a region and simply removes whatever it overlaps. In every mode, middle-click breaks the aimed voxel into the next
 smaller size that divides it (1 m -> 8 x 1/2 m -> 64 x 1/4 m ...), B breaks
 it into the selected size, X removes it. Command + mouse wheel (or `[` and
 `]`) chooses the size from the five standard sizes (1/16, 1/8, 1/4, 1/2, 1 m;

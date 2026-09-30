@@ -19,8 +19,9 @@ import { CHUNK_SIZE } from './world.js';
  * - remove: remove the voxel covering unit cell (x, y, z).
  * - break: split the voxel covering (x, y, z) into equal pieces of `pieceSize`,
  *   which must evenly divide it.
- * - place: add a voxel with its minimum corner at (x, y, z). It must lie in
- *   one 1 m block and not overlap any existing voxel.
+ * - place: add a voxel with its minimum corner at (x, y, z) that must not
+ *   overlap any existing voxel. `applyEdit` requires it to lie in one 1 m
+ *   block; servers accept any cube and place `splitPlacement` pieces.
  */
 export type Edit =
   | { op: 'remove'; x: number; y: number; z: number }
@@ -175,6 +176,55 @@ export function applyEdit(chunk: Chunk, edit: Edit): Chunk {
   const blocks = chunk.blocks.slice();
   blocks[bi] = blockFromVoxels(voxels);
   return { cx: chunk.cx, cy: chunk.cy, cz: chunk.cz, blocks };
+}
+
+/** A cube in world units. */
+export interface Cube {
+  x: number;
+  y: number;
+  z: number;
+  size: number;
+}
+
+const pow2Floor = (n: number) => 2 ** Math.floor(Math.log2(n));
+
+/**
+ * Splits a cube into voxels that each lie inside one 1 m block and together
+ * fill exactly the same space. A cube that already fits in one block is
+ * returned whole. Otherwise each block's part (a box) is tiled greedily with
+ * the largest power-of-two cubes that fit, so pieces use the standard sizes.
+ */
+export function splitPlacement(cube: Cube): Cube[] {
+  if (voxelFitsInBlock(cube.x, cube.y, cube.z, cube.size)) return [cube];
+  const out: Cube[] = [];
+  const tile = (x: number, y: number, z: number, w: number, h: number, d: number) => {
+    if (w <= 0 || h <= 0 || d <= 0) return;
+    const c = pow2Floor(Math.min(w, h, d));
+    const nx = Math.floor(w / c), ny = Math.floor(h / c), nz = Math.floor(d / c);
+    for (let j = 0; j < ny; j++) {
+      for (let k = 0; k < nz; k++) {
+        for (let i = 0; i < nx; i++) out.push({ x: x + i * c, y: y + j * c, z: z + k * c, size: c });
+      }
+    }
+    // What's left: a slab beyond the tiled X extent, then beyond Y, then beyond Z.
+    tile(x + nx * c, y, z, w - nx * c, h, d);
+    tile(x, y + ny * c, z, nx * c, h - ny * c, d);
+    tile(x, y, z + nz * c, nx * c, ny * c, d - nz * c);
+  };
+  const lo = (v: number) => Math.floor(v / BLOCK_SIZE) * BLOCK_SIZE;
+  for (let by = lo(cube.y); by < cube.y + cube.size; by += BLOCK_SIZE) {
+    for (let bz = lo(cube.z); bz < cube.z + cube.size; bz += BLOCK_SIZE) {
+      for (let bx = lo(cube.x); bx < cube.x + cube.size; bx += BLOCK_SIZE) {
+        // This block's part of the cube.
+        const x0 = Math.max(bx, cube.x), y0 = Math.max(by, cube.y), z0 = Math.max(bz, cube.z);
+        const x1 = Math.min(bx + BLOCK_SIZE, cube.x + cube.size);
+        const y1 = Math.min(by + BLOCK_SIZE, cube.y + cube.size);
+        const z1 = Math.min(bz + BLOCK_SIZE, cube.z + cube.size);
+        tile(x0, y0, z0, x1 - x0, y1 - y0, z1 - z0);
+      }
+    }
+  }
+  return out;
 }
 
 /** Throws EditError unless `box` is a valid removeBox cube. */

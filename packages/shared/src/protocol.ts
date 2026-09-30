@@ -3,7 +3,7 @@ import { isValidTileLevel } from './tile.js';
 import type { WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 export type ClientMessage =
   | {

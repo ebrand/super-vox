@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { blockIndex, emptyChunk, voxelAt, type Chunk } from './chunk.js';
 import { decodeChunk, encodeChunk } from './chunkcodec.js';
-import { EditError, applyEdit, blockVoxels, editChunk, removeBoxChunks, removeBoxFromChunk, type Edit } from './edit.js';
+import { EditError, applyEdit, blockVoxels, editChunk, removeBoxChunks, removeBoxFromChunk, splitPlacement, type Edit } from './edit.js';
+import { voxelFitsInBlock } from './voxel.js';
 import { FlatGenerator, defaultFlatGen } from './flatgen.js';
 import { Material } from './materials.js';
 import { FLAT_WORLD_16KM } from './world.js';
@@ -214,5 +215,53 @@ describe('removeBox', () => {
   it('refuses invalid sizes and reports nothing to remove through applyEdit', () => {
     expect(() => removeBoxFromChunk(chunkWith(null), { op: 'removeBox', ...at(0, 0, 0), size: 17 })).toThrow(/size/);
     expect(() => applyEdit(chunkWith(null), { op: 'removeBox', ...at(0, 0, 0), size: 4 })).toThrow(/nothing/);
+  });
+});
+
+describe('splitPlacement', () => {
+  const cells = (cubes: { x: number; y: number; z: number; size: number }[]) => {
+    const seen = new Map<string, number>();
+    for (const c of cubes)
+      for (let y = c.y; y < c.y + c.size; y++)
+        for (let z = c.z; z < c.z + c.size; z++)
+          for (let x = c.x; x < c.x + c.size; x++) seen.set(`${x},${y},${z}`, (seen.get(`${x},${y},${z}`) ?? 0) + 1);
+    return seen;
+  };
+
+  it('returns a cube that fits in one block unchanged', () => {
+    expect(splitPlacement({ x: 4, y: 3, z: 5, size: 8 })).toEqual([{ x: 4, y: 3, z: 5, size: 8 }]);
+    expect(splitPlacement({ x: -16, y: 0, z: 0, size: 16 })).toEqual([{ x: -16, y: 0, z: 0, size: 16 }]);
+  });
+
+  it('splits a half-metre cube straddling a gridline at its middle into eight quarter-metre cubes', () => {
+    const pieces = splitPlacement({ x: 12, y: 0, z: 0, size: 8 });
+    expect(pieces).toHaveLength(8);
+    expect(pieces.every((p) => p.size === 4)).toBe(true);
+  });
+
+  it('fills exactly the cube, once, with standard sizes that each fit in one block', () => {
+    let s = 5;
+    const rand = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+    for (let k = 0; k < 400; k++) {
+      const size = [1, 2, 4, 8, 16, 3, 5, 12][Math.floor(rand() * 8)]!;
+      const cube = { x: Math.floor(rand() * 64) - 32, y: Math.floor(rand() * 64) - 32, z: Math.floor(rand() * 64) - 32, size };
+      const pieces = splitPlacement(cube);
+      const cov = cells(pieces);
+      expect(cov.size).toBe(size ** 3);
+      for (const [key, n] of cov) {
+        expect(n).toBe(1);
+        const [x, y, z] = key.split(',').map(Number) as [number, number, number];
+        expect(x >= cube.x && x < cube.x + size && y >= cube.y && y < cube.y + size && z >= cube.z && z < cube.z + size).toBe(true);
+      }
+      for (const p of pieces) expect(voxelFitsInBlock(p.x, p.y, p.z, p.size)).toBe(true);
+      if (pieces.length > 1) for (const p of pieces) expect([1, 2, 4, 8, 16]).toContain(p.size);
+    }
+  });
+
+  it('prefers large pieces', () => {
+    // A 1 m cube offset by half a metre on X: two 8 x 16 x 16 halves, each four 1/2 m cubes.
+    const pieces = splitPlacement({ x: 8, y: 0, z: 0, size: 16 });
+    expect(pieces).toHaveLength(8);
+    expect(pieces.every((p) => p.size === 8)).toBe(true);
   });
 });

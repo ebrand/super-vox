@@ -7,6 +7,7 @@ import {
   editChunk,
   removeBoxChunks,
   removeBoxFromChunk,
+  splitPlacement,
   validateRemoveBox,
   normalizeX,
   TILE_SAMPLES,
@@ -86,7 +87,8 @@ export class World {
 
   /**
    * Applies an edit and returns the chunks it changed (one, or up to eight
-   * for a removeBox) plus any column whose height range widened. Throws
+   * for a removeBox or a placement crossing chunk borders) plus any column
+   * whose height range widened. Throws
    * EditError, changing nothing, if the edit is invalid, outside the world,
    * or (for removeBox) removes nothing.
    */
@@ -104,6 +106,18 @@ export class World {
       }
       if (changed.length === 0) throw new EditError('nothing to remove there');
       return this.commit(changed);
+    }
+    if (edit.op === 'place') {
+      // Cubes that cross 1 m gridlines are placed as block-sized pieces; all or nothing.
+      const next = new Map<string, Chunk>();
+      for (const piece of splitPlacement(edit)) {
+        const p = { ...edit, ...piece, x: normalizeX(this.config, piece.x) };
+        const resolved = resolveChunk(this.config, editChunk(p));
+        if (!resolved) throw new EditError('outside the world');
+        const key = chunkKey(resolved);
+        next.set(key, applyEdit(next.get(key) ?? this.current(resolved), p));
+      }
+      return this.commit([...next.values()]);
     }
     const e = { ...edit, x: normalizeX(this.config, edit.x) };
     const resolved = resolveChunk(this.config, editChunk(e));

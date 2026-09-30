@@ -163,6 +163,7 @@ describe('World', () => {
       expect(() => world.applyEdit({ op: 'remove', x: 100, y: 50, z: 200 })).toThrow(EditError);
       expect(() => world.applyEdit({ op: 'remove', x: -5, y: -1, z: 200 })).toThrow(/outside/);
       expect(() => world.applyEdit({ op: 'place', x: 100, y: -1, z: 200, size: 1, material: 1 })).toThrow(/occupied/);
+      expect(() => world.applyEdit({ op: 'place', x: -4, y: 0, z: 200, size: 8, material: 1 })).toThrow(/outside/);
       expect(world.editedChunkCount).toBe(0);
     });
 
@@ -203,6 +204,32 @@ describe('World', () => {
       expect(voxelAt(at(1, 1), 0, 255, 0)).toBeNull();
       expect(voxelAt(at(0, 0), 239, 255, 250)).not.toBeNull();
       expect(voxelAt(at(0, 0), 250, 239, 250)).not.toBeNull();
+    });
+
+    it('places a cube across gridlines and chunk borders as block-sized pieces', () => {
+      const dir = tmp();
+      const world = flatWorld(dir);
+      // A 1/2 m cube centred on the corner where four chunks meet, sitting on the ground (y = 0).
+      const r = world.applyEdit({ op: 'place', x: 252, y: 0, z: 252, size: 8, material: 2 });
+      expect(r.changes.map((c) => `${c.coord.cx},${c.coord.cz}`).sort()).toEqual(['0,0', '0,1', '1,0', '1,1']);
+      expect(readdirSync(dir)).toHaveLength(4);
+      const at = (cx: number, cz: number) => decodeChunk(world.getEncodedChunk({ cx, cy: 0, cz })!);
+      // Every cell of the cube is filled with 1/4 m pieces; the cells just outside are not.
+      for (const [cx, cz, lx, lz] of [[0, 0, 252, 252], [1, 1, 0, 0], [0, 1, 255, 3], [1, 0, 3, 255]] as const) {
+        expect(voxelAt(at(cx, cz), lx, 0, lz)).toEqual({ material: 2, size: 4 });
+        expect(voxelAt(at(cx, cz), lx, 7, lz)).toEqual({ material: 2, size: 4 });
+        expect(voxelAt(at(cx, cz), lx, 8, lz)).toBeNull();
+      }
+      expect(voxelAt(at(0, 0), 251, 0, 252)).toBeNull();
+    });
+
+    it('places nothing if any part of a split placement is occupied', () => {
+      const world = flatWorld();
+      world.applyEdit({ op: 'place', x: 256, y: 4, z: 256, size: 1, material: 1 });
+      const before = world.editedChunkCount;
+      expect(() => world.applyEdit({ op: 'place', x: 252, y: 0, z: 252, size: 8, material: 2 })).toThrow(/occupied/);
+      expect(world.editedChunkCount).toBe(before);
+      expect(voxelAt(decodeChunk(world.getEncodedChunk({ cx: 0, cy: 0, cz: 0 })!), 252, 0, 252)).toBeNull();
     });
 
     it('rejects a removeBox that touches nothing, changing nothing', () => {

@@ -58,49 +58,43 @@ describe('raycastVoxels', () => {
 
 describe('placementBox', () => {
   const top = (x: number, z: number): RayHit => ({ cell: [Math.floor(x), -1, Math.floor(z)], normal: [0, 1, 0], point: [x, 0, z], distance: 1 });
+  const on1m = { x: 0, y: -16, z: 0, size: 16 };
 
-  it('sits on top of the target, snapped to its size inside the 1 m block', () => {
-    expect(placementBox(top(5.2, 9.9), { x: 0, y: -16, z: 0, size: 16 }, 4)).toEqual({ x: 4, y: 0, z: 8, size: 4, valid: true });
-    expect(placementBox(top(15.9, 15.9), { x: 0, y: -16, z: 0, size: 16 }, 3)).toEqual({ x: 13, y: 0, z: 13, size: 3, valid: true });
+  it('sits on top of the target, snapped to its size', () => {
+    expect(placementBox(top(5.2, 9.9), on1m, 4)).toEqual({ x: 4, y: 0, z: 8, size: 4 });
+    expect(placementBox(top(15.9, 15.9), on1m, 8)).toEqual({ x: 8, y: 0, z: 8, size: 8 });
   });
 
   it('goes below or beside the target for downward and sideways faces', () => {
     const below: RayHit = { cell: [3, 5, 3], normal: [0, -1, 0], point: [3.5, 5, 3.5], distance: 1 };
-    expect(placementBox(below, { x: 2, y: 5, z: 2, size: 2 }, 2)).toEqual({ x: 2, y: 3, z: 2, size: 2, valid: true });
+    expect(placementBox(below, { x: 2, y: 5, z: 2, size: 2 }, 2)).toEqual({ x: 2, y: 3, z: 2, size: 2 });
     const side: RayHit = { cell: [10, 3, 1], normal: [-1, 0, 0], point: [10, 3.5, 1.5], distance: 1 };
-    expect(placementBox(side, { x: 10, y: 0, z: 0, size: 4 }, 2)).toEqual({ x: 8, y: 2, z: 0, size: 2, valid: true });
+    expect(placementBox(side, { x: 10, y: 0, z: 0, size: 4 }, 2)).toEqual({ x: 8, y: 2, z: 0, size: 2 });
   });
 
-  it('places in 1/16 m steps centred on the hit point when fine', () => {
-    const on1m = { x: 0, y: -16, z: 0, size: 16 };
-    // A 1/2 m voxel centred on x = 5.3, z = 9.9 -> corner x = 1, z = 6 (not the aligned 0 / 8).
-    expect(placementBox(top(5.3, 9.9), on1m, 8, true)).toEqual({ x: 1, y: 0, z: 6, size: 8, valid: true });
-    expect(placementBox(top(5.3, 9.9), on1m, 8, false)).toEqual({ x: 0, y: 0, z: 8, size: 8, valid: true });
-    // Every whole-unit offset 0..8 is reachable for a 1/2 m voxel on a 1 m face.
+  it('places in 1/16 m steps centred on the hit point when fine, crossing gridlines freely', () => {
+    expect(placementBox(top(5.3, 9.9), on1m, 8, true)).toEqual({ x: 1, y: 0, z: 6, size: 8 });
+    // Near the block edge it now straddles the gridline (the server splits it).
+    expect(placementBox(top(15.8, 0.2), on1m, 8, true)).toEqual({ x: 12, y: 0, z: -4, size: 8 });
+    // Every 1/16 m position is reachable as the crosshair moves.
     const xs = new Set<number>();
     for (let px = 0; px < 16; px += 0.25) xs.add(placementBox(top(px, 8), on1m, 8, true).x);
-    expect([...xs].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
-    // Near the block edge it is pushed back inside rather than overhanging.
-    expect(placementBox(top(15.8, 0.2), on1m, 8, true)).toMatchObject({ x: 8, z: 0, valid: true });
+    expect([...xs].sort((a, b) => a - b)).toEqual([-4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
   });
 
-  it('keeps fine placement inside the block of the hit point, including negative coordinates', () => {
-    const block = { x: -16, y: -16, z: -32, size: 16 };
-    for (let px = -16; px < 0; px += 0.5) {
-      const b = placementBox(top(px, -20.3), block, 5, true);
-      expect(b.valid).toBe(true);
-      expect(b.x).toBeGreaterThanOrEqual(-16);
-      expect(b.x + 5).toBeLessThanOrEqual(0);
-      expect(b.z).toBeGreaterThanOrEqual(-32);
-      expect(b.z + 5).toBeLessThanOrEqual(-16);
+  it('aligned placement never crosses a gridline for the standard sizes', () => {
+    for (const size of [1, 2, 4, 8, 16]) {
+      for (let px = -16; px < 16; px += 0.37) {
+        const b = placementBox(top(px, -px), { x: Math.floor(px / 16) * 16, y: -16, z: Math.floor(-px / 16) * 16, size: 16 }, size);
+        expect(Math.floor(b.x / 16)).toBe(Math.floor((b.x + size - 1) / 16));
+        expect(Math.floor(b.z / 16)).toBe(Math.floor((b.z + size - 1) / 16));
+      }
     }
   });
 
-  it('is invalid when it would cross a 1 m gridline', () => {
-    // On top of a 1/16 m voxel at y = 4: a 16-unit voxel from y = 5 would cross y = 16.
-    const h: RayHit = { cell: [0, 4, 0], normal: [0, 1, 0], point: [0.5, 5, 0.5], distance: 1 };
-    expect(placementBox(h, { x: 0, y: 4, z: 0, size: 1 }, 16).valid).toBe(false);
-    expect(placementBox(h, { x: 0, y: 4, z: 0, size: 1 }, 11).valid).toBe(true);
+  it('may cross a gridline along the normal (on top of a small voxel near the top of a block)', () => {
+    const h: RayHit = { cell: [0, 12, 0], normal: [0, 1, 0], point: [0.5, 13, 0.5], distance: 1 };
+    expect(placementBox(h, { x: 0, y: 12, z: 0, size: 1 }, 8)).toEqual({ x: 0, y: 13, z: 0, size: 8 });
   });
 });
 
@@ -110,6 +104,10 @@ describe('digBox', () => {
   it('sits just below the face aimed at, aligned or fine', () => {
     expect(digBox(top(5.2, 9.9), { x: 0, y: -16, z: 0, size: 16 }, 8)).toEqual({ x: 0, y: -8, z: 8, size: 8 });
     expect(digBox(top(5.3, 9.9), { x: 0, y: -16, z: 0, size: 16 }, 8, true)).toEqual({ x: 1, y: -8, z: 6, size: 8 });
+  });
+
+  it('slides freely across gridlines sideways when fine', () => {
+    expect(digBox(top(15.8, 0.2), { x: 0, y: -16, z: 0, size: 16 }, 8, true)).toEqual({ x: 12, y: -8, z: -4, size: 8 });
   });
 
   it('goes into the solid for sideways and downward faces too', () => {

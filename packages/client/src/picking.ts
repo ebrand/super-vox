@@ -1,4 +1,3 @@
-import { BLOCK_SIZE, voxelFitsInBlock } from '@super-vox/shared';
 
 /** Solidity of a world unit cell: true/false, or undefined if its chunk isn't loaded. */
 export type SolidAt = (x: number, y: number, z: number) => boolean | undefined;
@@ -73,38 +72,37 @@ export interface Box {
 }
 
 /**
- * Where a new voxel of `size` goes when placed on the face of `target` that
- * `hit` points at: flush against that face and, on the face's plane, inside
- * the 1 m block the hit point is in. Aligned placement snaps to multiples of
- * the size within that block; `fine` placement centres the voxel on the hit
- * point in 1/16 m steps. `valid` is false if it would cross a 1 m gridline
- * (occupancy is checked separately).
+ * The cube's position on the face's plane: aligned snaps to multiples of the
+ * size (which never crosses a 1 m gridline for the standard sizes), fine
+ * centres it on the hit point in 1/16 m steps (and may cross gridlines).
  */
-export function placementBox(hit: RayHit, target: Box, size: number, fine = false): Box & { valid: boolean } {
+function facePosition(point: number, size: number, fine: boolean): number {
+  return fine ? Math.floor(point - size / 2 + 0.5) : Math.floor(point / size) * size;
+}
+
+/**
+ * Where a new voxel of `size` goes when placed on the face of `target` that
+ * `hit` points at: flush against that face, and on the face's plane per
+ * facePosition. It may cross 1 m gridlines (servers split it into pieces);
+ * occupancy is checked separately.
+ */
+export function placementBox(hit: RayHit, target: Box, size: number, fine = false): Box {
   const axis = hit.normal[0] !== 0 ? 0 : hit.normal[1] !== 0 ? 1 : 2;
   const targetMin = [target.x, target.y, target.z];
   const corner = [0, 0, 0];
   for (let a = 0; a < 3; a++) {
-    if (a === axis) {
-      corner[a] = hit.normal[a]! > 0 ? targetMin[a]! + target.size : targetMin[a]! - size;
-      continue;
-    }
-    // Work within the 1 m block containing the hit point, keeping the voxel inside it.
-    const p = Math.min(Math.floor(hit.point[a]!), targetMin[a]! + target.size - 1);
-    const blockStart = Math.floor(p / BLOCK_SIZE) * BLOCK_SIZE;
-    const start = fine
-      ? Math.floor(hit.point[a]! - size / 2 + 0.5) // centred on the hit point, whole units
-      : blockStart + Math.floor((p - blockStart) / size) * size;
-    corner[a] = Math.max(blockStart, Math.min(start, blockStart + BLOCK_SIZE - size));
+    if (a === axis) corner[a] = hit.normal[a]! > 0 ? targetMin[a]! + target.size : targetMin[a]! - size;
+    // Keep the hit point inside the target so aligned snapping uses the right cell at its edge.
+    else corner[a] = facePosition(Math.min(hit.point[a]!, targetMin[a]! + target.size - 1e-6), size, fine);
   }
   const [x, y, z] = corner as [number, number, number];
-  return { x, y, z, size, valid: voxelFitsInBlock(x, y, z, size) };
+  return { x, y, z, size };
 }
 
 /**
  * The dig box: a cube of `size` just behind the face `hit` points at (inside
- * the solid), positioned on the face's plane like placementBox (aligned or
- * fine). Unlike a voxel it may cross 1 m gridlines.
+ * the solid), positioned on the face's plane like placementBox. It is a
+ * region, not a voxel, so it may cross 1 m gridlines in any direction.
  */
 export function digBox(hit: RayHit, target: Box, size: number, fine = false): Box {
   const outside = placementBox(hit, target, size, fine);

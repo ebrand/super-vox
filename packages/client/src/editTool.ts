@@ -34,8 +34,8 @@ const MATERIALS = [
 /** Sizes the tool offers: the five that tile a 1 m block (1/16, 1/8, 1/4, 1/2, 1 m). */
 export const TOOL_SIZES = GRID_SIZES;
 
-/** Tool modes, in the order Tab cycles through them. */
-export const MODES = ['off', 'dig', 'place'] as const;
+/** Tool modes, in the order Tab cycles through them; the first is the default. */
+export const MODES = ['hybrid', 'dig', 'place'] as const;
 export type Mode = (typeof MODES)[number];
 
 /** "1 m", "1/2 m", ... "1/16 m" for a size in units. */
@@ -49,13 +49,24 @@ export interface Modifiers {
   alt: boolean;
 }
 
+/** The standard tool size closest to `size` (ties go to the smaller). */
+function nearestToolSize(size: number): number {
+  return TOOL_SIZES.reduce((best, s) => (Math.abs(s - size) < Math.abs(best - size) ? s : best));
+}
+
 const floorDiv = (v: number, m: number) => Math.floor(v / m);
 const mod = (v: number, m: number) => ((v % m) + m) % m;
 
 /**
  * Crosshair voxel editing, in three modes cycled with Tab:
  *
- * - off: no editing; clicks only capture the mouse.
+ * - hybrid (default, Minecraft-like): left click removes the voxel you aim
+ *   at, right click places a voxel the same size as it against the face you
+ *   aim at, snapped to that size so voxels stack simply. Command+wheel (or
+ *   [ ]) picks a different size for the next placement, previewed while
+ *   Command is held. Otherwise only the target
+ *   outline shows. This is also where interaction with special voxels will
+ *   go (e.g. right click opens a door instead of placing).
  * - dig: left click removes the voxel you aim at. Holding Command shows the
  *   dig box (the selected size, just inside the surface you aim at): its
  *   entry face is marked on that surface and its volume shows faintly through
@@ -64,13 +75,15 @@ const mod = (v: number, m: number) => ((v % m) + m) % m;
  *   at; left click places it.
  *
  * In dig and place, Option positions the box in 1/16 m steps instead of
- * snapping to its size, middle click breaks the aimed voxel into the next
+ * snapping to its size. In every mode, middle click breaks the aimed voxel into the next
  * smaller size, B breaks it into the selected size, X removes it. The size
  * (one of the five standard sizes) changes with Command+wheel or [ ], the
  * material with 1-3. The server applies edits and sends back changed chunks.
  */
 export class EditTool {
-  mode: Mode = 'off';
+  mode: Mode = MODES[0];
+  /** Called whenever the mode changes (and once when set), e.g. to update an on-screen tag. */
+  onModeChange: ((mode: Mode) => void) | null = null;
   /** Index into TOOL_SIZES of the selected size. */
   private sizeIndex = TOOL_SIZES.indexOf(4);
   materialIndex = 0;
@@ -93,6 +106,8 @@ export class EditTool {
   private readonly onKeyUp: (e: KeyboardEvent) => void;
   private readonly onBlur: () => void;
   private readonly modifiers: Modifiers = { meta: false, alt: false };
+  /** Hybrid mode: size chosen for the next placement, overriding "match the target". */
+  private hybridSize: number | null = null;
   /** Accumulated wheel movement not yet turned into a size step. */
   private wheelTravel = 0;
   private lastWheelAt = -Infinity;
@@ -156,35 +171,61 @@ export class EditTool {
     this.sizeIndex = best;
   }
 
-  /** Steps the size up (+1) or down (-1) through TOOL_SIZES, wrapping or stopping at the ends. */
+  /**
+   * Size of a voxel placed against `target`. In hybrid mode: a size chosen
+   * with Command+wheel or [ ] for the next placement, else the target's own
+   * size (so voxels stack like-for-like; the nearest standard size if it
+   * isn't one). Otherwise the selected size.
+   */
+  placeSize(target: Box): number {
+    if (this.mode !== 'hybrid') return this.size;
+    if (this.hybridSize !== null) return this.hybridSize;
+    return nearestToolSize(target.size);
+  }
+
+  /**
+   * Steps the size up (+1) or down (-1) through TOOL_SIZES, wrapping or
+   * stopping at the ends. In hybrid mode this picks the size of the next
+   * placement, starting from the size it would otherwise have.
+   */
   stepSize(dir: 1 | -1, wrap: boolean): void {
     const n = TOOL_SIZES.length;
-    const next = this.sizeIndex + dir;
-    this.sizeIndex = wrap ? (next + n) % n : Math.max(0, Math.min(n - 1, next));
+    const from =
+      this.mode === 'hybrid'
+        ? TOOL_SIZES.indexOf(this.hybridSize ?? (this.target ? nearestToolSize(this.target.size) : this.size))
+        : this.sizeIndex;
+    const next = from + dir;
+    const index = wrap ? (next + n) % n : Math.max(0, Math.min(n - 1, next));
+    if (this.mode === 'hybrid') this.hybridSize = TOOL_SIZES[index]!;
+    else this.sizeIndex = index;
   }
 
   get material(): (typeof MATERIALS)[number] {
     return MATERIALS[this.materialIndex]!;
   }
 
-  /** Switches to the next mode (off -> dig -> place -> off). */
+  /** Switches to the next mode (hybrid -> dig -> place -> hybrid). */
   cycleMode(): void {
     this.mode = MODES[(MODES.indexOf(this.mode) + 1) % MODES.length]!;
+    this.hybridSize = null;
+    this.onModeChange?.(this.mode);
   }
 
   /** Re-aims from the camera; call every frame. */
   update(): void {
     this.target = this.placement = this.dig = null;
-    if (this.mode !== 'off') {
+    {
       const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
       const dir = this.camera.getWorldDirection(new THREE.Vector3());
       const hit = raycastVoxels([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], REACH, this.solidAt);
       this.target = hit ? this.voxelBox(hit.cell) : null;
       if (hit && this.target) {
-        const fine = this.modifiers.alt;
-        if (this.mode === 'place') {
-          const p = placementBox(hit, this.target, this.size, fine);
-          const reason = p.valid ? this.occupied(p) : 'would cross a 1 m gridline';
+        // Hybrid keeps things simple: always snapped to the size.
+        const fine = this.mode !== 'hybrid' && this.modifiers.alt;
+        if (this.mode === 'place' || this.mode === 'hybrid') {
+          const p = placementBox(hit, this.target, this.placeSize(this.target), fine);
+          // Crossing 1 m gridlines is fine: the server places it as block-sized pieces.
+          const reason = this.occupied(p);
           this.placement = { ...p, valid: !reason, reason };
         } else if (this.modifiers.meta) {
           this.dig = digBox(hit, this.target, this.size, fine);
@@ -193,28 +234,32 @@ export class EditTool {
       }
     }
     this.show(this.outline, this.target, 1.004);
-    this.show(this.preview, this.placement, 0.999);
+    // Hybrid previews only while Command is held (when choosing a size), like Minecraft otherwise.
+    const preview = this.mode === 'place' || (this.mode === 'hybrid' && this.modifiers.meta);
+    this.show(this.preview, preview ? this.placement : null, 0.999);
     this.show(this.digPreview, this.dig, 1.002);
     this.showEntry();
     this.previewMaterial.color.set(this.placement?.valid ? 0x40ff60 : 0xff4040);
   }
 
   /**
-   * A mouse button pressed while the mouse is captured: 0 = left, 1 = middle.
-   * `mods` are the modifier keys held at that moment.
+   * A mouse button pressed while the mouse is captured: 0 = left, 1 = middle,
+   * 2 = right. `mods` are the modifier keys held at that moment.
    */
   click(button: number, mods: Modifiers = this.modifiers): void {
     this.modifiers.meta = mods.meta;
     this.modifiers.alt = mods.alt;
-    if (this.mode === 'off') return;
     this.update(); // aim with the modifiers as they are right now
     if (button === 1) return this.breakSmaller();
+    if (this.mode === 'hybrid') {
+      // Where interactive voxels (doors, TNT, ...) will take over these buttons.
+      if (button === 0) this.remove();
+      else if (button === 2) this.place();
+      return;
+    }
     if (button !== 0) return;
     if (this.mode === 'place') {
-      if (!this.placement) return;
-      if (!this.placement.valid) return this.say(`can't place: ${this.placement.reason}`);
-      const { x, y, z, size } = this.placement;
-      this.submit({ op: 'place', x, y, z, size, material: this.material.id }, 'place');
+      this.place();
     } else if (this.dig) {
       const { x, y, z, size } = this.dig;
       this.submit({ op: 'removeBox', x, y, z, size }, 'dig');
@@ -257,16 +302,22 @@ export class EditTool {
 
   hudLines(): string {
     const msg = performance.now() < this.messageUntil ? `\n${this.message}` : '';
-    if (this.mode === 'off') return 'mode: off (Tab: dig / place)' + msg;
-    const size = sizeLabel(this.size);
+    const size =
+      this.mode === 'hybrid'
+        ? this.hybridSize !== null
+          ? `next place ${sizeLabel(this.hybridSize)}`
+          : 'places matching size'
+        : sizeLabel(this.size);
     const target = this.target ? `aiming at a ${sizeLabel(this.target.size)} voxel` : 'nothing in reach';
     const actions =
-      this.mode === 'dig'
-        ? 'click: remove · ⌘+click: remove everything in the box (⌘ shows it)'
-        : 'click: place';
+      this.mode === 'hybrid'
+        ? 'click: remove · right-click: place (⌘+wheel: pick size, ⌘ shows it)'
+        : this.mode === 'dig'
+          ? 'click: remove · ⌘+click: remove everything in the box (⌘ shows it) · ⌥: 1/16 m steps'
+          : 'click: place · ⌥: 1/16 m steps';
     return (
-      `mode: ${this.mode} (Tab) · ${size} ${this.material.name} · ${target}\n` +
-      `${actions} · ⌥: 1/16 m steps · middle-click: break smaller · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-3: material` +
+      `mode: ${this.mode} (Tab: hybrid / dig / place) · ${size} ${this.material.name} · ${target}\n` +
+      `${actions} · middle-click: break smaller · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-3: material` +
       msg
     );
   }
@@ -303,7 +354,6 @@ export class EditTool {
     if (e.code === 'BracketLeft') this.stepSize(-1, false);
     else if (e.code === 'BracketRight') this.stepSize(1, false);
     else if (e.code === 'Digit1' || e.code === 'Digit2' || e.code === 'Digit3') this.materialIndex = Number(e.code.slice(5)) - 1;
-    else if (this.mode === 'off') return;
     else if (e.code === 'KeyX') this.remove();
     else if (e.code === 'KeyB' && this.target) {
       if (!breakSizesFor(this.target.size).includes(this.size)) {
@@ -313,6 +363,15 @@ export class EditTool {
       }
       this.submit({ op: 'break', x: this.target.x, y: this.target.y, z: this.target.z, pieceSize: this.size }, 'break');
     }
+  }
+
+  private place(): void {
+    if (!this.placement) return;
+    if (!this.placement.valid) return this.say(`can't place: ${this.placement.reason}`);
+    const { x, y, z, size } = this.placement;
+    this.submit({ op: 'place', x, y, z, size, material: this.material.id }, 'place');
+    // A size chosen in hybrid applies to one placement; then it matches the target again.
+    if (this.mode === 'hybrid') this.hybridSize = null;
   }
 
   private breakSmaller(): void {
