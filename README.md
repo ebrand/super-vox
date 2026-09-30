@@ -28,9 +28,16 @@ tolerance per page load with `?tolerance=N` (integer 0..16), e.g.
 http://localhost:5173/?tolerance=0. The overlay shows the tolerance in use and
 how long the view took to settle. Production servers ignore the override.
 
+## Controls
+
+Drag with the left or right mouse button to look around. W/A/S/D move along
+the ground in the direction you face, Space or E rises, Q or C descends, Shift
+moves 5x faster, and the mouse wheel changes the base speed. There is no
+collision yet: you can fly through terrain.
+
 ## Distant terrain
 
-Around the orbit focus the client renders full-detail voxel chunks within
+Around the camera the client renders full-detail voxel chunks within
 `?detail=N` chunks (default 4). Beyond that, out to `?view=M` metres (default
 2048), it renders low-detail tiles chosen by a quadtree: 32 m tiles next to
 the full-detail area, doubling in size with distance up to 1 km. A tile is a

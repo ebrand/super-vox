@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CHUNK_SIZE, UNITS_PER_METER, isValidTolerance, unitsToMeters, type WorldConfig } from '@super-vox/shared';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
+import { FlyControls } from './flyControls.js';
 import { selectLod } from './lod.js';
 import { TileManager } from './tileManager.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
@@ -40,11 +40,7 @@ scene.background = sky;
 scene.fog = new THREE.Fog(sky, view * 0.4, view);
 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, view * 1.5);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.screenSpacePanning = false;
-controls.maxPolarAngle = Math.PI * 0.49;
-controls.listenToKeyEvents(window);
-controls.keyPanSpeed = 30;
+const controls = new FlyControls(camera, renderer.domElement);
 
 const material = createVoxelMaterial();
 let world: WorldConfig | null = null;
@@ -61,8 +57,9 @@ let settledMs: number | null = null;
 
 function updateLod(force = false): void {
   if (!world || !chunks || !tiles) return;
-  const fx = controls.target.x * UNITS_PER_METER;
-  const fz = controls.target.z * UNITS_PER_METER;
+  // Stream terrain around the camera.
+  const fx = camera.position.x * UNITS_PER_METER;
+  const fz = camera.position.z * UNITS_PER_METER;
   const column = `${Math.floor(fx / CHUNK_SIZE)},${Math.floor(fz / CHUNK_SIZE)}`;
   if (!force && column === lodColumn) return;
   lodColumn = column;
@@ -103,13 +100,11 @@ connection = connect({
           `\ndetail ${detail} chunks, view ${view} m`;
         if (!chunks) {
           world = w;
-          // Start at the server's spawn point, looking at the ground.
-          const sx = unitsToMeters(msg.spawn.x);
-          const sy = unitsToMeters(msg.spawn.y);
-          const sz = unitsToMeters(msg.spawn.z);
-          controls.target.set(sx, sy, sz);
-          camera.position.set(sx + 12, sy + 10, sz + 12);
-          controls.update();
+          // Start above and behind the spawn point, looking at it.
+          const spawn = new THREE.Vector3(unitsToMeters(msg.spawn.x), unitsToMeters(msg.spawn.y), unitsToMeters(msg.spawn.z));
+          camera.position.set(spawn.x, spawn.y + 12, spawn.z + 24);
+          controls.lookAt(spawn);
+          controls.minY = unitsToMeters(w.minYUnits) + 1;
           const send = (m: Parameters<NonNullable<typeof connection>['send']>[0]) => connection?.send(m);
           pool = new MeshWorkerPool();
           chunks = new ChunkManager(w, scene, material, send, pool, 64, onProgress);
@@ -157,11 +152,12 @@ let lastFpsTime = performance.now();
 function updateHud(): void {
   const c = chunks?.stats;
   const t = tiles?.stats;
-  const f = controls.target;
+  const f = camera.position;
   const mb = (b: number) => (b / 2 ** 20).toFixed(0);
   statusEl.textContent =
     `${worldLine || 'connecting…'}\n` +
-    `focus ${f.x.toFixed(1)}, ${f.y.toFixed(1)}, ${f.z.toFixed(1)} m\n` +
+    `camera ${f.x.toFixed(1)}, ${f.y.toFixed(1)}, ${f.z.toFixed(1)} m, speed ${controls.speed.toFixed(0)} m/s\n` +
+    'drag: look · WASD: move · Space/E: up · Q/C: down · Shift: 5x · wheel: speed\n' +
     (c && t
       ? `chunks ${c.loaded} loaded (${c.columns} columns), ${c.inFlight} in flight, ${c.queued} queued, ${c.meshing} meshing\n` +
         `tiles ${t.loaded}/${t.tiles}, ${t.inFlight} in flight, ${t.queued} queued, ${t.meshing} meshing\n` +
@@ -173,8 +169,12 @@ function updateHud(): void {
     `${fps.toFixed(0)} fps`;
 }
 
+let lastFrame = performance.now();
+
 renderer.setAnimationLoop(() => {
-  controls.update();
+  const frameStart = performance.now();
+  controls.update((frameStart - lastFrame) / 1000);
+  lastFrame = frameStart;
   updateLod();
   renderer.render(scene, camera);
 
