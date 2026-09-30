@@ -88,3 +88,16 @@ export function chunkOf(world: WorldConfig, x: number, y: number, z: number): Ch
 export function chunkKey(c: ChunkCoord): string {
   return `${c.cx},${c.cy},${c.cz}`;
 }
+
+/**
+ * Validates a chunk coordinate against the world and returns it with X
+ * normalized (for wrapping worlds), or null if it lies outside the world.
+ */
+export function resolveChunk(world: WorldConfig, c: ChunkCoord): ChunkCoord | null {
+  const chunksX = world.widthUnits / CHUNK_SIZE;
+  const cx = world.wrapX ? ((c.cx % chunksX) + chunksX) % chunksX : c.cx;
+  if (cx < 0 || cx >= chunksX) return null;
+  if (c.cz < 0 || c.cz * CHUNK_SIZE >= world.depthUnits) return null;
+  if ((c.cy + 1) * CHUNK_SIZE <= world.minYUnits || c.cy * CHUNK_SIZE >= world.maxYUnits) return null;
+  return { cx, cy: c.cy, cz: c.cz };
+}

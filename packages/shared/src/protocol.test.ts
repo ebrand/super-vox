@@ -17,4 +17,18 @@ describe('protocol', () => {
     const msg = decodeClientMessage('{"type":"hello","protocolVersion":1,"admin":true}');
     expect(msg).toEqual({ type: 'hello', protocolVersion: 1 });
   });
+
+  it('validates chunk requests', () => {
+    expect(decodeClientMessage('{"type":"requestChunk","cx":1,"cy":-2,"cz":3}')).toEqual({
+      type: 'requestChunk', cx: 1, cy: -2, cz: 3,
+    });
+    for (const raw of [
+      '{"type":"requestChunk","cx":1,"cy":2}',
+      '{"type":"requestChunk","cx":1.5,"cy":2,"cz":3}',
+      '{"type":"requestChunk","cx":"1","cy":2,"cz":3}',
+      '{"type":"requestChunk","cx":1e20,"cy":2,"cz":3}',
+    ]) {
+      expect(decodeClientMessage(raw)).toBeNull();
+    }
+  });
 });

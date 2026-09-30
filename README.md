@@ -3,6 +3,13 @@
 Multiplayer voxel world. Voxels range from 1/16 m to 1 m in 1/16 m steps; a
 voxel can be broken into smaller voxels whose size evenly divides its own.
 
+## Voxel rules
+
+- A voxel never crosses a 1 m gridline: it lies entirely inside one 1 m block.
+- Placed voxels may be any of the 16 sizes (1/16 m to 1 m).
+- Generated terrain uses one of five sizes, the ones that tile a 1 m block:
+  1/16, 1/8, 1/4, 1/2 or 1 m (`WORLD_RESOLUTION` = 1, 2, 4, 8 or 16 units).
+
 ## Layout
 
 | Package | Role |
@@ -26,7 +33,7 @@ voxel can be broken into smaller voxels whose size evenly divides its own.
 
 ```sh
 npm install
-npm run dev:server   # http://127.0.0.1:8787
+npm run dev:server   # http://127.0.0.1:8787 (WORLD_RESOLUTION=1|2|4|8|16, default 16)
 npm run dev:client   # http://localhost:5173 (proxies /api and /ws to the server)
 npm test
 npm run typecheck
