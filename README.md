@@ -39,7 +39,8 @@ collision yet: you can fly through terrain.
 Editing works on the voxel under the crosshair (within 32 m) while the mouse
 is captured: click (or X) removes it; middle-click breaks it into the next
 smaller size that divides it (1 m -> 8 x 1/2 m -> 64 x 1/4 m ...); right-click places a voxel of the selected size against the face you aim at
-(hold Command to see where it will go), and B breaks it into pieces of the selected size (which must divide it).
+(hold Command to see where it will go; hold Option to position it in 1/16 m
+steps instead of snapping to its size), and B breaks it into pieces of the selected size (which must divide it).
 Command + mouse wheel (or `[` and `]`) chooses the size from the five
 standard sizes (1/16, 1/8, 1/4, 1/2, 1 m; the wheel wraps around), 1-3 the material (stone, dirt,
 grass). The server validates and applies edits, sends changed chunks to every

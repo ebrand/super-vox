@@ -74,11 +74,13 @@ export interface Box {
 
 /**
  * Where a new voxel of `size` goes when placed on the face of `target` that
- * `hit` points at: flush against that face, and on the face's plane snapped
- * to the size's grid inside the 1 m block the hit point is in. `valid` is
- * false if it would cross a 1 m gridline (occupancy is checked separately).
+ * `hit` points at: flush against that face and, on the face's plane, inside
+ * the 1 m block the hit point is in. Aligned placement snaps to multiples of
+ * the size within that block; `fine` placement centres the voxel on the hit
+ * point in 1/16 m steps. `valid` is false if it would cross a 1 m gridline
+ * (occupancy is checked separately).
  */
-export function placementBox(hit: RayHit, target: Box, size: number): Box & { valid: boolean } {
+export function placementBox(hit: RayHit, target: Box, size: number, fine = false): Box & { valid: boolean } {
   const axis = hit.normal[0] !== 0 ? 0 : hit.normal[1] !== 0 ? 1 : 2;
   const targetMin = [target.x, target.y, target.z];
   const corner = [0, 0, 0];
@@ -87,11 +89,13 @@ export function placementBox(hit: RayHit, target: Box, size: number): Box & { va
       corner[a] = hit.normal[a]! > 0 ? targetMin[a]! + target.size : targetMin[a]! - size;
       continue;
     }
-    // Snap within the 1 m block containing the hit point, keeping the voxel inside it.
+    // Work within the 1 m block containing the hit point, keeping the voxel inside it.
     const p = Math.min(Math.floor(hit.point[a]!), targetMin[a]! + target.size - 1);
     const blockStart = Math.floor(p / BLOCK_SIZE) * BLOCK_SIZE;
-    const snapped = blockStart + Math.floor((p - blockStart) / size) * size;
-    corner[a] = Math.min(snapped, blockStart + BLOCK_SIZE - size);
+    const start = fine
+      ? Math.floor(hit.point[a]! - size / 2 + 0.5) // centred on the hit point, whole units
+      : blockStart + Math.floor((p - blockStart) / size) * size;
+    corner[a] = Math.max(blockStart, Math.min(start, blockStart + BLOCK_SIZE - size));
   }
   const [x, y, z] = corner as [number, number, number];
   return { x, y, z, size, valid: voxelFitsInBlock(x, y, z, size) };

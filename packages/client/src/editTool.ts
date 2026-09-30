@@ -38,7 +38,8 @@ const mod = (v: number, m: number) => ((v % m) + m) % m;
  * Crosshair voxel editing: left click or X removes the voxel you aim at;
  * middle click breaks it into the next smaller size that divides it
  * (1 m -> 1/2 m -> 1/4 m ...); right click places a voxel of the selected
- * size against the face you aim at (a preview shows while Command is held);
+ * size against the face you aim at (a preview shows while Command is held;
+ * holding Option moves it in 1/16 m steps instead of snapping to its size);
  * B breaks the aimed voxel into pieces of the selected size. [ and ] change
  * the size (1..16 units), 1-3 the material. The server applies edits and
  * sends back the changed chunks.
@@ -69,6 +70,8 @@ export class EditTool {
   private readonly onBlur: () => void;
   /** The placement preview is only shown while Command (Meta) is held. */
   private showPreview = false;
+  /** While Option (Alt) is held, placement moves in 1/16 m steps instead of snapping to the size. */
+  private finePlacement = false;
   /** Accumulated wheel movement not yet turned into a size step. */
   private wheelTravel = 0;
   private lastWheelAt = -Infinity;
@@ -87,14 +90,19 @@ export class EditTool {
     scene.add(this.outline, this.preview);
     this.onKeyDown = (e) => {
       this.showPreview = e.metaKey;
+      this.finePlacement = e.altKey;
+      // Keep Alt from focusing a browser menu bar on some platforms.
+      if (e.code === 'AltLeft' || e.code === 'AltRight') e.preventDefault();
       this.handleKey(e);
     };
     this.onKeyUp = (e) => {
       this.showPreview = e.metaKey;
+      this.finePlacement = e.altKey;
       if (!e.metaKey) this.wheelTravel = 0;
     };
     this.onBlur = () => {
       this.showPreview = false;
+      this.finePlacement = false;
     };
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
@@ -132,7 +140,7 @@ export class EditTool {
     const hit = raycastVoxels([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], REACH, this.solidAt);
     this.target = hit ? this.voxelBox(hit.cell) : null;
     if (hit && this.target) {
-      const p = placementBox(hit, this.target, this.size);
+      const p = placementBox(hit, this.target, this.size, this.finePlacement);
       let reason = p.valid ? '' : 'would cross a 1 m gridline';
       if (!reason) reason = this.occupied(p);
       this.placement = { ...p, valid: !reason, reason };
@@ -200,7 +208,7 @@ export class EditTool {
     const msg = performance.now() < this.messageUntil ? `\n${this.message}` : '';
     return (
       `tool: ${size} ${this.material.name} · ${target}\n` +
-      'click/X: remove · middle-click: break smaller · right-click: place (hold ⌘ to preview) · B: break to size · ⌘+wheel or [ ]: size · 1-3: material' +
+      'click/X: remove · middle-click: break smaller · right-click: place (⌘ preview, ⌥ fine 1/16 m) · B: break to size · ⌘+wheel or [ ]: size · 1-3: material' +
       msg
     );
   }

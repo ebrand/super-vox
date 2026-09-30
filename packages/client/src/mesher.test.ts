@@ -291,6 +291,38 @@ describe('adaptive terrain meshing', () => {
   }
 });
 
+describe('voxel grid phase', () => {
+  it('gives an offset voxel the phase of its block-local position on each face', () => {
+    // A 1/2 m voxel at block-local (4, 3, 5): phases x 4, y 3, z 5.
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    chunk.blocks[blockIndex(2, 0, 1)] = { kind: 'voxels', packed: Uint16Array.of(packVoxel(4, 3, 5, 8)), materials: Uint16Array.of(1) };
+    const quads = visibleFaces(chunk, NO_NEIGHBORS);
+    expect(quads).toHaveLength(6);
+    for (const q of quads) {
+      const axis = DIRS[q.dir]!.axis;
+      // Shader order: X faces (y, z), Y faces (x, z), Z faces (x, y).
+      const expected = axis === 0 ? [3, 5] : axis === 1 ? [4, 5] : [4, 3];
+      expect([q.pa, q.pb]).toEqual(expected);
+    }
+  });
+
+  it('never merges faces whose voxel grids are out of phase', () => {
+    const base = { dir: 2, plane: 16, v: 0, du: 8, dv: 8, material: 1, size: 8 } as const;
+    const merged = mergeFaces([
+      { ...base, u: 0, pa: 0, pb: 0 },
+      { ...base, u: 8, pa: 4, pb: 0 },
+    ]);
+    expect(merged).toHaveLength(2);
+    expect(mergeFaces([{ ...base, u: 0 }, { ...base, u: 8 }])).toHaveLength(1);
+  });
+
+  it('keeps aligned voxels at phase 0', () => {
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    chunk.blocks[0] = { kind: 'voxels', packed: Uint16Array.of(packVoxel(8, 0, 8, 8), packVoxel(0, 12, 4, 4)), materials: Uint16Array.of(1, 2) };
+    for (const q of visibleFaces(chunk, NO_NEIGHBORS)) expect([q.pa, q.pb]).toEqual([0, 0]);
+  });
+});
+
 describe('packQuads', () => {
   const NORMALS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 
@@ -305,14 +337,14 @@ describe('packQuads', () => {
       const e1 = [b[0]! - a[0]!, b[1]! - a[1]!, b[2]! - a[2]!];
       const e2 = [c[0]! - a[0]!, c[1]! - a[1]!, c[2]! - a[2]!];
       const cross = [e1[1]! * e2[2]! - e1[2]! * e2[1]!, e1[2]! * e2[0]! - e1[0]! * e2[2]!, e1[0]! * e2[1]! - e1[1]! * e2[0]!];
-      const n = NORMALS[buf.faces[indices[t]! * 4]!]!;
+      const n = NORMALS[buf.faces[indices[t]! * 4]! & 7]!;
       expect(cross[0]! * n[0]! + cross[1]! * n[1]! + cross[2]! * n[2]!).toBeGreaterThan(0);
     }
   });
 
   it('round-trips every quad field through the packed buffers', () => {
     const quads = mergeFaces(visibleFaces(randomChunk(22), randomNeighbors(22)));
-    quads.push({ dir: 4, plane: 256, u: 0, v: 0, du: 256, dv: 256, material: 0x1234, size: 16 });
+    quads.push({ dir: 4, plane: 256, u: 0, v: 0, du: 256, dv: 256, material: 0x1234, size: 16, pa: 15, pb: 7 });
     const buf = packQuads(quads);
     const U = [1, 2, 0], V = [2, 0, 1];
     quads.forEach((q, qi) => {
@@ -323,7 +355,9 @@ describe('packQuads', () => {
       expect([Math.min(...us), Math.max(...us), Math.min(...ws), Math.max(...ws)]).toEqual([q.u, q.u + q.du, q.v, q.v + q.dv]);
       for (let k = 0; k < 4; k++) {
         const f = buf.faces.subarray((qi * 4 + k) * 4, (qi * 4 + k) * 4 + 4);
-        expect([f[0], f[1], f[2]! | (f[3]! << 8)]).toEqual([q.dir, q.size, q.material]);
+        expect([f[0]! & 7, (f[0]! >> 3) + 1, f[1]! & 15, f[1]! >> 4, f[2]! | (f[3]! << 8)]).toEqual([
+          q.dir, q.size, q.pa ?? 0, q.pb ?? 0, q.material,
+        ]);
       }
     });
   });

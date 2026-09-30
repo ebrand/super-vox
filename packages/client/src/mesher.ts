@@ -43,6 +43,15 @@ export interface Quad {
   dv: number;
   material: MaterialId;
   size: number;
+  /**
+   * Where the voxel's own grid starts, as its block-local position modulo its
+   * size, on the face's two in-plane axes in shader order: (Y, Z) for X
+   * faces, (X, Z) for Y faces, (X, Y) for Z faces. Voxel edge lines are drawn
+   * from here, so voxels not aligned to their size draw correct edges.
+   * Omitted = 0 (aligned).
+   */
+  pa?: number;
+  pb?: number;
 }
 
 /** Chunks adjacent in each of the six directions; null means empty. */
@@ -180,8 +189,10 @@ function blockFaces(block: Exclude<Block, null>, nbBlocks: readonly Block[]): Qu
         const v = c[V_AXIS[axis]]!;
         const plane = c[axis]! + (sign > 0 ? size : 0);
         const layer = sign > 0 ? c[axis]! + size : c[axis]! - 1;
+        const pa = (axis === 0 ? y : x) % size;
+        const pb = (axis === 2 ? y : z) % size;
         const emit = (fu: number, fv: number, du: number, dv: number) =>
-          out.push({ dir: d, plane, u: fu, v: fv, du, dv, material, size });
+          out.push({ dir: d, plane, u: fu, v: fv, du, dv, material, size, pa, pb });
         if (layer >= 0 && layer < BLOCK_SIZE) emitUncoveredUnits(raster, axis, layer, u, v, size, emit);
         else forUncovered(nbBlocks[d]!, d, u, v, size, emit);
       }
@@ -288,7 +299,7 @@ function gcd(a: number, b: number): number {
 export function mergeFaces(faces: Quad[]): Quad[] {
   const groups = new Map<string, Quad[]>();
   for (const f of faces) {
-    const key = `${f.dir}|${f.plane}|${f.material}|${f.size}`;
+    const key = `${f.dir}|${f.plane}|${f.material}|${f.size}|${f.pa ?? 0}|${f.pb ?? 0}`;
     let g = groups.get(key);
     if (!g) groups.set(key, (g = []));
     g.push(f);
@@ -338,8 +349,10 @@ export function mergeFaces(faces: Quad[]): Quad[] {
 /**
  * Packed mesh data, 10 bytes per vertex and 4 vertices per quad:
  * - `positions`: chunk-local units (0..256) as u16 x, y, z.
- * - `faces`: u8 direction (0..5), voxel size (1..16), material low byte,
- *   material high byte; the same for all 4 vertices of a quad.
+ * - `faces`, the same for all 4 vertices of a quad:
+ *   byte 0: direction (0..5) | (voxel size - 1) << 3;
+ *   byte 1: grid phase a (0..15) | phase b << 4 (see Quad.pa/pb);
+ *   bytes 2-3: material, little-endian.
  * Corners are ordered so every quad is drawn with the same index pattern
  * (see quadIndexPattern) and faces outward.
  */
@@ -384,8 +397,8 @@ export function packQuads(quads: Quad[]): MeshBuffers {
       positions[vi * 3] = p[0]!;
       positions[vi * 3 + 1] = p[1]!;
       positions[vi * 3 + 2] = p[2]!;
-      faces[vi * 4] = q.dir;
-      faces[vi * 4 + 1] = q.size;
+      faces[vi * 4] = q.dir | ((q.size - 1) << 3);
+      faces[vi * 4 + 1] = (q.pa ?? 0) | ((q.pb ?? 0) << 4);
       faces[vi * 4 + 2] = q.material & 0xff;
       faces[vi * 4 + 3] = q.material >> 8;
     });

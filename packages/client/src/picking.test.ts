@@ -71,6 +71,31 @@ describe('placementBox', () => {
     expect(placementBox(side, { x: 10, y: 0, z: 0, size: 4 }, 2)).toEqual({ x: 8, y: 2, z: 0, size: 2, valid: true });
   });
 
+  it('places in 1/16 m steps centred on the hit point when fine', () => {
+    const on1m = { x: 0, y: -16, z: 0, size: 16 };
+    // A 1/2 m voxel centred on x = 5.3, z = 9.9 -> corner x = 1, z = 6 (not the aligned 0 / 8).
+    expect(placementBox(top(5.3, 9.9), on1m, 8, true)).toEqual({ x: 1, y: 0, z: 6, size: 8, valid: true });
+    expect(placementBox(top(5.3, 9.9), on1m, 8, false)).toEqual({ x: 0, y: 0, z: 8, size: 8, valid: true });
+    // Every whole-unit offset 0..8 is reachable for a 1/2 m voxel on a 1 m face.
+    const xs = new Set<number>();
+    for (let px = 0; px < 16; px += 0.25) xs.add(placementBox(top(px, 8), on1m, 8, true).x);
+    expect([...xs].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    // Near the block edge it is pushed back inside rather than overhanging.
+    expect(placementBox(top(15.8, 0.2), on1m, 8, true)).toMatchObject({ x: 8, z: 0, valid: true });
+  });
+
+  it('keeps fine placement inside the block of the hit point, including negative coordinates', () => {
+    const block = { x: -16, y: -16, z: -32, size: 16 };
+    for (let px = -16; px < 0; px += 0.5) {
+      const b = placementBox(top(px, -20.3), block, 5, true);
+      expect(b.valid).toBe(true);
+      expect(b.x).toBeGreaterThanOrEqual(-16);
+      expect(b.x + 5).toBeLessThanOrEqual(0);
+      expect(b.z).toBeGreaterThanOrEqual(-32);
+      expect(b.z + 5).toBeLessThanOrEqual(-16);
+    }
+  });
+
   it('is invalid when it would cross a 1 m gridline', () => {
     // On top of a 1/16 m voxel at y = 4: a 16-unit voxel from y = 5 would cross y = 16.
     const h: RayHit = { cell: [0, 4, 0], normal: [0, 1, 0], point: [0.5, 5, 0.5], distance: 1 };
