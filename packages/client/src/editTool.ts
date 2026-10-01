@@ -67,12 +67,12 @@ const mod = (v: number, m: number) => ((v % m) + m) % m;
  * Crosshair voxel editing, in three modes cycled with Tab:
  *
  * - hybrid (default, Minecraft-like): left click removes the voxel you aim
- *   at, right click places a voxel the same size as it against the face you
- *   aim at, snapped to that size so voxels stack simply. Command+wheel (or
- *   [ ]) picks a different size for the next placement, previewed while
- *   Command is held. Otherwise only the target
- *   outline shows. This is also where interaction with special voxels will
- *   go (e.g. right click opens a door instead of placing).
+ *   at, right click places a voxel of the hotbar's material, the same size as
+ *   the voxel aimed at, against its face, snapped to that size so voxels stack
+ *   simply. While Command is held, the wheel picks a different size (previewed)
+ *   for placements made with it still held; letting go matches the target
+ *   again. Otherwise only the target outline shows. Right click opens and
+ *   closes gates and doors, and places the fence, gate or door in hand.
  * - dig: left click removes the voxel you aim at. Holding Command shows the
  *   dig box (the selected size, just inside the surface you aim at): its
  *   entry face is marked on that surface and its volume shows faintly through
@@ -115,7 +115,7 @@ export class EditTool {
   private readonly onKeyUp: (e: KeyboardEvent) => void;
   private readonly onBlur: () => void;
   private readonly modifiers: Modifiers = { meta: false, alt: false };
-  /** Hybrid mode: size chosen for the next placement, overriding "match the target". */
+  /** Hybrid mode: size chosen with Command+wheel, overriding "match the target" while Command is held. */
   private hybridSize: number | null = null;
   /** Accumulated wheel movement not yet turned into a size step. */
   private wheelTravel = 0;
@@ -165,7 +165,8 @@ export class EditTool {
       if (!e.metaKey) this.wheelTravel = 0;
     };
     this.onBlur = () => {
-      this.modifiers.meta = this.modifiers.alt = false;
+      this.setMeta(false);
+      this.modifiers.alt = false;
     };
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
@@ -187,13 +188,14 @@ export class EditTool {
 
   /**
    * Size of a voxel placed against `target`. In hybrid mode: a size chosen
-   * with Command+wheel or [ ] for the next placement, else the target's own
+   * with Command+wheel while Command is still held, else the target's own
    * size (so voxels stack like-for-like; the nearest standard size if it
    * isn't one). Otherwise the selected size.
    */
   placeSize(target: Box): number {
     if (this.mode !== 'hybrid') return this.size;
-    if (this.hybridSize !== null) return this.hybridSize;
+    // A size chosen with Command+wheel holds while Command does.
+    if (this.hybridSize !== null && this.modifiers.meta) return this.hybridSize;
     return nearestToolSize(target.size);
   }
 
@@ -268,7 +270,7 @@ export class EditTool {
    * 2 = right. `mods` are the modifier keys held at that moment.
    */
   click(button: number, mods: Modifiers = this.modifiers): void {
-    this.modifiers.meta = mods.meta;
+    this.setMeta(mods.meta);
     this.modifiers.alt = mods.alt;
     this.update(); // aim with the modifiers as they are right now
     if (button === 1) return this.breakSmaller();
@@ -329,9 +331,9 @@ export class EditTool {
     const msg = performance.now() < this.messageUntil ? `\n${this.message}` : '';
     const size =
       this.mode === 'hybrid'
-        ? this.hybridSize !== null
-          ? `next place ${sizeLabel(this.hybridSize)}`
-          : 'places matching size'
+        ? this.hybridSize !== null && this.modifiers.meta
+          ? `places ${sizeLabel(this.hybridSize)} while ⌘ is held`
+          : 'places matching size (⌘+wheel: choose)'
         : sizeLabel(this.size);
     const usable = this.targetMaterial !== null && isUsableMaterial(this.targetMaterial);
     const target = !this.target
@@ -369,8 +371,14 @@ export class EditTool {
   }
 
   private readModifiers(e: KeyboardEvent): void {
-    this.modifiers.meta = e.metaKey;
+    this.setMeta(e.metaKey);
     this.modifiers.alt = e.altKey;
+  }
+
+  /** Command held or not; letting go of it drops a size chosen in hybrid (back to matching the target). */
+  private setMeta(held: boolean): void {
+    if (!held) this.hybridSize = null;
+    this.modifiers.meta = held;
   }
 
   private handleKey(e: KeyboardEvent): void {
@@ -381,7 +389,9 @@ export class EditTool {
       this.cycleMode();
       return;
     }
-    if (e.code === 'BracketLeft') this.stepSize(-1, false);
+    // (In hybrid the size follows the target unless Command is held, so [ ] only work in dig and place.)
+    if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && this.mode === 'hybrid') this.say('hybrid: hold ⌘ and turn the wheel to choose a size');
+    else if (e.code === 'BracketLeft') this.stepSize(-1, false);
     else if (e.code === 'BracketRight') this.stepSize(1, false);
     else if (e.code === 'KeyX') this.remove();
     else if (e.code === 'KeyB' && this.target) {
@@ -408,8 +418,6 @@ export class EditTool {
       return;
     }
     this.submit({ op: 'place', x, y, z, size, material: material.id }, 'place');
-    // A size chosen in hybrid applies to one placement; then it matches the target again.
-    if (this.mode === 'hybrid') this.hybridSize = null;
   }
 
   /** Opens or closes the gate or door aimed at. */
