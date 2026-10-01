@@ -115,15 +115,16 @@ export class FileWorldCatalog implements WorldCatalog {
     /** dayMinutes: the day length of worlds that don't have a clock yet. */
     private readonly opts: { dev: boolean; config?: WorldConfig; dayMinutes?: number | 'real' },
   ) {
+    // Anyone the server lets (see app.ts: development, or admins) may change a world's clock.
+    this.setClock = (name, change) => {
+      const now = this.clock(name);
+      if (!now) throw new NoSuchWorldError(`no world named "${name}"`);
+      const next = applyClockChange(now, change, Date.now());
+      saveClock(this.dataRoot, name, next);
+      this.clocks.set(name, next);
+      return next;
+    };
     if (opts.dev) {
-      this.setClock = (name, change) => {
-        const now = this.clock(name);
-        if (!now) throw new NoSuchWorldError(`no world named "${name}"`);
-        const next = applyClockChange(now, change, Date.now());
-        saveClock(this.dataRoot, name, next);
-        this.clocks.set(name, next);
-        return next;
-      };
       this.create = (name, plates, shape = DEFAULT_WORLD_SHAPE) =>
         this.summary(createWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize: defaultVoxelize(), shape }));
       this.update = (name, plates, shape) => {

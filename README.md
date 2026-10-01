@@ -390,8 +390,8 @@ share an address). `railway.toml` points Railway at the Dockerfile and health-ch
 - **Volume:** mount one at `/data` (`WORLD_DATA_DIR`); worlds and their edits live there.
   Without it, every deploy starts a fresh world.
 - **Production mode** (`NODE_ENV=production`, set by the image): no world creation or
-  deletion, no clock changes, no dashboard, and `?tolerance` is ignored. Anyone with the
-  address can still play and edit voxels.
+  deletion, and `?tolerance` is ignored. The dashboard and changing the clock are for
+  signed-in admins (`ADMIN_EMAILS`) only. Signed-in players can play and build.
 - **First start** creates the default world from the `WORLD_*` settings (64 x 32 km round,
   1/4 m tolerance by default); later starts reuse it. It takes several seconds to build
   and about 300 MB of memory.

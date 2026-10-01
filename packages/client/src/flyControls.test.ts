@@ -35,7 +35,7 @@ describe('moveDirection', () => {
   it('rises and sinks, normalizes diagonals, and stops when nothing is held', () => {
     const up = new THREE.Vector3(0, 1, 0);
     expect(moveDirection(0, keys('Space')).distanceTo(up)).toBe(0);
-    expect(moveDirection(0, keys('KeyE')).distanceTo(up)).toBe(0);
+    expect(moveDirection(0, keys('KeyE')).lengthSq()).toBe(0); // E is the inventory now
     expect(moveDirection(0, keys('KeyQ')).y).toBe(-1);
     expect(moveDirection(0, keys('KeyC')).y).toBe(-1);
     expect(moveDirection(0.3, keys('KeyW', 'KeyD', 'Space')).length()).toBeCloseTo(1, 12);

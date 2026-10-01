@@ -21,6 +21,8 @@ import {
   type ServerMessage,
 } from '@super-vox/shared';
 import { buildApp } from './app.js';
+import { MemoryAccountStore } from './accounts.js';
+import { Auth, SESSION_COOKIE, sessionToken } from './auth.js';
 import { World } from './world.js';
 import { createWorld, readWorld } from './worldFile.js';
 import { FileWorldCatalog } from './worlds.js';
@@ -425,12 +427,12 @@ describe('named worlds', () => {
     for (const d of roots.splice(0)) rmSync(d, { recursive: true, force: true });
   });
   /** A data folder with two flat worlds, "home" (resolution 4) and "other" (resolution 8). */
-  async function catalogApp(dev = true) {
+  async function catalogApp(dev = true, auth?: Auth) {
     const root = mkdtempSync(join(tmpdir(), 'super-vox-app-'));
     roots.push(root);
     createWorld(root, 'home', { generator: 'flat', resolution: 4 });
     createWorld(root, 'other', { generator: 'flat', resolution: 8 });
-    const a = await buildApp({ catalog: new FileWorldCatalog(root, 'home', { dev }) });
+    const a = await buildApp({ catalog: new FileWorldCatalog(root, 'home', { dev }), ...(auth ? { auth } : {}) });
     const url = (await a.listen({ port: 0, host: '127.0.0.1' })).replace(/^http/, 'ws') + '/ws';
     return { a, url, root };
   }
@@ -573,6 +575,29 @@ describe('named worlds', () => {
   it('refuses clock changes on production servers', async () => {
     const { a } = await catalogApp(false);
     expect((await a.inject({ method: 'PUT', url: '/api/worlds/home/clock', payload: { hours: 3 } })).statusCode).toBe(403);
+  });
+
+  it('lets admins, and only admins, see the dashboard and change the clock on production servers', async () => {
+    const secret = 'q'.repeat(40);
+    const accounts = new MemoryAccountStore();
+    const auth = new Auth({ googleClientId: 'c', googleClientSecret: 's', sessionSecret: secret, adminEmails: ['boss@x.com'], secureCookies: false }, accounts);
+    const { a } = await catalogApp(false, auth);
+    const cookieFor = async (email: string) => {
+      const acct = await accounts.signIn({ sub: email, email, name: email });
+      return `${SESSION_COOKIE}=${sessionToken(acct.id, Date.now() + 1e6, secret)}`;
+    };
+    const boss = await cookieFor('boss@x.com'), ann = await cookieFor('ann@x.com');
+    const dash = (cookie?: string) => a.inject({ method: 'GET', url: '/api/dashboard', ...(cookie ? { headers: { cookie } } : {}) });
+    const clock = (cookie?: string) => a.inject({ method: 'PUT', url: '/api/worlds/home/clock', payload: { hours: 3 }, ...(cookie ? { headers: { cookie } } : {}) });
+    expect((await dash(boss)).statusCode).toBe(200);
+    expect((await clock(boss)).json().clock).toMatchObject({ dayMinutes: 24 });
+    for (const who of [ann, undefined]) {
+      expect((await dash(who)).statusCode).toBe(403);
+      expect((await dash(who)).json()).toEqual({ error: 'the dashboard is only for admins (sign in on the menu page)' });
+      expect((await clock(who)).statusCode).toBe(403);
+    }
+    // Still no creating or deleting worlds, admin or not.
+    expect((await a.inject({ method: 'DELETE', url: '/api/worlds/other', headers: { cookie: boss } })).statusCode).toBe(403);
   });
 
   it('serves the climate of worlds whose biomes blend, and nothing for the rest', async () => {

@@ -31,10 +31,12 @@ function setInfoVisible(visible: boolean): void {
     // Not remembered (e.g. storage blocked).
   }
 }
+// Hidden until I shows it (and then as it was last left).
+statusEl.hidden = true;
 try {
-  statusEl.hidden = localStorage.getItem(INFO_KEY) === '1';
+  statusEl.hidden = localStorage.getItem(INFO_KEY) !== '0';
 } catch {
-  // Shown by default.
+  // Not remembered: hidden.
 }
 const params = new URLSearchParams(location.search);
 /** Numeric URL parameter clamped to [min, max]; missing or non-numeric values use the default. */
@@ -454,14 +456,15 @@ function updateHud(): void {
   const mb = (b: number) => (b / 2 ** 20).toFixed(0);
   statusEl.textContent =
     `${worldLine || 'connecting…'}\n` +
-    `camera ${f.x.toFixed(1)}, ${f.y.toFixed(1)}, ${f.z.toFixed(1)} m, speed ${controls.speed.toFixed(0)} m/s` +
+    `camera ${f.x.toFixed(1)}, ${f.y.toFixed(1)}, ${f.z.toFixed(1)} m` + (controls.walking ? '' : `, flying ${controls.speed.toFixed(0)} m/s`) +
     (clock ? `, time ${formatHours(worldHours())}` : '') +
     '\n' +
     (controls.pointerLocked ? 'mouse: look · Esc: release mouse' : 'click: capture mouse (or drag to look)') +
     (controls.walking
       ? controls.swimming ? ' · swimming: WASD move · Space: up · C: down' : ' · walking: WASD move · Space: jump'
-      : ' · flying: WASD move · Space/E: up · Q/C: down') +
-    ' · Shift: 5x · ⌥+wheel: speed · wheel: hotbar (⌘+wheel: voxel size)' +
+      : ' · flying: WASD move · Space: up · Q/C: down') +
+    (controls.walking ? ' · Shift: sprint' : ' · Shift: 5x · ⌥+wheel: speed') +
+    ' · wheel: hotbar (⌘+wheel: voxel size)' +
     ` · F: ${controls.walking ? 'fly' : 'walk'} · N: no-clip (${controls.collide ? 'off' : 'on'}) · M: map · L: lighting · I: hide info\n` +
     (editTool ? `${editTool.hudLines()}\n` : '') +
     (c && t

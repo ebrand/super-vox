@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import fastifyCookie from '@fastify/cookie';
@@ -119,10 +119,20 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     return reply.type('application/octet-stream').send(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
   });
 
-  // Development only (no accounts yet): what the server and its worlds are doing, for the
-  // dashboard page. The history holds a sample per second for the last few minutes.
-  app.get('/api/dashboard', async (_req, reply) => {
-    if (!catalog.create) return reply.code(403).send({ error: 'the dashboard is not enabled on this server' });
+  /**
+   * Whether a request may use the operator's tools (the dashboard, changing the clock): on
+   * development servers, anyone; elsewhere, signed-in admins (ADMIN_EMAILS).
+   */
+  const operator = async (req: FastifyRequest): Promise<boolean> => {
+    if (catalog.create) return true;
+    return !!(opts.auth && (await opts.auth.signedIn(req.cookies))?.admin);
+  };
+  const notOperator = (what: string) => ({ error: `${what} is only for ${opts.auth ? 'admins (sign in on the menu page)' : 'development servers'}` });
+
+  // What the server and its worlds are doing, for the dashboard page (operators only). The
+  // history holds a sample per second for the last few minutes.
+  app.get('/api/dashboard', async (req, reply) => {
+    if (!(await operator(req))) return reply.code(403).send(notOperator('the dashboard'));
     const now = Date.now();
     const open = new Map(catalog.openWorlds().map((o) => [o.name, o.world]));
     const names = [...new Set([...catalog.list().map((w) => w.name), ...open.keys()])].sort();
@@ -218,10 +228,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     }
   });
 
-  // Development only: change a world's clock. Body: { dayMinutes?: minutes | "real", hours?: 0..24,
+  // Operators only: change a world's clock. Body: { dayMinutes?: minutes | "real", hours?: 0..24,
   // frozen?: boolean }. Everyone in the world gets the new clock.
   app.put<{ Params: { name: string }; Body: unknown }>('/api/worlds/:name/clock', async (req, reply) => {
     if (!catalog.setClock) return reply.code(403).send({ error: 'changing the time is not enabled on this server' });
+    if (!(await operator(req))) return reply.code(403).send(notOperator('changing the time'));
     const { name } = req.params;
     if (!isValidWorldName(name)) return reply.code(404).send({ error: 'no such world' });
     let change;

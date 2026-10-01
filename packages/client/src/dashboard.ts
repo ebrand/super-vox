@@ -290,7 +290,9 @@ async function poll(): Promise<void> {
   try {
     const res = await fetch('/api/dashboard');
     if (res.status === 403) {
-      statusEl.textContent = 'The dashboard is only available on development servers.';
+      // The server says who it's for (development servers; admins where there's sign-in).
+      const why = ((await res.json().catch(() => ({}))) as { error?: string }).error;
+      statusEl.textContent = why ? why[0]!.toUpperCase() + why.slice(1) + '.' : 'The dashboard is not available here.';
       statusEl.className = 'bad';
       return; // no point asking again
     }

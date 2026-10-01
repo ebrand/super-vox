@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { walkStep, type Mover, type WalkState } from './walking.js';
+import { SPRINT, WALK_SPEED, walkStep, type Mover, type WalkState } from './walking.js';
 
 /** Keys currently held, by KeyboardEvent.code. */
 export type HeldKeys = ReadonlySet<string>;
@@ -9,12 +9,12 @@ const MAX_PITCH = (89 * Math.PI) / 180;
 /**
  * Movement direction for the held keys (not normalized to speed): W/S
  * forward/back and A/D strafe along the ground in the direction the camera
- * faces (yaw only), Space/E up, Q/C down. Returns a unit vector or zero.
+ * faces (yaw only), Space up, Q/C down. Returns a unit vector or zero.
  */
 export function moveDirection(yaw: number, keys: HeldKeys): THREE.Vector3 {
   const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
   const r = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
-  const u = (keys.has('Space') || keys.has('KeyE') ? 1 : 0) - (keys.has('KeyQ') || keys.has('KeyC') ? 1 : 0);
+  const u = (keys.has('Space') ? 1 : 0) - (keys.has('KeyQ') || keys.has('KeyC') ? 1 : 0);
   // Yaw 0 faces -Z (three.js convention); right is +X.
   const v = new THREE.Vector3(
     -Math.sin(yaw) * f + Math.cos(yaw) * r,
@@ -36,17 +36,18 @@ export function applyLook(yaw: number, pitch: number, dx: number, dy: number, se
  * First-person camera that walks (gravity, Space to jump) or flies. Click the view to capture the mouse (pointer lock);
  * while captured, moving the mouse looks around and button presses are
  * reported through `onClick`. Esc releases it. Uncaptured, dragging with the
- * left or right button still looks around. WASD moves, Space/E up, Q/C down,
+ * left or right button still looks around. WASD moves, Space up, Q/C down,
  * Shift for 5x speed, Option+wheel changes the base speed (the plain wheel too, unless onWheel
  * takes it; with Command held
- * it goes to `onModifiedWheel` instead). Flying: Space/E up, Q/C down.
+ * it goes to `onModifiedWheel` instead). Flying: Space up, Q/C down. Walking goes at WALK_SPEED
+ * (Shift: SPRINT times that), whatever the flying speed.
  * Collision comes from `collide`; walking needs it.
  */
 export class FlyControls {
   yaw = 0;
   pitch = 0;
-  /** Base speed in metres per second (the wheel changes it, 1..500). */
-  speed = 2;
+  /** Base flying speed in metres per second (Option+wheel changes it, 1..500). */
+  speed = 15;
   sensitivity = 0.0035;
   /** Lowest camera height allowed (metres). */
   minY = -Infinity;
@@ -168,7 +169,8 @@ export class FlyControls {
 
   /** Moves and orients the camera; `dt` in seconds. */
   update(dt: number): void {
-    const step = Math.min(dt, 0.1) * this.speed * (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 5 : 1);
+    const shift = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
+    const step = Math.min(dt, 0.1) * this.speed * (shift ? 5 : 1);
     if (this.walking && this.collide) {
       // Walk along the ground in the facing direction; Space jumps.
       const dir = moveDirection(this.yaw, this.keys);
@@ -177,8 +179,9 @@ export class FlyControls {
       // The middle of the body (the eye is 1.62 m up a 1.8 m player).
       const p = this.camera.position;
       this.swimming = this.inWater(p.x, p.y - 0.75, p.z);
-      const swim = this.swimming ? { up: this.keys.has('Space') || this.keys.has('KeyE'), down: this.keys.has('KeyC') || this.keys.has('KeyQ') } : undefined;
-      const speed = (step / Math.max(Math.min(dt, 0.1), 1e-6)) * (swim ? 0.5 : 1);
+      const swim = this.swimming ? { up: this.keys.has('Space'), down: this.keys.has('KeyC') || this.keys.has('KeyQ') } : undefined;
+      // On foot: a walking pace (Shift: sprint), not the flying speed.
+      const speed = WALK_SPEED * (shift ? SPRINT : 1) * (swim ? 0.5 : 1);
       const r = walkStep(
         this.walk,
         { dx: dir.x, dz: dir.z, speed, jump: this.keys.has('Space'), ...(swim ? { swim } : {}) },
