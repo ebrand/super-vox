@@ -1,6 +1,6 @@
 import type { ClimateGrid } from './climate.js';
-import { plantTrees, type Canopy, type Tree } from './trees.js';
-import { setBlockWater } from './water.js';
+import { NO_CANOPY, plantTrees, type Canopy, type Tree } from './trees.js';
+import { NO_WATER, setBlockWater } from './water.js';
 import {
   BLOCK_SIZE,
   BLOCKS_PER_AXIS,
@@ -41,6 +41,11 @@ export interface HeightSource {
   readonly seaLevel?: number;
   /** Optional forest canopy over samples (given their ground heights and materials), for distant views. */
   canopy?(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array, materials: Uint16Array): Canopy | null;
+  /**
+   * Optional height of water standing over each sample above the sea (rivers, lakes): NO_WATER
+   * where there's none, or null for none over any of them.
+   */
+  water?(x0: number, z0: number, w: number, d: number, step?: number): Int32Array | null;
   /** Optional climate for blending biome colours (null where biomes don't blend). */
   climate?(): ClimateGrid | null;
   /** Optional trees with any part in the box [x0, x1) x [z0, z1) (units), in a fixed order. */
@@ -194,9 +199,24 @@ export class NoiseHeights implements HeightSource {
 type Node = number | Node[];
 
 /** Voxelizes any HeightSource adaptively into chunks. */
+interface Column {
+  H: Int32Array;
+  M: Uint16Array | null;
+  trees: Tree[];
+  /** Water surface per column (units; NO_WATER for none), or null without any water. */
+  S: Int32Array | null;
+  /** Highest water surface over the ground, or null. */
+  waterTop: number | null;
+}
+
 export class TerrainGenerator implements ChunkGenerator {
   /** Per chunk column: surface heights, (if the source provides them) top materials, and trees. */
-  private readonly columns = new Map<string, { H: Int32Array; M: Uint16Array | null; trees: Tree[] }>();
+  /**
+   * Per chunk column: surface heights, (if the source provides them) top materials, trees, and
+   * the height of the water over each column (the sea, or a river or lake above it; null if
+   * none) with the highest of it over ground.
+   */
+  private readonly columns = new Map<string, Column>();
   private readonly uniform = new Map<MaterialId, UniformBlock>();
   private readonly grassSlack: number;
 
@@ -225,16 +245,19 @@ export class TerrainGenerator implements ChunkGenerator {
     return this.source.climate?.() ?? null;
   }
 
-  surfaceSamples(x0: number, z0: number, step: number, n: number): { heights: Int32Array; materials: Uint16Array; canopy: Canopy | null } {
+  surfaceSamples(x0: number, z0: number, step: number, n: number): { heights: Int32Array; materials: Uint16Array; canopy: Canopy | null; water: Int32Array | null } {
     const heights = this.source.heights(x0, z0, n, n, step);
     const materials = this.source.materials?.(x0, z0, n, n, step, heights) ?? new Uint16Array(n * n).fill(Material.Grass);
     // Distant terrain and maps show forests as their canopy, above the ground.
     const canopy = this.source.canopy?.(x0, z0, n, n, step, heights, materials) ?? null;
-    return { heights, materials, canopy };
+    // Rivers and lakes: their surface over the ground (and no trees there).
+    const water = this.source.water?.(x0, z0, n, n, step) ?? null;
+    if (water && canopy) for (let k = 0; k < heights.length; k++) if (water[k]! > heights[k]!) canopy.top[k] = canopy.bottom[k] = NO_CANOPY;
+    return { heights, materials, canopy, water };
   }
 
   columnRange(cx: number, cz: number): { minY: number; maxY: number } {
-    const { H, trees } = this.chunkColumn(cx, cz);
+    const { H, trees, waterTop } = this.chunkColumn(cx, cz);
     let minY = Infinity, maxY = -Infinity;
     for (const h of H) {
       if (h < minY) minY = h;
@@ -243,12 +266,11 @@ export class TerrainGenerator implements ChunkGenerator {
     // Tree tops (of trees reaching into the column) count too, so crowns are loaded; so does
     // the sea's surface over ground below it.
     for (const t of trees) maxY = Math.max(maxY, t.y + t.height);
-    const sea = this.source.seaLevel;
-    if (sea !== undefined && minY < sea) maxY = Math.max(maxY, sea);
+    if (waterTop !== null) maxY = Math.max(maxY, waterTop);
     return { minY, maxY };
   }
 
-  private chunkColumn(cx: number, cz: number): { H: Int32Array; M: Uint16Array | null; trees: Tree[] } {
+  private chunkColumn(cx: number, cz: number): Column {
     const key = `${cx},${cz}`;
     let col = this.columns.get(key);
     if (col) {
@@ -258,11 +280,17 @@ export class TerrainGenerator implements ChunkGenerator {
     }
     const x0 = cx * CHUNK_SIZE, z0 = cz * CHUNK_SIZE;
     const H = this.source.heights(x0, z0, CHUNK_SIZE, CHUNK_SIZE);
-    col = {
-      H,
-      M: this.source.materials?.(x0, z0, CHUNK_SIZE, CHUNK_SIZE, 1, H) ?? null,
-      trees: this.source.trees?.(x0, z0, x0 + CHUNK_SIZE, z0 + CHUNK_SIZE) ?? [],
-    };
+    const M = this.source.materials?.(x0, z0, CHUNK_SIZE, CHUNK_SIZE, 1, H) ?? null;
+    // Water over the columns: the sea, raised to any river or lake above it.
+    const sea = this.source.seaLevel;
+    const W = this.source.water?.(x0, z0, CHUNK_SIZE, CHUNK_SIZE) ?? null;
+    let S: Int32Array | null = null, waterTop: number | null = null;
+    if (sea !== undefined || W) {
+      S = new Int32Array(CHUNK_SIZE * CHUNK_SIZE).fill(sea ?? NO_WATER);
+      if (W) for (let k = 0; k < S.length; k++) if (W[k]! > S[k]!) S[k] = W[k]!;
+      for (let k = 0; k < S.length; k++) if (S[k]! > H[k]! && (waterTop === null || S[k]! > waterTop)) waterTop = S[k]!;
+    }
+    col = { H, M, trees: this.source.trees?.(x0, z0, x0 + CHUNK_SIZE, z0 + CHUNK_SIZE) ?? [], S, waterTop };
     this.columns.set(key, col);
     if (this.columns.size > this.columnCacheSize) this.columns.delete(this.columns.keys().next().value!);
     return col;
@@ -297,7 +325,7 @@ export class TerrainGenerator implements ChunkGenerator {
     if (x0 < 0 || x0 >= w.widthUnits || z0 < 0 || z0 >= w.depthUnits) return chunk;
     if (y0 < w.minYUnits || y0 >= w.maxYUnits) return chunk;
 
-    const { H, M, trees } = this.chunkColumn(coord.cx, coord.cz);
+    const { H, M, trees, S } = this.chunkColumn(coord.cx, coord.cz);
     // Per block column: min / max surface height, and the top material at the minimum.
     const bMin = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(2 ** 31 - 1);
     const bMax = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(-(2 ** 31));
@@ -325,19 +353,25 @@ export class TerrainGenerator implements ChunkGenerator {
           chunk.blocks[blockIndex(bx, by, bz)] =
             by0 + BLOCK_SIZE <= minH
               ? this.uniformBlock(this.materialFor(minH, by0 + BLOCK_SIZE, bMat[k]!))
-              : this.buildBlock(H, M, bx * BLOCK_SIZE, by0, bz * BLOCK_SIZE);
+              : this.buildBlock(H, M, S, bx * BLOCK_SIZE, by0, bz * BLOCK_SIZE);
         }
       }
     }
     if (trees.length > 0) plantTrees(chunk, trees);
-    // The sea over the ground (blocks through the ground got theirs as they were built).
-    const sea = this.source.seaLevel;
-    if (sea !== undefined && y0 < sea) {
-      for (let by = 0; by < BLOCKS_PER_AXIS; by++) {
-        const below = sea - (y0 + by * BLOCK_SIZE);
-        if (below <= 0) break;
-        for (let i = by * BLOCKS_PER_AXIS * BLOCKS_PER_AXIS; i < (by + 1) * BLOCKS_PER_AXIS * BLOCKS_PER_AXIS; i++) {
-          if (!chunk.blocks[i]) chunk.blocks[i] = setBlockWater(null, 0, Math.min(BLOCK_SIZE, below));
+    // Water over the ground: the sea, rivers and lakes (blocks through the ground got theirs as
+    // they were built).
+    if (S) {
+      for (let bz = 0; bz < BLOCKS_PER_AXIS; bz++) {
+        for (let bx = 0; bx < BLOCKS_PER_AXIS; bx++) {
+          let top = NO_WATER;
+          for (let z = bz * BLOCK_SIZE; z < (bz + 1) * BLOCK_SIZE; z++) for (let x = bx * BLOCK_SIZE; x < (bx + 1) * BLOCK_SIZE; x++) top = Math.max(top, S[x + CHUNK_SIZE * z]!);
+          for (let by = 0; by < BLOCKS_PER_AXIS && y0 + by * BLOCK_SIZE < top; by++) {
+            const i = blockIndex(bx, by, bz);
+            if (chunk.blocks[i]) continue;
+            const voxels = this.waterVoxels(S, bx * BLOCK_SIZE, y0 + by * BLOCK_SIZE, bz * BLOCK_SIZE);
+            if (voxels.packed.length === 1 && voxels.packed[0] === packVoxel(0, 0, 0, BLOCK_SIZE)) chunk.blocks[i] = setBlockWater(null, 0);
+            else if (voxels.packed.length) chunk.blocks[i] = { kind: 'voxels', packed: Uint16Array.from(voxels.packed), materials: Uint16Array.from(voxels.materials) };
+          }
         }
       }
     }
@@ -345,31 +379,58 @@ export class TerrainGenerator implements ChunkGenerator {
   }
 
   /**
-   * Voxelizes the block whose corner is at chunk-local (lx, lz) and world y `y0`; open space
-   * below sea level is source water.
+   * Source water filling the open cube [x, x+s)^3 (block-local units; the block's corner at
+   * chunk-local (lx, lz) and world y `y0`) below each column's water surface `S`.
    */
-  private buildBlock(H: Int32Array, M: Uint16Array | null, lx: number, y0: number, lz: number): Block {
+  private fillWater(S: Int32Array, lx: number, y0: number, lz: number, x: number, y: number, z: number, s: number, out: { packed: number[]; materials: number[] }): void {
+    let lo = Infinity, hi = -Infinity;
+    for (let j = lz + z; j < lz + z + s; j++) {
+      for (let i = lx + x; i < lx + x + s; i++) {
+        const v = S[i + CHUNK_SIZE * j]!;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+    }
+    if (y0 + y + s <= lo) {
+      out.packed.push(packVoxel(x, y, z, s));
+      out.materials.push(Material.Water);
+    } else if (y0 + y < hi && s > 1) {
+      // A surface cuts through (or varies across) the cube: halves.
+      const t = s / 2;
+      for (let i = 0; i < 8; i++) this.fillWater(S, lx, y0, lz, x + (i & 1) * t, y + ((i >> 2) & 1) * t, z + ((i >> 1) & 1) * t, t, out);
+    }
+  }
+
+  /** Water voxels for an empty block (see fillWater). */
+  private waterVoxels(S: Int32Array, lx: number, y0: number, lz: number): { packed: number[]; materials: number[] } {
+    const out = { packed: [] as number[], materials: [] as number[] };
+    this.fillWater(S, lx, y0, lz, 0, 0, 0, BLOCK_SIZE, out);
+    return out;
+  }
+
+  /**
+   * Voxelizes the block whose corner is at chunk-local (lx, lz) and world y `y0`; open space
+   * below the columns' water surfaces `S` (if any) is source water.
+   */
+  private buildBlock(H: Int32Array, M: Uint16Array | null, S: Int32Array | null, lx: number, y0: number, lz: number): Block {
     const root = this.buildNode(H, M, lx, y0, lz, BLOCK_SIZE);
-    const sea = this.source.seaLevel === undefined ? -Infinity : this.source.seaLevel - y0; // block-local
     if (typeof root === 'number') {
       if (root !== 0) return this.uniformBlock(root);
-      return sea > 0 ? setBlockWater(null, 0, Math.min(BLOCK_SIZE, sea)) : null;
+      if (!S) return null;
+      const w = this.waterVoxels(S, lx, y0, lz);
+      if (w.packed.length === 0) return null;
+      if (w.packed.length === 1 && w.packed[0] === packVoxel(0, 0, 0, BLOCK_SIZE)) return setBlockWater(null, 0);
+      return { kind: 'voxels', packed: Uint16Array.from(w.packed), materials: Uint16Array.from(w.materials) };
     }
     const packed: number[] = [];
     const materials: number[] = [];
+    const out = { packed, materials };
     const walk = (node: Node, x: number, y: number, z: number, s: number) => {
       if (typeof node === 'number') {
         if (node !== 0) {
           packed.push(packVoxel(x, y, z, s));
           materials.push(node);
-        } else if (y + s <= sea) {
-          packed.push(packVoxel(x, y, z, s));
-          materials.push(Material.Water);
-        } else if (y < sea && s > 1) {
-          // Open space the sea's surface cuts through: halves.
-          const t = s / 2;
-          for (let i = 0; i < 8; i++) walk(0, x + (i & 1) * t, y + ((i >> 2) & 1) * t, z + ((i >> 1) & 1) * t, t);
-        }
+        } else if (S) this.fillWater(S, lx, y0, lz, x, y, z, s, out);
         return;
       }
       const t = s / 2;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { NO_GROUND, TILE_SAMPLES, tileStep, type Tile } from '@super-vox/shared';
+import { Material, NO_GROUND, TILE_SAMPLES, tileStep, type Tile } from '@super-vox/shared';
 import { packQuads } from './mesher.js';
 import { meshTile, skirtDepth } from './tileMesher.js';
 
@@ -120,5 +120,22 @@ describe('meshTile', () => {
       }
       expect(buf.quadCount).toBe(m.quads.length);
     }
+  });
+});
+
+describe('tile water', () => {
+  it('draws a river or lake surface as water over its bed, and only there', () => {
+    const N = TILE_SAMPLES * TILE_SAMPLES;
+    const heights = new Int16Array(N).fill(160);
+    const water = new Int16Array(N).fill(NO_GROUND);
+    heights[5] = 100;
+    water[5] = 150; // 50 units of water over a dip
+    const m = meshTile({ level: 1, tx: 0, tz: 0, heights, materials: new Uint16Array(N).fill(4), water })!;
+    const tops = m.quads.filter((q) => q.dir === 2);
+    const wet = tops.filter((q) => q.material === Material.Water);
+    expect(wet).toHaveLength(1);
+    expect(wet[0]!.plane + m.baseY).toBe(150);
+    // The bed is still there, under it.
+    expect(tops.some((q) => q.material !== Material.Water && q.plane + m.baseY === 100)).toBe(true);
   });
 });

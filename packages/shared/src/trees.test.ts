@@ -9,7 +9,7 @@ import { CHUNK_SIZE, FLAT_WORLD_16KM } from './world.js';
 
 const cache = new Map<string, PlateHeights>();
 const world = (over: Partial<PlateTerrainConfig> = {}) => {
-  const cfg = { ...defaultPlateTerrain(9), mountains: 0, ...over };
+  const cfg = { ...defaultPlateTerrain(9), mountains: 0, rivers: 0, lakes: 0, ...over };
   const key = JSON.stringify(cfg);
   let p = cache.get(key);
   if (!p) cache.set(key, (p = new PlateHeights(FLAT_WORLD_16KM, cfg)));

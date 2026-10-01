@@ -59,6 +59,8 @@ const FIELDS: FieldSpec[] = [
   { key: 'rainfall', label: 'Rainfall', section: 'Climate', min: L.rainfall[0], max: L.rainfall[1], step: 1, hint: '0 dry … 100 soaked; wet near the sea, drier inland' },
   { key: 'snowTemperature', label: 'Snow temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 0.5, unit: '°C', hint: 'Ground colder than this is snow; a band of bare rock lies just below it on high ground' },
   { key: 'biomeBlend', label: 'Biome blending', section: 'Climate', min: L.biomeBlend[0], max: L.biomeBlend[1], step: 1, hint: '0 sharp borders … 100 wide, ragged transitions where trees mix and ground colours blend' },
+  { key: 'rivers', label: 'Rivers', section: 'Climate', min: L.rivers[0], max: L.rivers[1], step: 1, hint: '0 none … 100 many small streams; rivers cut valleys to the sea, more in wet country' },
+  { key: 'lakes', label: 'Lakes', section: 'Climate', min: L.lakes[0], max: L.lakes[1], step: 1, hint: '0 basins filled in … 100 even small basins hold lakes' },
   { key: 'trees', label: 'Trees', section: 'Climate', min: L.trees[0], max: L.trees[1], step: 1, hint: 'Forest density: 0 none, 50 natural for each biome, 100 double' },
   { key: 'windFrom', label: 'Wind from', section: 'Climate', min: L.windFrom[0], max: L.windFrom[1], step: 5, unit: '°', hint: 'Compass direction rain comes from (270 = west); land behind mountains is drier' },
   { key: 'islandArcs', label: 'Island arcs', section: 'Islands', min: L.islandArcs[0], max: L.islandArcs[1], step: 1, hint: 'Chains along seams where an ocean plate meets another plate' },
@@ -339,6 +341,19 @@ function draw(): void {
     }
   }
   ctx.putImageData(new ImageData(px, cols, rows), 0, 0);
+  // Rivers, drawn as lines (most are narrower than a sample).
+  if (mode !== 'plates' && mode !== 'biomes') {
+    const r = preview.rivers;
+    ctx.strokeStyle = 'rgb(70, 120, 160)';
+    ctx.lineCap = 'round';
+    for (let k = 0; k < r.length; k += 5) {
+      ctx.lineWidth = Math.max(0.8, r[k + 4]! / map.step);
+      ctx.beginPath();
+      ctx.moveTo(r[k]! / map.step, r[k + 1]! / map.step);
+      ctx.lineTo(r[k + 2]! / map.step, r[k + 3]! / map.step);
+      ctx.stroke();
+    }
+  }
 }
 viewEl.addEventListener('change', draw);
 

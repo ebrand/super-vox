@@ -20,7 +20,7 @@ function setup() {
   const sent: ClientMessage[] = [];
   const { pool, finishAll } = heldPool();
   const scene = { add: () => {} } as unknown as THREE.Scene;
-  const tm = new TileManager(scene, {} as THREE.Material, (m) => sent.push(m), pool, 8, () => {});
+  const tm = new TileManager(scene, {} as THREE.Material, {} as THREE.Material, (m) => sent.push(m), pool, 8, () => {});
   return { tm, sent, finishAll };
 }
 

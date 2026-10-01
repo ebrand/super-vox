@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BLOCK_SIZE, packVoxel, rasterizeVoxels, type Block } from './chunk.js';
 import { Material, MAX_FLOW, isWater, waterMaterial } from './materials.js';
-import { blockVoxels } from './edit.js';
+import { blockFromVoxels, blockVoxels } from './edit.js';
 import { PlateHeights, defaultPlateTerrain } from './plates.js';
 import { TerrainGenerator } from './terrain.js';
 import { WaterFlow, blockHasAir, blockHasRoom, blockWater, chunkWithoutWater, setBlockWater, waterHeight, withoutWater, type WaterWorld } from './water.js';
@@ -187,6 +187,28 @@ describe('water flow', () => {
     flow.touch(1, 1, 0);
     settle(flow, w);
     expect(blockHasAir(w.getBlock(1, 1, 0)!)).toBe(false);
+  });
+
+  it('refills a source only up to its own surface (a river standing part way up its block)', () => {
+    const w = blockWorld([3, 2, 1]);
+    for (let x = 0; x < 3; x++) w.solid(x, 0, 0);
+    // A river block: water up to 10/16 m; dig a cell out of it (it holds a stone voxel instead of
+    // water there, then the stone is removed: open space below the surface).
+    const river = setBlockWater(null, 0, 10);
+    const dug = blockVoxels(river).filter((v) => !(v.x === 0 && v.y === 0 && v.z === 0));
+    w.setBlock(1, 1, 0, blockFromVoxels(dug));
+    expect(blockHasAir(w.getBlock(1, 1, 0)!, 10)).toBe(true);
+    const flow = new WaterFlow();
+    flow.touch(1, 1, 0);
+    settle(flow, w);
+    const after = cells(w.getBlock(1, 1, 0)!);
+    let above = 0, gaps = 0;
+    for (let i = 0; i < after.length; i++) {
+      const y = Math.floor(i / 256);
+      if (y >= 10 && after[i] !== 0) above++;
+      if (y < 10 && after[i] === 0) gaps++;
+    }
+    expect([above, gaps]).toEqual([0, 0]);
   });
 
   it('leaves enclosed space dry', () => {

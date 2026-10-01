@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { chunkWithoutWater, decodeChunk, decodeTile } from '@super-vox/shared';
+import { chunkWithoutWater, decodeChunk, decodeTile, isWater } from '@super-vox/shared';
 import { mergeFaces, packQuads, visibleFaces, waterQuads, type MeshBuffers } from './mesher.js';
 import { meshTile } from './tileMesher.js';
 
@@ -36,7 +36,14 @@ self.onmessage = (ev: MessageEvent<MeshRequest>) => {
   try {
     if (req.kind === 'tile') {
       const m = meshTile(decodeTile(req.tile));
-      reply(m && m.quads.length ? { buffers: packQuads(m.quads), baseY: m.baseY } : { buffers: null });
+      if (!m || !m.quads.length) {
+        reply({ buffers: null });
+        return;
+      }
+      // Rivers and lakes (water-topped samples) are drawn as water, the rest as ground.
+      const ground = m.quads.filter((q) => !isWater(q.material));
+      const water = m.quads.filter((q) => isWater(q.material));
+      reply({ buffers: ground.length ? packQuads(ground) : null, water: water.length ? packQuads(water) : null, baseY: m.baseY });
       return;
     }
     const chunk = decodeChunk(req.center);

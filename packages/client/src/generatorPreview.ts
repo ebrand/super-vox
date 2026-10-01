@@ -1,4 +1,4 @@
-import { FLAT_WORLD_16KM, NO_CANOPY, PlateHeights, type PlateTerrainConfig, type WorldConfig } from '@super-vox/shared';
+import { FLAT_WORLD_16KM, Material, NO_CANOPY, PlateHeights, type PlateTerrainConfig, type WorldConfig } from '@super-vox/shared';
 import { climateTintColors } from './tintColors.js';
 import type { MapData } from './worldMap.js';
 
@@ -29,6 +29,8 @@ export interface Preview {
   plates: { major: boolean; continental: boolean }[];
   /** Biome per map sample (BiomeId), or null for worlds without biomes. */
   biome: Uint8Array | null;
+  /** River segments (units): ax, az, bx, bz, width per segment (too narrow to show in the samples). */
+  rivers: Float32Array;
   stats: PreviewStats;
 }
 
@@ -49,11 +51,20 @@ export function buildPreview(config: PlateTerrainConfig, size: number, world: Wo
   // Forests, seen from above as the map shows them (biomes and stats are about the ground).
   const canopy = p.canopy(step / 2, step / 2, cols, rows, step, h, m);
   const canopyH = Int32Array.from(h), canopyM = Uint16Array.from(m);
+  // Rivers and lakes show as water.
+  const standing = p.water(step / 2, step / 2, cols, rows, step);
   if (canopy) {
     for (let k = 0; k < h.length; k++) {
       if (canopy.top[k] === NO_CANOPY) continue;
       canopyH[k] = canopy.top[k]!;
       canopyM[k] = canopy.material[k]!;
+    }
+  }
+  if (standing) {
+    for (let k = 0; k < h.length; k++) {
+      if (standing[k]! <= h[k]!) continue;
+      canopyH[k] = standing[k]!;
+      canopyM[k] = Material.Water;
     }
   }
   let biomeShares: number[] | null = null;
@@ -86,6 +97,7 @@ export function buildPreview(config: PlateTerrainConfig, size: number, world: Wo
     plateOf,
     plates: p.plates.map((q) => ({ major: q.major, continental: q.continental })),
     biome,
+    rivers: Float32Array.from((p.hydrology?.segments ?? []).flatMap((s) => [s.ax, s.az, s.bx, s.bz, s.width])),
     stats: {
       ms: performance.now() - t0,
       land: p.landFraction(),

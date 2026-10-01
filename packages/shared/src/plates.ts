@@ -2,6 +2,8 @@ import { BIOME_GROUND, classifyBiome, sameBiome, type BiomeId, type Ecotone } fr
 import type { ClimateGrid } from './climate.js';
 import { Material } from './materials.js';
 import { canopyOver, treesIn, type Canopy, type Climate, type Tree } from './trees.js';
+import { RiverIndex, buildHydrology, carveRivers, type Hydrology } from './rivers.js';
+import { NO_WATER } from './water.js';
 import { fractalGrid, ridgedGrid, type Octave } from './noise.js';
 import type { HeightSource } from './terrain.js';
 import type { WorldConfig } from './world.js';
@@ -84,6 +86,10 @@ export interface PlateTerrainConfig {
   windFrom: number;
   /** How many trees, 0 (none) .. 100 (twice the natural density for each biome); 50 is natural. */
   trees: number;
+  /** Rivers: 0 (none) .. 100 (many small streams); 50 is a network of streams joining into rivers. */
+  rivers: number;
+  /** Lakes in land basins: 0 (basins are filled in) .. 100 (even small basins hold lakes). */
+  lakes: number;
   /** Density of island chains along seams where an oceanic plate meets another plate, 0 (none) .. 100. */
   islandArcs: number;
   /** Groups of islands inside oceanic plates, each a main island trailing smaller ones (0..40). */
@@ -129,6 +135,8 @@ export function defaultPlateTerrain(seed = 1): PlateTerrainConfig {
     snowTemperature: -4,
     biomeBlend: 50,
     trees: 50,
+    rivers: 50,
+    lakes: 50,
     islandArcs: 0,
     hotspots: 0,
     islandMinSize: 200,
@@ -162,6 +170,8 @@ export const PLATE_LIMITS = {
   windFrom: [0, 360],
   biomeBlend: [0, 100],
   trees: [0, 100],
+  rivers: [0, 100],
+  lakes: [0, 100],
   islandArcs: [0, 100],
   hotspots: [0, 40],
   islandSize: [50, 4000],
@@ -187,7 +197,7 @@ export function parsePlateTerrain(raw: unknown): PlateTerrainConfig {
  * `waterPercent` becomes `landPercent`; rock and snow, which started at 60% and 80% of the land's
  * height range (or `rockLine` percent), get those heights in metres; steep ground turned to rock
  * above slope 0.9 (42 degrees), along a plain contour; there were no mountains, biomes or trees,
- * and biome borders were sharp. Other missing settings get their defaults.
+ * biome borders were sharp, and there were no rivers or lakes. Other missing settings get their defaults.
  */
 export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   const r = { ...((typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>) };
@@ -202,6 +212,8 @@ export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   if (r.biomes === undefined) r.biomes = 0;
   if (r.trees === undefined) r.trees = 0;
   if (r.biomeBlend === undefined) r.biomeBlend = 0;
+  if (r.rivers === undefined) r.rivers = 0;
+  if (r.lakes === undefined) r.lakes = 0;
   // Worlds from before the current mountains have none. (The first plate worlds saved a
   // `mountainHeight` that meant something else, possibly below maxHeight: replace it.)
   if (r.mountains === undefined) {
@@ -256,6 +268,8 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   num(c.snowTemperature, L.temperature, 'snowTemperature', ' degrees C');
   num(c.biomeBlend, L.biomeBlend, 'biomeBlend');
   num(c.trees, L.trees, 'trees');
+  num(c.rivers, L.rivers, 'rivers');
+  num(c.lakes, L.lakes, 'lakes');
   num(c.islandArcs, L.islandArcs, 'islandArcs');
   int(c.hotspots, ...L.hotspots, 'hotspots');
   num(c.islandMinSize, L.islandSize, 'islandMinSize', ' m');
@@ -407,6 +421,11 @@ export class PlateHeights implements HeightSource {
   readonly collisions: readonly { plates: readonly [number, number]; kind: 'continental' | 'coastal' }[];
   /** Per grid cell: 0 (hills) .. 1 (plain); 0 everywhere without plains. */
   readonly plainness: Float32Array;
+  /** Rivers and lakes (null without either). */
+  readonly hydrology: Hydrology | null;
+  private readonly rivers: RiverIndex | null;
+  /** The last block of ground and water sampled (heights, materials and water ask for the same ones). */
+  private lastSurface: { key: string; heights: Int32Array; water: Int32Array | null } | null = null;
   private readonly detail: Octave[];
   /** Multiplier on small-scale roughness (surfaceRoughness / 50). */
   private readonly detailScale: number;
@@ -1128,6 +1147,19 @@ export class PlateHeights implements HeightSource {
     this.ecotone = { degrees: blend * ECOTONE_DEGREES, moisture: blend * ECOTONE_MOISTURE };
     const borders = [16384, 8192, 4096, 2048, 1024, 512, 256];
     this.raggedNoise = [octaves(config.terrainSeed * 7919 + 53, borders, 0.75), octaves(config.terrainSeed * 7919 + 59, borders, 0.75)];
+
+    // 14. Rivers and lakes: water drains toward the sea; basins become lakes or are filled in,
+    //     and rivers run where enough water gathers (more in wetter country).
+    if (config.rivers > 0 || config.lakes > 0) {
+      this.hydrology = buildHydrology({
+        elevation, cols, rows, cell: PLATE_CELL, sea, wrap: this.wrap,
+        wetness: this.moisture, rivers: config.rivers, lakes: config.lakes, seed: config.terrainSeed * 7919 + 61,
+      });
+      this.rivers = this.hydrology.segments.length ? new RiverIndex(this.hydrology.segments, W, this.wrap) : null;
+    } else {
+      this.hydrology = null;
+      this.rivers = null;
+    }
   }
 
   /** Fraction of grid cells above sea level (for tests and tools). */
@@ -1186,6 +1218,64 @@ export class PlateHeights implements HeightSource {
   }
 
   heights(x0: number, z0: number, w: number, d: number, step = 1): Int32Array {
+    // A copy: the last block sampled is kept for water() and materials().
+    return this.surface(x0, z0, w, d, step).heights.slice();
+  }
+
+  /**
+   * Height of the water standing over each sample (rivers and lakes; the sea is seaLevel), or
+   * null if there's none over any of them. NO_WATER where there's none.
+   */
+  water(x0: number, z0: number, w: number, d: number, step = 1): Int32Array | null {
+    return this.surface(x0, z0, w, d, step).water;
+  }
+
+  /** Ground (with rivers' channels and valleys cut) and river and lake water over samples. */
+  private surface(x0: number, z0: number, w: number, d: number, step: number): { heights: Int32Array; water: Int32Array | null } {
+    const key = `${x0},${z0},${w},${d},${step}`;
+    if (this.lastSurface?.key === key) return this.lastSurface;
+    const heights = this.groundHeights(x0, z0, w, d, step);
+    let water: Int32Array | null = null;
+    const h = this.hydrology;
+    if (h) {
+      const rivers = this.rivers;
+      const lakes = h.lakeCount > 0;
+      for (let j = 0; j < d; j++) {
+        for (let i = 0; i < w; i++) {
+          const k = i + w * j, x = x0 + i * step, z = z0 + j * step;
+          let top: number | null = null;
+          const segs = rivers ? rivers.at(x, z) : null;
+          if (segs && segs.length) {
+            const r = carveRivers(segs, x, z, heights[k]!, this.world.widthUnits, this.wrap);
+            heights[k] = Math.round(r.ground);
+            top = r.water;
+          }
+          if (lakes) {
+            // A lake fills its basin up to its level, around its cells and a cell beyond.
+            const c = Math.floor(x / PLATE_CELL), r = Math.floor(z / PLATE_CELL);
+            let level = NaN;
+            for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) {
+              let cc = c + a;
+              if (this.wrap) cc = ((cc % this.cols) + this.cols) % this.cols;
+              const rr = r + b;
+              if (cc < 0 || cc >= this.cols || rr < 0 || rr >= this.rows) continue;
+              const l = h.lakeLevel[cc + this.cols * rr]!;
+              if (!Number.isNaN(l) && !(l <= level)) level = l;
+            }
+            if (!Number.isNaN(level) && heights[k]! < level) top = Math.max(top ?? -Infinity, level);
+          }
+          if (top !== null && top > heights[k]! && top > this.seaLevel) {
+            water ??= new Int32Array(w * d).fill(NO_WATER);
+            water[k] = Math.round(top);
+          }
+        }
+      }
+    }
+    this.lastSurface = { key, heights, water };
+    return this.lastSurface;
+  }
+
+  private groundHeights(x0: number, z0: number, w: number, d: number, step = 1): Int32Array {
     const detail = fractalGrid(this.detail, x0, z0, w, d, step);
     const norm = 2 / this.detail.reduce((a, o) => a + o.weight, 0);
     const elev = this.interpolate(this.elevation, x0, z0, w, d, step);
@@ -1265,8 +1355,14 @@ export class PlateHeights implements HeightSource {
         snowShift = f.map((v) => Math.max(-wander, Math.min(wander, v * s)));
       }
     }
+    // River and lake beds (only looked up where this world has any).
+    const standing = this.hydrology ? this.surface(x0, z0, w, d, step).water : null;
     for (let k = 0; k < out.length; k++) {
       const h = heights[k]!;
+      if (standing && standing[k]! > h) {
+        out[k] = Material.Sand;
+        continue;
+      }
       const slope = Math.hypot(east[k]! - west[k]!, south[k]! - north[k]!) / (2 * e);
       const v = vary[k]! * norm; // about -1..1
       // Steep coasts: bare rock at the waterline (the threshold wanders so the edge isn't a line).

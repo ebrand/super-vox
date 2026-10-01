@@ -141,7 +141,13 @@ export interface ChunkGenerator {
    * sample (i, j) at column (x0 + i * step, z0 + j * step); used for distant
    * low-detail tiles. Row-major (i + n * j).
    */
-  surfaceSamples(x0: number, z0: number, step: number, n: number): { heights: Int32Array; materials: Uint16Array; canopy?: Canopy | null };
+  surfaceSamples(x0: number, z0: number, step: number, n: number): {
+    heights: Int32Array;
+    materials: Uint16Array;
+    canopy?: Canopy | null;
+    /** River and lake surfaces over the ground (NO_WATER where none), or null for none. */
+    water?: Int32Array | null;
+  };
   /** Lowest and highest ground height (units) over every column of chunk column (cx, cz). */
   columnRange(cx: number, cz: number): { minY: number; maxY: number };
   /** Y (units) of the sea surface, or null for worlds without a sea. */

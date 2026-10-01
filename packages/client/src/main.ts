@@ -224,7 +224,7 @@ connection = connect({
           const waterAt = waterAtFor(chunks);
           inWaterAt = (x, y, z) => waterAt(x * UNITS_PER_METER, y * UNITS_PER_METER, z * UNITS_PER_METER) ?? y < atmosphere.uniforms.waterLevel.value;
           controls.inWater = (x, y, z) => inWaterAt(x, y, z);
-          tiles = new TileManager(scene, material, send, pool, 32, onProgress);
+          tiles = new TileManager(scene, material, voxelWater, send, pool, 32, onProgress);
           const solidAt = solidAtFor(chunks);
           const eyeUnits = () => [camera.position.x * UNITS_PER_METER, camera.position.y * UNITS_PER_METER, camera.position.z * UNITS_PER_METER] as const;
           const collide = (d: [number, number, number]) => {

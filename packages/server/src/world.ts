@@ -4,6 +4,7 @@ import {
   NO_CANOPY,
   encodeClimate,
   NO_GROUND,
+  Material,
   BLOCK_SIZE,
   WaterFlow,
   blockHasRoom,
@@ -315,7 +316,13 @@ export class World {
       }
       canopy = { canopyTop: top, canopyBottom: bottom, canopyMaterials: s.canopy.material };
     }
-    const bytes = encodeTile({ ...t, heights, materials: s.materials, ...canopy });
+    // Rivers and lakes, over the ground.
+    let water: Int16Array | undefined;
+    if (s.water) {
+      water = new Int16Array(TILE_SAMPLES * TILE_SAMPLES).fill(NO_GROUND);
+      for (let k = 0; k < water.length; k++) if (s.water[k]! > s.heights[k]! && heights[k] !== NO_GROUND) water[k] = Math.max(-32767, Math.min(32767, s.water[k]!));
+    }
+    const bytes = encodeTile({ ...t, heights, materials: s.materials, ...canopy, ...(water ? { water } : {}) });
     lruSet(this.tileCache, key, bytes, this.cacheSize);
     return bytes;
   }
@@ -357,10 +364,11 @@ export class World {
     const materials = new Uint8Array(cols * rows);
     for (let j = 0; j < rows; j++) {
       for (let i = 0; i < cols; i++) {
-        // The map shows forests from above: their canopy where there is one.
+        // The map shows forests from above (their canopy), and rivers and lakes as water.
         const k = i + n * j, tree = s.canopy && s.canopy.top[k] !== NO_CANOPY;
-        heights[i + cols * j] = Math.max(-32767, Math.min(32767, tree ? s.canopy!.top[k]! : s.heights[k]!));
-        materials[i + cols * j] = Math.min(255, tree ? s.canopy!.material[k]! : s.materials[k]!);
+        const wet = s.water && s.water[k]! > s.heights[k]!;
+        heights[i + cols * j] = Math.max(-32767, Math.min(32767, wet ? s.water![k]! : tree ? s.canopy!.top[k]! : s.heights[k]!));
+        materials[i + cols * j] = Math.min(255, wet ? Material.Water : tree ? s.canopy!.material[k]! : s.materials[k]!);
       }
     }
     const map = { cols, rows, step, seaLevel: this.seaLevel, heights, materials };

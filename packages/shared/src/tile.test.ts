@@ -62,6 +62,24 @@ describe('tiles', () => {
     expect(tileInWorld(ROUND_WORLD_16x8KM, { level: 1, tx: 0, tz: -1 })).toBe(false);
   });
 
+  it('round-trips river and lake surfaces, with or without a canopy', () => {
+    const base = { level: 2, tx: 3, tz: -4, heights: new Int16Array(N).fill(100), materials: new Uint16Array(N).fill(3) };
+    const water = new Int16Array(N).fill(NO_GROUND);
+    water[9] = 140;
+    const plain = encodeTile({ ...base, water });
+    expect(plain.byteLength).toBe(10 + N * 6);
+    expect(decodeTile(plain).water).toEqual(water);
+    expect(decodeTile(plain).canopyTop).toBeUndefined();
+    const canopyTop = new Int16Array(N).fill(NO_GROUND), canopyBottom = new Int16Array(N).fill(NO_GROUND), canopyMaterials = new Uint16Array(N);
+    const both = encodeTile({ ...base, canopyTop, canopyBottom, canopyMaterials, water });
+    expect(both.byteLength).toBe(10 + N * 12);
+    const back = decodeTile(both);
+    expect(back.water).toEqual(water);
+    expect(back.canopyTop).toEqual(canopyTop);
+    expect(decodeTile(encodeTile(base)).water).toBeUndefined();
+    expect(() => decodeTile(both.subarray(0, 10 + N * 8))).toThrow(TileDecodeError);
+  });
+
   it('round-trips a forest canopy, and leaves tiles without one at the old size', () => {
     const N = TILE_SAMPLES * TILE_SAMPLES;
     const base = { level: 2, tx: 3, tz: -4, heights: new Int16Array(N).fill(100), materials: new Uint16Array(N).fill(3) };

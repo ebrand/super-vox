@@ -82,6 +82,8 @@ Settings for a new world from the environment:
 | `WORLD_WIND_FROM` | 270 | Compass direction rain comes from (270 = west); land behind mountains is drier |
 | `WORLD_TREES` | 50 | Forest density: 0 (none), 50 (natural for each biome), 100 (double) |
 | `WORLD_SNOW_TEMPERATURE` | -4 | With biomes: ground colder than this (degrees C) is snow, with bare rock just below it on high ground |
+| `WORLD_RIVERS` | 50 | Rivers: 0 (none) .. 100 (many small streams) |
+| `WORLD_LAKES` | 50 | Lakes in land basins: 0 (filled in) .. 100 (even small basins) |
 | `WORLD_BIOME_BLEND` | 50 | With biomes: how gradually biomes give way to each other, 0 (sharp borders) .. 100 (wide, ragged transitions) |
 | `WORLD_ISLAND_ARCS` | 0 | Island chains along seams where an oceanic plate meets another, 0 .. 100 |
 | `WORLD_HOTSPOTS` | 0 | Hotspot island groups in oceanic plates (0..40) |
@@ -198,6 +200,14 @@ one level weaker per block up to 7 blocks from a source (shallower the further i
 up when nothing feeds it, and open space between two sources becomes a source. Digging below sea
 level next to the sea lets it in; a pit dug inland stays dry. Near the player the sea is these
 voxels; further away a flat sea surface stands in for it.
+
+Rivers and lakes (`WORLD_RIVERS`, `WORLD_LAKES`, 0..100, default 50; older worlds have none):
+water drains from every 32 m cell toward the sea along the lowest route (basins filled to their
+spill height first). Basins big and deep enough hold lakes at that height, the rest are filled
+in; where enough water gathers (more in wet country) a river runs, wider downstream (up to 50 m),
+falling all the way to the sea or a lake. Rivers cut a channel with a sand bed and a valley around
+it (banks rising at 0.3 out to ~100 m), and their and lakes' water is source water like the sea's.
+Distant terrain and the map show them as water over their beds.
 
 Day and night: each world has a clock kept by the server (saved in its world.json, so it
 carries on across restarts and terrain updates), a 24-minute day by default or real time (the

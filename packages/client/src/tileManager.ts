@@ -1,4 +1,4 @@
-import type * as THREE from 'three';
+import * as THREE from 'three';
 import {
   readTileHeader,
   tileKey,
@@ -7,6 +7,7 @@ import {
   type TileCoord,
 } from '@super-vox/shared';
 import { createPackedMesh, disposePackedMesh, meshGpuBytes, meshQuads } from './meshFactory.js';
+import { WATER_LAYER } from './water.js';
 import type { MeshWorkerPool } from './workerPool.js';
 
 export interface TileStats {
@@ -31,15 +32,17 @@ export class TileManager {
   private readonly requested = new Set<string>();
   private queue: TileCoord[] = [];
   private inFlight = 0;
-  private readonly meshes = new Map<string, THREE.Mesh | null>();
+  private readonly meshes = new Map<string, THREE.Object3D | null>();
   private readonly jobs = new Map<string, number>();
-  private readonly stale = new Map<string, THREE.Mesh>();
+  private readonly stale = new Map<string, THREE.Object3D>();
   private nextToken = 1;
   private errors = 0;
 
   constructor(
     private readonly scene: THREE.Scene,
     private readonly material: THREE.Material,
+    /** For rivers' and lakes' surfaces (drawn on WATER_LAYER). */
+    private readonly waterMaterial: THREE.Material,
     private readonly send: (msg: ClientMessage) => void,
     private readonly pool: MeshWorkerPool,
     private readonly maxInFlight: number,
@@ -132,7 +135,7 @@ export class TileManager {
     this.meshes.clear();
   }
 
-  private retire(key: string, mesh: THREE.Mesh): void {
+  private retire(key: string, mesh: THREE.Object3D): void {
     const old = this.stale.get(key);
     if (old) disposePackedMesh(old);
     this.stale.set(key, mesh);
@@ -158,9 +161,19 @@ export class TileManager {
       if (res.error) {
         this.errors++;
         console.error(`[super-vox] meshing tile ${key} failed: ${res.error}`);
-      } else if (res.buffers && res.baseY !== undefined) {
+      } else if ((res.buffers || res.water) && res.baseY !== undefined) {
         const size = tileSizeUnits(t.level);
-        this.setMesh(key, createPackedMesh(res.buffers, { x: t.tx * size, y: res.baseY, z: t.tz * size }, this.material, `tile ${key}`));
+        const origin = { x: t.tx * size, y: res.baseY, z: t.tz * size };
+        const group = new THREE.Group();
+        group.name = `tile ${key}`;
+        if (res.buffers) group.add(createPackedMesh(res.buffers, origin, this.material, `tile ${key}`));
+        if (res.water) {
+          const water = createPackedMesh(res.water, origin, this.waterMaterial, `tile water ${key}`);
+          water.layers.set(WATER_LAYER);
+          water.renderOrder = 4;
+          group.add(water);
+        }
+        this.setMesh(key, group);
       } else {
         this.setMesh(key, null);
       }
@@ -168,7 +181,7 @@ export class TileManager {
     });
   }
 
-  private setMesh(key: string, mesh: THREE.Mesh | null): void {
+  private setMesh(key: string, mesh: THREE.Object3D | null): void {
     const prev = this.meshes.get(key);
     if (prev) disposePackedMesh(prev);
     const stale = this.stale.get(key);

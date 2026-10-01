@@ -62,6 +62,8 @@ function specForNewWorld(): WorldSpec {
         snowTemperature: numberEnv('WORLD_SNOW_TEMPERATURE', d.snowTemperature),
         biomeBlend: numberEnv('WORLD_BIOME_BLEND', d.biomeBlend),
         trees: numberEnv('WORLD_TREES', d.trees),
+        rivers: numberEnv('WORLD_RIVERS', d.rivers),
+        lakes: numberEnv('WORLD_LAKES', d.lakes),
         islandArcs: numberEnv('WORLD_ISLAND_ARCS', d.islandArcs),
         hotspots: numberEnv('WORLD_HOTSPOTS', d.hotspots),
         islandMinSize: numberEnv('WORLD_ISLAND_MIN_SIZE', d.islandMinSize),

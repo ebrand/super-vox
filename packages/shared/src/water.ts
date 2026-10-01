@@ -8,6 +8,9 @@ import { MAX_FLOW, isWater, waterLevelOf, waterMaterial } from './materials.js';
  * solid (you see, move and aim through it), and flows from block to block (see WaterFlow).
  */
 
+/** No water standing over a column (see HeightSource.water). */
+export const NO_WATER = -(2 ** 31);
+
 const stripped = new WeakMap<Exclude<Block, null>, Block>();
 
 /** The block without its water (the same object if it has none). */
@@ -71,6 +74,27 @@ function solidCells(block: Block): Uint8Array {
     }
   }
   return out;
+}
+
+/** Top of a block's water (block-local units): 0 without water. */
+export function blockWaterTop(block: Block): number {
+  if (!block) return 0;
+  if (block.kind === 'uniform') return isWater(block.material) ? BLOCK_SIZE : 0;
+  if (block.kind === 'grid') {
+    const n = BLOCK_SIZE / block.size;
+    let top = 0;
+    block.materials.forEach((m, i) => {
+      if (isWater(m)) top = Math.max(top, (Math.floor(i / (n * n)) + 1) * block.size);
+    });
+    return top;
+  }
+  let top = 0;
+  for (let i = 0; i < block.packed.length; i++) {
+    if (!isWater(block.materials[i]!)) continue;
+    const p = block.packed[i]!;
+    top = Math.max(top, ((p >> 4) & 15) + (p >> 12) + 1);
+  }
+  return top;
 }
 
 /** Whether a block has any cell that isn't solid (room for water). */
@@ -205,9 +229,12 @@ export class WaterFlow {
       if (block === undefined || !blockHasRoom(block)) continue;
       const level = blockWater(block);
       const want = this.wanted(world, bx, by, bz, level);
-      // Changed level, or new open space (dug, or water displaced) in a block that has water.
-      if (want !== level || (want !== null && blockHasAir(block, waterHeight(want)))) {
-        world.setBlock(bx, by, bz, setBlockWater(block, want));
+      // A source keeps its surface where it stands (a river or lake's may be part way up its
+      // block); others stand at their level's height.
+      const height = want === 0 && level === 0 ? blockWaterTop(block) : want === null ? 0 : waterHeight(want);
+      // Changed level, or new open space (dug, or water displaced) below its surface.
+      if (want !== level || (want !== null && blockHasAir(block, height))) {
+        world.setBlock(bx, by, bz, setBlockWater(block, want, height));
         changed.push([bx, by, bz]);
         this.touch(bx, by, bz);
       }

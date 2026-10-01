@@ -1,4 +1,4 @@
-import { NO_GROUND, TILE_SAMPLES, tileStep, type Tile } from '@super-vox/shared';
+import { Material, NO_GROUND, TILE_SAMPLES, tileStep, type Tile } from '@super-vox/shared';
 import { mergeFaces, type Quad } from './mesher.js';
 
 /** Voxel size used for edge lines on tiles: 1 m, which fades out at tile distances anyway. */
@@ -102,6 +102,37 @@ export function meshTile(tile: Tile): TileMesh | null {
               const plane = (j + (dir === 4 ? 1 : 0)) * step;
               quads.push({ dir, plane, u: i * step, v: u0, du: step, dv: u1 - u0, material, size: S });
             }
+          }
+        }
+      }
+    }
+  }
+  // Rivers and lakes: their surface over the ground (drawn as water), with sides where it stands
+  // above a neighbour (a river stepping down).
+  const water = tile.water;
+  if (water) {
+    const surface = (i: number, j: number) => {
+      if (i < 0 || j < 0 || i >= n || j >= n) return NO_GROUND;
+      const w = water[i + n * j]!;
+      return w === NO_GROUND ? h(i, j) : w;
+    };
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const w = water[i + n * j]!;
+        if (w === NO_GROUND || h(i, j) === NO_GROUND || w <= h(i, j)) continue;
+        const y1 = w - baseY;
+        quads.push({ dir: 2, plane: y1, u: j * step, v: i * step, du: step, dv: step, material: Material.Water, size: S });
+        for (const [di, dj, dir] of sides) {
+          const other = surface(i + di, j + dj);
+          if (other === NO_GROUND || other >= w) continue;
+          const y0 = Math.max(other, h(i, j)) - baseY;
+          if (y0 >= y1) continue;
+          if (dir === 0 || dir === 1) {
+            const plane = (i + (dir === 0 ? 1 : 0)) * step;
+            quads.push({ dir, plane, u: y0, v: j * step, du: y1 - y0, dv: step, material: Material.Water, size: S });
+          } else {
+            const plane = (j + (dir === 4 ? 1 : 0)) * step;
+            quads.push({ dir, plane, u: i * step, v: y0, du: step, dv: y1 - y0, material: Material.Water, size: S });
           }
         }
       }

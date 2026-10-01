@@ -30,6 +30,8 @@ export interface Tile extends TileCoord {
   canopyTop?: Int16Array;
   canopyBottom?: Int16Array;
   canopyMaterials?: Uint16Array;
+  /** River and lake surfaces over the ground, per sample (units; NO_GROUND where none). */
+  water?: Int16Array;
 }
 
 export function tileSizeUnits(level: number): number {
@@ -58,12 +60,13 @@ export function tileInWorld(world: WorldConfig, t: TileCoord): boolean {
 }
 
 /**
- * Tile format (little-endian): u8 version (2), u8 level, i32 tx, i32 tz,
+ * Tile format (little-endian): u8 version (3), u8 level, i32 tx, i32 tz,
  * then TILE_SAMPLES^2 x i16 heights, then TILE_SAMPLES^2 x u16 materials; then, if the tile
  * has a forest canopy, TILE_SAMPLES^2 each of i16 canopy tops, i16 canopy bottoms and u16
- * canopy materials.
+ * canopy materials; then, if it has rivers or lakes, TILE_SAMPLES^2 x i16 water surfaces
+ * (NO_GROUND where none). Which parts are there follows from the length.
  */
-export const TILE_FORMAT_VERSION = 2;
+export const TILE_FORMAT_VERSION = 3;
 const HEADER = 10;
 const N = TILE_SAMPLES * TILE_SAMPLES;
 
@@ -75,7 +78,9 @@ export function encodeTile(tile: Tile): Uint8Array {
   if (canopy && (tile.canopyTop!.length !== N || tile.canopyBottom!.length !== N || tile.canopyMaterials!.length !== N)) {
     throw new RangeError('tile canopy arrays must hold TILE_SAMPLES^2 entries');
   }
-  const buf = new Uint8Array(HEADER + N * (canopy ? 10 : 4));
+  if (tile.water && tile.water.length !== N) throw new RangeError('tile water must hold TILE_SAMPLES^2 entries');
+  const water = HEADER + N * (canopy ? 10 : 4);
+  const buf = new Uint8Array(water + (tile.water ? N * 2 : 0));
   const v = new DataView(buf.buffer);
   v.setUint8(0, TILE_FORMAT_VERSION);
   v.setUint8(1, tile.level);
@@ -89,15 +94,17 @@ export function encodeTile(tile: Tile): Uint8Array {
       v.setInt16(HEADER + N * 6 + i * 2, tile.canopyBottom![i]!, true);
       v.setUint16(HEADER + N * 8 + i * 2, tile.canopyMaterials![i]!, true);
     }
+    if (tile.water) v.setInt16(water + i * 2, tile.water[i]!, true);
   }
   return buf;
 }
 
 export function decodeTile(bytes: Uint8Array): Tile {
-  const canopy = bytes.byteLength === HEADER + N * 10;
-  if (!canopy && bytes.byteLength !== HEADER + N * 4) {
-    throw new TileDecodeError(`tile must be ${HEADER + N * 4} or ${HEADER + N * 10} bytes, got ${bytes.byteLength}`);
+  const perSample = (bytes.byteLength - HEADER) / N;
+  if (![4, 6, 10, 12].includes(perSample)) {
+    throw new TileDecodeError(`tile must be ${HEADER} + ${N} x 4, 6, 10 or 12 bytes, got ${bytes.byteLength}`);
   }
+  const canopy = perSample >= 10, hasWater = perSample === 6 || perSample === 12;
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (v.getUint8(0) !== TILE_FORMAT_VERSION) throw new TileDecodeError(`unsupported tile format ${v.getUint8(0)}`);
   const level = v.getUint8(1);
@@ -118,6 +125,11 @@ export function decodeTile(bytes: Uint8Array): Tile {
       tile.canopyBottom[i] = v.getInt16(HEADER + N * 6 + i * 2, true);
       tile.canopyMaterials[i] = v.getUint16(HEADER + N * 8 + i * 2, true);
     }
+  }
+  if (hasWater) {
+    const at = HEADER + N * (canopy ? 10 : 4);
+    tile.water = new Int16Array(N);
+    for (let i = 0; i < N; i++) tile.water[i] = v.getInt16(at + i * 2, true);
   }
   return tile;
 }
