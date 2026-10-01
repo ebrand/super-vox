@@ -15,6 +15,9 @@ and terrain tolerance (the world's own by default; development servers only). UR
 the game page override them for one visit: `?detail=N`, `?view=M`, `?tolerance=N`.
 `?workers=N` sets the number of mesh workers (default: up to 4; the HUD shows
 how many and their average time per chunk).
+While moving fast, nearby voxel chunks give way to 1 m tiles (full detail up to
+10 m/s, none from 40 m/s; it comes back about a second after you slow down):
+`?fullDetailBelow=A&noDetailAbove=B` (m/s) tune it, `?noDetailAbove=0` turns it off.
 
 ## Voxel rules
 

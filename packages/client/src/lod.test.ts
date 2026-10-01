@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CHUNK_SIZE, FLAT_WORLD_16KM, tileSizeUnits } from '@super-vox/shared';
-import { focusLead, selectLod } from './lod.js';
+import { DETAIL_GROW_MS, SpeedDetail, focusLead, selectLod } from './lod.js';
 
 const FAR = 2048 * 16;
 
@@ -67,6 +67,44 @@ describe('focusLead', () => {
     expect(Math.hypot(fast.dx, fast.dz)).toBeCloseTo(3 * CHUNK_SIZE);
     expect(fast.dx / fast.dz).toBeCloseTo(-3 / 4);
     expect(focusLead(1000, 0, 1)).toEqual({ dx: 0, dz: 0 });
+  });
+});
+
+describe('voxel chunks while moving fast', () => {
+  const world = FLAT_WORLD_16KM;
+  const at = [8000.5 * 16, 8000.5 * 16] as const;
+
+  it('replaces chunk columns beyond chunkRadius with 32 m tiles, keeping the rest of the layout', () => {
+    const full = selectLod(world, ...at, 4, FAR);
+    expect(selectLod(world, ...at, 4, FAR, 4)).toEqual(full);
+    const none = selectLod(world, ...at, 4, FAR, -1);
+    expect(none.columns).toEqual([]);
+    // Every 2 x 2 group of columns became one level-1 tile; nothing else changed.
+    expect(none.tiles.filter((t) => t.level === 1)).toHaveLength(full.columns.length / 4 + full.tiles.filter((t) => t.level === 1).length);
+    expect(none.tiles.filter((t) => t.level > 1)).toEqual(full.tiles.filter((t) => t.level > 1));
+    const some = selectLod(world, ...at, 4, FAR, 1);
+    expect(some.columns.length).toBeGreaterThan(0);
+    expect(some.columns.length).toBeLessThan(full.columns.length);
+    for (const c of some.columns) expect(Math.max(Math.abs((c.cx + 0.5) * CHUNK_SIZE - at[0]), Math.abs((c.cz + 0.5) * CHUNK_SIZE - at[1]))).toBeLessThan(3 * CHUNK_SIZE);
+  });
+
+  it('shrinks the chunk radius with speed at once, and grows it back only after a while', () => {
+    const sd = new SpeedDetail(8, { full: 10, none: 40 });
+    expect(sd.target(5)).toBe(8);
+    expect(sd.target(10)).toBe(8);
+    expect(sd.target(25)).toBe(3);
+    expect(sd.target(39)).toBe(-1);
+    expect(sd.target(400)).toBe(-1);
+    expect(sd.update(5, 0)).toBe(8);
+    expect(sd.update(50, 100)).toBe(-1); // at once
+    expect(sd.update(5, 200)).toBe(-1); // slowed down: not yet
+    expect(sd.update(5, 200 + DETAIL_GROW_MS - 1)).toBe(-1);
+    expect(sd.update(5, 200 + DETAIL_GROW_MS)).toBe(8);
+    // A wobble back up resets the wait.
+    sd.update(50, 5000);
+    sd.update(5, 5100);
+    sd.update(50, 5200);
+    expect(sd.update(5, 5300 + DETAIL_GROW_MS - 1)).toBe(-1);
   });
 });
 

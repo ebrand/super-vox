@@ -4,7 +4,7 @@ import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool } from './editTool.js';
 import { FlyControls } from './flyControls.js';
-import { focusLead, selectLod } from './lod.js';
+import { DETAIL_SPEEDS, SpeedDetail, focusLead, selectLod } from './lod.js';
 import { TileManager } from './tileManager.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
 import { createAtmosphere, createSky } from './atmosphere.js';
@@ -48,6 +48,17 @@ const settings = loadSettings();
 const detail = Math.round(numberParam('detail', settings.detail, 1, 32));
 /** ?view=M: view distance in metres; low-detail tiles cover everything beyond `detail` out to here. */
 const view = Math.max(detail * 16 + 16, numberParam('view', settings.view, 64, 16_000));
+/**
+ * ?fullDetailBelow=A&noDetailAbove=B (m/s): voxel chunks give way to 1 m tiles while flying fast
+ * (see SpeedDetail); noDetailAbove=0 keeps full detail at any speed.
+ */
+const detailSpeeds = {
+  full: numberParam('fullDetailBelow', DETAIL_SPEEDS.full, 0, 10_000),
+  none: numberParam('noDetailAbove', DETAIL_SPEEDS.none, 0, 10_000),
+};
+const speedDetail = new SpeedDetail(detail, detailSpeeds.none > detailSpeeds.full ? detailSpeeds : { full: Infinity, none: Infinity });
+/** Voxel-chunk radius in use (below `detail` while moving fast; -1 for none). */
+let chunkRadius = detail;
 // Development: ?tolerance=N (integer 1/16 m units, 0..16) asks the server for
 // terrain voxelized with that tolerance.
 const toleranceParam = params.get('tolerance') ?? (settings.tolerance !== null ? String(settings.tolerance) : null);
@@ -185,17 +196,19 @@ function trackVelocity(now: number): void {
 
 function updateLod(force = false): void {
   if (!world || !chunks || !tiles) return;
-  // Stream terrain around the camera, centred a little ahead of it while moving.
-  const lead = focusLead(velocity.x, velocity.z, detail);
+  // Stream terrain around the camera, centred a little ahead of it while moving; fewer voxel
+  // chunks (more 1 m tiles) the faster we go.
+  chunkRadius = speedDetail.update(Math.hypot(velocity.x, velocity.z) / UNITS_PER_METER, performance.now());
+  const lead = focusLead(velocity.x, velocity.z, chunkRadius);
   const fx = camera.position.x * UNITS_PER_METER + lead.dx;
   const fz = camera.position.z * UNITS_PER_METER + lead.dz;
-  const column = `${Math.floor(fx / CHUNK_SIZE)},${Math.floor(fz / CHUNK_SIZE)}`;
+  const column = `${Math.floor(fx / CHUNK_SIZE)},${Math.floor(fz / CHUNK_SIZE)},${chunkRadius}`;
   if (!force && column === lodColumn) return;
   lodColumn = column;
-  const sel = selectLod(world, fx, fz, detail, view * UNITS_PER_METER);
-  // Everything within `detail` chunks (Chebyshev) of the focus is full-detail chunks; one chunk in
+  const sel = selectLod(world, fx, fz, detail, view * UNITS_PER_METER, chunkRadius);
+  // Everything within `chunkRadius` chunks (Chebyshev) of the focus is voxel chunks; one chunk in
   // from that, they were loaded from the last position too.
-  seaMaterial?.setNear(fx / UNITS_PER_METER, fz / UNITS_PER_METER, (Math.max(0, detail - 1) * CHUNK_SIZE) / UNITS_PER_METER);
+  seaMaterial?.setNear(fx / UNITS_PER_METER, fz / UNITS_PER_METER, (Math.max(0, chunkRadius - 1) * CHUNK_SIZE) / UNITS_PER_METER);
   lodChangedAt = performance.now();
   settledMs = null;
   chunks.setRegion(sel.columns, fx, fz);
@@ -409,7 +422,8 @@ function updateHud(): void {
     ` · F: ${controls.walking ? 'fly' : 'walk'} · N: no-clip (${controls.collide ? 'off' : 'on'}) · M: map · L: lighting · I: hide info\n` +
     (editTool ? `${editTool.hudLines()}\n` : '') +
     (c && t
-      ? `chunks ${c.loaded} loaded (${c.columns} columns), ${c.inFlight} in flight, ${c.queued} queued, ${c.meshing} meshing\n` +
+      ? (chunkRadius < detail ? `moving fast: ${chunkRadius < 0 ? 'no voxel chunks, 1 m tiles only' : `voxel chunks within ${chunkRadius} of ${detail}`}\n` : '') +
+        `chunks ${c.loaded} loaded (${c.columns} columns), ${c.inFlight} in flight, ${c.queued} queued, ${c.meshing} meshing\n` +
         `tiles ${t.loaded}/${t.tiles}, ${t.inFlight} in flight, ${t.queued} queued, ${t.meshing} meshing\n` +
         (pool ? `meshing on ${pool.size} workers, ${pool.averageMs.toFixed(1)} ms per job\n` : '') +
         `tris ${c.triangles} near + ${t.triangles} far, ~${mb(c.gpuBytes + t.gpuBytes)} MB GPU` +

@@ -20,9 +20,10 @@ export interface LodSelection {
  * focus is covered by exactly one node.
  *
  * `radius` is the full-detail radius in chunks; each coarser ring is twice as
- * wide as the previous one.
+ * wide as the previous one. `chunkRadius` (default `radius`) can shrink the part drawn as voxel
+ * chunks, the rest of the full-detail area being 32 m tiles (1 m samples); below 0, no chunks.
  */
-export function selectLod(world: WorldConfig, focusX: number, focusZ: number, radius: number, far: number): LodSelection {
+export function selectLod(world: WorldConfig, focusX: number, focusZ: number, radius: number, far: number, chunkRadius = radius): LodSelection {
   const out: LodSelection = { columns: [], tiles: [] };
   const splitDistance = (level: number) => radius * CHUNK_SIZE * 2 ** (level - 1);
   const distance = (x0: number, z0: number, size: number) =>
@@ -38,6 +39,10 @@ export function selectLod(world: WorldConfig, focusX: number, focusZ: number, ra
       return;
     }
     if (level === 1) {
+      if (chunkRadius < 0 || d > chunkRadius * CHUNK_SIZE) {
+        out.tiles.push({ level, tx, tz });
+        return;
+      }
       for (let j = 0; j < 2; j++) {
         for (let i = 0; i < 2; i++) {
           const cx = tx * 2 + i, cz = tz * 2 + j;
@@ -72,4 +77,51 @@ export function focusLead(vx: number, vz: number, radius: number): { dx: number;
   if (speed === 0 || max === 0) return { dx: 0, dz: 0 };
   const scale = Math.min(LEAD_SECONDS, max / speed);
   return { dx: vx * scale, dz: vz * scale };
+}
+
+/** Speeds (m/s) between which voxel chunks give way to tiles while moving fast (see SpeedDetail). */
+export const DETAIL_SPEEDS = { full: 10, none: 40 };
+/** How long (ms) a lower speed must last before more voxel chunks come back. */
+export const DETAIL_GROW_MS = 1000;
+
+/**
+ * Voxel-chunk radius for the current speed: the full `detail` up to `full` m/s, none (-1) from
+ * `none` m/s, shrinking in between. It shrinks at once but grows back only after the lower
+ * speed has lasted DETAIL_GROW_MS, so speed wobbles don't rebuild terrain.
+ */
+export class SpeedDetail {
+  private current: number;
+  private higherSince: number | null = null;
+
+  constructor(
+    private readonly detail: number,
+    private readonly speeds = DETAIL_SPEEDS,
+  ) {
+    this.current = detail;
+  }
+
+  /** The chunk radius wanted at `speed` (m/s), ignoring how long it has lasted. */
+  target(speed: number): number {
+    const { full, none } = this.speeds;
+    if (speed <= full) return this.detail;
+    if (speed >= none) return -1;
+    return Math.floor(((none - speed) / (none - full)) * (this.detail + 1)) - 1;
+  }
+
+  update(speed: number, now: number): number {
+    const target = this.target(speed);
+    if (target < this.current) {
+      this.current = target;
+      this.higherSince = null;
+    } else if (target > this.current) {
+      this.higherSince ??= now;
+      if (now - this.higherSince >= DETAIL_GROW_MS) {
+        this.current = target;
+        this.higherSince = null;
+      }
+    } else {
+      this.higherSince = null;
+    }
+    return this.current;
+  }
 }

@@ -5,7 +5,7 @@
  */
 import * as THREE from 'three';
 import { Worker } from 'node:worker_threads';
-import { BinaryTag, CHUNK_SIZE, PROTOCOL_VERSION, UNITS_PER_METER, decodeServerMessage, encodeMessage, type ClientMessage, type WorldConfig } from '@super-vox/shared';
+import { BinaryTag, CHUNK_SIZE, tileKey, tileSizeUnits, PROTOCOL_VERSION, UNITS_PER_METER, decodeServerMessage, encodeMessage, type ClientMessage, type WorldConfig } from '@super-vox/shared';
 import { ChunkManager } from '../src/chunkManager.js';
 import { TileManager } from '../src/tileManager.js';
 import * as lod from '../src/lod.js';
@@ -73,16 +73,44 @@ const ready = new Promise<void>((resolve) => {
 });
 
 let fx = 0, fz = 0, lodColumn = '';
+// The game's speed rule (main.ts), unless SPEED_DETAIL=off.
+const speedDetail = process.env.SPEED_DETAIL === 'off' ? null : new lod.SpeedDetail(DETAIL);
+let chunkRadius = DETAIL;
 function updateLod(x: number, z: number, vx: number) {
-  // The client's focus, led in the direction of flight where the client does that (see main.ts).
-  const focusLead = (lod as { focusLead?: (vx: number, vz: number, r: number) => { dx: number } }).focusLead;
-  fx = x + (focusLead?.(vx, 0, DETAIL).dx ?? 0); fz = z;
-  const column = `${Math.floor(fx / CHUNK_SIZE)},${Math.floor(fz / CHUNK_SIZE)}`;
+  chunkRadius = speedDetail ? speedDetail.update(Math.abs(vx) / UNITS_PER_METER, performance.now()) : DETAIL;
+  // The client's focus, led in the direction of flight (see main.ts).
+  fx = x + lod.focusLead(vx, 0, chunkRadius).dx; fz = z;
+  const column = `${Math.floor(fx / CHUNK_SIZE)},${Math.floor(fz / CHUNK_SIZE)},${chunkRadius}`;
   if (column === lodColumn) return;
   lodColumn = column;
-  const sel = lod.selectLod(world, fx, fz, DETAIL, VIEW);
+  const sel = lod.selectLod(world, fx, fz, DETAIL, VIEW, chunkRadius);
   chunks.setRegion(sel.columns, fx, fz);
   tiles.setTiles(sel.tiles, fx, fz);
+}
+
+/** Columns within `r` chunks of the camera with ground drawn: chunks meshed, or a tile over them. */
+function covered(camX: number, camZ: number, r: number): number {
+  const tm = tiles as unknown as { meshes: Map<string, unknown> };
+  const ccx = Math.floor(camX / CHUNK_SIZE), ccz = Math.floor(camZ / CHUNK_SIZE);
+  let ok = 0, n = 0;
+  for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+    n++;
+    if (readinessOf(ccx + dx, ccz + dz)) { ok++; continue; }
+    for (let level = 1; level <= 6; level++) {
+      const size = tileSizeUnits(level);
+      const k = tileKey({ level, tx: Math.floor(((ccx + dx) * CHUNK_SIZE) / size), tz: Math.floor(((ccz + dz) * CHUNK_SIZE) / size) });
+      if (tm.meshes.has(k)) { ok++; break; }
+    }
+  }
+  return ok / n;
+}
+
+function readinessOf(cx: number, cz: number): boolean {
+  const cm = chunks as unknown as { ranges: Map<string, unknown>; meshes: Map<string, unknown>; render: Set<string> };
+  const range = cm.ranges.get(`${cx},${cz}`);
+  if (range === undefined) return false;
+  for (const k of cm.render) if (k.startsWith(`${cx},`) && k.endsWith(`,${cz}`) && !cm.meshes.has(k)) return false;
+  return true;
 }
 
 /** Columns within `r` chunks (Chebyshev) of the camera that are fully meshed, as a fraction. */
@@ -103,10 +131,17 @@ function readiness(camX: number, camZ: number, r: number): number {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+let nearReadyMs = 0;
 async function settle(x: number, z: number, limit = 60_000): Promise<number> {
   const t0 = performance.now();
+  nearReadyMs = NaN;
   updateLod(x, z, 0);
-  while (!(chunks.idle && tiles.idle) && performance.now() - t0 < limit) { await sleep(20); updateLod(x, z, 0); }
+  // Settled: full detail back (see SpeedDetail) and everything loaded.
+  while (!(chunkRadius === DETAIL && chunks.idle && tiles.idle) && performance.now() - t0 < limit) {
+    await sleep(20);
+    updateLod(x, z, 0);
+    if (Number.isNaN(nearReadyMs) && chunkRadius >= 1 && readiness(x, z, 1) === 1) nearReadyMs = performance.now() - t0;
+  }
   return performance.now() - t0;
 }
 
@@ -123,29 +158,31 @@ for (const [speed, row] of runs) {
   const s0 = await settle(x, z);
   sent = { chunk: 0, tile: 0, column: 0, cancel: 0 }; got = { chunk: 0, tile: 0 };
   const p0 = pools.stats();
-  const near: number[] = [], region: number[] = [], load: number[][] = [];
+  const near: number[] = [], region: number[] = [], ground: number[] = [], load: number[][] = [];
   const FLY_S = 8, DT = 50;
   const t0 = performance.now();
   for (let t = 0; t < FLY_S * 1000; t += DT) {
     x += speed * UNITS_PER_METER * DT / 1000;
     updateLod(x, z, speed * UNITS_PER_METER);
     await sleep(DT);
-    near.push(readiness(x, z, 1)); region.push(readiness(x, z, DETAIL - 1));
+    near.push(readiness(x, z, 1)); region.push(readiness(x, z, DETAIL - 1)); ground.push(covered(x, z, 2));
     const c = chunks.stats, tl = tiles.stats;
     const cm = chunks as unknown as { columnRequested: Set<string>; columnQueue: unknown[]; queue: unknown[]; requested: Set<string> };
     load.push([c.inFlight, c.queued, tl.inFlight, tl.queued, chunks.staleCount + tiles.staleCount, tl.triangles, cm.columnRequested.size, cm.columnQueue.length, cm.queue.length, cm.requested.size]);
   }
   const wall = performance.now() - t0;
+  const endRadius = chunkRadius;
   const settleMs = await settle(x, z);
   const p1 = pools.stats();
   const avg = (a: number[]) => (100 * a.reduce((s, v) => s + v, 0) / a.length).toFixed(0);
   const lastHalf = (a: number[]) => avg(a.slice(a.length / 2));
   const mean = (k: number) => Math.round(load.reduce((a, l) => a + l[k]!, 0) / load.length);
   const last = load[load.length - 1]!;
+  console.log(`  ground drawn within 2 chunks: ${avg(ground)}% (2nd half ${lastHalf(ground)}%); voxel chunk radius at the end of the flight: ${endRadius}`);
   console.log(`  while flying (mean): chunks ${mean(0)} in flight / ${mean(1)} queued, tiles ${mean(2)} in flight / ${mean(3)} queued (columns asked ${mean(6)}, column queue ${mean(7)}, chunk queue ${mean(8)}, chunks requested ${mean(9)}) · at the end: ${last[4]} stale meshes, ${(last[5]! / 1e6).toFixed(1)} M far triangles`);
   console.log(`${speed} m/s @ ${row} km for ${(wall / 1000).toFixed(1)} s (initial settle ${(s0 / 1000).toFixed(1)} s): ` +
     `ready within 1 chunk ${avg(near)}% (2nd half ${lastHalf(near)}%), within ${DETAIL - 1} chunks ${avg(region)}% (2nd half ${lastHalf(region)}%) · ` +
-    `settle after stopping ${(settleMs / 1000).toFixed(2)} s · sent ${sent.column} col/${sent.chunk} chunk/${sent.tile} tile/${sent.cancel} cancel, got ${got.chunk} chunks/${got.tile} tiles · meshed ${p1.ran - p0.ran} in ${((p1.ms - p0.ms) / 1000).toFixed(1)} worker-s (skipped ${p1.skipped - p0.skipped})`);
+    `settle after stopping ${(settleMs / 1000).toFixed(2)} s (voxels within 1 chunk after ${(nearReadyMs / 1000).toFixed(2)} s) · sent ${sent.column} col/${sent.chunk} chunk/${sent.tile} tile/${sent.cancel} cancel, got ${got.chunk} chunks/${got.tile} tiles · meshed ${p1.ran - p0.ran} in ${((p1.ms - p0.ms) / 1000).toFixed(1)} worker-s (skipped ${p1.skipped - p0.skipped})`);
 }
 ws.close();
 pools.close();
