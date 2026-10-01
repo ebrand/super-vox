@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { voxelAt, type Chunk } from './chunk.js';
 import { Biome, BIOME_GROUND } from './biomes.js';
 import { Material } from './materials.js';
-import { PLATE_CELL, PlateHeights, defaultPlateTerrain, migratePlateTerrain, parsePlateTerrain, validatePlateTerrain, type PlateTerrainConfig } from './plates.js';
+import { PLATE_CELL, PlateHeights, defaultPlateCounts, defaultPlateTerrain, migratePlateTerrain, parsePlateTerrain, validatePlateTerrain, type PlateTerrainConfig } from './plates.js';
 import { TerrainGenerator } from './terrain.js';
 import { CHUNK_SIZE, FLAT_WORLD_16KM, ROUND_WORLD_16x8KM } from './world.js';
 
@@ -868,6 +868,18 @@ describe('rock and snow', () => {
     };
     expect(stone(20)).toBeGreaterThan(stone(30) * 1.3);
     expect(stone(30)).toBeGreaterThan(stone(90));
+  });
+});
+
+describe('bigger worlds', () => {
+  it('get more plates by default, growing a little slower than their area', () => {
+    expect(defaultPlateCounts()).toEqual({ majorPlates: 7, minorPlates: 15 });
+    expect(defaultPlateCounts(FLAT_WORLD_16KM)).toEqual({ majorPlates: 7, minorPlates: 15 });
+    expect(defaultPlateCounts(ROUND_WORLD_16x8KM)).toEqual({ majorPlates: 7, minorPlates: 15 }); // never fewer
+    const big = defaultPlateCounts({ ...ROUND_WORLD_16x8KM, widthUnits: 64_000 * 16, depthUnits: 32_000 * 16 });
+    expect(big.majorPlates).toBeGreaterThan(20);
+    expect(big.majorPlates).toBeLessThan(7 * 8); // not as many as the area alone would give
+    expect(defaultPlateTerrain(1, { ...ROUND_WORLD_16x8KM, widthUnits: 64_000 * 16, depthUnits: 32_000 * 16 }).majorPlates).toBe(big.majorPlates);
   });
 });
 

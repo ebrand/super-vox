@@ -64,6 +64,14 @@ async function nextMessage(ws: WebSocket): Promise<ServerMessage> {
   return f.text;
 }
 
+async function until(done: () => boolean, ms = 5000): Promise<void> {
+  const t0 = Date.now();
+  while (!done()) {
+    if (Date.now() - t0 > ms) throw new Error('timed out');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 async function greeted(): Promise<WebSocket> {
   const ws = await connect();
   const reply = nextMessage(ws);
@@ -208,14 +216,50 @@ describe('tiles and columns', () => {
     ws.close();
   });
 
-  it('answers column requests with the height range', async () => {
+  it("answers column requests with the height range, then the column's chunks", async () => {
     const ws = await greeted();
-    const reply = nextMessage(ws);
+    const frames: Frame[] = [];
+    ws.on('message', (data, isBinary) => frames.push(isBinary ? { binary: new Uint8Array(data as Buffer) } : { text: JSON.parse(String(data)) as ServerMessage }));
     ws.send(JSON.stringify({ type: 'requestColumn', cx: 3, cz: 4 }));
-    expect(await reply).toEqual({ type: 'column', cx: 3, cz: 4, minY: 0, maxY: 0 });
-    const outside = nextMessage(ws);
     ws.send(JSON.stringify({ type: 'requestColumn', cx: -3, cz: 4 }));
-    expect(await outside).toEqual({ type: 'column', cx: -3, cz: 4, minY: null, maxY: null });
+    ws.send(JSON.stringify({ type: 'requestColumn', cx: 5, cz: 4 }));
+    await until(() => frames.length >= 10);
+    const seen = frames.map((f) => ('text' in f ? f.text : (({ cx, cy, cz }) => ({ chunk: [cx, cy, cz] }))(decodeChunk(f.binary.subarray(1)))));
+    // Flat ground at 0: rendered layers -1..0, and one more either side to mesh against. Each
+    // column's chunks come before the next column.
+    expect(seen).toEqual([
+      { type: 'column', cx: 3, cz: 4, minY: 0, maxY: 0, sent: { lo: -2, hi: 1 } },
+      { chunk: [3, -2, 4] }, { chunk: [3, -1, 4] }, { chunk: [3, 0, 4] }, { chunk: [3, 1, 4] },
+      { type: 'column', cx: -3, cz: 4, minY: null, maxY: null },
+      { type: 'column', cx: 5, cz: 4, minY: 0, maxY: 0, sent: { lo: -2, hi: 1 } },
+      { chunk: [5, -2, 4] }, { chunk: [5, -1, 4] }, { chunk: [5, 0, 4] }, { chunk: [5, 1, 4] },
+    ]);
+    ws.close();
+  });
+
+  it('drops requests cancelled before they were served', async () => {
+    const ws = await greeted();
+    const chunks: string[] = [];
+    let marker = false;
+    ws.on('message', (data, isBinary) => {
+      if (!isBinary) return;
+      const f = new Uint8Array(data as Buffer);
+      if (f[0] === BinaryTag.Tile) marker = true;
+      else {
+        const c = decodeChunk(f.subarray(1));
+        chunks.push(`${c.cx},${c.cy},${c.cz}`);
+      }
+    });
+    const coords = Array.from({ length: 400 }, (_, i) => ({ cx: i % 20, cy: 0, cz: Math.floor(i / 20) }));
+    for (const c of coords) ws.send(JSON.stringify({ type: 'requestChunk', ...c }));
+    const dropped = coords.slice(200);
+    ws.send(JSON.stringify({ type: 'cancel', chunks: dropped.map((c) => [c.cx, c.cy, c.cz]), columns: [[1, 1]], tiles: [[2, 0, 0]] }));
+    // Answered after everything asked before it.
+    ws.send(JSON.stringify({ type: 'requestTile', level: 2, tx: 1, tz: 1 }));
+    await until(() => marker);
+    // All the wanted chunks; of the cancelled ones, only any served before the cancel arrived.
+    expect(new Set(chunks.slice(0, 200))).toEqual(new Set(coords.slice(0, 200).map((c) => `${c.cx},${c.cy},${c.cz}`)));
+    expect(chunks.length).toBeLessThan(300);
     ws.close();
   });
 });
@@ -392,7 +436,7 @@ describe('named worlds', () => {
 
   it('creates plate worlds from settings, filling in defaults, and refuses bad requests', async () => {
     const { a, root } = await catalogApp();
-    const post = (body: object) => a.inject({ method: 'POST', url: '/api/worlds', payload: body });
+    const post = (body: object) => a.inject({ method: 'POST', url: '/api/worlds', payload: { shape: 'round-16x8', ...body } });
     const created = await post({ name: 'fresh', plates: { seed: 9, landPercent: 45, junk: true } });
     expect(created.statusCode).toBe(201);
     expect(created.json().spec.plates).toEqual({ ...defaultPlateTerrain(9), landPercent: 45 });
@@ -428,9 +472,9 @@ describe('named worlds', () => {
     expect((await a.inject({ method: 'PUT', url: '/api/worlds/home/clock', payload: { hours: 30 } })).statusCode).toBe(400);
     expect((await a.inject({ method: 'PUT', url: '/api/worlds/nope/clock', payload: { hours: 3 } })).statusCode).toBe(404);
     // Regenerating the terrain keeps the clock.
-    expect((await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'isle', plates: { seed: 2 } } })).statusCode).toBe(201);
+    expect((await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'isle', plates: { seed: 2 }, shape: 'round-16x8' } })).statusCode).toBe(201);
     await a.inject({ method: 'PUT', url: '/api/worlds/isle/clock', payload: { dayMinutes: 'real' } });
-    await a.inject({ method: 'PUT', url: '/api/worlds/isle', payload: { plates: { seed: 3 } } });
+    await a.inject({ method: 'PUT', url: '/api/worlds/isle', payload: { plates: { seed: 3 }, shape: 'round-16x8' } });
     const again = await hello(url, { world: 'isle' });
     expect(again.reply.type === 'welcome' && again.reply.clock.dayMinutes).toBe('real');
     for (const s of [home.ws, other.ws, again.ws]) s.close();
@@ -479,24 +523,24 @@ describe('named worlds', () => {
 
   it('serves the climate of worlds whose biomes blend, and nothing for the rest', async () => {
     const { a } = await catalogApp();
-    expect((await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'clim', plates: { seed: 2 } } })).statusCode).toBe(201);
+    expect((await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'clim', plates: { seed: 2 }, shape: 'round-16x8' } })).statusCode).toBe(201);
     const res = await a.inject({ method: 'GET', url: '/api/world/climate?world=clim' });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toContain('application/octet-stream');
     const c = decodeClimate(new Uint8Array(res.rawPayload));
-    // New worlds are round: 16 km around, 8 km north to south.
+    // (Made round, 16 km around and 8 km north to south.)
     expect(c).toMatchObject({ cols: 500, rows: 250, cell: 512, seaLevel: 0 });
     expect(c.ecotone.degrees).toBeGreaterThan(0);
     // Flat worlds, unknown worlds, and worlds with sharp borders.
     expect((await a.inject({ method: 'GET', url: '/api/world/climate' })).statusCode).toBe(204);
     expect((await a.inject({ method: 'GET', url: '/api/world/climate?world=nope' })).statusCode).toBe(404);
-    expect((await a.inject({ method: 'PUT', url: '/api/worlds/clim', payload: { plates: { seed: 2, biomeBlend: 0 } } })).statusCode).toBe(200);
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/clim', payload: { plates: { seed: 2, biomeBlend: 0 }, shape: 'round-16x8' } })).statusCode).toBe(200);
     expect((await a.inject({ method: 'GET', url: '/api/world/climate?world=clim' })).statusCode).toBe(204);
   });
 
   it('updates a world, discarding its edits, and disconnects its players', async () => {
     const { a, url, root } = await catalogApp();
-    const created = await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'isle', plates: { seed: 2 } } });
+    const created = await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'isle', plates: { seed: 2 }, shape: 'round-16x8' } });
     expect(created.statusCode).toBe(201);
     const inIsle = await hello(url, { world: 'isle' });
     const inOther = await hello(url, { world: 'other' });
@@ -506,7 +550,7 @@ describe('named worlds', () => {
     writeFileSync(join(root, 'isle', 'chunks', '0_0_0.chunk'), 'x');
     expect((await a.inject({ method: 'GET', url: '/api/worlds' })).json().worlds.find((w: { name: string }) => w.name === 'isle').editedChunks).toBe(1);
     const told = nextMessage(inIsle.ws);
-    const res = await a.inject({ method: 'PUT', url: '/api/worlds/isle', payload: { plates: { seed: 2, landPercent: 55 } } });
+    const res = await a.inject({ method: 'PUT', url: '/api/worlds/isle', payload: { plates: { seed: 2, landPercent: 55 }, shape: 'round-16x8' } });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ name: 'isle', editedChunks: 0, spec: { plates: { landPercent: 55 } } });
     expect(res.json().updatedAt).toBeDefined();
@@ -518,8 +562,8 @@ describe('named worlds', () => {
     const again = await hello(url, { world: 'isle' });
     expect(again.reply.type).toBe('welcome');
     for (const ws of [inOther.ws, again.ws]) ws.close();
-    expect((await a.inject({ method: 'PUT', url: '/api/worlds/nope', payload: { plates: {} } })).statusCode).toBe(404);
-    expect((await a.inject({ method: 'PUT', url: '/api/worlds/isle', payload: { plates: { hotspots: 99 } } })).statusCode).toBe(400);
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/nope', payload: { plates: {}, shape: 'round-16x8' } })).statusCode).toBe(404);
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/isle', payload: { plates: { hotspots: 99 }, shape: 'round-16x8' } })).statusCode).toBe(400);
     await a.close();
   });
 
@@ -543,9 +587,9 @@ describe('named worlds', () => {
   it('does not create worlds outside development', async () => {
     const { a, root } = await catalogApp(false);
     expect((await a.inject({ method: 'GET', url: '/api/worlds' })).json().canCreate).toBe(false);
-    expect((await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'x', plates: {} } })).statusCode).toBe(403);
+    expect((await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'x', plates: {}, shape: 'round-16x8' } })).statusCode).toBe(403);
     expect(readWorld(root, 'x')).toBeNull();
-    expect((await a.inject({ method: 'PUT', url: '/api/worlds/other', payload: { plates: {} } })).statusCode).toBe(403);
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/other', payload: { plates: {}, shape: 'round-16x8' } })).statusCode).toBe(403);
     expect((await a.inject({ method: 'DELETE', url: '/api/worlds/other' })).statusCode).toBe(403);
     expect(readWorld(root, 'other')!.spec).toEqual({ generator: 'flat', resolution: 8 });
     await a.close();

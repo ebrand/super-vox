@@ -3,6 +3,8 @@ import websocket from '@fastify/websocket';
 import {
   BinaryTag,
   EditError,
+  columnLayers,
+  type ChunkCoord,
   PROTOCOL_VERSION,
   decodeClientMessage,
   encodeMessage,
@@ -17,6 +19,7 @@ import {
 } from '@super-vox/shared';
 import type { WebSocket } from 'ws';
 import { encodeWorldMap, type EditResult, type World } from './world.js';
+import { RequestQueue } from './requestQueue.js';
 import { HISTORY, Metrics, percentile } from './metrics.js';
 import { NoSuchWorldError, WorldExistsError } from './worldFile.js';
 import { DefaultWorldError, singleWorld, type WorldCatalog } from './worlds.js';
@@ -135,7 +138,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   app.post<{ Body: unknown }>('/api/worlds', async (req, reply) => {
     if (!catalog.create) return reply.code(403).send({ error: 'creating worlds is not enabled on this server' });
     const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { name?: unknown; plates?: unknown; shape?: unknown };
-    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: 'shape must be "round-16x8" or "flat-16x16"' });
+    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: 'shape must be "round-64x32", "round-16x8" or "flat-16x16"' });
     if (!isValidWorldName(body.name)) {
       return reply.code(400).send({ error: 'name must be 1-64 lower-case letters, digits, "-" or "_", starting with a letter or digit' });
     }
@@ -161,7 +164,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const { name } = req.params;
     if (!isValidWorldName(name)) return reply.code(404).send({ error: 'no such world' });
     const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { plates?: unknown; shape?: unknown };
-    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: 'shape must be "round-16x8" or "flat-16x16"' });
+    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: 'shape must be "round-64x32", "round-16x8" or "flat-16x16"' });
     let plates;
     try {
       plates = parsePlateTerrain(body.plates);
@@ -289,7 +292,28 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const sendBinary = (tag: number, bytes: Uint8Array) => out(socket, frame(tag, bytes));
     let greeted = false;
     let world: World;
+    const queue = new RequestQueue((err) => {
+      metrics.error('request', err instanceof Error ? err.message : String(err), clientWorld.get(socket));
+      app.log.error(err);
+    });
+    /** Queues a chunk request; `front` for a column's chunks, sent ahead of other waiting columns. */
+    const queueChunk = (c: ChunkCoord, front = false) =>
+      queue.add(
+        `c:${c.cx},${c.cy},${c.cz}`,
+        () => {
+          const bytes = world.getEncodedChunk(c);
+          if (!bytes) {
+            send({ type: 'chunkUnavailable', ...c });
+            return;
+          }
+          sendBinary(BinaryTag.Chunk, bytes);
+          metrics.totals.chunksOut++;
+          players.get(socket)!.chunks++;
+        },
+        front,
+      );
     socket.on('close', () => {
+      queue.close();
       clients.delete(socket);
       clientWorld.delete(socket);
       players.delete(socket);
@@ -345,36 +369,44 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           });
           break;
 
-        case 'requestChunk': {
+        case 'requestChunk':
+        case 'requestTile':
+        case 'requestColumn':
           if (!greeted) {
             send({ type: 'error', code: 'not_ready', message: 'send hello first' });
             return;
           }
-          const bytes = world.getEncodedChunk(msg);
-          if (!bytes) {
-            send({ type: 'chunkUnavailable', cx: msg.cx, cy: msg.cy, cz: msg.cz });
-            return;
+          if (msg.type === 'requestChunk') queueChunk({ cx: msg.cx, cy: msg.cy, cz: msg.cz });
+          else if (msg.type === 'requestTile') {
+            const t = { level: msg.level, tx: msg.tx, tz: msg.tz };
+            queue.add(`t:${t.level},${t.tx},${t.tz}`, () => {
+              const bytes = world.getEncodedTile(t);
+              if (!bytes) send({ type: 'tileUnavailable', ...t });
+              else {
+                sendBinary(BinaryTag.Tile, bytes);
+                metrics.totals.tilesOut++;
+                players.get(socket)!.tiles++;
+              }
+            });
+          } else {
+            const { cx, cz } = msg;
+            queue.add(`k:${cx},${cz}`, () => {
+              const range = world.columnRange(cx, cz);
+              // The chunks the client renders, and those just above and below (it meshes against them).
+              const layers = range && columnLayers(range.minY, range.maxY);
+              const sent = layers && { lo: layers.lo - 1, hi: layers.hi + 1 };
+              send({ type: 'column', cx, cz, minY: range?.minY ?? null, maxY: range?.maxY ?? null, ...(sent ? { sent } : {}) });
+              metrics.totals.columnsOut++;
+              if (sent) for (let cy = sent.lo; cy <= sent.hi; cy++) queueChunk({ cx, cy, cz }, true);
+            });
           }
-          sendBinary(BinaryTag.Chunk, bytes);
-          metrics.totals.chunksOut++;
-          players.get(socket)!.chunks++;
           break;
-        }
 
-        case 'requestTile': {
-          if (!greeted) {
-            send({ type: 'error', code: 'not_ready', message: 'send hello first' });
-            return;
-          }
-          const bytes = world.getEncodedTile(msg);
-          if (!bytes) send({ type: 'tileUnavailable', level: msg.level, tx: msg.tx, tz: msg.tz });
-          else {
-            sendBinary(BinaryTag.Tile, bytes);
-            metrics.totals.tilesOut++;
-            players.get(socket)!.tiles++;
-          }
+        case 'cancel':
+          for (const [cx, cy, cz] of msg.chunks ?? []) queue.cancel(`c:${cx},${cy},${cz}`);
+          for (const [level, tx, tz] of msg.tiles ?? []) queue.cancel(`t:${level},${tx},${tz}`);
+          for (const [cx, cz] of msg.columns ?? []) queue.cancel(`k:${cx},${cz}`);
           break;
-        }
 
         case 'edit': {
           if (!greeted) {
@@ -395,17 +427,6 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           players.get(socket)!.edits++;
           send({ type: 'editResult', id: msg.id, ok: true });
           broadcast(world, result);
-          break;
-        }
-
-        case 'requestColumn': {
-          if (!greeted) {
-            send({ type: 'error', code: 'not_ready', message: 'send hello first' });
-            return;
-          }
-          const range = world.columnRange(msg.cx, msg.cz);
-          send({ type: 'column', cx: msg.cx, cz: msg.cz, minY: range?.minY ?? null, maxY: range?.maxY ?? null });
-          metrics.totals.columnsOut++;
           break;
         }
 

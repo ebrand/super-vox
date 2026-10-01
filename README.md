@@ -82,7 +82,7 @@ Settings for a new world from the environment:
 | `WORLD_WIND_FROM` | 270 | Compass direction rain comes from (270 = west); land behind mountains is drier |
 | `WORLD_TREES` | 50 | Forest density: 0 (none), 50 (natural for each biome), 100 (double) |
 | `WORLD_SNOW_TEMPERATURE` | -4 | With biomes: ground colder than this (degrees C) is snow, with bare rock just below it on high ground |
-| `WORLD_SHAPE` | round-16x8 | Shape of a new default world: `round-16x8` (wraps east-west, polar ice north and south) or `flat-16x16` |
+| `WORLD_SHAPE` | round-64x32 | Shape of a new default world: `round-64x32` or `round-16x8` (wrap east-west, polar ice north and south), or `flat-16x16` |
 | `WORLD_EQUATOR` | 1 | 1: hottest across the middle, cooling to both edges; 0: from the north edge to the south edge |
 | `WORLD_EQUATOR_TEMPERATURE` | 28 | With an equator: sea-level temperature across the middle (degrees C) |
 | `WORLD_RIVERS` | 50 | Rivers: 0 (none) .. 100 (many small streams) |
@@ -171,6 +171,8 @@ stay in memory.
 
 Click the view to capture the mouse; then moving the mouse looks around and
 Esc releases it. (Without capturing, dragging with a mouse button also looks.)
+A compass rose around the crosshair turns with you; its red N points to world
+north (-Z).
 
 You start **walking**: W/A/S/D move in the direction you face, Space jumps
 (about 1.25 m, enough to get onto a 1 m voxel), gravity pulls you down, and
@@ -212,12 +214,16 @@ falling all the way to the sea or a lake. Rivers cut a channel with a sand bed a
 it (banks rising at 0.3 out to ~100 m), and their and lakes' water is source water like the sea's.
 Distant terrain and the map show them as water over their beds.
 
-World shapes: new worlds are round by default, 16 km around east-west (walk or fly past the
-seam and you're back where you started; nothing changes as you cross) and 8 km north to south,
-with polar ice at the north and south edges: a band ~700 m wide that rises from a low shelf over
+World shapes: new worlds are round by default, 64 km around east-west (walk or fly past the
+seam and you're back where you started; nothing changes as you cross) and 32 km north to south
+(a 16 x 8 km round world is available for quick tests), with polar ice at the north and south edges: a band ~700 m wide that rises from a low shelf over
 the sea to a 70 m ice wall at the edge. Flat 16 x 16 km worlds are still available (the
-generator's World menu, `"shape": "flat-16x16"` in the API, or `WORLD_SHAPE=flat-16x16` for a
-new default world); worlds made before shapes stay flat. The climate has an equator across the
+generator's World menu, `"shape"` in the API: `round-64x32`, `round-16x8` or `flat-16x16`, or
+`WORLD_SHAPE` for a new default world); worlds made before shapes stay flat. Default plate counts
+grow with the world (24 major and 52 minor at 64 x 32 km), and on worlds bigger than 16 x 16 km
+plate borders also bend at the plates' own scale, so coasts don't run straight. A 64 x 32 km
+world takes about 5 s to build (at server start, when first opened, and for each generator
+preview change) and about 100 MB of server memory. The climate has an equator across the
 middle (`equator`, `equatorTemperature`, default 28 C) cooling to `northTemperature` and
 `southTemperature` (default -8 C) at the edges; worlds from before keep their cold-north,
 hot-south climate.
@@ -280,6 +286,24 @@ the full-detail area, doubling in size with distance up to 1 km. A tile is a
 edges to hide cracks between levels. For full-detail chunk columns the server
 reports each column's exact ground height range, so only chunk layers that
 contain the surface are loaded.
+
+Streaming: a column's reply is followed by its chunks (the layers it names in
+`sent`), so the client needn't ask for each; it keeps only a few columns in
+flight so the server's queue stays short. Each connection's requests are served
+a few milliseconds at a time, and the client cancels requests for chunks, tiles
+and columns it has moved away from, so flying fast doesn't leave the server
+generating terrain behind you. Mesh workers take one job at a time and skip
+chunks that have left the view. While moving, the full-detail area is centred
+up to a second of travel ahead of the camera (at most detail - 1 chunks).
+
+`packages/client/bench/fly.ts` flies a headless client (the real chunk and tile
+managers, meshing on node worker threads) east across the seam of a running
+server and reports how much of the area around the camera was ready:
+
+```sh
+PORT=8799 WORLD_DATA_DIR=/tmp/fly npm run dev -w @super-vox/server   # a fresh world
+cd packages/client && npx tsx bench/fly.ts 8799 30@2 80@-12          # speed (m/s) @ row (km from the equator)
+```
 
 Heights currently come from simple value noise (`NoiseHeights`). The voxelizer
 only depends on the `HeightSource` interface, so a different source (e.g.

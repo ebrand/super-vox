@@ -105,12 +105,22 @@ export interface PlateTerrainConfig {
   islandMaxSize: number;
 }
 
-export function defaultPlateTerrain(seed = 1): PlateTerrainConfig {
+/**
+ * Plate counts for a world: 7 major and 15 minor on 16 x 16 km, more on bigger worlds (growing a
+ * little slower than the area, so continents grow too).
+ */
+export function defaultPlateCounts(world?: WorldConfig): { majorPlates: number; minorPlates: number } {
+  const km2 = world ? (world.widthUnits / (1000 * M)) * (world.depthUnits / (1000 * M)) : 256;
+  const scale = Math.max(1, (km2 / 256) ** 0.6);
+  return { majorPlates: Math.round(7 * scale), minorPlates: Math.round(15 * scale) };
+}
+
+/** Default settings (plate counts scaled to `world`'s size, if given). */
+export function defaultPlateTerrain(seed = 1, world?: WorldConfig): PlateTerrainConfig {
   return {
     seed,
     terrainSeed: seed,
-    majorPlates: 7,
-    minorPlates: 15,
+    ...defaultPlateCounts(world),
     plateSizeRatio: 6,
     minHeight: -300,
     maxHeight: 300,
@@ -153,8 +163,8 @@ export function defaultPlateTerrain(seed = 1): PlateTerrainConfig {
 }
 
 export const PLATE_LIMITS = {
-  majorPlates: [1, 40],
-  minorPlates: [0, 100],
+  majorPlates: [1, 80],
+  minorPlates: [0, 200],
   plateSizeRatio: [1, 50],
   height: [-1000, 1000],
   landPercent: [0, 100],
@@ -533,6 +543,17 @@ export class PlateHeights implements HeightSource {
       posX[i] = (c + 0.5) * PLATE_CELL + warpX[i]! * WARP;
       posZ[i] = (r + 0.5) * PLATE_CELL + warpZ[i]! * WARP;
     }
+    // On worlds bigger than 16 x 16 km, major plates are big enough that their straight borders
+    // (and the coasts that follow them) show: bend them at their own scale too.
+    if (n > 250_000) {
+      const majorRadius = Math.sqrt((minorArea * config.plateSizeRatio) / Math.PI);
+      const spacings = [4 * majorRadius, 2 * majorRadius, majorRadius];
+      const bigX = layoutNoise(3, spacings), bigZ = layoutNoise(4, spacings);
+      for (let i = 0; i < n; i++) {
+        posX[i]! += bigX[i]! * 0.45 * majorRadius;
+        posZ[i]! += bigZ[i]! * 0.45 * majorRadius;
+      }
+    }
     const power = (p: Plate, x: number, z: number) => {
       const ddx = dx(p.x, x), ddz = p.z - z;
       return ddx * ddx + ddz * ddz - p.weight;
@@ -567,7 +588,9 @@ export class PlateHeights implements HeightSource {
     // Plate sizes are tuned on a coarse grid. Each round measures every plate's area and moves
     // its weight toward its target, with a per-plate step size (as in Rprop): halved when the
     // plate overshoots (its error changes sign), otherwise grown, so plates far off converge fast.
-    const S = 4; // coarse grid stride (cells)
+    // Coarse grid stride (cells): 4 up to 16 x 16 km, wider on bigger worlds so there are about as
+    // many samples (the cost is samples x plates x rounds).
+    const S = Math.max(4, Math.round(4 * Math.sqrt(n / 250_000)));
     const sample: number[] = [];
     for (let r = S >> 1; r < rows; r += S) for (let c = S >> 1; c < cols; c += S) sample.push(c + cols * r);
     const cellArea = (S * PLATE_CELL) ** 2;

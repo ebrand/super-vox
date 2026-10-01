@@ -4,7 +4,7 @@ import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool } from './editTool.js';
 import { FlyControls } from './flyControls.js';
-import { selectLod } from './lod.js';
+import { focusLead, selectLod } from './lod.js';
 import { TileManager } from './tileManager.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
 import { createAtmosphere, createSky } from './atmosphere.js';
@@ -16,6 +16,7 @@ import { PLAYER, moveAabb, playerBox } from './physics.js';
 import { loadSettings } from './settings.js';
 import { MeshWorkerPool } from './workerPool.js';
 import { WorldMapOverlay } from './worldMap.js';
+import { createCompassRose } from './compassRose.js';
 import { solidAtFor, waterAtFor } from './worldQuery.js';
 
 const statusEl = document.getElementById('status')!;
@@ -73,6 +74,7 @@ scene.add(createSky(atmosphere));
 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, view * 1.5);
 const controls = new FlyControls(camera, renderer.domElement);
+const compassRose = createCompassRose(document.body);
 
 const material = createVoxelMaterial(atmosphere);
 /** Draws water over the rest of the scene, shading it from what lies behind. */
@@ -158,11 +160,33 @@ let lodColumn = '';
 let lodChangedAt = 0;
 let settledMs: number | null = null;
 
+/** Horizontal velocity (units per second), smoothed over a fraction of a second. */
+const velocity = { x: 0, z: 0 };
+const lastPosition = new THREE.Vector3();
+let velocityAt = 0;
+
+function trackVelocity(now: number): void {
+  const dt = (now - velocityAt) / 1000;
+  velocityAt = now;
+  const p = camera.position;
+  const dx = (p.x - lastPosition.x) * UNITS_PER_METER, dz = (p.z - lastPosition.z) * UNITS_PER_METER;
+  lastPosition.copy(p);
+  // A jump (teleport, or the first frame) isn't travel.
+  if (!(dt > 0) || dt > 1 || Math.hypot(dx, dz) > 200 * UNITS_PER_METER) {
+    velocity.x = velocity.z = 0;
+    return;
+  }
+  const k = 1 - Math.exp(-dt / 0.25);
+  velocity.x += (dx / dt - velocity.x) * k;
+  velocity.z += (dz / dt - velocity.z) * k;
+}
+
 function updateLod(force = false): void {
   if (!world || !chunks || !tiles) return;
-  // Stream terrain around the camera.
-  const fx = camera.position.x * UNITS_PER_METER;
-  const fz = camera.position.z * UNITS_PER_METER;
+  // Stream terrain around the camera, centred a little ahead of it while moving.
+  const lead = focusLead(velocity.x, velocity.z, detail);
+  const fx = camera.position.x * UNITS_PER_METER + lead.dx;
+  const fz = camera.position.z * UNITS_PER_METER + lead.dz;
   const column = `${Math.floor(fx / CHUNK_SIZE)},${Math.floor(fz / CHUNK_SIZE)}`;
   if (!force && column === lodColumn) return;
   lodColumn = column;
@@ -304,7 +328,7 @@ connection = connect({
             if (error) editTool?.say(error);
             updateHud();
           };
-          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool, water };
+          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool, water, compassRose };
           // Start loading now rather than on the first frame (frames pause in hidden tabs).
           updateLod(true);
         }
@@ -413,8 +437,10 @@ renderer.setAnimationLoop(() => {
   // Movement and editing pause while the map is open.
   if (!worldMap?.isOpen) controls.update((frameStart - lastFrame) / 1000);
   lastFrame = frameStart;
+  trackVelocity(frameStart);
   updateLod();
   if (!worldMap?.isOpen) editTool?.update();
+  compassRose.update(controls.yaw);
   worldMap?.update();
   if (sea) sea.position.set(camera.position.x, sea.position.y, camera.position.z);
   applyLighting(lighting, worldHours(), atmosphere, lightingUniforms, view);

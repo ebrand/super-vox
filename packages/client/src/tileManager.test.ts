@@ -79,4 +79,18 @@ describe('TileManager', () => {
     expect(tm.idle).toBe(true);
     expect(tm.stats.loaded).toBe(2);
   });
+
+  it('cancels requests for tiles that left the selection, and asks again if they come back', () => {
+    const { tm, sent } = setup();
+    const C: TileCoord = { level: 3, tx: -2, tz: 7 };
+    tm.setTiles([A, C], 0, 0);
+    tm.setTiles([B], 0, 0);
+    expect(sent.filter((m) => m.type === 'cancel')).toEqual([{ type: 'cancel', tiles: [[1, 0, 0], [3, -2, 7]] }]);
+    expect(tm.stats.inFlight).toBe(1); // B
+    tm.setTiles([A, B], 0, 0);
+    expect(sent.filter((m) => m.type === 'requestTile')).toHaveLength(4); // A, C, B, A again
+    tm.onTileBytes(tileBytes(C)); // a late answer to the cancelled request: ignored
+    expect(tm.stats.inFlight).toBe(2);
+  });
 });
+

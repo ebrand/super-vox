@@ -57,3 +57,19 @@ export function selectLod(world: WorldConfig, focusX: number, focusZ: number, ra
   for (let tz = rz - r; tz <= rz + r; tz++) for (let tx = rx - r; tx <= rx + r; tx++) visit(MAX_TILE_LEVEL, tx, tz);
   return out;
 }
+
+/** How far ahead (seconds of travel) the full-detail region is centred while moving. */
+export const LEAD_SECONDS = 1;
+
+/**
+ * Offset (units) from the camera to the centre of the full-detail region, for a horizontal
+ * velocity in units per second: ahead in the direction of travel, so chunks load before we reach
+ * them; at most `radius - 1` chunks, so the camera's own column and the one behind it stay detailed.
+ */
+export function focusLead(vx: number, vz: number, radius: number): { dx: number; dz: number } {
+  const max = Math.max(0, radius - 1) * CHUNK_SIZE;
+  const speed = Math.hypot(vx, vz);
+  if (speed === 0 || max === 0) return { dx: 0, dz: 0 };
+  const scale = Math.min(LEAD_SECONDS, max / speed);
+  return { dx: vx * scale, dz: vz * scale };
+}

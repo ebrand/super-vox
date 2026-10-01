@@ -23,6 +23,8 @@ export interface MeshResponse {
   /** Time spent meshing in the worker. */
   ms: number;
   error?: string;
+  /** Set by the pool (not the worker) for a job skipped because it was no longer wanted. */
+  skipped?: boolean;
 }
 
 self.onmessage = (ev: MessageEvent<MeshRequest>) => {

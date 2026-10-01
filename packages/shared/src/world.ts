@@ -38,16 +38,28 @@ export const ROUND_WORLD_16x8KM: WorldConfig = {
   wrapX: true,
 };
 
+export const ROUND_WORLD_64x32KM: WorldConfig = {
+  widthUnits: 64 * KM,
+  depthUnits: 32 * KM,
+  minYUnits: DEFAULT_MIN_Y,
+  maxYUnits: DEFAULT_MAX_Y,
+  wrapX: true,
+};
+
 /**
- * The shapes a world can have: round (16 km around east-west, wrapping, 8 km north-south between
- * polar ice) or flat (16 x 16 km with edges all round).
+ * The shapes a world can have: round (wrapping east-west, with polar ice at the north and south
+ * edges), 64 km around by 32 km or 16 by 8 km; or flat, 16 x 16 km with edges all round.
  */
-export type WorldShape = 'round-16x8' | 'flat-16x16';
-export const WORLD_SHAPES: Record<WorldShape, WorldConfig> = { 'round-16x8': ROUND_WORLD_16x8KM, 'flat-16x16': FLAT_WORLD_16KM };
-export const DEFAULT_WORLD_SHAPE: WorldShape = 'round-16x8';
+export type WorldShape = 'round-64x32' | 'round-16x8' | 'flat-16x16';
+export const WORLD_SHAPES: Record<WorldShape, WorldConfig> = {
+  'round-64x32': ROUND_WORLD_64x32KM,
+  'round-16x8': ROUND_WORLD_16x8KM,
+  'flat-16x16': FLAT_WORLD_16KM,
+};
+export const DEFAULT_WORLD_SHAPE: WorldShape = 'round-64x32';
 
 export function isWorldShape(v: unknown): v is WorldShape {
-  return v === 'round-16x8' || v === 'flat-16x16';
+  return v === 'round-64x32' || v === 'round-16x8' || v === 'flat-16x16';
 }
 
 /** Maps x into [0, width) for wrapping worlds; returns x unchanged otherwise. */

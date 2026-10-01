@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import {
   CHUNK_SIZE,
+  MAX_CANCEL,
   chunkKey,
+  columnLayers,
   decodeChunk,
   readChunkHeader,
   resolveChunk,
@@ -37,14 +39,17 @@ const HORIZONTAL = [
   { dir: 5, dx: 0, dz: -1 },
 ] as const;
 
-/** Chunk layers to render for a column whose ground spans [minY, maxY] (units). */
-export function columnLayers(minY: number, maxY: number): { lo: number; hi: number } {
-  // Surface voxels occupy units up to maxY - 1; allow 1 m either way for
-  // voxelization rounding (tolerance <= 16 units).
-  return { lo: Math.floor((minY - 17) / CHUNK_SIZE), hi: Math.floor((maxY + 16) / CHUNK_SIZE) };
-}
-
 const colKey = (cx: number, cz: number) => `${cx},${cz}`;
+
+/** Column requests outstanding at once (see pump). */
+const MAX_COLUMNS_IN_FLIGHT = 4;
+
+function sameBytes(a: Uint8Array | null, b: Uint8Array | null): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 
 /**
  * Full-detail chunks for a region of chunk columns. For each column it asks
@@ -154,11 +159,22 @@ export class ChunkManager {
     return [cx + (k - 1) * n, cx + k * n, cx + (k + 1) * n];
   }
 
-  onColumn(msg: { cx: number; cz: number; minY: number | null; maxY: number | null }): void {
+  onColumn(msg: { cx: number; cz: number; minY: number | null; maxY: number | null; sent?: { lo: number; hi: number } }): void {
     let changed = false;
     for (const cx of this.copiesOf(msg.cx)) {
       const key = colKey(cx, msg.cz);
-      if (this.columnRequested.delete(key)) this.inFlight--;
+      if (this.columnRequested.delete(key)) {
+        this.inFlight--;
+        // The server sends these chunks next, unasked: count them as requested.
+        if (msg.sent) {
+          for (let cy = msg.sent.lo; cy <= msg.sent.hi; cy++) {
+            const k = chunkKey({ cx, cy, cz: msg.cz });
+            if (this.requested.has(k)) continue;
+            this.requested.add(k);
+            this.inFlight++;
+          }
+        }
+      }
       if (this.region.has(key)) {
         this.ranges.set(key, msg.minY === null || msg.maxY === null ? null : columnLayers(msg.minY, msg.maxY));
         changed = true;
@@ -234,13 +250,33 @@ export class ChunkManager {
         render.add(want({ cx, cy, cz }));
         want({ cx, cy: cy - 1, cz });
         want({ cx, cy: cy + 1, cz });
+        // Neighbours in the region, once we know their column (whose own chunks come with it).
         for (const { dx, dz } of HORIZONTAL) {
-          if (this.region.has(colKey(cx + dx, cz + dz))) want({ cx: cx + dx, cy, cz: cz + dz });
+          const n = colKey(cx + dx, cz + dz);
+          if (this.region.has(n) && this.ranges.has(n)) want({ cx: cx + dx, cy, cz: cz + dz });
         }
       }
     }
     this.render = render;
     this.wanted = wanted;
+
+    // Requests nobody wants any more (we moved on): tell the server not to bother.
+    const chunks: [number, number, number][] = [], columns: [number, number][] = [];
+    for (const key of this.requested) {
+      if (wanted.has(key)) continue;
+      this.requested.delete(key);
+      this.inFlight--;
+      chunks.push(key.split(',').map(Number) as [number, number, number]);
+    }
+    for (const key of this.columnRequested) {
+      if (this.region.has(key)) continue;
+      this.columnRequested.delete(key);
+      this.inFlight--;
+      columns.push(key.split(',').map(Number) as [number, number]);
+    }
+    for (let i = 0; i < Math.max(chunks.length, columns.length); i += MAX_CANCEL) {
+      this.send({ type: 'cancel', chunks: chunks.slice(i, i + MAX_CANCEL), columns: columns.slice(i, i + MAX_CANCEL) });
+    }
 
     for (const key of [...this.data.keys()]) {
       if (!wanted.has(key)) {
@@ -281,7 +317,9 @@ export class ChunkManager {
   }
 
   private pump(): void {
-    while (this.inFlight < this.maxInFlight && this.columnQueue.length > 0) {
+    // Few columns at a time: each brings its chunks (counted in flight once its reply arrives), so
+    // more would let the server's queue grow past what we can cancel when we move on.
+    while (this.inFlight < this.maxInFlight && this.columnRequested.size < MAX_COLUMNS_IN_FLIGHT && this.columnQueue.length > 0) {
       const c = this.columnQueue.shift()!;
       const key = colKey(c.cx, c.cz);
       if (!this.region.has(key) || this.ranges.has(key) || this.columnRequested.has(key)) continue;
@@ -315,6 +353,8 @@ export class ChunkManager {
 
   private store(key: string, coord: ChunkCoord, bytes: Uint8Array | null, meshNeighbors = true): void {
     const previous = this.data.get(key);
+    // The same chunk again (e.g. sent with its column after we had it as a neighbour): nothing to do.
+    if (previous !== undefined && sameBytes(previous, bytes)) return;
     this.decoded.delete(key);
     if (previous !== undefined) {
       // An update (e.g. an edit): rebuild this chunk's mesh and its neighbours',
@@ -377,7 +417,8 @@ export class ChunkManager {
     }
     const token = this.nextToken++;
     this.jobs.set(key, { token, mask });
-    void this.pool.run({ kind: 'chunk', center, neighbors }).then((res) => {
+    // Skipped if, by the time a worker is free, this job has been superseded or isn't rendered.
+    void this.pool.run({ kind: 'chunk', center, neighbors }, () => this.jobs.get(key)?.token === token).then((res) => {
       const job = this.jobs.get(key);
       if (job?.token !== token) return; // superseded or no longer rendered
       this.jobs.delete(key);

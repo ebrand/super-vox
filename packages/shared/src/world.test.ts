@@ -8,6 +8,9 @@ import {
   isInWorld,
   normalizeX,
   resolveChunk,
+  DEFAULT_WORLD_SHAPE,
+  WORLD_SHAPES,
+  isWorldShape,
 } from './world.js';
 
 const W = ROUND_WORLD_16x8KM.widthUnits;
@@ -82,5 +85,16 @@ describe('resolveChunk', () => {
     expect(resolveChunk(ROUND_WORLD_16x8KM, { cx: -1, cy: 0, cz: 0 })).toEqual({ cx: n - 1, cy: 0, cz: 0 });
     expect(resolveChunk(ROUND_WORLD_16x8KM, { cx: n, cy: 0, cz: 0 })).toEqual({ cx: 0, cy: 0, cz: 0 });
     expect(resolveChunk(ROUND_WORLD_16x8KM, { cx: 0, cy: 0, cz: ROUND_WORLD_16x8KM.depthUnits / CHUNK_SIZE })).toBeNull();
+  });
+});
+
+describe('world shapes', () => {
+  it('include a round 64 x 32 km world, the default', () => {
+    expect(DEFAULT_WORLD_SHAPE).toBe('round-64x32');
+    expect(WORLD_SHAPES['round-64x32']).toMatchObject({ widthUnits: 64_000 * 16, depthUnits: 32_000 * 16, wrapX: true });
+    expect(WORLD_SHAPES['round-16x8'].wrapX).toBe(true);
+    expect(WORLD_SHAPES['flat-16x16'].wrapX).toBe(false);
+    for (const s of ['round-64x32', 'round-16x8', 'flat-16x16']) expect(isWorldShape(s)).toBe(true);
+    expect(isWorldShape('round-32x16')).toBe(false);
   });
 });

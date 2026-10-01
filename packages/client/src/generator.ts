@@ -1,11 +1,12 @@
-import { BIOME_NAMES, Biome, DEFAULT_WORLD_SHAPE, PLATE_LIMITS, defaultPlateTerrain, isValidWorldName, isWorldShape, validatePlateTerrain, type BiomeId, type PlateTerrainConfig, type WorldShape } from '@super-vox/shared';
+import { BIOME_NAMES, Biome, DEFAULT_WORLD_SHAPE, PLATE_LIMITS, WORLD_SHAPES, defaultPlateCounts, defaultPlateTerrain, isValidWorldName, isWorldShape, validatePlateTerrain, type BiomeId, type PlateTerrainConfig, type WorldShape } from '@super-vox/shared';
 import type { PreviewRequest, PreviewResponse } from './generator.worker.js';
 import type { Preview } from './generatorPreview.js';
 import { materialName } from './materials.js';
 import { renderMap } from './worldMap.js';
 
 /** Preview map width in samples (16 km / 512 = 31.25 m per pixel). */
-const PREVIEW_SIZE = 512;
+/** Preview samples across: more for worlds wider than 16 km. */
+const previewSize = (s: WorldShape) => (WORLD_SHAPES[s].widthUnits > 16 * 16000 ? 1024 : 512);
 const MAX_SEED = 2 ** 31 - 1;
 
 interface FieldSpec {
@@ -74,7 +75,7 @@ const FIELDS: FieldSpec[] = [
 // ---- Settings, kept in the URL hash so a reload (or a shared link) keeps them.
 
 function fromHash(): PlateTerrainConfig {
-  const config = defaultPlateTerrain(1);
+  const config = defaultPlateTerrain(1, WORLD_SHAPES[shape]);
   const params = new URLSearchParams(location.hash.slice(1));
   for (const f of FIELDS) {
     const raw = params.get(f.key);
@@ -85,7 +86,7 @@ function fromHash(): PlateTerrainConfig {
     validatePlateTerrain(config);
     return config;
   } catch {
-    return defaultPlateTerrain(1);
+    return defaultPlateTerrain(1, WORLD_SHAPES[shape]);
   }
 }
 
@@ -100,7 +101,17 @@ let shape: WorldShape = isWorldShape(hashShape) ? hashShape : DEFAULT_WORLD_SHAP
 const shapeEl = document.getElementById('shape') as HTMLSelectElement;
 shapeEl.value = shape;
 shapeEl.addEventListener('change', () => {
+  // Plate counts follow the world's size, keeping their proportion to the default.
+  const before = defaultPlateCounts(WORLD_SHAPES[shape]);
   shape = shapeEl.value as WorldShape;
+  const after = defaultPlateCounts(WORLD_SHAPES[shape]);
+  const L = PLATE_LIMITS;
+  config = {
+    ...config,
+    majorPlates: Math.max(L.majorPlates[0], Math.min(L.majorPlates[1], Math.round((config.majorPlates * after.majorPlates) / before.majorPlates))),
+    minorPlates: Math.max(L.minorPlates[0], Math.min(L.minorPlates[1], Math.round((config.minorPlates * after.minorPlates) / Math.max(1, before.minorPlates)))),
+  };
+  showForm();
   toHash(config);
   requestPreview();
 });
@@ -200,7 +211,7 @@ function set(key: keyof PlateTerrainConfig, value: number): void {
 }
 
 document.getElementById('reset')!.addEventListener('click', () => {
-  config = defaultPlateTerrain(1);
+  config = defaultPlateTerrain(1, WORLD_SHAPES[shape]);
   showForm();
   toHash(config);
   requestPreview();
@@ -258,7 +269,7 @@ function requestPreview(): void {
   busy = true;
   sent = config;
   canvas.classList.add('busy');
-  const req: PreviewRequest = { id: nextId++, config, size: PREVIEW_SIZE, shape };
+  const req: PreviewRequest = { id: nextId++, config, size: previewSize(shape), shape };
   worker.postMessage(req);
 }
 

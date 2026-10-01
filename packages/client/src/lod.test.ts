@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CHUNK_SIZE, FLAT_WORLD_16KM, tileSizeUnits } from '@super-vox/shared';
-import { selectLod } from './lod.js';
+import { focusLead, selectLod } from './lod.js';
 
 const FAR = 2048 * 16;
 
@@ -58,3 +58,15 @@ describe('selectLod', () => {
     expect(changed.length).toBeLessThan(sel.tiles.length / 4);
   });
 });
+
+describe('focusLead', () => {
+  it('leads one second of travel, at most radius - 1 chunks', () => {
+    expect(focusLead(0, 0, 4)).toEqual({ dx: 0, dz: 0 });
+    expect(focusLead(160, 0, 4)).toEqual({ dx: 160, dz: 0 }); // 10 m/s: 10 m ahead
+    const fast = focusLead(-3000 * 16, 4000 * 16, 4); // 5 km/s: clamped to 3 chunks
+    expect(Math.hypot(fast.dx, fast.dz)).toBeCloseTo(3 * CHUNK_SIZE);
+    expect(fast.dx / fast.dz).toBeCloseTo(-3 / 4);
+    expect(focusLead(1000, 0, 1)).toEqual({ dx: 0, dz: 0 });
+  });
+});
+

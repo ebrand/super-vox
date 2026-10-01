@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { DAY_MINUTES_LIMITS, DEFAULT_DAY_MINUTES, DEFAULT_WORLD_SHAPE, defaultPlateTerrain, defaultVoxelize, isWorldShape, type WorldShape } from '@super-vox/shared';
+import { DAY_MINUTES_LIMITS, DEFAULT_DAY_MINUTES, DEFAULT_WORLD_SHAPE, WORLD_SHAPES, defaultPlateTerrain, defaultVoxelize, isWorldShape, type WorldShape } from '@super-vox/shared';
 import { buildApp } from './app.js';
 import { openWorld, type WorldSpec } from './worldFile.js';
 import { FileWorldCatalog } from './worlds.js';
@@ -16,11 +16,11 @@ function numberEnv(name: string, fallback: number): number {
 }
 
 /** Settings for a world that doesn't exist yet (WORLD_GENERATOR: plates (default), noise, or flat). */
-/** WORLD_SHAPE for a new default world: round-16x8 (default) or flat-16x16. */
+/** WORLD_SHAPE for a new default world: round-64x32 (default), round-16x8 or flat-16x16. */
 function worldShapeEnv(): WorldShape {
   const v = process.env.WORLD_SHAPE;
   if (v === undefined || v === '') return DEFAULT_WORLD_SHAPE;
-  if (!isWorldShape(v)) throw new RangeError(`WORLD_SHAPE must be "round-16x8" or "flat-16x16"; got "${v}"`);
+  if (!isWorldShape(v)) throw new RangeError(`WORLD_SHAPE must be "round-64x32", "round-16x8" or "flat-16x16"; got "${v}"`);
   return v;
 }
 
@@ -32,7 +32,8 @@ function specForNewWorld(): WorldSpec {
   };
   const seed = numberEnv('WORLD_SEED', 1);
   if (kind === 'plates') {
-    const d = defaultPlateTerrain(seed);
+    const shape = worldShapeEnv();
+    const d = defaultPlateTerrain(seed, WORLD_SHAPES[shape]);
     return {
       generator: 'plates',
       plates: {
@@ -80,7 +81,7 @@ function specForNewWorld(): WorldSpec {
         islandMaxSize: numberEnv('WORLD_ISLAND_MAX_SIZE', d.islandMaxSize),
       },
       voxelize,
-      shape: worldShapeEnv(),
+      shape,
     };
   }
   if (kind === 'noise') return { generator: 'noise', seed, voxelize };

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import {
+  MAX_CANCEL,
   readTileHeader,
   tileKey,
   tileSizeUnits,
@@ -88,6 +89,16 @@ export class TileManager {
     // requested again if it comes back into the selection.
     for (const key of [...this.loaded]) if (!this.wanted.has(key)) this.loaded.delete(key);
     for (const key of [...this.jobs.keys()]) if (!this.wanted.has(key)) this.jobs.delete(key);
+    // Requested tiles nobody wants any more (we moved on): tell the server not to bother.
+    const cancelled: [number, number, number][] = [];
+    for (const key of this.requested) {
+      if (this.wanted.has(key)) continue;
+      this.requested.delete(key);
+      this.inFlight--;
+      const [level, tx, tz] = key.split(/[:,]/).map(Number) as [number, number, number]; // see tileKey
+      cancelled.push([level, tx, tz]);
+    }
+    for (let i = 0; i < cancelled.length; i += MAX_CANCEL) this.send({ type: 'cancel', tiles: cancelled.slice(i, i + MAX_CANCEL) });
     const d = (t: TileCoord) => {
       const s = tileSizeUnits(t.level);
       return Math.hypot((t.tx + 0.5) * s - focusX, (t.tz + 0.5) * s - focusZ);
@@ -155,7 +166,7 @@ export class TileManager {
   private mesh(key: string, t: TileCoord, bytes: Uint8Array): void {
     const token = this.nextToken++;
     this.jobs.set(key, token);
-    void this.pool.run({ kind: 'tile', tile: bytes }).then((res) => {
+    void this.pool.run({ kind: 'tile', tile: bytes }, () => this.jobs.get(key) === token).then((res) => {
       if (this.jobs.get(key) !== token) return;
       this.jobs.delete(key);
       if (res.error) {

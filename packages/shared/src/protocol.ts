@@ -1,10 +1,10 @@
 import type { DayClock } from './clock.js';
 import type { Edit } from './edit.js';
 import { isValidTileLevel } from './tile.js';
-import type { WorldConfig } from './world.js';
+import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 16;
+export const PROTOCOL_VERSION = 17;
 
 export type ClientMessage =
   | {
@@ -21,8 +21,16 @@ export type ClientMessage =
   | { type: 'requestChunk'; cx: number; cy: number; cz: number }
   /** Low-detail tile for distant terrain; answered with a Tile binary frame. */
   | { type: 'requestTile'; level: number; tx: number; tz: number }
-  /** Ground height range of a chunk column; answered with a `column` message. */
+  /**
+   * Ground height range of a chunk column; answered with a `column` message, followed by the
+   * column's chunks in the layers the reply names (`sent`), as if each had been requested.
+   */
   | { type: 'requestColumn'; cx: number; cz: number }
+  /**
+   * Requests (as sent: chunks [cx, cy, cz], tiles [level, tx, tz], columns [cx, cz]) the client no
+   * longer wants. The server drops those it hasn't answered yet; answers already sent still arrive.
+   */
+  | { type: 'cancel'; chunks?: [number, number, number][]; tiles?: [number, number, number][]; columns?: [number, number][] }
   /** A voxel edit; answered with `editResult`. `id` is chosen by the client to match the reply. */
   | { type: 'edit'; id: number; edit: Edit }
   /** Where the player is (world units) and faces (radians, 0 = -Z); sent a couple of times a second, not answered. */
@@ -45,8 +53,12 @@ export type ServerMessage =
     }
   /** The world's clock was changed (time set, stopped, or a new day length). */
   | { type: 'clock'; clock: DayClock; serverTime: number }
-  /** Reply to requestColumn. minY/maxY are null for columns outside the world. */
-  | { type: 'column'; cx: number; cz: number; minY: number | null; maxY: number | null }
+  /**
+   * A column's ground height range; minY/maxY are null for columns outside the world. In reply to
+   * requestColumn, `sent` names the chunk layers (inclusive) the server sends next; a column sent
+   * for another reason (an edit changed it) has none.
+   */
+  | { type: 'column'; cx: number; cz: number; minY: number | null; maxY: number | null; sent?: { lo: number; hi: number } }
   /** Reply to requestTile for a tile entirely outside the world. */
   | { type: 'tileUnavailable'; level: number; tx: number; tz: number }
   /** Reply to requestChunk for a chunk outside the world. */
@@ -84,6 +96,18 @@ export function isValidWorldName(v: unknown): v is string {
   return typeof v === 'string' && WORLD_NAME_PATTERN.test(v);
 }
 
+/** Most entries per list in a `cancel` message. */
+export const MAX_CANCEL = 4096;
+
+/**
+ * Chunk layers (inclusive) holding the surface of a column whose ground spans [minY, maxY] (units):
+ * the layers a client renders. Surface voxels occupy units up to maxY - 1; this allows 1 m either
+ * way for voxelization rounding (tolerance <= 16 units).
+ */
+export function columnLayers(minY: number, maxY: number): { lo: number; hi: number } {
+  return { lo: Math.floor((minY - 17) / CHUNK_SIZE), hi: Math.floor((maxY + 16) / CHUNK_SIZE) };
+}
+
 function isInt32(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= -(2 ** 31) && v < 2 ** 31;
 }
@@ -118,6 +142,18 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   }
   if (msg.type === 'requestColumn' && isInt32(msg.cx) && isInt32(msg.cz)) {
     return { type: 'requestColumn', cx: msg.cx, cz: msg.cz };
+  }
+  if (msg.type === 'cancel') {
+    const list = (v: unknown, n: number): number[][] | null | undefined =>
+      v === undefined ? undefined : Array.isArray(v) && v.length <= MAX_CANCEL && v.every((e) => Array.isArray(e) && e.length === n && e.every(isInt32)) ? (v as number[][]) : null;
+    const chunks = list(msg.chunks, 3), tiles = list(msg.tiles, 3), columns = list(msg.columns, 2);
+    if (chunks === null || tiles === null || columns === null) return null;
+    return {
+      type: 'cancel',
+      ...(chunks ? { chunks: chunks as [number, number, number][] } : {}),
+      ...(tiles ? { tiles: tiles as [number, number, number][] } : {}),
+      ...(columns ? { columns: columns as [number, number][] } : {}),
+    };
   }
   if (msg.type === 'pose' && [msg.x, msg.y, msg.z, msg.yaw].every((v) => typeof v === 'number' && Number.isFinite(v))) {
     return { type: 'pose', x: msg.x as number, y: msg.y as number, z: msg.z as number, yaw: msg.yaw as number };

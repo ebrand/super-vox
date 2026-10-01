@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PROTOCOL_VERSION, decodeClientMessage, encodeMessage } from './protocol.js';
+import { MAX_CANCEL, PROTOCOL_VERSION, columnLayers, decodeClientMessage, encodeMessage } from './protocol.js';
 
 describe('protocol', () => {
   it('round-trips hello', () => {
@@ -51,6 +51,29 @@ describe('protocol', () => {
     ]) {
       expect(decodeClientMessage(raw)).toBeNull();
     }
+  });
+
+  it('validates cancels', () => {
+    expect(decodeClientMessage('{"type":"cancel","chunks":[[1,-2,3]],"columns":[[-1,5]]}')).toEqual({ type: 'cancel', chunks: [[1, -2, 3]], columns: [[-1, 5]] });
+    expect(decodeClientMessage('{"type":"cancel","tiles":[[2,0,0]]}')).toEqual({ type: 'cancel', tiles: [[2, 0, 0]] });
+    expect(decodeClientMessage('{"type":"cancel"}')).toEqual({ type: 'cancel' });
+    for (const raw of [
+      '{"type":"cancel","chunks":[[1,2]]}',
+      '{"type":"cancel","chunks":[[1,2,0.5]]}',
+      '{"type":"cancel","columns":[[1,"2"]]}',
+      '{"type":"cancel","tiles":{"0":[1,2,3]}}',
+      `{"type":"cancel","columns":${JSON.stringify(Array.from({ length: MAX_CANCEL + 1 }, () => [0, 0]))}}`,
+    ]) {
+      expect(decodeClientMessage(raw)).toBeNull();
+    }
+  });
+
+  it('names the chunk layers around a column surface', () => {
+    // Ground from 0 to 1 m: the layer below (rounding) and layer 0.
+    expect(columnLayers(0, 16)).toEqual({ lo: -1, hi: 0 });
+    // Ground from 20 m to just under 47 m: layers 1 to 2; from 47 m (within 1 m of layer 3), 3 too.
+    expect(columnLayers(20 * 16, 47 * 16 - 1)).toEqual({ lo: 1, hi: 2 });
+    expect(columnLayers(20 * 16, 47 * 16)).toEqual({ lo: 1, hi: 3 });
   });
 
   it('validates poses', () => {
