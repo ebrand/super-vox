@@ -2,7 +2,10 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DAY_MINUTES_LIMITS, DEFAULT_DAY_MINUTES, DEFAULT_WORLD_SHAPE, WORLD_SHAPES, defaultPlateTerrain, defaultVoxelize, isWorldShape, type WorldShape } from '@super-vox/shared';
+import { MemoryAccountStore, PgAccountStore, type AccountStore } from './accounts.js';
 import { buildApp } from './app.js';
+import { Auth } from './auth.js';
+import { authConfigFromEnv, loadDevSecrets } from './authConfig.js';
 import { openWorld, type WorldSpec } from './worldFile.js';
 import { FileWorldCatalog } from './worlds.js';
 
@@ -111,7 +114,24 @@ const world = catalog.get(name)!;
 // The built client, served at / (CLIENT_DIR, or in production packages/client/dist if built).
 const clientDir = process.env.CLIENT_DIR || (process.env.NODE_ENV === 'production' ? fileURLToPath(new URL('../../client/dist', import.meta.url)) : '');
 if (clientDir && !existsSync(join(clientDir, 'index.html'))) throw new Error(`no built client in ${clientDir} (npm run build)`);
-const app = await buildApp({ catalog, logger: true, ...(clientDir ? { clientDir } : {}) });
+// Google sign-in (see authConfig.ts). In development the credentials come from auth/ when the
+// environment lacks them; accounts are kept in Postgres when DATABASE_URL is set, else in memory.
+const production = process.env.NODE_ENV === 'production';
+const fromAuthDir = production ? [] : loadDevSecrets(process.env, fileURLToPath(new URL('../../../auth', import.meta.url)));
+const authConfig = authConfigFromEnv(process.env, production);
+let accounts: AccountStore | null = null;
+if (authConfig) {
+  if (process.env.DATABASE_URL) accounts = await PgAccountStore.open(process.env.DATABASE_URL);
+  else if (production) throw new Error('sign-in needs DATABASE_URL in production');
+  else accounts = new MemoryAccountStore();
+}
+const auth = authConfig && accounts ? new Auth(authConfig, accounts) : undefined;
+const app = await buildApp({ catalog, logger: true, ...(clientDir ? { clientDir } : {}), ...(auth ? { auth } : {}) });
+app.addHook('onClose', async () => accounts?.close?.());
+app.log.info(
+  { signIn: !!auth, accounts: accounts ? (accounts instanceof PgAccountStore ? 'postgres' : 'memory') : null, fromAuthDir },
+  auth ? 'sign-in on: only signed-in players may edit' : 'sign-in off: anyone may edit',
+);
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {

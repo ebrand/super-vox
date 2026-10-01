@@ -165,3 +165,47 @@ form.addEventListener('submit', (e) => {
 
 showSummary();
 void loadWorlds();
+
+/** Who is signed in (the server says, from its session cookie); hidden on servers without sign-in. */
+async function showAccount(): Promise<void> {
+  const el = document.getElementById('account')!;
+  let me: { signedIn: boolean; name?: string; email?: string; admin?: boolean };
+  try {
+    const res = await fetch('/api/auth/me');
+    if (!res.ok) return; // no sign-in here
+    me = (await res.json()) as typeof me;
+  } catch {
+    return;
+  }
+  el.hidden = false;
+  el.replaceChildren();
+  const who = document.createElement('span');
+  who.className = 'who';
+  if (me.signedIn) {
+    who.append('Signed in as ');
+    const b = document.createElement('b');
+    b.textContent = me.name ?? '';
+    who.append(b);
+    if (me.admin) who.append(' (admin)');
+    who.title = me.email ?? '';
+    const out = document.createElement('button');
+    out.type = 'button';
+    out.textContent = 'Sign out';
+    out.addEventListener('click', () => {
+      void fetch('/api/auth/logout', { method: 'POST' }).then(() => showAccount());
+    });
+    el.append(who, out);
+  } else {
+    who.textContent = 'Sign in to build; anyone can look around.';
+    const signIn = document.createElement('a');
+    signIn.className = 'button';
+    signIn.href = '/api/auth/google?return=/';
+    signIn.textContent = 'Sign in with Google';
+    el.append(who, signIn);
+  }
+  const params = new URLSearchParams(location.search);
+  if (params.get('signin') === 'cancelled') status('Sign-in cancelled.', 'bad');
+}
+
+void showAccount();
+

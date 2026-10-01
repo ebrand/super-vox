@@ -1,6 +1,8 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
+import fastifyCookie from '@fastify/cookie';
+import type { Auth, SignedIn } from './auth.js';
 import {
   BinaryTag,
   EditError,
@@ -40,6 +42,8 @@ export type AppOptions = (
   logger?: boolean;
   /** Directory of the built client (packages/client/dist) to serve at /, if any. */
   clientDir?: string;
+  /** Google sign-in. With it, only signed-in players may edit; without, anyone may (development). */
+  auth?: Auth;
 };
 
 /** A connection, as the dashboard shows it. */
@@ -48,6 +52,8 @@ interface Player {
   world: string;
   connectedAt: number;
   tolerance: number | null;
+  /** Account name, if signed in. */
+  name: string | null;
   /** Last reported position (units) and heading, and when. */
   pose: { x: number; y: number; z: number; yaw: number; at: number } | null;
   chunks: number;
@@ -61,7 +67,9 @@ export const WATER_STEP_MS = 200;
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
+  await app.register(fastifyCookie);
   await app.register(websocket);
+  opts.auth?.register(app);
   const catalog = 'catalog' in opts ? opts.catalog : singleWorld(opts.world, opts.worldWithTolerance);
 
   app.get('/api/health', async () => ({ ok: true, protocolVersion: PROTOCOL_VERSION }));
@@ -304,7 +312,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     return f;
   };
 
-  app.get('/ws', { websocket: true }, (socket) => {
+  app.get('/ws', { websocket: true }, (socket, req) => {
+    // Who's connecting (their session cookie came with the upgrade request).
+    const whoReady: Promise<SignedIn | null> = opts.auth ? opts.auth.signedIn(req.cookies).catch(() => null) : Promise.resolve(null);
+    let who: SignedIn | null = null;
+    const canEdit = () => !opts.auth || who !== null;
     const send = (msg: ServerMessage) => out(socket, encodeMessage(msg));
     const sendBinary = (tag: number, bytes: Uint8Array) => out(socket, frame(tag, bytes));
     let greeted = false;
@@ -367,22 +379,28 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             }
             world = w;
           }
-          greeted = true;
-          clients.set(socket, world);
-          clientWorld.set(socket, msg.world ?? catalog.defaultName);
-          players.set(socket, {
-            id: nextPlayer++, world: msg.world ?? catalog.defaultName, connectedAt: Date.now(), tolerance: world.tolerance,
-            pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
-          });
-          send({
-            type: 'welcome',
-            protocolVersion: PROTOCOL_VERSION,
-            world: world.config,
-            spawn: world.spawn,
-            tolerance: world.tolerance,
-            seaLevel: world.seaLevel,
-            clock: catalog.clock(msg.world)!,
-            serverTime: Date.now(),
+          void whoReady.then((signedIn) => {
+            if (socket.readyState !== socket.OPEN) return;
+            who = signedIn;
+            greeted = true;
+            clients.set(socket, world);
+            clientWorld.set(socket, msg.world ?? catalog.defaultName);
+            players.set(socket, {
+              id: nextPlayer++, world: msg.world ?? catalog.defaultName, connectedAt: Date.now(), tolerance: world.tolerance,
+              name: who?.account.name ?? null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
+            });
+            send({
+              type: 'welcome',
+              protocolVersion: PROTOCOL_VERSION,
+              world: world.config,
+              spawn: world.spawn,
+              tolerance: world.tolerance,
+              seaLevel: world.seaLevel,
+              clock: catalog.clock(msg.world)!,
+              serverTime: Date.now(),
+              player: who ? { name: who.account.name, admin: who.admin } : null,
+              canEdit: canEdit(),
+            });
           });
           break;
 
@@ -428,6 +446,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         case 'edit': {
           if (!greeted) {
             send({ type: 'error', code: 'not_ready', message: 'send hello first' });
+            return;
+          }
+          if (!canEdit()) {
+            send({ type: 'editResult', id: msg.id, ok: false, error: 'sign in to build' });
             return;
           }
           let result: EditResult;

@@ -245,7 +245,9 @@ connection = connect({
             ? ` (server ignored the requested tolerance ${requestedTolerance}: development servers only)`
             : '') +
           (toleranceWarning ? `\n${toleranceWarning}` : '') +
-          `\ndetail ${detail} chunks, view ${view} m`;
+          `\ndetail ${detail} chunks, view ${view} m` +
+          (msg.player ? `\nsigned in as ${msg.player.name}${msg.player.admin ? ' (admin)' : ''}` : '') +
+          (msg.canEdit ? '' : '\nnot signed in: look around, or sign in on the menu (/) to build');
         clock = msg.clock;
         serverOffset = msg.serverTime - Date.now();
         if (!chunks) {

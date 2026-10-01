@@ -25,6 +25,10 @@
       #summary { margin-top: 16px; font: 12px ui-monospace, monospace; color: var(--dim); }
       #status { margin-top: 8px; font-size: 12px; min-height: 1.45em; }
       #status.bad { color: var(--bad); } #status.good { color: var(--good); }
+      #account { display: flex; align-items: center; gap: 8px; margin: -6px 0 16px; font-size: 13px; color: var(--dim); min-height: 34px; }
+      #account .who { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #account .who b { color: var(--text); font-weight: 600; }
+      #account a.button, #account button { padding: 6px 12px; }
       dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 20px; width: min(440px, calc(100vw - 32px)); }
       dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
       dialog h2 { margin: 0 0 14px; font-size: 18px; }
@@ -42,6 +46,7 @@
   <body>
     <main>
       <h1>SuperVoxel</h1>
+      <div id="account" hidden></div>
       <label class="title" for="world">World</label>
       <select id="world" disabled><option>loading…</option></select>
       <div class="about" id="about"></div>

@@ -6,7 +6,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 18;
+export const PROTOCOL_VERSION = 19;
 
 export type ClientMessage =
   | {
@@ -52,6 +52,10 @@ export type ServerMessage =
       /** The world's time of day, and the server's time now (epoch ms) to read it against. */
       clock: DayClock;
       serverTime: number;
+      /** Who this connection is signed in as (null: not signed in). */
+      player: { name: string; admin: boolean } | null;
+      /** Whether this connection may edit (signing in is required where the server has accounts). */
+      canEdit: boolean;
     }
   /** The world's clock was changed (time set, stopped, or a new day length). */
   | { type: 'clock'; clock: DayClock; serverTime: number }

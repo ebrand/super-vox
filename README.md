@@ -366,6 +366,12 @@ share an address). `railway.toml` points Railway at the Dockerfile and health-ch
   1/4 m tolerance by default); later starts reuse it. It takes several seconds to build
   and about 300 MB of memory.
 - `auth/` (credentials) and `data/` are excluded from the image by `.dockerignore`.
+- **Sign-in** (Google): set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SESSION_SECRET` (32+
+  characters), `DATABASE_URL` (Supabase Postgres; tables go in the `"super-vox"` schema,
+  created on start), `PUBLIC_URL` (this site's address, for Google's callback
+  `/api/auth/google/callback`) and optionally `ADMIN_EMAILS`. With sign-in on, only signed-in
+  players can edit; anyone can look around. Locally, `npm run dev` takes the Google client and
+  session secret from `auth/` and keeps accounts in memory (set `DATABASE_URL` to use Postgres).
 
 ```sh
 docker build -t super-vox .

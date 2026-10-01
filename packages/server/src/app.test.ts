@@ -151,6 +151,9 @@ describe('WebSocket handshake', () => {
       seaLevel: null,
       clock: expect.objectContaining({ dayMinutes: 24, frozen: false }),
       serverTime: expect.any(Number),
+      // No sign-in on this server: anyone may edit.
+      player: null,
+      canEdit: true,
     });
     ws.close();
   });
