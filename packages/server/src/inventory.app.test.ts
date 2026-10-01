@@ -155,6 +155,41 @@ describe('inventories', () => {
     p.ws.close();
   });
 
+  it('place, open and take down fences, gates and doors with items from the inventory', async () => {
+    const { url, cookie, inventories, ann } = await setup('survival');
+    await inventories.save(ann.id, 'default@single', { items: new Map([[Item.Fence, 2], [Item.Gate, 1], [Item.WoodenSword, 1]]), hotbar: Array(HOTBAR_SLOTS).fill(null) });
+    const p = await player(url, cookie);
+    await p.until(() => !!p.inventory());
+    let id = 100;
+    const act = async (msg: object) => {
+      const n = ++id;
+      p.ws.send(JSON.stringify({ ...msg, id: n }));
+      await p.until(() => p.msgs.some((m) => m.type === 'editResult' && m.id === n));
+      await new Promise((r) => setTimeout(r, 30)); // the inventory follows
+      return p.msgs.find((m) => m.type === 'editResult' && m.id === n);
+    };
+    const have = (item: number) => new Map(p.inventory()!.items).get(item) ?? 0;
+    expect(await act({ type: 'placeObject', item: Item.Fence, x: 100, y: 0, z: 100, facing: 'n' })).toMatchObject({ ok: true });
+    expect(await act({ type: 'placeObject', item: Item.Gate, x: 101, y: 0, z: 100, facing: 'n' })).toMatchObject({ ok: true });
+    expect(have(Item.Fence)).toBe(1);
+    expect(have(Item.Gate)).toBe(0);
+    expect(await act({ type: 'placeObject', item: Item.Gate, x: 103, y: 0, z: 100, facing: 'n' })).toMatchObject({ ok: false, error: 'no gate left' });
+    expect(await act({ type: 'placeObject', item: Item.WoodenSword, x: 103, y: 0, z: 100, facing: 'n' })).toMatchObject({ ok: false, error: "a wooden sword isn't placed like that" });
+    // Right-click any voxel of the gate (units): opens it; a fence doesn't open.
+    expect(await act({ type: 'use', x: 101 * 16 + 8, y: 5, z: 100 * 16 + 8 })).toMatchObject({ ok: true });
+    expect(await act({ type: 'use', x: 100 * 16 + 8, y: 5, z: 100 * 16 + 8 })).toMatchObject({ ok: false, error: 'nothing to open there' });
+    // Left-click any part of the fence: down it comes, back into the inventory.
+    expect(await p.edit({ op: 'remove', x: 100 * 16 + 7, y: 2, z: 100 * 16 + 7 })).toMatchObject({ ok: true });
+    expect(have(Item.Fence)).toBe(2);
+    p.ws.close();
+    const guest = await player(url);
+    await guest.until(() => guest.msgs.some((m) => m.type === 'welcome'));
+    guest.ws.send(JSON.stringify({ type: 'use', id: 9, x: 101 * 16 + 8, y: 5, z: 100 * 16 + 8 }));
+    await guest.until(() => guest.msgs.some((m) => m.type === 'editResult'));
+    expect(guest.msgs.find((m) => m.type === 'editResult')).toMatchObject({ ok: false, error: 'sign in to build' });
+    guest.ws.close();
+  });
+
   it("don't exist for players who aren't signed in", async () => {
     const { url } = await setup('survival');
     const p = await player(url);

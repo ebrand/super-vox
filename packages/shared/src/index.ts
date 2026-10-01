@@ -19,3 +19,4 @@ export * from './world.js';
 export * from './protocol.js';
 export * from './items.js';
 export * from './recipes.js';
+export * from './objects.js';

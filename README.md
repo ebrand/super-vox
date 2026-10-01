@@ -186,10 +186,17 @@ the server (Postgres with sign-in, else memory):
 **Crafting** (in the inventory screen): 1 wood → 4 planks, 2 planks → 4 sticks, 4 planks → a
 crafting table; and, within 5 m of a placed crafting table, wooden and stone swords, fences,
 gates, doors and buckets (see `RECIPES`). Mining stone gives cobblestone. Items that aren't
-blocks (sticks, tools, ...) are counted whole; fences, gates, doors and buckets can't be placed
-or used yet.
+blocks (sticks, tools, ...) are counted whole; buckets can't be used yet.
 
-The hotbar (bottom of the screen) holds what you place: 1-9 pick a slot. E opens the inventory
+**Fences, gates and doors**: with one in the hotbar, right-click a face (hybrid mode) to place it
+in the 1 m block there, facing the way you look (doors are two blocks tall). Fences join each
+other and gates in their line. Right-click a gate or door to open or close it; left-click any
+part of one to take it down (it goes back in your inventory). Other edits can't cut into them.
+They're voxels of their own materials, and the server keeps a register of them (objects.json
+beside each world's edited chunks).
+
+The hotbar (bottom of the screen) holds what you place: 1-9 or the mouse wheel pick a slot
+(Option+wheel sets the flying speed). E opens the inventory
 (survival: what you have; creative: everything); click a material to put it in the selected
 slot. The hotbar is kept with your inventory. Players who aren't signed in can't build, so they
 have neither. Inventories are filed under the world's name and when its terrain was made, so a

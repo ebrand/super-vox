@@ -110,6 +110,12 @@ const inventoryUi = new InventoryUi(
   (hotbar) => connection?.send({ type: 'setHotbar', hotbar }),
   (recipe) => connection?.send({ type: 'craft', recipe }),
 );
+// The wheel steps through the hotbar (while it's there: players who can build).
+controls.onWheel = (deltaY) => {
+  if (!inventoryUi.enabled) return false;
+  inventoryUi.scroll(deltaY);
+  return true;
+};
 // Clicking back into the world (capturing the mouse) closes it.
 document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement) inventoryUi.close();
@@ -455,7 +461,7 @@ function updateHud(): void {
     (controls.walking
       ? controls.swimming ? ' · swimming: WASD move · Space: up · C: down' : ' · walking: WASD move · Space: jump'
       : ' · flying: WASD move · Space/E: up · Q/C: down') +
-    ' · Shift: 5x · wheel: speed (⌘+wheel: voxel size)' +
+    ' · Shift: 5x · ⌥+wheel: speed · wheel: hotbar (⌘+wheel: voxel size)' +
     ` · F: ${controls.walking ? 'fly' : 'walk'} · N: no-clip (${controls.collide ? 'off' : 'on'}) · M: map · L: lighting · I: hide info\n` +
     (editTool ? `${editTool.hudLines()}\n` : '') +
     (c && t

@@ -19,6 +19,16 @@ import { materialColor } from './materials.js';
 
 type InventoryMessage = Extract<ServerMessage, { type: 'inventory' }>;
 
+/** Wheel travel (pixels) per hotbar step: about one mouse-wheel notch. */
+const WHEEL_STEP = 40;
+
+/** Whole hotbar steps in `travel + deltaY` wheel pixels (down = next), and the travel left over. */
+export function wheelSteps(travel: number, deltaY: number): { steps: number; travel: number } {
+  const t = travel + deltaY;
+  const steps = Math.trunc(t / WHEEL_STEP) || 0; // (never -0)
+  return { steps, travel: t - steps * WHEEL_STEP };
+}
+
 /** A linear-light colour (as the renderer keeps them) for CSS (sRGB). */
 const css = (c: readonly [number, number, number]) => `rgb(${c.map((v) => Math.round(Math.min(1, Math.max(0, v)) ** (1 / 2.2) * 255)).join(' ')})`;
 
@@ -38,7 +48,7 @@ function colorOf(id: ItemId): string {
 }
 
 /**
- * The hotbar (bottom of the screen; 1-9 pick a slot) and the inventory screen (E): in survival,
+ * The hotbar (bottom of the screen; 1-9 or the wheel pick a slot) and the inventory screen (E): in survival,
  * the materials you have and how much (in blocks); in creative, everything placeable. Clicking a
  * material in the inventory puts it in the selected hotbar slot. Until the server sends an
  * inventory (servers without accounts), it's creative.
@@ -119,6 +129,17 @@ export class InventoryUi {
     this.items = new Map(msg.items);
     this.hotbar = Array.from({ length: HOTBAR_SLOTS }, (_, i) => msg.hotbar[i] ?? null);
     this.render();
+  }
+
+  private wheelTravel = 0;
+  private lastWheel = 0;
+
+  /** Steps through the hotbar with the mouse wheel (deltaY pixels; one step per notch). */
+  scroll(deltaY: number, now = performance.now()): void {
+    const r = wheelSteps(now - this.lastWheel > 300 ? 0 : this.wheelTravel, deltaY);
+    this.lastWheel = now;
+    this.wheelTravel = r.travel;
+    if (r.steps) this.select((((this.selected + r.steps) % HOTBAR_SLOTS) + HOTBAR_SLOTS) % HOTBAR_SLOTS);
   }
 
   select(slot: number): void {

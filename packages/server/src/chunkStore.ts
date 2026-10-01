@@ -1,14 +1,17 @@
-import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ChunkCoord } from '@super-vox/shared';
+import type { ChunkCoord, PlacedObject } from '@super-vox/shared';
 
-/** Persists edited chunks. */
+/** Persists edited chunks, and the world's placed objects (fences, gates, doors). */
 export interface ChunkStore {
   loadAll(): { coord: ChunkCoord; bytes: Uint8Array }[];
   save(coord: ChunkCoord, bytes: Uint8Array): void;
+  loadObjects?(): PlacedObject[];
+  saveObjects?(objects: PlacedObject[]): void;
 }
 
 const FILE = /^(-?\d+)_(-?\d+)_(-?\d+)\.chunk$/;
+const OBJECTS = 'objects.json';
 
 /** One file per edited chunk, `<cx>_<cy>_<cz>.chunk`, in a directory. */
 export class FileChunkStore implements ChunkStore {
@@ -27,10 +30,23 @@ export class FileChunkStore implements ChunkStore {
   }
 
   save(coord: ChunkCoord, bytes: Uint8Array): void {
-    const name = `${coord.cx}_${coord.cy}_${coord.cz}.chunk`;
-    // Write then rename so a crash never leaves a half-written chunk.
+    this.write(`${coord.cx}_${coord.cy}_${coord.cz}.chunk`, bytes);
+  }
+
+  /** Placed objects, in objects.json beside the chunks. */
+  loadObjects(): PlacedObject[] {
+    const path = join(this.dir, OBJECTS);
+    return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as PlacedObject[]) : [];
+  }
+
+  saveObjects(objects: PlacedObject[]): void {
+    this.write(OBJECTS, JSON.stringify(objects));
+  }
+
+  private write(name: string, data: string | Uint8Array): void {
+    // Write then rename so a crash never leaves a half-written file.
     const tmp = join(this.dir, `${name}.tmp`);
-    writeFileSync(tmp, bytes);
+    writeFileSync(tmp, data);
     renameSync(tmp, join(this.dir, name));
   }
 }

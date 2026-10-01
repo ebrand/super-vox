@@ -96,8 +96,8 @@ export function canPlace(material: MaterialId, mode: GameMode): boolean {
 
 /** Grassy grounds give dirt when mined. */
 const GIVES_DIRT = new Set<MaterialId>([Material.Grass, Material.Meadow, Material.JungleFloor, Material.DryGrass, Material.TaigaFloor, Material.Tundra]);
-/** Leaves give nothing (for now). */
-const GIVES_NOTHING = new Set<MaterialId>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves]);
+/** Leaves give nothing (for now); nor do objects' voxels (taking an object down gives the object). */
+const GIVES_NOTHING = new Set<MaterialId>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves, Material.FenceWood, Material.GateWood, Material.DoorWood]);
 
 /** What mining a material gives in survival (null: nothing). */
 export function dropOf(material: MaterialId): MaterialId | null {

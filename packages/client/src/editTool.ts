@@ -8,8 +8,14 @@ import {
   blockIndex,
   blockVoxelContaining,
   breakSizesFor,
+  facingOfYaw,
   isBlock,
+  isObjectMaterial,
+  isUsableMaterial,
   itemName,
+  materialName,
+  objectKindOf,
+  type ItemId,
   nextBreakSize,
   type ClientMessage,
   type Edit,
@@ -88,6 +94,9 @@ export class EditTool {
   /** Index into TOOL_SIZES of the selected size. */
   private sizeIndex = TOOL_SIZES.indexOf(4);
   private target: Box | null = null;
+  /** The aimed voxel's material, and the unit cell and face the aim hit (for objects). */
+  private targetMaterial: MaterialId | null = null;
+  private hit: { cell: [number, number, number]; normal: [number, number, number] } | null = null;
   private placement: (Box & { valid: boolean; reason: string }) | null = null;
   private dig: Box | null = null;
   /** Outward normal of the face the dig box starts at (the surface aimed at). */
@@ -221,21 +230,26 @@ export class EditTool {
   /** Re-aims from the camera; call every frame. */
   update(): void {
     this.target = this.placement = this.dig = null;
+    this.targetMaterial = null;
+    this.hit = null;
     {
       const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
       const dir = this.camera.getWorldDirection(new THREE.Vector3());
       const hit = raycastVoxels([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], REACH, this.solidAt);
-      this.target = hit ? this.voxelBox(hit.cell) : null;
-      if (hit && this.target) {
+      const aimed = hit ? this.voxelBox(hit.cell) : null;
+      this.target = aimed;
+      if (hit && aimed) {
+        this.hit = hit;
+        this.targetMaterial = aimed.material;
         // Hybrid keeps things simple: always snapped to the size.
         const fine = this.mode !== 'hybrid' && this.modifiers.alt;
         if (this.mode === 'place' || this.mode === 'hybrid') {
-          const p = placementBox(hit, this.target, this.placeSize(this.target), fine);
+          const p = placementBox(hit, aimed, this.placeSize(aimed), fine);
           // Crossing 1 m gridlines is fine: the server places it as block-sized pieces.
           const reason = this.occupied(p);
           this.placement = { ...p, valid: !reason, reason };
         } else if (this.modifiers.meta) {
-          this.dig = digBox(hit, this.target, this.size, fine);
+          this.dig = digBox(hit, aimed, this.size, fine);
           this.digNormal = hit.normal;
         }
       }
@@ -259,9 +273,13 @@ export class EditTool {
     this.update(); // aim with the modifiers as they are right now
     if (button === 1) return this.breakSmaller();
     if (this.mode === 'hybrid') {
-      // Where interactive voxels (doors, TNT, ...) will take over these buttons.
       if (button === 0) this.remove();
-      else if (button === 2) this.place();
+      else if (button === 2) {
+        // Right-click opens and closes gates and doors; with a fence, gate or door in hand, places one.
+        if (this.targetMaterial !== null && isUsableMaterial(this.targetMaterial)) this.use();
+        else if (this.material && objectKindOf(this.material.id)) this.placeObject(this.material.id);
+        else this.place();
+      }
       return;
     }
     if (button !== 0) return;
@@ -315,7 +333,12 @@ export class EditTool {
           ? `next place ${sizeLabel(this.hybridSize)}`
           : 'places matching size'
         : sizeLabel(this.size);
-    const target = this.target ? `aiming at a ${sizeLabel(this.target.size)} voxel` : 'nothing in reach';
+    const usable = this.targetMaterial !== null && isUsableMaterial(this.targetMaterial);
+    const target = !this.target
+      ? 'nothing in reach'
+      : this.targetMaterial !== null && isObjectMaterial(this.targetMaterial)
+        ? `aiming at a ${materialName(this.targetMaterial)}${usable ? ' (right-click: open / close)' : ''} (left-click: take it down)`
+        : `aiming at a ${sizeLabel(this.target.size)} voxel`;
     const actions =
       this.mode === 'hybrid'
         ? 'click: remove · right-click: place (⌘+wheel: pick size, ⌘ shows it)'
@@ -381,12 +404,31 @@ export class EditTool {
       return;
     }
     if (!isBlock(material.id)) {
-      this.say(`a ${material.name} can't be placed yet`);
+      this.say(`a ${material.name} can't be placed${this.mode === 'hybrid' ? '' : ' in this mode (Tab: hybrid)'}`);
       return;
     }
     this.submit({ op: 'place', x, y, z, size, material: material.id }, 'place');
     // A size chosen in hybrid applies to one placement; then it matches the target again.
     if (this.mode === 'hybrid') this.hybridSize = null;
+  }
+
+  /** Opens or closes the gate or door aimed at. */
+  private use(): void {
+    if (!this.target) return;
+    const id = this.nextId++;
+    this.pending.set(id, 'open');
+    this.send({ type: 'use', id, x: this.target.x, y: this.target.y, z: this.target.z });
+  }
+
+  /** Places an object (fence, gate, door) in the 1 m block beside the face aimed at, facing the way we look. */
+  private placeObject(item: ItemId): void {
+    if (!this.hit) return;
+    const [x, y, z] = this.hit.cell.map((c, a) => floorDiv(c + this.hit!.normal[a]!, BLOCK_SIZE)) as [number, number, number];
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const facing = facingOfYaw(Math.atan2(-dir.x, -dir.z));
+    const id = this.nextId++;
+    this.pending.set(id, 'place');
+    this.send({ type: 'placeObject', id, item, x, y, z, facing });
   }
 
   private breakSmaller(): void {
@@ -409,14 +451,14 @@ export class EditTool {
   private readonly solidAt: SolidAt;
 
   /** World box of the voxel covering unit cell `cell`. */
-  private voxelBox([x, y, z]: [number, number, number]): Box | null {
+  private voxelBox([x, y, z]: [number, number, number]): (Box & { material: MaterialId }) | null {
     const chunk = this.chunks.chunkAt({ cx: floorDiv(x, CHUNK_SIZE), cy: floorDiv(y, CHUNK_SIZE), cz: floorDiv(z, CHUNK_SIZE) });
     if (!chunk) return null;
     const [lx, ly, lz] = [mod(x, CHUNK_SIZE), mod(y, CHUNK_SIZE), mod(z, CHUNK_SIZE)];
     const block = chunk.blocks[blockIndex(floorDiv(lx, BLOCK_SIZE), floorDiv(ly, BLOCK_SIZE), floorDiv(lz, BLOCK_SIZE))] ?? null;
     const v = blockVoxelContaining(block, mod(lx, BLOCK_SIZE), mod(ly, BLOCK_SIZE), mod(lz, BLOCK_SIZE));
     if (!v) return null;
-    return { x: x - mod(x, BLOCK_SIZE) + v.x, y: y - mod(y, BLOCK_SIZE) + v.y, z: z - mod(z, BLOCK_SIZE) + v.z, size: v.size };
+    return { x: x - mod(x, BLOCK_SIZE) + v.x, y: y - mod(y, BLOCK_SIZE) + v.y, z: z - mod(z, BLOCK_SIZE) + v.z, size: v.size, material: v.material };
   }
 
   /** '' if every cell of the box is loaded and empty and clear of the player, else why not. */

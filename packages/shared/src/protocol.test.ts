@@ -102,6 +102,19 @@ describe('protocol', () => {
     expect(mergeSpans([])).toEqual([]);
   });
 
+  it('validates placing and using objects', () => {
+    expect(decodeClientMessage('{"type":"placeObject","id":3,"item":1003,"x":-5,"y":2,"z":9,"facing":"e"}')).toEqual({ type: 'placeObject', id: 3, item: 1003, x: -5, y: 2, z: 9, facing: 'e' });
+    expect(decodeClientMessage('{"type":"use","id":4,"x":-80,"y":33,"z":150}')).toEqual({ type: 'use', id: 4, x: -80, y: 33, z: 150 });
+    for (const raw of [
+      '{"type":"placeObject","id":3,"item":1003,"x":0,"y":0,"z":0,"facing":"up"}',
+      '{"type":"placeObject","id":-1,"item":1003,"x":0,"y":0,"z":0,"facing":"n"}',
+      '{"type":"placeObject","id":3,"item":1003,"x":0.5,"y":0,"z":0,"facing":"n"}',
+      '{"type":"use","id":4,"x":1,"y":2}',
+    ]) {
+      expect(decodeClientMessage(raw)).toBeNull();
+    }
+  });
+
   it('validates craft requests', () => {
     expect(decodeClientMessage('{"type":"craft","recipe":"wooden-sword"}')).toEqual({ type: 'craft', recipe: 'wooden-sword' });
     for (const raw of ['{"type":"craft"}', '{"type":"craft","recipe":5}', '{"type":"craft","recipe":"Bad Id"}', `{"type":"craft","recipe":"${'a'.repeat(65)}"}`]) {

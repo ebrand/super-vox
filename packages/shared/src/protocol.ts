@@ -4,11 +4,12 @@ import { isValidTileLevel } from './tile.js';
 import type { ColumnRange } from './chunk.js';
 import { HOTBAR_SLOTS, type GameMode } from './items.js';
 import { MAX_MATERIAL_ID } from './materials.js';
+import { isFacing, type Facing } from './objects.js';
 import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 21;
+export const PROTOCOL_VERSION = 22;
 
 export type ClientMessage =
   | {
@@ -37,6 +38,13 @@ export type ClientMessage =
   | { type: 'cancel'; chunks?: [number, number, number][]; tiles?: [number, number, number][]; columns?: [number, number][] }
   /** A voxel edit; answered with `editResult`. `id` is chosen by the client to match the reply. */
   | { type: 'edit'; id: number; edit: Edit }
+  /**
+   * Place an object (an item that places one: fence, gate, door) in block (x, y, z) (1 m block
+   * coordinates), facing `facing`; answered with `editResult` (`id` as for edits).
+   */
+  | { type: 'placeObject'; id: number; item: number; x: number; y: number; z: number; facing: Facing }
+  /** Use (open or close) the object with a voxel at unit (x, y, z); answered with `editResult`. */
+  | { type: 'use'; id: number; x: number; y: number; z: number }
   /** Make something (a recipe id, see RECIPES); answered with the new inventory, or an error. */
   | { type: 'craft'; recipe: string }
   /** The player's hotbar arrangement (HOTBAR_SLOTS item ids, null for empty), kept with their inventory. */
@@ -224,6 +232,13 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
       ...(tiles ? { tiles: tiles as [number, number, number][] } : {}),
       ...(columns ? { columns: columns as [number, number][] } : {}),
     };
+  }
+  const isId = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 2 ** 32;
+  if (msg.type === 'placeObject' && isId(msg.id) && isInt32(msg.item) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z) && isFacing(msg.facing)) {
+    return { type: 'placeObject', id: msg.id as number, item: msg.item, x: msg.x, y: msg.y, z: msg.z, facing: msg.facing };
+  }
+  if (msg.type === 'use' && isId(msg.id) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
+    return { type: 'use', id: msg.id as number, x: msg.x, y: msg.y, z: msg.z };
   }
   if (msg.type === 'craft' && typeof msg.recipe === 'string' && /^[a-z0-9-]{1,64}$/.test(msg.recipe)) {
     return { type: 'craft', recipe: msg.recipe };

@@ -28,8 +28,20 @@ import {
   tileKey,
   tileSizeUnits,
   tileStep,
+  type Block,
   type Chunk,
   type ColumnRange,
+  type Facing,
+  type ObjectKind,
+  type PlacedObject,
+  FACINGS,
+  FACING_STEP,
+  blockFromVoxels,
+  blockVoxels,
+  fenceJoins,
+  objectBlocks,
+  objectHeight,
+  withoutWater,
   type MaterialId,
   volumeChange,
   type Edit,
@@ -95,6 +107,15 @@ export function encodeWorldMap(m: WorldMap): Uint8Array {
   return buf;
 }
 
+const mod = (v: number, m: number) => ((v % m) + m) % m;
+const objectKey = (x: number, y: number, z: number) => `${x},${y},${z}`;
+
+/** The unit box an edit touches. */
+function editBounds(edit: Edit): { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } {
+  const size = edit.op === 'place' || edit.op === 'removeBox' ? edit.size : 1;
+  return { x0: edit.x, y0: edit.y, z0: edit.z, x1: edit.x + size, y1: edit.y + size, z1: edit.z + size };
+}
+
 /** What an edit changed: the new chunks, columns whose height range widened, and how much of each material (see volumeChange). */
 export interface EditResult {
   changes: { coord: ChunkCoord; bytes: Uint8Array }[];
@@ -125,6 +146,8 @@ export class World {
   readonly seaLevel: number | null;
   /** Water flowing after edits (see stepWater). */
   private readonly flow = new WaterFlow();
+  /** Placed objects (fences, gates, doors) by their bottom block, "bx,by,bz" (block X in the world's range). */
+  private readonly objects = new Map<string, PlacedObject>();
   /** Running totals since the world was opened, for monitoring (see WorldStats). */
   readonly stats: WorldStats = {
     chunkHits: 0, chunkMisses: 0, tileHits: 0, tileMisses: 0,
@@ -147,6 +170,7 @@ export class World {
       }
       this.recordEdited(chunk);
     }
+    for (const o of this.store?.loadObjects?.() ?? []) this.objects.set(objectKey(o.x, o.y, o.z), o);
     if (config.widthUnits % CHUNK_SIZE !== 0 || config.depthUnits % CHUNK_SIZE !== 0) {
       throw new RangeError('world width and depth must be multiples of the chunk size');
     }
@@ -180,6 +204,8 @@ export class World {
    * or (for removeBox) removes nothing.
    */
   applyEdit(edit: Edit): EditResult {
+    const held = this.objectIn(editBounds(edit));
+    if (held) throw new EditError(`that's a ${held.kind}: left-click takes it down`);
     const result = this.applyEditOnly(edit);
     this.stats.edits++;
     // Water around whatever changed may flow.
@@ -380,6 +406,118 @@ export class World {
     this.stats.tileMisses++;
     recent(this.stats.recentTileMs, performance.now() - t0);
     return bytes;
+  }
+
+  /** Block X in the world's range (round worlds wrap). */
+  private wrapBlockX(bx: number): number {
+    const n = this.config.widthUnits / BLOCK_SIZE;
+    return this.config.wrapX ? ((bx % n) + n) % n : bx;
+  }
+
+  /** The object occupying block (bx, by, bz) (1 m block coordinates), if any (doors: either block). */
+  objectAt(bx: number, by: number, bz: number): PlacedObject | undefined {
+    const x = this.wrapBlockX(bx);
+    const o = this.objects.get(objectKey(x, by, bz));
+    if (o) return o;
+    const below = this.objects.get(objectKey(x, by - 1, bz));
+    return below && objectHeight(below.kind) === 2 ? below : undefined;
+  }
+
+  /** Any object in the blocks a unit box [x0, x1) x [y0, y1) x [z0, z1) touches. */
+  private objectIn(b: { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number }): PlacedObject | undefined {
+    if (this.objects.size === 0) return undefined;
+    for (let by = Math.floor(b.y0 / BLOCK_SIZE); by <= Math.floor((b.y1 - 1) / BLOCK_SIZE); by++)
+      for (let bz = Math.floor(b.z0 / BLOCK_SIZE); bz <= Math.floor((b.z1 - 1) / BLOCK_SIZE); bz++)
+        for (let bx = Math.floor(b.x0 / BLOCK_SIZE); bx <= Math.floor((b.x1 - 1) / BLOCK_SIZE); bx++) {
+          const o = this.objectAt(bx, by, bz);
+          if (o) return o;
+        }
+    return undefined;
+  }
+
+  /** The current block at (bx, by, bz), and where it lives; null outside the world. */
+  private blockAt(bx: number, by: number, bz: number): Block | undefined {
+    const n = BLOCKS_PER_CHUNK_AXIS;
+    const resolved = resolveChunk(this.config, { cx: Math.floor(bx / n), cy: Math.floor(by / n), cz: Math.floor(bz / n) });
+    if (!resolved) return undefined;
+    return this.current(resolved).blocks[blockIndex(mod(bx, n), mod(by, n), mod(bz, n))] ?? null;
+  }
+
+  /** Replaces whole blocks (1 m block coordinates) and commits the chunks they're in. */
+  private writeBlocks(blocks: { bx: number; by: number; bz: number; block: Block }[]): EditResult {
+    const n = BLOCKS_PER_CHUNK_AXIS;
+    const next = new Map<string, Chunk>();
+    for (const { bx, by, bz, block } of blocks) {
+      const resolved = resolveChunk(this.config, { cx: Math.floor(bx / n), cy: Math.floor(by / n), cz: Math.floor(bz / n) });
+      if (!resolved) throw new EditError('outside the world');
+      const key = chunkKey(resolved);
+      let chunk = next.get(key);
+      if (!chunk) {
+        const cur = this.current(resolved);
+        chunk = { cx: cur.cx, cy: cur.cy, cz: cur.cz, blocks: cur.blocks.slice() };
+        next.set(key, chunk);
+      }
+      chunk.blocks[blockIndex(mod(bx, n), mod(by, n), mod(bz, n))] = block;
+    }
+    return this.commit([...next.values()]);
+  }
+
+  /** The blocks of an object as it should be now (fences join their neighbours). */
+  private objectWrites(o: PlacedObject): { bx: number; by: number; bz: number; block: Block }[] {
+    const joins = o.kind === 'fence' ? fenceJoins(o.x, o.y, o.z, (x, y, z) => this.objectAt(x, y, z)) : [];
+    return objectBlocks(o, joins).map(({ dy, voxels }) => ({ bx: o.x, by: o.y + dy, bz: o.z, block: blockFromVoxels(voxels) }));
+  }
+
+  /** Fences beside block (bx, by, bz), redrawn (they may join or part from what's there now). */
+  private neighbourFenceWrites(bx: number, by: number, bz: number): { bx: number; by: number; bz: number; block: Block }[] {
+    return FACINGS.flatMap((f) => {
+      const [dx, dz] = FACING_STEP[f];
+      const o = this.objectAt(bx + dx, by, bz + dz);
+      return o?.kind === 'fence' ? this.objectWrites(o) : [];
+    });
+  }
+
+  private saveObjects(): void {
+    this.store?.saveObjects?.([...this.objects.values()]);
+  }
+
+  /**
+   * Places an object with its (bottom) block at (bx, by, bz). Throws EditError if a block it
+   * needs is outside the world, holds something solid, or holds another object.
+   */
+  placeObject(kind: ObjectKind, bx: number, by: number, bz: number, facing: Facing): EditResult {
+    const o: PlacedObject = { kind, x: this.wrapBlockX(bx), y: by, z: bz, facing, open: false };
+    for (let dy = 0; dy < objectHeight(kind); dy++) {
+      if (this.objectAt(o.x, by + dy, bz)) throw new EditError(`there's already something there`);
+      const block = this.blockAt(o.x, by + dy, bz);
+      if (block === undefined) throw new EditError('outside the world');
+      if (blockVoxels(withoutWater(block)).length > 0) throw new EditError(`a ${kind} needs ${kind === 'door' ? 'two empty blocks' : 'an empty block'}`);
+    }
+    this.objects.set(objectKey(o.x, o.y, o.z), o);
+    const result = this.writeBlocks([...this.objectWrites(o), ...this.neighbourFenceWrites(o.x, o.y, o.z)]);
+    this.stats.edits++;
+    this.saveObjects();
+    return result;
+  }
+
+  /** Takes an object down (its blocks become empty); fences beside it let go. */
+  removeObject(o: PlacedObject): EditResult {
+    this.objects.delete(objectKey(o.x, o.y, o.z));
+    const empty = Array.from({ length: objectHeight(o.kind) }, (_, dy) => ({ bx: o.x, by: o.y + dy, bz: o.z, block: null }));
+    const result = this.writeBlocks([...empty, ...this.neighbourFenceWrites(o.x, o.y, o.z)]);
+    this.stats.edits++;
+    this.saveObjects();
+    return result;
+  }
+
+  /** Opens or closes a gate or door; throws EditError for anything else. */
+  toggleObject(o: PlacedObject): EditResult {
+    if (o.kind === 'fence') throw new EditError("fences don't open");
+    const next = { ...o, open: !o.open };
+    this.objects.set(objectKey(o.x, o.y, o.z), next);
+    const result = this.writeBlocks(this.objectWrites(next));
+    this.saveObjects();
+    return result;
   }
 
   /**

@@ -37,7 +37,8 @@ export function applyLook(yaw: number, pitch: number, dx: number, dy: number, se
  * while captured, moving the mouse looks around and button presses are
  * reported through `onClick`. Esc releases it. Uncaptured, dragging with the
  * left or right button still looks around. WASD moves, Space/E up, Q/C down,
- * Shift for 5x speed, mouse wheel changes the base speed (with Command held
+ * Shift for 5x speed, Option+wheel changes the base speed (the plain wheel too, unless onWheel
+ * takes it; with Command held
  * it goes to `onModifiedWheel` instead). Flying: Space/E up, Q/C down.
  * Collision comes from `collide`; walking needs it.
  */
@@ -73,6 +74,11 @@ export class FlyControls {
    * 1 = middle, 2 = right), with the modifier keys held at that moment.
    */
   onClick: ((button: number, mods: { meta: boolean; alt: boolean }) => void) | null = null;
+  /**
+   * Offered plain wheel movement (deltaY, pixels), e.g. to step through the hotbar; returns
+   * whether it took it (if so, speed is Option+wheel).
+   */
+  onWheel: ((deltaY: number) => boolean) | null = null;
   /** Receives wheel movement (deltaY) while Command is held, instead of changing speed. */
   onModifiedWheel: ((deltaY: number) => void) | null = null;
   /** Called when the mouse is captured or released, with an error message if capture failed. */
@@ -116,12 +122,14 @@ export class FlyControls {
     on(element, 'contextmenu', (e: Event) => e.preventDefault());
     on(element, 'wheel', (e: WheelEvent) => {
       e.preventDefault();
+      // Normalize to pixels: some devices report lines or pages.
+      const pixels = e.deltaY * (e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1);
       if (e.metaKey && this.onModifiedWheel) {
-        // Normalize to pixels: some devices report lines or pages.
-        const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
-        this.onModifiedWheel(e.deltaY * scale);
+        this.onModifiedWheel(pixels);
         return;
       }
+      // The plain wheel goes to onWheel (the hotbar) if it takes it; otherwise, and with Option, speed.
+      if (!e.altKey && this.onWheel?.(pixels)) return;
       this.speed = Math.max(1, Math.min(500, this.speed * (e.deltaY > 0 ? 1 / 1.15 : 1.15)));
     });
     on(window, 'keydown', (e: KeyboardEvent) => {

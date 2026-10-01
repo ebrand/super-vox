@@ -13,6 +13,7 @@ import {
   voxelVolume,
   type Edit,
   type GameMode,
+  type ItemId,
   type MaterialId,
   type ServerMessage,
 } from '@super-vox/shared';
@@ -44,6 +45,21 @@ export class PlayerInventory {
     const have = this.inv.items.get(edit.material) ?? 0;
     const need = voxelVolume(edit.size);
     return have >= need ? null : `not enough ${itemName(edit.material)} (have ${formatBlocks(have)}, need ${formatBlocks(need)} blocks)`;
+  }
+
+  /** Why an item can't be used up here (null if it can): survival needs one. */
+  refuseItem(item: ItemId): string | null {
+    if (this.mode === 'creative') return null;
+    return (this.inv.items.get(item) ?? 0) >= 1 ? null : `no ${itemName(item)} left`;
+  }
+
+  /** Survival: one of an item used up (placing an object) or given back (taking one down). */
+  addItem(item: ItemId, n: number): void {
+    if (this.mode !== 'survival') return;
+    const left = (this.inv.items.get(item) ?? 0) + n;
+    if (left > 0) this.inv.items.set(item, left);
+    else this.inv.items.delete(item);
+    this.changed();
   }
 
   /** Survival: takes what an edit placed and gives what it removed (see EditResult.change). */

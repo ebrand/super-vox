@@ -27,6 +27,10 @@ export const Material = {
   Planks: 26,
   Cobblestone: 27,
   CraftingTable: 28,
+  /** Placed objects (see objects.ts): each its own material, so a click on one is recognised. */
+  FenceWood: 29,
+  GateWood: 30,
+  DoorWood: 31,
 } as const;
 
 /** Flowing water reaches this many blocks from its source. */
@@ -73,6 +77,9 @@ const MATERIAL_NAMES: Record<number, string> = {
   [Material.Planks]: 'planks',
   [Material.Cobblestone]: 'cobblestone',
   [Material.CraftingTable]: 'crafting table',
+  [Material.FenceWood]: 'fence',
+  [Material.GateWood]: 'gate',
+  [Material.DoorWood]: 'door',
 };
 
 export function materialName(m: MaterialId): string {

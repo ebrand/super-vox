@@ -9,6 +9,9 @@ import {
   BinaryTag,
   EditError,
   columnSpans,
+  OBJECT_ITEM,
+  itemName,
+  objectKindOf,
   Material,
   TABLE_REACH,
   recipeById,
@@ -492,6 +495,21 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             send({ type: 'editResult', id: msg.id, ok: false, error: inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded" });
             return;
           }
+          // Left-clicking any part of an object takes the whole thing down (and gives it back).
+          if (msg.edit.op === 'remove') {
+            const o = world.objectAt(Math.floor(msg.edit.x / 16), Math.floor(msg.edit.y / 16), Math.floor(msg.edit.z / 16));
+            if (o) {
+              const result = world.removeObject(o);
+              metrics.totals.edits++;
+              send({ type: 'editResult', id: msg.id, ok: true });
+              if (inventory) {
+                inventory.addItem(OBJECT_ITEM[o.kind], 1);
+                send(inventory.message());
+              }
+              broadcast(world, result);
+              return;
+            }
+          }
           const refused = inventory?.refuse(msg.edit);
           if (refused) {
             send({ type: 'editResult', id: msg.id, ok: false, error: refused });
@@ -511,6 +529,38 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           players.get(socket)!.edits++;
           send({ type: 'editResult', id: msg.id, ok: true });
           if (inventory?.apply(result.change)) send(inventory.message());
+          broadcast(world, result);
+          break;
+        }
+
+        case 'placeObject':
+        case 'use': {
+          if (!greeted) return;
+          const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
+          if (!canEdit()) return fail('sign in to build');
+          if (opts.inventories && who && !inventory) return fail(inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded");
+          let result: EditResult;
+          try {
+            if (msg.type === 'placeObject') {
+              const kind = objectKindOf(msg.item);
+              if (!kind) return fail(`a ${itemName(msg.item)} isn't placed like that`);
+              const why = inventory?.refuseItem(msg.item);
+              if (why) return fail(why);
+              result = world.placeObject(kind, msg.x, msg.y, msg.z, msg.facing);
+              inventory?.addItem(msg.item, -1);
+            } else {
+              const o = world.objectAt(Math.floor(msg.x / 16), Math.floor(msg.y / 16), Math.floor(msg.z / 16));
+              if (!o || o.kind === 'fence') return fail('nothing to open there');
+              result = world.toggleObject(o);
+            }
+          } catch (err) {
+            if (!(err instanceof EditError)) throw err;
+            return fail(err.message);
+          }
+          metrics.totals.edits++;
+          players.get(socket)!.edits++;
+          send({ type: 'editResult', id: msg.id, ok: true });
+          if (msg.type === 'placeObject' && inventory?.mode === 'survival') send(inventory.message());
           broadcast(world, result);
           break;
         }
