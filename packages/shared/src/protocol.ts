@@ -8,7 +8,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 20;
+export const PROTOCOL_VERSION = 21;
 
 export type ClientMessage =
   | {
@@ -37,6 +37,8 @@ export type ClientMessage =
   | { type: 'cancel'; chunks?: [number, number, number][]; tiles?: [number, number, number][]; columns?: [number, number][] }
   /** A voxel edit; answered with `editResult`. `id` is chosen by the client to match the reply. */
   | { type: 'edit'; id: number; edit: Edit }
+  /** Make something (a recipe id, see RECIPES); answered with the new inventory, or an error. */
+  | { type: 'craft'; recipe: string }
   /** The player's hotbar arrangement (HOTBAR_SLOTS item ids, null for empty), kept with their inventory. */
   | { type: 'setHotbar'; hotbar: (number | null)[] }
   /** Where the player is (world units) and faces (radians, 0 = -Z); sent a couple of times a second, not answered. */
@@ -63,8 +65,8 @@ export type ServerMessage =
     }
   /**
    * The player's inventory in this world (after welcome, and whenever it changes): the world's
-   * game mode; in survival, how much of each material they have (unit-voxel volumes, see
-   * BLOCK_VOLUME); and their hotbar. Not sent to players who aren't signed in.
+   * game mode; in survival, what they have (materials as unit-voxel volumes, see BLOCK_VOLUME;
+   * items counted); and their hotbar. Not sent to players who aren't signed in.
    */
   | { type: 'inventory'; mode: GameMode; items: [number, number][]; hotbar: (number | null)[] }
   /** The world's clock was changed (time set, stopped, or a new day length). */
@@ -222,6 +224,9 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
       ...(tiles ? { tiles: tiles as [number, number, number][] } : {}),
       ...(columns ? { columns: columns as [number, number][] } : {}),
     };
+  }
+  if (msg.type === 'craft' && typeof msg.recipe === 'string' && /^[a-z0-9-]{1,64}$/.test(msg.recipe)) {
+    return { type: 'craft', recipe: msg.recipe };
   }
   if (
     msg.type === 'setHotbar' &&

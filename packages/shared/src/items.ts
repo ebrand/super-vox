@@ -1,5 +1,5 @@
 import { BLOCK_SIZE, unpackVoxel, type Chunk } from './chunk.js';
-import { Material, isWater, type MaterialId } from './materials.js';
+import { Material, isWater, materialName, type MaterialId } from './materials.js';
 
 /**
  * Game modes: in creative, every placeable material is unlimited; in survival, players build
@@ -26,6 +26,41 @@ export const voxelVolume = (size: number) => size ** 3;
 /** Hotbar slots. */
 export const HOTBAR_SLOTS = 9;
 
+/**
+ * Things that aren't blocks, counted whole (ids from FIRST_ITEM; below it, an id is a material,
+ * counted by volume). Fences, gates, doors and buckets are placed and used in later steps.
+ */
+export const Item = {
+  Stick: 1000,
+  WoodenSword: 1001,
+  StoneSword: 1002,
+  Fence: 1003,
+  Gate: 1004,
+  Door: 1005,
+  Bucket: 1006,
+} as const;
+export type ItemId = number;
+export const FIRST_ITEM = 1000;
+
+const ITEM_NAMES: Record<number, string> = {
+  [Item.Stick]: 'stick',
+  [Item.WoodenSword]: 'wooden sword',
+  [Item.StoneSword]: 'stone sword',
+  [Item.Fence]: 'fence',
+  [Item.Gate]: 'gate',
+  [Item.Door]: 'door',
+  [Item.Bucket]: 'bucket',
+};
+
+/** Whether an id is a block material (amounts are volumes) rather than an item (amounts are counts). */
+export function isBlock(id: ItemId): boolean {
+  return id < FIRST_ITEM;
+}
+
+export function itemName(id: ItemId): string {
+  return isBlock(id) ? materialName(id) : (ITEM_NAMES[id] ?? `item ${id}`);
+}
+
 /** What players can place: in creative all of these, in survival those they have. */
 export const PLACEABLE: readonly MaterialId[] = [
   Material.Stone,
@@ -45,8 +80,14 @@ export const PLACEABLE: readonly MaterialId[] = [
   Material.DryGrass,
   Material.TaigaFloor,
   Material.Tundra,
+  Material.Planks,
+  Material.Cobblestone,
+  Material.CraftingTable,
   Material.Water,
 ];
+
+/** Everything a player can have: what creative lists, and what can go on a hotbar. */
+export const ALL_ITEMS: readonly ItemId[] = [...PLACEABLE, ...(Object.values(Item) as ItemId[])];
 
 /** Placeable in this mode: water only in creative (survival will carry it in buckets). */
 export function canPlace(material: MaterialId, mode: GameMode): boolean {
@@ -62,6 +103,7 @@ const GIVES_NOTHING = new Set<MaterialId>([Material.Leaves, Material.Needles, Ma
 export function dropOf(material: MaterialId): MaterialId | null {
   if (isWater(material) || GIVES_NOTHING.has(material)) return null;
   if (GIVES_DIRT.has(material)) return Material.Dirt;
+  if (material === Material.Stone) return Material.Cobblestone;
   return material;
 }
 
@@ -107,6 +149,11 @@ export function volumeChange(before: readonly Chunk[], after: readonly Chunk[]):
     if (d !== 0) out.set(m, d);
   }
   return out;
+}
+
+/** An amount of `id` for people: blocks for materials (see formatBlocks), a count for items. */
+export function formatAmount(id: ItemId, amount: number): string {
+  return isBlock(id) ? formatBlocks(amount) : String(amount);
 }
 
 /** "3", "2.5", "0.02" blocks: an amount for people. */

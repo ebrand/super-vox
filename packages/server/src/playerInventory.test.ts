@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLOCK_VOLUME, HOTBAR_SLOTS, Material, waterMaterial } from '@super-vox/shared';
+import { BLOCK_VOLUME, HOTBAR_SLOTS, Item, Material, waterMaterial } from '@super-vox/shared';
 import { starterInventory, type Inventory } from './inventories.js';
 import { PlayerInventory } from './playerInventory.js';
 
@@ -73,4 +73,25 @@ describe('PlayerInventory', () => {
     await p.flush(); // nothing new
     expect(saves).toHaveLength(2);
   });
+
+  it("crafts in survival, saying why not when it can't", () => {
+    const { p } = survival();
+    expect(p.craft('planks', false)).toBeNull();
+    expect(new Map(p.message().items).get(Material.Planks)).toBe(4 * B);
+    expect(p.craft('wooden-sword', false)).toBe('need 1 more stick');
+    expect(p.craft('sticks', false)).toBeNull();
+    expect(p.craft('wooden-sword', false)).toBe('needs a crafting table nearby');
+    expect(p.craft('wooden-sword', true)).toBeNull();
+    expect(new Map(p.message().items).get(Item.WoodenSword)).toBe(1);
+    expect(p.craft('nope', true)).toBe('no recipe "nope"');
+    const creative = new PlayerInventory('creative', { items: new Map(), hotbar: [] }, async () => {});
+    expect(creative.craft('planks', true)).toMatch(/creative/);
+  });
+
+  it("puts items on the hotbar, but doesn't place them", () => {
+    const { p } = survival();
+    expect(p.setHotbar([Item.WoodenSword, Item.Door, null, null, null, null, null, null, Material.Cobblestone])).toBeNull();
+    expect(p.refuse(place(Item.Door))).toBe("a door can't be placed yet");
+  });
 });
+

@@ -382,6 +382,30 @@ export class World {
     return bytes;
   }
 
+  /**
+   * Whether any 1 m block within `reach` units (Chebyshev) of (x, y, z) holds `material` (e.g. a
+   * crafting table near a player). Looks at generated or edited chunks as they are now.
+   */
+  materialNear(x: number, y: number, z: number, reach: number, material: MaterialId): boolean {
+    const n = BLOCKS_PER_CHUNK_AXIS;
+    const b0 = (v: number) => Math.floor((v - reach) / BLOCK_SIZE), b1 = (v: number) => Math.floor((v + reach) / BLOCK_SIZE);
+    for (let cy = Math.floor(b0(y) / n); cy <= Math.floor(b1(y) / n); cy++)
+      for (let cz = Math.floor(b0(z) / n); cz <= Math.floor(b1(z) / n); cz++)
+        for (let cx = Math.floor(b0(x) / n); cx <= Math.floor(b1(x) / n); cx++) {
+          const resolved = resolveChunk(this.config, { cx, cy, cz });
+          if (!resolved) continue;
+          const chunk = this.current(resolved);
+          for (let by = Math.max(0, b0(y) - cy * n); by <= Math.min(n - 1, b1(y) - cy * n); by++)
+            for (let bz = Math.max(0, b0(z) - cz * n); bz <= Math.min(n - 1, b1(z) - cz * n); bz++)
+              for (let bx = Math.max(0, b0(x) - cx * n); bx <= Math.min(n - 1, b1(x) - cx * n); bx++) {
+                const b = chunk.blocks[blockIndex(bx, by, bz)];
+                if (!b) continue;
+                if (b.kind === 'uniform' ? b.material === material : b.materials.includes(material)) return true;
+              }
+        }
+    return false;
+  }
+
   /** Ground height range of a chunk column, or null outside the world. */
   columnRange(cx: number, cz: number): ColumnRange | null {
     const resolved = resolveChunk(this.config, { cx, cy: 0, cz });

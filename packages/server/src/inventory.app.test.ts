@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import WebSocket from 'ws';
-import { BLOCK_VOLUME, FLAT_WORLD_16KM, FlatGenerator, HOTBAR_SLOTS, Material, PROTOCOL_VERSION, defaultFlatGen, type GameMode, type ServerMessage } from '@super-vox/shared';
+import { BLOCK_VOLUME, FLAT_WORLD_16KM, FlatGenerator, HOTBAR_SLOTS, Item, Material, PROTOCOL_VERSION, defaultFlatGen, type GameMode, type ServerMessage } from '@super-vox/shared';
 import { MemoryAccountStore } from './accounts.js';
 import { buildApp } from './app.js';
 import { Auth, SESSION_COOKIE, sessionToken } from './auth.js';
@@ -79,9 +79,10 @@ describe('inventories', () => {
     // Placing a 1 m stone block uses one.
     expect(await p.edit({ op: 'place', x: 1600, y: 0, z: 1600, size: 16, material: Material.Stone })).toMatchObject({ ok: true });
     expect(new Map(p.inventory()!.items).get(Material.Stone)).toBe(15 * B);
-    // Mining it back gives it back.
+    // Mining it back gives cobblestone, as mining stone does.
     expect(await p.edit({ op: 'remove', x: 1600, y: 0, z: 1600 })).toMatchObject({ ok: true });
-    expect(new Map(p.inventory()!.items).get(Material.Stone)).toBe(16 * B);
+    expect(new Map(p.inventory()!.items).get(Material.Stone)).toBe(15 * B);
+    expect(new Map(p.inventory()!.items).get(Material.Cobblestone)).toBe(B);
     // No sand, no water in survival.
     expect(await p.edit({ op: 'place', x: 1600, y: 0, z: 1600, size: 16, material: Material.Sand })).toEqual({
       type: 'editResult', id: 4, ok: false, error: 'not enough sand (have 0, need 1 blocks)',
@@ -117,6 +118,40 @@ describe('inventories', () => {
     expect(await p.edit({ op: 'place', x: 1600, y: 0, z: 1600, size: 16, material: Material.Sand })).toMatchObject({ ok: true });
     expect(await p.edit({ op: 'place', x: 1600, y: 256, z: 1600, size: 16, material: Material.Water })).toMatchObject({ ok: true });
     expect(p.msgs.filter((m) => m.type === 'inventory')).toHaveLength(1);
+    p.ws.close();
+  });
+
+  it('craft, with recipes that need a crafting table only near one', async () => {
+    const { url, cookie } = await setup('survival');
+    const p = await player(url, cookie);
+    await p.until(() => !!p.inventory());
+    const craft = async (recipe: string) => {
+      const n = p.msgs.length;
+      p.ws.send(JSON.stringify({ type: 'craft', recipe }));
+      await p.until(() => p.msgs.slice(n).some((m) => m.type === 'inventory' || (m.type === 'error' && m.code === 'craft')));
+      const reply = p.msgs.slice(n).find((m) => m.type === 'inventory' || m.type === 'error')!;
+      return reply.type === 'error' ? reply.message : null;
+    };
+    const have = (id: number) => new Map(p.inventory()!.items).get(id) ?? 0;
+    expect(await craft('planks')).toBeNull();
+    expect(await craft('planks')).toBeNull();
+    expect(have(Material.Planks)).toBe(8 * B);
+    expect(have(Material.Wood)).toBe(14 * B);
+    expect(await craft('sticks')).toBeNull();
+    expect(await craft('crafting-table')).toBeNull();
+    expect(have(Material.CraftingTable)).toBe(B);
+    // Standing over open ground: no table near.
+    p.ws.send(JSON.stringify({ type: 'pose', x: 1608, y: 40, z: 1608, yaw: 0 }));
+    expect(await craft('wooden-sword')).toBe('needs a crafting table nearby');
+    // Put the table down right there.
+    expect(await p.edit({ op: 'place', x: 1600, y: 0, z: 1600, size: 16, material: Material.CraftingTable })).toMatchObject({ ok: true });
+    expect(have(Material.CraftingTable)).toBe(0);
+    expect(await craft('wooden-sword')).toBeNull();
+    expect(have(Item.WoodenSword)).toBe(1);
+    // Walk 10 m away (with planks enough): out of reach again.
+    expect(await craft('planks')).toBeNull();
+    p.ws.send(JSON.stringify({ type: 'pose', x: 1608 + 160, y: 40, z: 1608, yaw: 0 }));
+    expect(await craft('wooden-sword')).toBe('needs a crafting table nearby');
     p.ws.close();
   });
 

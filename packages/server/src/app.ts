@@ -9,6 +9,9 @@ import {
   BinaryTag,
   EditError,
   columnSpans,
+  Material,
+  TABLE_REACH,
+  recipeById,
   creativeHotbar,
   mergeSpans,
   type ChunkCoord,
@@ -509,6 +512,21 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           send({ type: 'editResult', id: msg.id, ok: true });
           if (inventory?.apply(result.change)) send(inventory.message());
           broadcast(world, result);
+          break;
+        }
+
+        case 'craft': {
+          if (!inventory) {
+            send({ type: 'error', code: 'craft', message: 'sign in to craft' });
+            return;
+          }
+          // A crafting table within reach of where the player last said they were.
+          const pose = players.get(socket)?.pose;
+          const recipe = recipeById(msg.recipe);
+          const nearTable = !!recipe?.table && !!pose && world.materialNear(pose.x, pose.y, pose.z, TABLE_REACH, Material.CraftingTable);
+          const why = inventory.craft(msg.recipe, nearTable);
+          if (why) send({ type: 'error', code: 'craft', message: why });
+          else send(inventory.message());
           break;
         }
 

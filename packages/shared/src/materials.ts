@@ -23,6 +23,10 @@ export const Material = {
   Water: 17,
   /** Polar ice (round worlds' north and south edges). */
   Ice: 25,
+  /** Made by players (see recipes.ts). */
+  Planks: 26,
+  Cobblestone: 27,
+  CraftingTable: 28,
 } as const;
 
 /** Flowing water reaches this many blocks from its source. */
@@ -66,6 +70,9 @@ const MATERIAL_NAMES: Record<number, string> = {
   [Material.JungleLeaves]: 'jungle leaves',
   [Material.AcaciaLeaves]: 'acacia leaves',
   [Material.Ice]: 'ice',
+  [Material.Planks]: 'planks',
+  [Material.Cobblestone]: 'cobblestone',
+  [Material.CraftingTable]: 'crafting table',
 };
 
 export function materialName(m: MaterialId): string {

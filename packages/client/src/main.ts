@@ -105,7 +105,11 @@ const worldHours = () => (clock ? clockHours(clock, Date.now() + serverOffset) :
 applyLighting(lighting, worldHours(), atmosphere, lightingUniforms, view);
 /** L: sliders for the lighting (saved in this browser), and the world's time. */
 /** Hotbar and inventory screen (E); the server keeps what's in them (see InventoryUi). */
-const inventoryUi = new InventoryUi(document.body, (hotbar) => connection?.send({ type: 'setHotbar', hotbar }));
+const inventoryUi = new InventoryUi(
+  document.body,
+  (hotbar) => connection?.send({ type: 'setHotbar', hotbar }),
+  (recipe) => connection?.send({ type: 'craft', recipe }),
+);
 // Clicking back into the world (capturing the mouse) closes it.
 document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement) inventoryUi.close();
@@ -321,8 +325,11 @@ connection = connect({
             // Inventory: E opens and closes it (freeing the mouse to click), Esc closes it; 1-9 pick a hotbar slot.
             if (e.code === 'KeyE' || (e.code === 'Escape' && inventoryUi.isOpen)) {
               if (e.code === 'KeyE' && !inventoryUi.isOpen && controls.pointerLocked) document.exitPointerLock();
+              const closing = inventoryUi.isOpen;
               if (e.code === 'Escape') inventoryUi.close();
               else inventoryUi.toggle();
+              // Closed with E (a key press may capture the mouse; Esc may not): straight back to playing.
+              if (closing && e.code === 'KeyE' && !inventoryUi.isOpen) controls.requestPointerLock();
               return;
             }
             if (/^Digit[1-9]$/.test(e.code)) {
@@ -365,7 +372,7 @@ connection = connect({
             if (error) editTool?.say(error);
             updateHud();
           };
-          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool, water, compassRose };
+          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool, water, compassRose, inventoryUi };
           // Start loading now rather than on the first frame (frames pause in hidden tabs).
           updateLod(true);
         }
@@ -393,6 +400,10 @@ connection = connect({
         editTool?.onServerMessage(msg);
         break;
       case 'error':
+        if (msg.code === 'craft') {
+          inventoryUi.say(msg.message);
+          break;
+        }
         console.error(`[super-vox] server error ${msg.code}: ${msg.message}`);
         // Refused at hello (e.g. no such world), or the world was replaced or deleted while
         // playing: the server closes the connection, so keep the reason on screen.

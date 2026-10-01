@@ -1,11 +1,15 @@
 import {
+  ALL_ITEMS,
   HOTBAR_SLOTS,
-  PLACEABLE,
   canPlace,
+  cannotCraft,
+  craft,
   dropOf,
   formatBlocks,
+  isBlock,
   isWater,
-  materialName,
+  itemName,
+  recipeById,
   voxelVolume,
   type Edit,
   type GameMode,
@@ -34,11 +38,12 @@ export class PlayerInventory {
   /** Why `edit` isn't allowed (null if it is): placing what this mode doesn't allow, or more than you have. */
   refuse(edit: Edit): string | null {
     if (edit.op !== 'place') return null;
-    if (!canPlace(edit.material, this.mode)) return `${materialName(edit.material)} can't be placed${this.mode === 'survival' ? ' in survival' : ''}`;
+    if (!isBlock(edit.material)) return `a ${itemName(edit.material)} can't be placed yet`;
+    if (!canPlace(edit.material, this.mode)) return `${itemName(edit.material)} can't be placed${this.mode === 'survival' ? ' in survival' : ''}`;
     if (this.mode === 'creative') return null;
     const have = this.inv.items.get(edit.material) ?? 0;
     const need = voxelVolume(edit.size);
-    return have >= need ? null : `not enough ${materialName(edit.material)} (have ${formatBlocks(have)}, need ${formatBlocks(need)} blocks)`;
+    return have >= need ? null : `not enough ${itemName(edit.material)} (have ${formatBlocks(have)}, need ${formatBlocks(need)} blocks)`;
   }
 
   /** Survival: takes what an edit placed and gives what it removed (see EditResult.change). */
@@ -61,11 +66,26 @@ export class PlayerInventory {
     return changed;
   }
 
-  /** Rearranges the hotbar; why not (null if fine): only placeable materials go on it. */
+  /**
+   * Survival: makes a recipe (see RECIPES), `nearTable` saying whether a crafting table is within
+   * reach. Why not, if it can't be made (null if it was).
+   */
+  craft(recipeId: string, nearTable: boolean): string | null {
+    const recipe = recipeById(recipeId);
+    if (!recipe) return `no recipe "${recipeId}"`;
+    if (this.mode === 'creative') return 'nothing to make in creative: everything is already yours';
+    const why = cannotCraft(recipe, this.inv.items, nearTable);
+    if (why) return why;
+    craft(recipe, this.inv.items);
+    this.changed();
+    return null;
+  }
+
+  /** Rearranges the hotbar; why not (null if fine): anything a player can have goes on it. */
   setHotbar(hotbar: (MaterialId | null)[]): string | null {
     if (hotbar.length !== HOTBAR_SLOTS) return 'wrong number of hotbar slots';
-    const bad = hotbar.find((m) => m !== null && !PLACEABLE.includes(m));
-    if (bad !== undefined) return `${materialName(bad!)} can't go on the hotbar`;
+    const bad = hotbar.find((m) => m !== null && !ALL_ITEMS.includes(m));
+    if (bad !== undefined) return `${itemName(bad!)} can't go on the hotbar`;
     this.inv.hotbar.splice(0, HOTBAR_SLOTS, ...hotbar);
     this.changed();
     return null;

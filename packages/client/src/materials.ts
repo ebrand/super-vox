@@ -22,6 +22,9 @@ const COLORS: Record<number, readonly [number, number, number]> = {
   [Material.JungleLeaves]: [0.04, 0.22, 0.03],
   [Material.AcaciaLeaves]: [0.22, 0.3, 0.07],
   [Material.Ice]: [0.62, 0.74, 0.84],
+  [Material.Planks]: [0.45, 0.29, 0.13],
+  [Material.Cobblestone]: [0.22, 0.22, 0.23],
+  [Material.CraftingTable]: [0.33, 0.17, 0.07],
   // Water (drawn by its own shader; this is for places that show a flat colour).
   ...Object.fromEntries(Array.from({ length: MAX_FLOW + 1 }, (_, l) => [Material.Water + l, [0.05, 0.2, 0.3] as const])),
 };

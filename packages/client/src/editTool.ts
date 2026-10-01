@@ -8,7 +8,8 @@ import {
   blockIndex,
   blockVoxelContaining,
   breakSizesFor,
-  materialName,
+  isBlock,
+  itemName,
   nextBreakSize,
   type ClientMessage,
   type Edit,
@@ -207,7 +208,7 @@ export class EditTool {
   /** The material placements use (the selected hotbar slot), if any. */
   get material(): { id: MaterialId; name: string } | null {
     const id = this.materialOf();
-    return id === null ? null : { id, name: materialName(id) };
+    return id === null ? null : { id, name: itemName(id) };
   }
 
   /** Switches to the next mode (hybrid -> dig -> place -> hybrid). */
@@ -377,6 +378,10 @@ export class EditTool {
     const material = this.material;
     if (!material) {
       this.say('nothing in this hotbar slot (E: inventory)');
+      return;
+    }
+    if (!isBlock(material.id)) {
+      this.say(`a ${material.name} can't be placed yet`);
       return;
     }
     this.submit({ op: 'place', x, y, z, size, material: material.id }, 'place');

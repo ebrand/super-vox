@@ -183,6 +183,12 @@ the server (Postgres with sign-in, else memory):
   Grassy grounds give dirt, leaves give nothing (for now); water can't be placed yet.
 - **Creative:** everything placeable is unlimited.
 
+**Crafting** (in the inventory screen): 1 wood → 4 planks, 2 planks → 4 sticks, 4 planks → a
+crafting table; and, within 5 m of a placed crafting table, wooden and stone swords, fences,
+gates, doors and buckets (see `RECIPES`). Mining stone gives cobblestone. Items that aren't
+blocks (sticks, tools, ...) are counted whole; fences, gates, doors and buckets can't be placed
+or used yet.
+
 The hotbar (bottom of the screen) holds what you place: 1-9 pick a slot. E opens the inventory
 (survival: what you have; creative: everything); click a material to put it in the selected
 slot. The hotbar is kept with your inventory. Players who aren't signed in can't build, so they

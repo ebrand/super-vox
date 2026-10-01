@@ -102,6 +102,13 @@ describe('protocol', () => {
     expect(mergeSpans([])).toEqual([]);
   });
 
+  it('validates craft requests', () => {
+    expect(decodeClientMessage('{"type":"craft","recipe":"wooden-sword"}')).toEqual({ type: 'craft', recipe: 'wooden-sword' });
+    for (const raw of ['{"type":"craft"}', '{"type":"craft","recipe":5}', '{"type":"craft","recipe":"Bad Id"}', `{"type":"craft","recipe":"${'a'.repeat(65)}"}`]) {
+      expect(decodeClientMessage(raw)).toBeNull();
+    }
+  });
+
   it('validates hotbars', () => {
     const nine = [1, 2, null, null, null, null, null, null, 12];
     expect(decodeClientMessage(JSON.stringify({ type: 'setHotbar', hotbar: nine }))).toEqual({ type: 'setHotbar', hotbar: nine });

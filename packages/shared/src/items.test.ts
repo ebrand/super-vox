@@ -34,8 +34,8 @@ describe('items', () => {
     expect(volumeChange([before], [before])).toEqual(new Map());
   });
 
-  it('drop Minecraft-like: grassy grounds give dirt, leaves and water nothing', () => {
-    expect(dropOf(Material.Stone)).toBe(Material.Stone);
+  it('drop Minecraft-like: stone gives cobblestone, grassy grounds dirt, leaves and water nothing', () => {
+    expect(dropOf(Material.Stone)).toBe(Material.Cobblestone);
     expect(dropOf(Material.Grass)).toBe(Material.Dirt);
     expect(dropOf(Material.Tundra)).toBe(Material.Dirt);
     expect(dropOf(Material.Wood)).toBe(Material.Wood);

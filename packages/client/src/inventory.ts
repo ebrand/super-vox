@@ -1,18 +1,41 @@
 import {
+  ALL_ITEMS,
   HOTBAR_SLOTS,
-  PLACEABLE,
+  Item,
+  RECIPES,
+  cannotCraft,
   creativeHotbar,
-  formatBlocks,
-  materialName,
+  describeRecipe,
+  formatAmount,
+  isBlock,
+  itemName,
   type GameMode,
+  type ItemId,
   type MaterialId,
+  type Recipe,
   type ServerMessage,
 } from '@super-vox/shared';
 import { materialColor } from './materials.js';
 
 type InventoryMessage = Extract<ServerMessage, { type: 'inventory' }>;
 
-const css = (c: readonly [number, number, number]) => `rgb(${c.map((v) => Math.round(Math.min(1, v) * 255)).join(' ')})`;
+/** A linear-light colour (as the renderer keeps them) for CSS (sRGB). */
+const css = (c: readonly [number, number, number]) => `rgb(${c.map((v) => Math.round(Math.min(1, Math.max(0, v)) ** (1 / 2.2) * 255)).join(' ')})`;
+
+/** How items that aren't blocks look in slots: a colour and a glyph. */
+const ITEM_LOOK: Record<number, { color: readonly [number, number, number]; glyph: string }> = {
+  [Item.Stick]: { color: [0.2, 0.12, 0.06], glyph: '/' },
+  [Item.WoodenSword]: { color: [0.45, 0.29, 0.13], glyph: '†' },
+  [Item.StoneSword]: { color: [0.22, 0.22, 0.23], glyph: '†' },
+  [Item.Fence]: { color: [0.45, 0.29, 0.13], glyph: '#' },
+  [Item.Gate]: { color: [0.45, 0.29, 0.13], glyph: 'H' },
+  [Item.Door]: { color: [0.33, 0.17, 0.07], glyph: '▯' },
+  [Item.Bucket]: { color: [0.45, 0.29, 0.13], glyph: 'U' },
+};
+
+function colorOf(id: ItemId): string {
+  return css(isBlock(id) ? materialColor(id) : (ITEM_LOOK[id]?.color ?? [1, 0, 1]));
+}
 
 /**
  * The hotbar (bottom of the screen; 1-9 pick a slot) and the inventory screen (E): in survival,
@@ -29,11 +52,15 @@ export class InventoryUi {
   private readonly panel: HTMLElement;
   private readonly grid: HTMLElement;
   private readonly title: HTMLElement;
+  private readonly recipes: HTMLElement;
+  private readonly note: HTMLElement;
 
   constructor(
     parent: HTMLElement,
     /** Called when the hotbar is rearranged (to tell the server). */
-    private readonly onHotbar: (hotbar: (MaterialId | null)[]) => void,
+    private readonly onHotbar: (hotbar: (ItemId | null)[]) => void,
+    /** Called to make a recipe (the server answers with the new inventory, or why not). */
+    private readonly onCraft: (recipe: string) => void,
   ) {
     this.bar = document.createElement('div');
     this.bar.id = 'hotbar';
@@ -46,7 +73,13 @@ export class InventoryUi {
     hint.textContent = 'Click a material to put it in the selected hotbar slot (1-9 picks the slot). E or Esc closes.';
     this.grid = document.createElement('div');
     this.grid.className = 'grid';
-    this.panel.append(this.title, hint, this.grid);
+    const crafting = document.createElement('h3');
+    crafting.textContent = 'Crafting';
+    this.note = document.createElement('p');
+    this.note.className = 'note';
+    this.recipes = document.createElement('div');
+    this.recipes.className = 'recipes';
+    this.panel.append(this.title, hint, this.grid, crafting, this.note, this.recipes);
     parent.append(this.bar, this.panel);
     this.render();
   }
@@ -65,9 +98,14 @@ export class InventoryUi {
     return !this.bar.hidden;
   }
 
-  /** The material in the selected slot, if any. */
-  get material(): MaterialId | null {
+  /** What's in the selected slot, if anything (a material, or an item; see isBlock). */
+  get material(): ItemId | null {
     return this.hotbar[this.selected] ?? null;
+  }
+
+  /** Shows a line in the inventory (e.g. why something couldn't be made). */
+  say(text: string): void {
+    this.note.textContent = text;
   }
 
   /** How much of a material there is (survival; Infinity in creative). */
@@ -76,6 +114,7 @@ export class InventoryUi {
   }
 
   update(msg: InventoryMessage): void {
+    this.note.textContent = '';
     this.mode = msg.mode;
     this.items = new Map(msg.items);
     this.hotbar = Array.from({ length: HOTBAR_SLOTS }, (_, i) => msg.hotbar[i] ?? null);
@@ -100,8 +139,8 @@ export class InventoryUi {
 
   /** Materials the inventory screen lists. */
   private listed(): MaterialId[] {
-    if (this.mode === 'creative') return [...PLACEABLE];
-    return [...this.items.keys()].filter((m) => (this.items.get(m) ?? 0) > 0).sort((a, b) => PLACEABLE.indexOf(a) - PLACEABLE.indexOf(b));
+    if (this.mode === 'creative') return [...ALL_ITEMS];
+    return [...this.items.keys()].filter((m) => (this.items.get(m) ?? 0) > 0).sort((a, b) => ALL_ITEMS.indexOf(a) - ALL_ITEMS.indexOf(b));
   }
 
   private place(m: MaterialId): void {
@@ -115,12 +154,18 @@ export class InventoryUi {
     this.render();
   }
 
-  private swatch(m: MaterialId | null, amount: string): HTMLElement {
+  private swatch(m: ItemId | null, amount: string): HTMLElement {
     const el = document.createElement('div');
     el.className = 'swatch';
     if (m !== null) {
-      el.style.background = css(materialColor(m));
-      el.title = materialName(m);
+      el.style.background = colorOf(m);
+      el.title = itemName(m);
+      const glyph = ITEM_LOOK[m]?.glyph;
+      if (glyph) {
+        const g = document.createElement('b');
+        g.textContent = glyph;
+        el.append(g);
+      }
       const n = document.createElement('span');
       n.textContent = amount;
       el.append(n);
@@ -129,7 +174,7 @@ export class InventoryUi {
   }
 
   private render(): void {
-    const amountText = (m: MaterialId) => (this.mode === 'creative' ? '' : formatBlocks(this.items.get(m) ?? 0));
+    const amountText = (m: ItemId) => (this.mode === 'creative' ? '' : formatAmount(m, this.items.get(m) ?? 0));
     this.bar.replaceChildren(
       ...this.hotbar.map((m, i) => {
         const slot = document.createElement('div');
@@ -151,7 +196,7 @@ export class InventoryUi {
         item.className = 'item' + (this.hotbar[this.selected] === m ? ' current' : '');
         const label = document.createElement('div');
         label.className = 'label';
-        label.textContent = materialName(m) + (this.mode === 'creative' ? '' : ` · ${amountText(m)}`);
+        label.textContent = itemName(m) + (this.mode === 'creative' ? '' : ` · ${amountText(m)}`);
         item.append(this.swatch(m, ''), label);
         item.addEventListener('click', () => this.place(m));
         return item;
@@ -163,5 +208,26 @@ export class InventoryUi {
       none.textContent = 'Nothing yet: mine something.';
       this.grid.append(none);
     }
+    this.recipes.replaceChildren(...RECIPES.map((r) => this.recipeButton(r)));
+  }
+
+  /** A recipe, dimmed (with the reason) when you can't make it; the server has the last word. */
+  private recipeButton(recipe: Recipe): HTMLElement {
+    const b = document.createElement('button');
+    b.type = 'button';
+    // Whether a table is near is the server's to judge: here only the ingredients count.
+    const why = this.mode === 'creative' ? 'creative: everything is already yours' : cannotCraft(recipe, this.items, true);
+    b.className = 'recipe' + (why ? ' cant' : '');
+    const [out] = recipe.output;
+    const text = document.createElement('div');
+    text.className = 'label';
+    text.textContent = describeRecipe(recipe) + (recipe.table ? ' · at a crafting table' : '');
+    b.append(this.swatch(out, ''), text);
+    b.title = why ?? 'make it';
+    b.addEventListener('click', () => {
+      if (why) this.say(why);
+      else this.onCraft(recipe.id);
+    });
+    return b;
   }
 }
