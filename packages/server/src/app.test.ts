@@ -436,6 +436,42 @@ describe('named worlds', () => {
     for (const s of [home.ws, other.ws, again.ws]) s.close();
   });
 
+  it('reports players, traffic, worlds and errors on the dashboard (dev servers only)', async () => {
+    const { a, url } = await catalogApp();
+    const p = await hello(url, {});
+    expect(p.reply.type).toBe('welcome');
+    const frame = nextFrame(p.ws);
+    p.ws.send(JSON.stringify({ type: 'requestChunk', cx: 500, cy: -1, cz: 500 }));
+    await frame;
+    p.ws.send(JSON.stringify({ type: 'pose', x: 1600, y: 32, z: -48, yaw: 1.5 }));
+    const failed = nextMessage(p.ws);
+    p.ws.send(JSON.stringify({ type: 'edit', id: 7, edit: { op: 'remove', x: 0, y: 4000, z: 0 } }));
+    expect(await failed).toMatchObject({ type: 'editResult', ok: false });
+    await new Promise((r) => setTimeout(r, 1100)); // a sample
+    const res = await a.inject({ method: 'GET', url: '/api/dashboard' });
+    expect(res.statusCode).toBe(200);
+    const d = res.json();
+    expect(d.players).toHaveLength(1);
+    expect(d.players[0]).toMatchObject({ world: 'home', chunks: 1, pose: { x: 1600, y: 32, z: -48, yaw: 1.5 } });
+    expect(d.players[0].bytesOut).toBeGreaterThan(0);
+    expect(d.totals).toMatchObject({ chunksOut: 1, editErrors: 1 });
+    expect(d.totals.messagesIn).toBeGreaterThanOrEqual(4);
+    expect(d.errors.some((e: { kind: string; world?: string }) => e.kind === 'edit' && e.world === 'home')).toBe(true);
+    expect(d.history.length).toBeGreaterThanOrEqual(1);
+    expect(d.history.at(-1)).toMatchObject({ players: 1 });
+    expect(d.history.at(-1).rssMB).toBeGreaterThan(0);
+    const home = d.worlds.find((w: { name: string }) => w.name === 'home');
+    expect(home).toMatchObject({ default: true, open: true, players: 1, generation: { chunks: 1 } });
+    expect(home.clock.dayMinutes).toBe(24);
+    expect(d.worlds.find((w: { name: string }) => w.name === 'other')).toMatchObject({ open: false, players: 0 });
+    p.ws.close();
+  });
+
+  it('refuses the dashboard on production servers', async () => {
+    const { a } = await catalogApp(false);
+    expect((await a.inject({ method: 'GET', url: '/api/dashboard' })).statusCode).toBe(403);
+  });
+
   it('refuses clock changes on production servers', async () => {
     const { a } = await catalogApp(false);
     expect((await a.inject({ method: 'PUT', url: '/api/worlds/home/clock', payload: { hours: 3 } })).statusCode).toBe(403);

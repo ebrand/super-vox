@@ -9,11 +9,13 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
-      // The entry page, the game (/play.html), and the world generator (/generator.html).
+      // The entry page, the game (/play.html), the world generator (/generator.html) and the
+      // dashboard (/dashboard.html).
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         play: fileURLToPath(new URL('./play.html', import.meta.url)),
         generator: fileURLToPath(new URL('./generator.html', import.meta.url)),
+        dashboard: fileURLToPath(new URL('./dashboard.html', import.meta.url)),
       },
     },
   },

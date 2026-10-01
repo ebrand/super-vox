@@ -53,6 +53,12 @@ describe('protocol', () => {
     }
   });
 
+  it('validates poses', () => {
+    expect(decodeClientMessage('{"type":"pose","x":1.5,"y":-3,"z":200,"yaw":0.7,"extra":1}')).toEqual({ type: 'pose', x: 1.5, y: -3, z: 200, yaw: 0.7 });
+    expect(decodeClientMessage('{"type":"pose","x":1,"y":2,"z":3}')).toBeNull();
+    expect(decodeClientMessage('{"type":"pose","x":"1","y":2,"z":3,"yaw":0}')).toBeNull();
+  });
+
   it('validates edits and drops unknown fields', () => {
     expect(decodeClientMessage('{"type":"edit","id":7,"edit":{"op":"remove","x":1,"y":-2,"z":3,"evil":1}}')).toEqual({
       type: 'edit', id: 7, edit: { op: 'remove', x: 1, y: -2, z: 3 },

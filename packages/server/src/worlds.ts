@@ -1,3 +1,4 @@
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   DEFAULT_DAY_MINUTES,
@@ -44,6 +45,10 @@ export interface WorldCatalog {
   clock(name: string | undefined): DayClock | null;
   /** Changes a world's clock (now) and returns it; throws NoSuchWorldError. Absent where not allowed. */
   setClock?: (name: string, change: ClockChange) => DayClock;
+  /** Worlds open now (being played or recently asked for), by name. */
+  openWorlds(): { name: string; world: World }[];
+  /** Bytes of saved edits of world `name` on disk (0 if none or not kept on disk). */
+  diskBytes(name: string): number;
 }
 
 /** The server's offset from UTC in minutes (east positive), for real-time clocks. */
@@ -56,6 +61,8 @@ export function singleWorld(world: World, withTolerance?: (tolerance: number) =>
   let clock = defaultClock(Date.now(), dayMinutes, localUtcOffsetMinutes());
   return {
     clock: (n) => (n === undefined || n === name ? clock : null),
+    openWorlds: () => [{ name, world }],
+    diskBytes: () => 0,
     setClock: (n, change) => {
       if (n !== name) throw new NoSuchWorldError(`no world named "${n}"`);
       return (clock = applyClockChange(clock, change, Date.now()));
@@ -161,6 +168,24 @@ export class FileWorldCatalog implements WorldCatalog {
     }
     // A real-time clock follows the server's current time zone (daylight saving).
     return c.dayMinutes === 'real' ? { ...c, utcOffsetMinutes: localUtcOffsetMinutes() } : c;
+  }
+
+  openWorlds(): { name: string; world: World }[] {
+    return [...this.open].map(([name, o]) => ({ name, world: o.world }));
+  }
+
+  private readonly disk = new Map<string, { at: number; bytes: number }>();
+
+  diskBytes(name: string): number {
+    if (!isValidWorldName(name)) return 0;
+    // Summed at most every 10 s: worlds can have many chunk files.
+    const hit = this.disk.get(name);
+    if (hit && Date.now() - hit.at < 10_000) return hit.bytes;
+    let bytes = 0;
+    const dir = join(this.dataRoot, name, 'chunks');
+    if (existsSync(dir)) for (const f of readdirSync(dir)) bytes += statSync(join(dir, f)).size;
+    this.disk.set(name, { at: Date.now(), bytes });
+    return bytes;
   }
 
   list(): WorldSummary[] {

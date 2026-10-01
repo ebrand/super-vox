@@ -7,12 +7,14 @@ import {
   decodeClientMessage,
   encodeMessage,
   isValidWorldName,
+  clockHours,
   parseClockChange,
   parsePlateTerrain,
   type ServerMessage,
 } from '@super-vox/shared';
 import type { WebSocket } from 'ws';
 import { encodeWorldMap, type EditResult, type World } from './world.js';
+import { HISTORY, Metrics, percentile } from './metrics.js';
 import { NoSuchWorldError, WorldExistsError } from './worldFile.js';
 import { DefaultWorldError, singleWorld, type WorldCatalog } from './worlds.js';
 
@@ -27,6 +29,20 @@ export type AppOptions = (
       worldWithTolerance?: (tolerance: number) => World;
     }
 ) & { logger?: boolean };
+
+/** A connection, as the dashboard shows it. */
+interface Player {
+  id: number;
+  world: string;
+  connectedAt: number;
+  tolerance: number | null;
+  /** Last reported position (units) and heading, and when. */
+  pose: { x: number; y: number; z: number; yaw: number; at: number } | null;
+  chunks: number;
+  tiles: number;
+  edits: number;
+  bytesOut: number;
+}
 
 /** Time between water flow steps. */
 export const WATER_STEP_MS = 200;
@@ -59,6 +75,54 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const bytes = world.getEncodedClimate();
     if (!bytes) return reply.code(204).send();
     return reply.type('application/octet-stream').send(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  });
+
+  // Development only (no accounts yet): what the server and its worlds are doing, for the
+  // dashboard page. The history holds a sample per second for the last few minutes.
+  app.get('/api/dashboard', async (_req, reply) => {
+    if (!catalog.create) return reply.code(403).send({ error: 'the dashboard is not enabled on this server' });
+    const now = Date.now();
+    const open = new Map(catalog.openWorlds().map((o) => [o.name, o.world]));
+    const names = [...new Set([...catalog.list().map((w) => w.name), ...open.keys()])].sort();
+    const worlds = names.map((name) => {
+      const w = open.get(name);
+      const clock = catalog.clock(name);
+      const base = {
+        name,
+        default: name === catalog.defaultName,
+        open: !!w,
+        players: [...players.values()].filter((p) => p.world === name).length,
+        diskBytes: catalog.diskBytes(name),
+        clock: clock && { hours: clockHours(clock, now), dayMinutes: clock.dayMinutes, frozen: clock.frozen },
+      };
+      if (!w) return base;
+      const st = w.stats, cache = w.cacheUse;
+      const rate = (hits: number, misses: number) => (hits + misses ? hits / (hits + misses) : null);
+      return {
+        ...base,
+        editedChunks: w.editedChunkCount,
+        edits: st.edits,
+        cache: { ...cache, chunkHitRate: rate(st.chunkHits, st.chunkMisses), tileHitRate: rate(st.tileHits, st.tileMisses) },
+        generation: {
+          chunks: st.chunkMisses,
+          tiles: st.tileMisses,
+          chunkMs: { p50: percentile(st.recentChunkMs, 50), p95: percentile(st.recentChunkMs, 95) },
+          tileMs: { p50: percentile(st.recentTileMs, 50), p95: percentile(st.recentTileMs, 95) },
+        },
+        water: { pending: w.waterPending, steps: st.waterSteps, changes: st.waterChanges },
+      };
+    });
+    return {
+      now,
+      startedAt: metrics.startedAt,
+      protocolVersion: PROTOCOL_VERSION,
+      historySeconds: HISTORY,
+      totals: metrics.totals,
+      history: metrics.history,
+      worlds,
+      players: [...players.values()].map((p) => ({ ...p })),
+      errors: metrics.errors,
+    };
   });
 
   // The worlds on this server and how each was generated.
@@ -151,6 +215,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     return reply.code(204).send();
   });
 
+  const metrics = new Metrics();
+  /** Greeted connections, for monitoring. */
+  const players = new Map<WebSocket, Player>();
+  let nextPlayer = 1;
   /** Connected, greeted clients, the world each is viewing, and that world's name. */
   const clients = new Map<WebSocket, World>();
   const clientWorld = new Map<WebSocket, string>();
@@ -175,18 +243,35 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const columns = result.columns.map((c) => encodeMessage({ type: 'column', ...c }));
     for (const [client, w] of clients) {
       if (w !== world || client.readyState !== client.OPEN) continue;
-      for (const m of columns) client.send(m);
-      for (const f of frames) client.send(f);
+      for (const m of columns) out(client, m);
+      for (const f of frames) out(client, f);
+      metrics.totals.chunksOut += frames.length;
     }
   };
   // Water flows a step five times a second in worlds someone is in.
   const flowing = setInterval(() => {
     for (const world of new Set(clients.values())) {
+      const before = world.stats.waterChanges;
       const result = world.stepWater();
+      metrics.totals.waterChanges += world.stats.waterChanges - before;
       if (result) broadcast(world, result);
     }
   }, WATER_STEP_MS);
-  app.addHook('onClose', async () => clearInterval(flowing));
+  // Monitoring: a sample every second (see /api/dashboard).
+  const sampling = setInterval(() => metrics.tick(players.size), 1000);
+  app.addHook('onClose', async () => {
+    clearInterval(flowing);
+    clearInterval(sampling);
+    metrics.stop();
+  });
+  /** Sends to a client, counting the bytes. */
+  const out = (client: WebSocket, data: string | Uint8Array) => {
+    client.send(data);
+    const n = typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength;
+    metrics.totals.bytesOut += n;
+    const p = players.get(client);
+    if (p) p.bytesOut += n;
+  };
   const frame = (tag: number, bytes: Uint8Array) => {
     const f = new Uint8Array(1 + bytes.byteLength);
     f[0] = tag;
@@ -195,24 +280,29 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   };
 
   app.get('/ws', { websocket: true }, (socket) => {
-    const send = (msg: ServerMessage) => socket.send(encodeMessage(msg));
-    const sendBinary = (tag: number, bytes: Uint8Array) => socket.send(frame(tag, bytes));
+    const send = (msg: ServerMessage) => out(socket, encodeMessage(msg));
+    const sendBinary = (tag: number, bytes: Uint8Array) => out(socket, frame(tag, bytes));
     let greeted = false;
     let world: World;
     socket.on('close', () => {
       clients.delete(socket);
       clientWorld.delete(socket);
+      players.delete(socket);
     });
 
     socket.on('message', (data, isBinary) => {
+      metrics.totals.messagesIn++;
+      metrics.totals.bytesIn += Array.isArray(data) ? data.reduce((a, b) => a + b.byteLength, 0) : (data as Buffer | ArrayBuffer).byteLength;
       const msg = isBinary ? null : decodeClientMessage(data.toString());
       if (!msg) {
+        metrics.error('bad_message', 'malformed message', clientWorld.get(socket));
         send({ type: 'error', code: 'bad_message', message: 'malformed message' });
         return;
       }
       switch (msg.type) {
         case 'hello':
           if (msg.protocolVersion !== PROTOCOL_VERSION) {
+            metrics.error('protocol_mismatch', `client speaks protocol ${msg.protocolVersion}`);
             send({
               type: 'error',
               code: 'protocol_mismatch',
@@ -224,6 +314,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           {
             const w = catalog.get(msg.world, msg.tolerance);
             if (!w) {
+              metrics.error('unknown_world', `no world named "${msg.world}"`);
               send({ type: 'error', code: 'unknown_world', message: `no world named "${msg.world}"` });
               socket.close(1008, 'unknown world');
               return;
@@ -233,6 +324,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           greeted = true;
           clients.set(socket, world);
           clientWorld.set(socket, msg.world ?? catalog.defaultName);
+          players.set(socket, {
+            id: nextPlayer++, world: msg.world ?? catalog.defaultName, connectedAt: Date.now(), tolerance: world.tolerance,
+            pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
+          });
           send({
             type: 'welcome',
             protocolVersion: PROTOCOL_VERSION,
@@ -256,6 +351,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             return;
           }
           sendBinary(BinaryTag.Chunk, bytes);
+          metrics.totals.chunksOut++;
+          players.get(socket)!.chunks++;
           break;
         }
 
@@ -266,7 +363,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           }
           const bytes = world.getEncodedTile(msg);
           if (!bytes) send({ type: 'tileUnavailable', level: msg.level, tx: msg.tx, tz: msg.tz });
-          else sendBinary(BinaryTag.Tile, bytes);
+          else {
+            sendBinary(BinaryTag.Tile, bytes);
+            metrics.totals.tilesOut++;
+            players.get(socket)!.tiles++;
+          }
           break;
         }
 
@@ -280,9 +381,13 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             result = world.applyEdit(msg.edit);
           } catch (err) {
             if (!(err instanceof EditError)) throw err;
+            metrics.totals.editErrors++;
+            metrics.error('edit', err.message, clientWorld.get(socket));
             send({ type: 'editResult', id: msg.id, ok: false, error: err.message });
             return;
           }
+          metrics.totals.edits++;
+          players.get(socket)!.edits++;
           send({ type: 'editResult', id: msg.id, ok: true });
           broadcast(world, result);
           break;
@@ -295,6 +400,13 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           }
           const range = world.columnRange(msg.cx, msg.cz);
           send({ type: 'column', cx: msg.cx, cz: msg.cz, minY: range?.minY ?? null, maxY: range?.maxY ?? null });
+          metrics.totals.columnsOut++;
+          break;
+        }
+
+        case 'pose': {
+          const p = players.get(socket);
+          if (p) p.pose = { x: msg.x, y: msg.y, z: msg.z, yaw: msg.yaw, at: Date.now() };
           break;
         }
       }

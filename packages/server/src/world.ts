@@ -38,6 +38,28 @@ import {
 } from '@super-vox/shared';
 import type { ChunkStore } from './chunkStore.js';
 
+/** Running totals for monitoring a world. */
+export interface WorldStats {
+  chunkHits: number;
+  chunkMisses: number;
+  tileHits: number;
+  tileMisses: number;
+  /** How long the latest chunks and tiles not in the cache took to make (ms; the last RECENT). */
+  recentChunkMs: number[];
+  recentTileMs: number[];
+  edits: number;
+  waterSteps: number;
+  /** Blocks whose water changed. */
+  waterChanges: number;
+}
+
+const RECENT = 200;
+
+function recent(list: number[], v: number): void {
+  list.push(v);
+  if (list.length > RECENT) list.splice(0, list.length - RECENT);
+}
+
 /** 1 m blocks along a chunk's edge. */
 const BLOCKS_PER_CHUNK_AXIS = CHUNK_SIZE / BLOCK_SIZE;
 
@@ -98,6 +120,12 @@ export class World {
   readonly seaLevel: number | null;
   /** Water flowing after edits (see stepWater). */
   private readonly flow = new WaterFlow();
+  /** Running totals since the world was opened, for monitoring (see WorldStats). */
+  readonly stats: WorldStats = {
+    chunkHits: 0, chunkMisses: 0, tileHits: 0, tileMisses: 0,
+    recentChunkMs: [], recentTileMs: [],
+    edits: 0, waterSteps: 0, waterChanges: 0,
+  };
 
   constructor(
     readonly config: WorldConfig,
@@ -127,9 +155,15 @@ export class World {
     if (!resolved) return null;
     const key = chunkKey(resolved);
     const hit = lruGet(this.cache, key);
-    if (hit) return hit;
+    if (hit) {
+      this.stats.chunkHits++;
+      return hit;
+    }
+    const t0 = performance.now();
     const bytes = encodeChunk(this.edited.get(key) ?? this.generator.generateChunk(resolved));
     lruSet(this.cache, key, bytes, this.cacheSize);
+    this.stats.chunkMisses++;
+    recent(this.stats.recentChunkMs, performance.now() - t0);
     return bytes;
   }
 
@@ -142,6 +176,7 @@ export class World {
    */
   applyEdit(edit: Edit): EditResult {
     const result = this.applyEditOnly(edit);
+    this.stats.edits++;
     // Water around whatever changed may flow.
     const size = edit.op === 'place' || edit.op === 'removeBox' ? edit.size : 1;
     for (let by = edit.y >> 4; by <= (edit.y + size - 1) >> 4; by++)
@@ -186,6 +221,8 @@ export class World {
       },
       limit,
     );
+    this.stats.waterSteps++;
+    this.stats.waterChanges += changed.length;
     return changed.length ? this.commit([...working.values()]) : null;
   }
 
@@ -272,6 +309,11 @@ export class World {
     return { changes, columns: widened };
   }
 
+  /** Encoded chunks and tiles held in the caches, and how many each may hold. */
+  get cacheUse(): { chunks: number; tiles: number; capacity: number } {
+    return { chunks: this.cache.size, tiles: this.tileCache.size, capacity: this.cacheSize };
+  }
+
   get editedChunkCount(): number {
     return this.edited.size;
   }
@@ -290,7 +332,11 @@ export class World {
     if (!tileInWorld(this.config, t)) return null;
     const key = tileKey(t);
     const hit = lruGet(this.tileCache, key);
-    if (hit) return hit;
+    if (hit) {
+      this.stats.tileHits++;
+      return hit;
+    }
+    const t0 = performance.now();
     const size = tileSizeUnits(t.level);
     const step = tileStep(t.level);
     // Sample each cell at its centre column.
@@ -324,6 +370,8 @@ export class World {
     }
     const bytes = encodeTile({ ...t, heights, materials: s.materials, ...canopy, ...(water ? { water } : {}) });
     lruSet(this.tileCache, key, bytes, this.cacheSize);
+    this.stats.tileMisses++;
+    recent(this.stats.recentTileMs, performance.now() - t0);
     return bytes;
   }
 

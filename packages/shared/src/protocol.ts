@@ -4,7 +4,7 @@ import { isValidTileLevel } from './tile.js';
 import type { WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 15;
+export const PROTOCOL_VERSION = 16;
 
 export type ClientMessage =
   | {
@@ -24,7 +24,9 @@ export type ClientMessage =
   /** Ground height range of a chunk column; answered with a `column` message. */
   | { type: 'requestColumn'; cx: number; cz: number }
   /** A voxel edit; answered with `editResult`. `id` is chosen by the client to match the reply. */
-  | { type: 'edit'; id: number; edit: Edit };
+  | { type: 'edit'; id: number; edit: Edit }
+  /** Where the player is (world units) and faces (radians, 0 = -Z); sent a couple of times a second, not answered. */
+  | { type: 'pose'; x: number; y: number; z: number; yaw: number };
 
 export type ServerMessage =
   | {
@@ -116,6 +118,9 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   }
   if (msg.type === 'requestColumn' && isInt32(msg.cx) && isInt32(msg.cz)) {
     return { type: 'requestColumn', cx: msg.cx, cz: msg.cz };
+  }
+  if (msg.type === 'pose' && [msg.x, msg.y, msg.z, msg.yaw].every((v) => typeof v === 'number' && Number.isFinite(v))) {
+    return { type: 'pose', x: msg.x as number, y: msg.y as number, z: msg.z as number, yaw: msg.yaw as number };
   }
   if (msg.type === 'edit' && typeof msg.id === 'number' && Number.isInteger(msg.id) && msg.id >= 0 && msg.id < 2 ** 32) {
     const edit = decodeEdit(msg.edit);

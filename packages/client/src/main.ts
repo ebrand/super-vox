@@ -391,6 +391,19 @@ function updateHud(): void {
 
 let lastFrame = performance.now();
 
+// Tell the server where we are (for its dashboard), twice a second when we've moved. A timer, not
+// the render loop: frames stop in background tabs.
+let lastPose = '';
+setInterval(() => {
+  if (!world) return;
+  const p = camera.position;
+  const pose = { type: 'pose' as const, x: Math.round(p.x * UNITS_PER_METER), y: Math.round(p.y * UNITS_PER_METER), z: Math.round(p.z * UNITS_PER_METER), yaw: Math.round(controls.yaw * 1000) / 1000 };
+  const key = `${pose.x},${pose.y},${pose.z},${pose.yaw}`;
+  if (key === lastPose) return;
+  connection?.send(pose);
+  lastPose = key;
+}, 500);
+
 renderer.setAnimationLoop(() => {
   const frameStart = performance.now();
   // Movement and editing pause while the map is open.

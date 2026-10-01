@@ -209,6 +209,13 @@ falling all the way to the sea or a lake. Rivers cut a channel with a sand bed a
 it (banks rising at 0.3 out to ~100 m), and their and lakes' water is source water like the sea's.
 Distant terrain and the map show them as water over their beds.
 
+World dashboard (`/dashboard.html`, linked from the menu; development servers only, from
+`GET /api/dashboard`): live server health (CPU, memory, event loop delay, network), five minutes
+of charts (chunks and tiles sent, traffic, CPU, memory, edits and water changes per second),
+each world (players, clock, edited chunks and their size on disk, cache use and hit rates,
+generation times, water flow), the players (position and heading on the world's map, what
+they've loaded and sent) and recent errors. Players report their position twice a second.
+
 Day and night: each world has a clock kept by the server (saved in its world.json, so it
 carries on across restarts and terrain updates), a 24-minute day by default or real time (the
 server's clock and time zone). New worlds take `WORLD_DAY_MINUTES` (1..1440 or `real`, default
