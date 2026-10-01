@@ -1,9 +1,10 @@
+import type { DayClock } from './clock.js';
 import type { Edit } from './edit.js';
 import { isValidTileLevel } from './tile.js';
 import type { WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 12;
+export const PROTOCOL_VERSION = 13;
 
 export type ClientMessage =
   | {
@@ -36,7 +37,12 @@ export type ServerMessage =
       tolerance: number | null;
       /** Y (units) of the sea surface; null if the world has no sea. */
       seaLevel: number | null;
+      /** The world's time of day, and the server's time now (epoch ms) to read it against. */
+      clock: DayClock;
+      serverTime: number;
     }
+  /** The world's clock was changed (time set, stopped, or a new day length). */
+  | { type: 'clock'; clock: DayClock; serverTime: number }
   /** Reply to requestColumn. minY/maxY are null for columns outside the world. */
   | { type: 'column'; cx: number; cz: number; minY: number | null; maxY: number | null }
   /** Reply to requestTile for a tile entirely outside the world. */

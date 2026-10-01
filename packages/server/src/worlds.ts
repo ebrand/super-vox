@@ -1,8 +1,21 @@
 import { join } from 'node:path';
-import { FLAT_WORLD_16KM, TerrainGenerator, defaultVoxelize, isValidWorldName, type HeightSource, type PlateTerrainConfig, type WorldConfig } from '@super-vox/shared';
+import {
+  DEFAULT_DAY_MINUTES,
+  FLAT_WORLD_16KM,
+  TerrainGenerator,
+  applyClockChange,
+  defaultClock,
+  defaultVoxelize,
+  isValidWorldName,
+  type ClockChange,
+  type DayClock,
+  type HeightSource,
+  type PlateTerrainConfig,
+  type WorldConfig,
+} from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
 import { World } from './world.js';
-import { countEdits, createWorld, deleteWorld, generatorFor, listWorlds, readWorld, updateWorld, type WorldFile } from './worldFile.js';
+import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, listWorlds, readWorld, saveClock, updateWorld, type WorldFile } from './worldFile.js';
 
 /** What the HTTP API shows about a world. */
 export type WorldSummary = Pick<WorldFile, 'name' | 'createdAt' | 'updatedAt' | 'spec'> & {
@@ -27,11 +40,26 @@ export interface WorldCatalog {
   update?: (name: string, plates: PlateTerrainConfig) => WorldSummary;
   /** Deletes a world (never the default one: DefaultWorldError). */
   delete?: (name: string) => void;
+  /** World `name`'s clock (the default world when undefined), or null if there is no such world. */
+  clock(name: string | undefined): DayClock | null;
+  /** Changes a world's clock (now) and returns it; throws NoSuchWorldError. Absent where not allowed. */
+  setClock?: (name: string, change: ClockChange) => DayClock;
+}
+
+/** The server's offset from UTC in minutes (east positive), for real-time clocks. */
+export function localUtcOffsetMinutes(now = new Date()): number {
+  return -now.getTimezoneOffset();
 }
 
 /** A catalog of exactly one world (tests, and servers without a data directory). */
-export function singleWorld(world: World, withTolerance?: (tolerance: number) => World, name = 'default'): WorldCatalog {
+export function singleWorld(world: World, withTolerance?: (tolerance: number) => World, name = 'default', dayMinutes: number | 'real' = DEFAULT_DAY_MINUTES): WorldCatalog {
+  let clock = defaultClock(Date.now(), dayMinutes, localUtcOffsetMinutes());
   return {
+    clock: (n) => (n === undefined || n === name ? clock : null),
+    setClock: (n, change) => {
+      if (n !== name) throw new NoSuchWorldError(`no world named "${n}"`);
+      return (clock = applyClockChange(clock, change, Date.now()));
+    },
     defaultName: name,
     get: (n, tolerance) => {
       if (n !== undefined && n !== name) return null;
@@ -59,13 +87,24 @@ export class FileWorldCatalog implements WorldCatalog {
   readonly create?: (name: string, plates: PlateTerrainConfig) => WorldSummary;
   readonly update?: (name: string, plates: PlateTerrainConfig) => WorldSummary;
   readonly delete?: (name: string) => void;
+  readonly setClock?: (name: string, change: ClockChange) => DayClock;
+  private readonly clocks = new Map<string, DayClock>();
 
   constructor(
     private readonly dataRoot: string,
     readonly defaultName: string,
-    private readonly opts: { dev: boolean; config?: WorldConfig },
+    /** dayMinutes: the day length of worlds that don't have a clock yet. */
+    private readonly opts: { dev: boolean; config?: WorldConfig; dayMinutes?: number | 'real' },
   ) {
     if (opts.dev) {
+      this.setClock = (name, change) => {
+        const now = this.clock(name);
+        if (!now) throw new NoSuchWorldError(`no world named "${name}"`);
+        const next = applyClockChange(now, change, Date.now());
+        saveClock(this.dataRoot, name, next);
+        this.clocks.set(name, next);
+        return next;
+      };
       this.create = (name, plates) => this.summary(createWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize: defaultVoxelize() }));
       this.update = (name, plates) => {
         const old = readWorld(this.dataRoot, name);
@@ -79,6 +118,7 @@ export class FileWorldCatalog implements WorldCatalog {
         if (name === this.defaultName) throw new DefaultWorldError(`"${name}" is the server's default world and can't be deleted`);
         deleteWorld(this.dataRoot, name);
         this.open.delete(name);
+        this.clocks.delete(name);
       };
     }
   }
@@ -102,6 +142,25 @@ export class FileWorldCatalog implements WorldCatalog {
       o.variants.set(tolerance, (w = new World(config, gen, { tolerance, cacheSize: 1024 })));
     }
     return w;
+  }
+
+  clock(name: string | undefined): DayClock | null {
+    const n = name ?? this.defaultName;
+    if (!isValidWorldName(n)) return null;
+    let c = this.clocks.get(n);
+    if (!c) {
+      const file = readWorld(this.dataRoot, n);
+      if (!file) return null;
+      c = file.clock;
+      if (!c) {
+        // A world's first clock is saved, so its time carries on across restarts.
+        c = defaultClock(Date.now(), this.opts.dayMinutes ?? DEFAULT_DAY_MINUTES, localUtcOffsetMinutes());
+        saveClock(this.dataRoot, n, c);
+      }
+      this.clocks.set(n, c);
+    }
+    // A real-time clock follows the server's current time zone (daylight saving).
+    return c.dayMinutes === 'real' ? { ...c, utcOffsetMinutes: localUtcOffsetMinutes() } : c;
   }
 
   list(): WorldSummary[] {

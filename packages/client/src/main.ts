@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CHUNK_SIZE, UNITS_PER_METER, decodeClimate, isValidTolerance, unitsToMeters, type WorldConfig } from '@super-vox/shared';
+import { CHUNK_SIZE, UNITS_PER_METER, clockHours, decodeClimate, formatHours, isValidTolerance, unitsToMeters, type DayClock, type WorldConfig } from '@super-vox/shared';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool } from './editTool.js';
@@ -19,6 +19,21 @@ import { WorldMapOverlay } from './worldMap.js';
 import { solidAtFor } from './worldQuery.js';
 
 const statusEl = document.getElementById('status')!;
+/** I: shows or hides the info panel (remembered in this browser). */
+const INFO_KEY = 'super-vox.infoHidden';
+function setInfoVisible(visible: boolean): void {
+  statusEl.hidden = !visible;
+  try {
+    localStorage.setItem(INFO_KEY, visible ? '0' : '1');
+  } catch {
+    // Not remembered (e.g. storage blocked).
+  }
+}
+try {
+  statusEl.hidden = localStorage.getItem(INFO_KEY) === '1';
+} catch {
+  // Shown by default.
+}
 const params = new URLSearchParams(location.search);
 /** Numeric URL parameter clamped to [min, max]; missing or non-numeric values use the default. */
 function numberParam(name: string, fallback: number, min: number, max: number): number {
@@ -63,12 +78,37 @@ const material = createVoxelMaterial(atmosphere);
 /** Draws water over the rest of the scene, shading it from what lies behind. */
 const water = new WaterRenderer(renderer, atmosphere);
 const lightingUniforms = { aoStrength: material.uniforms.aoStrength!, exposure: material.uniforms.exposure! };
-applyLighting(loadLighting(), atmosphere, lightingUniforms, view);
-/** L: sliders for the lighting, applied live and saved in this browser. */
-const lightingPanel = new LightingPanel(loadLighting(), (l) => {
-  applyLighting(l, atmosphere, lightingUniforms, view);
-  saveLighting(l);
-});
+let lighting = loadLighting();
+/** The world's clock (from the server), and the server's clock minus ours (ms). */
+let clock: DayClock | null = null;
+let serverOffset = 0;
+const worldHours = () => (clock ? clockHours(clock, Date.now() + serverOffset) : 10);
+applyLighting(lighting, worldHours(), atmosphere, lightingUniforms, view);
+/** L: sliders for the lighting (saved in this browser), and the world's time. */
+const lightingPanel = new LightingPanel(
+  lighting,
+  (l) => {
+    lighting = l;
+    saveLighting(l);
+  },
+  {
+    read: () => (clock ? { hours: worldHours(), clock } : null),
+    change: async (c) => {
+      try {
+        const name = worldName ?? ((await (await fetch('/api/worlds')).json()) as { default: string }).default;
+        const res = await fetch(`/api/worlds/${encodeURIComponent(name)}/clock`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(c),
+        });
+        if (!res.ok) return ((await res.json().catch(() => null)) as { error?: string } | null)?.error ?? `failed (${res.status})`;
+        return null;
+      } catch (err) {
+        return String(err);
+      }
+    },
+  },
+);
 document.body.append(lightingPanel.root);
 
 /** Biome colours blend where the world's climate says so (no data: plain material colours). */
@@ -160,6 +200,8 @@ connection = connect({
             : '') +
           (toleranceWarning ? `\n${toleranceWarning}` : '') +
           `\ndetail ${detail} chunks, view ${view} m`;
+        clock = msg.clock;
+        serverOffset = msg.serverTime - Date.now();
         if (!chunks) {
           world = w;
           if (msg.seaLevel !== null) addSea(msg.seaLevel);
@@ -212,6 +254,10 @@ connection = connect({
               return;
             }
             if (worldMap?.isOpen) return;
+            if (e.code === 'KeyI') {
+              setInfoVisible(statusEl.hidden === true);
+              return;
+            }
             if (e.code === 'KeyL') {
               if (!lightingPanel.isOpen && controls.pointerLocked) document.exitPointerLock();
               lightingPanel.toggle();
@@ -253,6 +299,10 @@ connection = connect({
       }
       case 'column':
         chunks?.onColumn(msg);
+        break;
+      case 'clock':
+        clock = msg.clock;
+        serverOffset = msg.serverTime - Date.now();
         break;
       case 'chunkUnavailable':
         chunks?.onChunkUnavailable(msg);
@@ -308,13 +358,15 @@ function updateHud(): void {
   const mb = (b: number) => (b / 2 ** 20).toFixed(0);
   statusEl.textContent =
     `${worldLine || 'connecting…'}\n` +
-    `camera ${f.x.toFixed(1)}, ${f.y.toFixed(1)}, ${f.z.toFixed(1)} m, speed ${controls.speed.toFixed(0)} m/s\n` +
+    `camera ${f.x.toFixed(1)}, ${f.y.toFixed(1)}, ${f.z.toFixed(1)} m, speed ${controls.speed.toFixed(0)} m/s` +
+    (clock ? `, time ${formatHours(worldHours())}` : '') +
+    '\n' +
     (controls.pointerLocked ? 'mouse: look · Esc: release mouse' : 'click: capture mouse (or drag to look)') +
     (controls.walking
       ? controls.swimming ? ' · swimming: WASD move · Space: up · C: down' : ' · walking: WASD move · Space: jump'
       : ' · flying: WASD move · Space/E: up · Q/C: down') +
     ' · Shift: 5x · wheel: speed (⌘+wheel: voxel size)' +
-    ` · F: ${controls.walking ? 'fly' : 'walk'} · N: no-clip (${controls.collide ? 'off' : 'on'}) · M: map · L: lighting\n` +
+    ` · F: ${controls.walking ? 'fly' : 'walk'} · N: no-clip (${controls.collide ? 'off' : 'on'}) · M: map · L: lighting · I: hide info\n` +
     (editTool ? `${editTool.hudLines()}\n` : '') +
     (c && t
       ? `chunks ${c.loaded} loaded (${c.columns} columns), ${c.inFlight} in flight, ${c.queued} queued, ${c.meshing} meshing\n` +
@@ -338,6 +390,8 @@ renderer.setAnimationLoop(() => {
   if (!worldMap?.isOpen) editTool?.update();
   worldMap?.update();
   if (sea) sea.position.set(camera.position.x, sea.position.y, camera.position.z);
+  applyLighting(lighting, worldHours(), atmosphere, lightingUniforms, view);
+  lightingPanel.updateTime();
   atmosphere.uniforms.underwater.value = camera.position.y < atmosphere.uniforms.waterLevel.value ? 1 : 0;
   water.render(scene, camera);
 

@@ -128,6 +128,8 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
         // Below the water, light that reached down through it (red is lost first).
         if (vWorld.y < waterLevel) light *= exp(-WATER_ABSORB * 0.5 * (waterLevel - vWorld.y));
         vec3 rgb = base * light * exposure * (1.0 - 0.35 * line);
+        // Night vision: colour fades and shifts blue in the dark.
+        rgb = mix(rgb, vec3(dot(rgb, vec3(0.3, 0.5, 0.2))) * vec3(0.75, 0.9, 1.25), 0.7 * stars);
         gl_FragColor = vec4(applyHaze(rgb, vWorld), 1.0);
         #include <colorspace_fragment>
       }

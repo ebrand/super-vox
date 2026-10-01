@@ -10,9 +10,11 @@ import {
   defaultFlatGen,
   defaultNoiseTerrain,
   migratePlateTerrain,
+  parseClock,
   validatePlateTerrain,
   validateVoxelize,
   type ChunkGenerator,
+  type DayClock,
   type HeightSource,
   type PlateTerrainConfig,
   type VoxelizeConfig,
@@ -33,6 +35,8 @@ export interface WorldFile {
   /** When the spec was last replaced (which discards the world's edits). */
   updatedAt?: string;
   spec: WorldSpec;
+  /** The world's time of day (kept when the spec is replaced). */
+  clock?: DayClock;
 }
 
 export class WorldExistsError extends Error {}
@@ -66,6 +70,10 @@ export function readWorld(dataRoot: string, name: string): WorldFile | null {
   // Settings added (or renamed) after a world was created take their defaults.
   if (file.spec.generator === 'plates') file.spec.plates = migratePlateTerrain(file.spec.plates);
   validateWorldSpec(file.spec);
+  // A missing or broken clock: the server starts a new one.
+  const clock = parseClock(file.clock);
+  if (clock) file.clock = clock;
+  else delete file.clock;
   return file;
 }
 
@@ -100,11 +108,24 @@ export function updateWorld(dataRoot: string, name: string, spec: WorldSpec): Wo
   // Edits first: if this stops halfway, the world keeps its old terrain without edits, never
   // new terrain with old edits.
   rmSync(join(dir, 'chunks'), { recursive: true, force: true });
-  const file: WorldFile = { version: 1, name, createdAt: old.createdAt, updatedAt: new Date().toISOString(), spec };
+  const file: WorldFile = { version: 1, name, createdAt: old.createdAt, updatedAt: new Date().toISOString(), spec, ...(old.clock ? { clock: old.clock } : {}) };
+  writeWorldFile(dir, file);
+  return file;
+}
+
+function writeWorldFile(dir: string, file: WorldFile): void {
   const tmp = join(dir, 'world.json.tmp');
   writeFileSync(tmp, JSON.stringify(file, null, 2) + '\n');
   renameSync(tmp, join(dir, 'world.json'));
-  return file;
+}
+
+/** Saves world `name`'s clock. Throws NoSuchWorldError. */
+export function saveClock(dataRoot: string, name: string, clock: DayClock): WorldFile {
+  const file = readWorld(dataRoot, name);
+  if (!file) throw new NoSuchWorldError(`no world named "${name}"`);
+  const out = { ...file, clock };
+  writeWorldFile(join(dataRoot, name), out);
+  return out;
 }
 
 /** Deletes world `name` and its edits. Throws NoSuchWorldError. */

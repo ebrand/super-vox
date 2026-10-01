@@ -7,6 +7,7 @@ import {
   decodeClientMessage,
   encodeMessage,
   isValidWorldName,
+  parseClockChange,
   parsePlateTerrain,
   type ServerMessage,
 } from '@super-vox/shared';
@@ -106,6 +107,31 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     }
   });
 
+  // Development only: change a world's clock. Body: { dayMinutes?: minutes | "real", hours?: 0..24,
+  // frozen?: boolean }. Everyone in the world gets the new clock.
+  app.put<{ Params: { name: string }; Body: unknown }>('/api/worlds/:name/clock', async (req, reply) => {
+    if (!catalog.setClock) return reply.code(403).send({ error: 'changing the time is not enabled on this server' });
+    const { name } = req.params;
+    if (!isValidWorldName(name)) return reply.code(404).send({ error: 'no such world' });
+    let change;
+    try {
+      change = parseClockChange(req.body);
+    } catch (err) {
+      if (err instanceof RangeError) return reply.code(400).send({ error: err.message });
+      throw err;
+    }
+    let clock;
+    try {
+      clock = catalog.setClock(name, change);
+    } catch (err) {
+      if (err instanceof NoSuchWorldError) return reply.code(404).send({ error: err.message });
+      throw err;
+    }
+    const msg = encodeMessage({ type: 'clock', clock, serverTime: Date.now() });
+    for (const [client, n] of clientWorld) if (n === name && client.readyState === client.OPEN) client.send(msg);
+    return reply.send({ clock, serverTime: Date.now() });
+  });
+
   // Development only: delete a world and its edits (not the server's default world).
   app.delete<{ Params: { name: string } }>('/api/worlds/:name', async (req, reply) => {
     if (!catalog.delete) return reply.code(403).send({ error: 'changing worlds is not enabled on this server' });
@@ -190,6 +216,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             spawn: world.spawn,
             tolerance: world.tolerance,
             seaLevel: world.seaLevel,
+            clock: catalog.clock(msg.world)!,
+            serverTime: Date.now(),
           });
           break;
 

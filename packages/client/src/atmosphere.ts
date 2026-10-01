@@ -23,6 +23,9 @@ export interface Atmosphere {
     /** Height of the water surface (m; far below everything when there's none), and 1 while the camera is under water. */
     waterLevel: THREE.IUniform<number>;
     underwater: THREE.IUniform<number>;
+    /** Colour of the disc at sunDir (the sun, or the moon at night), and how many stars show (0..1). */
+    discColor: THREE.IUniform<THREE.Color>;
+    stars: THREE.IUniform<number>;
   };
 }
 
@@ -46,6 +49,8 @@ export function createAtmosphere(view: number, seaLevelM = 0): Atmosphere {
       viewDistance: { value: view },
       waterLevel: { value: -1e6 },
       underwater: { value: 0 },
+      discColor: { value: new THREE.Color(1, 0.97, 0.9) },
+      stars: { value: 0 },
     },
   };
 }
@@ -65,6 +70,8 @@ export const ATMOSPHERE_GLSL = /* glsl */ `
   uniform float viewDistance;
   uniform float waterLevel;
   uniform float underwater;
+  uniform vec3 discColor;
+  uniform float stars;
 
   // Water: light absorbed per metre (red first), and the colour of deep water lit from above
   // (darker the deeper the point it's seen from).
@@ -84,7 +91,18 @@ export const ATMOSPHERE_GLSL = /* glsl */ `
     vec3 c = mix(hazeColor(dir), zenithColor, 1.0 - exp(-16.0 * up * up));
     float s = max(dot(dir, sunDir), 0.0);
     // The sun's disc and a soft halo.
-    c += glowColor * (0.35 * pow(s, 64.0)) + vec3(1.0, 0.97, 0.9) * smoothstep(0.9993, 0.9996, s);
+    c += glowColor * (0.35 * pow(s, 64.0)) + discColor * smoothstep(0.99975, 0.9999, s);
+    // Stars: one in a few hundred cells of a fine grid over the sky, brightest overhead.
+    if (stars > 0.0 && dir.y > 0.0) {
+      vec3 p = dir * 260.0;
+      vec3 cell = floor(p);
+      float h = fract(sin(dot(cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      if (h > 0.996) {
+        vec3 centre = cell + 0.5 + 0.3 * (vec3(fract(h * 17.0), fract(h * 31.0), fract(h * 47.0)) - 0.5);
+        float d = length(p - centre);
+        c += vec3(0.9, 0.93, 1.0) * stars * smoothstep(0.45, 0.0, d) * (0.4 + 0.6 * fract(h * 97.0)) * smoothstep(0.0, 0.25, dir.y);
+      }
+    }
     return c;
   }
 

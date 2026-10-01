@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -115,6 +115,8 @@ describe('WebSocket handshake', () => {
       spawn: { x: 128_000, y: 0, z: 128_000 },
       tolerance: null,
       seaLevel: null,
+      clock: expect.objectContaining({ dayMinutes: 24, frozen: false }),
+      serverTime: expect.any(Number),
     });
     ws.close();
   });
@@ -402,6 +404,41 @@ describe('named worlds', () => {
     expect(invalid.json().error).toMatch(/landPercent/);
     expect(readWorld(root, 'bad')).toBeNull();
     await a.close();
+  });
+
+  it('sends the world clock on joining, and changes it for everyone in the world', async () => {
+    const { a, url, root } = await catalogApp();
+    const home = await hello(url, {});
+    const other = await hello(url, { world: 'other' });
+    if (home.reply.type !== 'welcome') throw new Error('expected welcome');
+    expect(home.reply.clock).toMatchObject({ dayMinutes: 24, frozen: false });
+    expect(Math.abs(home.reply.serverTime - Date.now())).toBeLessThan(5000);
+    const told = nextMessage(home.ws);
+    const res = await a.inject({ method: 'PUT', url: '/api/worlds/home/clock', payload: { hours: 21.5, frozen: true } });
+    expect(res.statusCode).toBe(200);
+    const msg = await told;
+    expect(msg).toMatchObject({ type: 'clock', clock: { hours: 21.5, frozen: true } });
+    // Saved with the world, and only its players are told.
+    expect(JSON.parse(readFileSync(join(root, 'home', 'world.json'), 'utf8')).clock).toMatchObject({ hours: 21.5, frozen: true });
+    let otherHeard = false;
+    other.ws.once('message', () => (otherHeard = true));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(otherHeard).toBe(false);
+    // Bad changes and unknown worlds.
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/home/clock', payload: { hours: 30 } })).statusCode).toBe(400);
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/nope/clock', payload: { hours: 3 } })).statusCode).toBe(404);
+    // Regenerating the terrain keeps the clock.
+    expect((await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'isle', plates: { seed: 2 } } })).statusCode).toBe(201);
+    await a.inject({ method: 'PUT', url: '/api/worlds/isle/clock', payload: { dayMinutes: 'real' } });
+    await a.inject({ method: 'PUT', url: '/api/worlds/isle', payload: { plates: { seed: 3 } } });
+    const again = await hello(url, { world: 'isle' });
+    expect(again.reply.type === 'welcome' && again.reply.clock.dayMinutes).toBe('real');
+    for (const s of [home.ws, other.ws, again.ws]) s.close();
+  });
+
+  it('refuses clock changes on production servers', async () => {
+    const { a } = await catalogApp(false);
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/home/clock', payload: { hours: 3 } })).statusCode).toBe(403);
   });
 
   it('serves the climate of worlds whose biomes blend, and nothing for the rest', async () => {

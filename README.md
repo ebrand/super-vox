@@ -186,9 +186,18 @@ Lighting: a warm sun (about 30 degrees up, low enough to shade the sides of thin
 bounced from the ground, with ambient occlusion darkening the corners and creases of nearby
 voxels (not of distant terrain). Haze thickens with distance and thins with height (peaks and
 high viewpoints see further), takes the sun's colour when looking toward it, and closes in fully
-at the view distance into a sky that matches it. **L** opens a lighting panel (sun height,
-direction, strength and warmth; sky light; ground bounce; corner shading; haze; exposure),
-applied live and saved in this browser.
+at the view distance into a sky that matches it. **L** opens a lighting panel (noon sun height
+and direction, sun strength and warmth; sky light; ground bounce; corner shading; haze;
+exposure), applied live and saved in this browser.
+
+Day and night: each world has a clock kept by the server (saved in its world.json, so it
+carries on across restarts and terrain updates), a 24-minute day by default or real time (the
+server's clock and time zone). New worlds take `WORLD_DAY_MINUTES` (1..1440 or `real`, default
+24). The sun rises in the east, crosses the noon direction at the noon height and sets in the
+west, reddening near the horizon with an orange sky at dusk; at night the moon (opposite the sun)
+gives a dim blue light, colours fade, and stars come out. Press **I** to hide or show the info panel. The lighting panel shows the time and,
+on development servers, sets it (`PUT /api/worlds/<name>/clock` with `hours`, `dayMinutes` or
+`frozen`); every player in the world sees the change.
 
 Editing has three modes; Tab cycles hybrid -> dig -> place (the overlay shows
 the current one). Aim with the crosshair (reach 32 m) while the mouse is

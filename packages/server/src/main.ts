@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { FLAT_WORLD_16KM, defaultPlateTerrain, defaultVoxelize } from '@super-vox/shared';
+import { DAY_MINUTES_LIMITS, DEFAULT_DAY_MINUTES, FLAT_WORLD_16KM, defaultPlateTerrain, defaultVoxelize } from '@super-vox/shared';
 import { buildApp } from './app.js';
 import { openWorld, type WorldSpec } from './worldFile.js';
 import { FileWorldCatalog } from './worlds.js';
@@ -84,7 +84,13 @@ const opened = openWorld(dataRoot, name, specForNewWorld());
 const spec = opened.file.spec;
 // Other worlds under dataRoot are served too (?world=name). In development, clients may ask for
 // other tolerances (?tolerance=N; those edits stay in memory) and new worlds can be created.
-const catalog = new FileWorldCatalog(dataRoot, name, { dev: process.env.NODE_ENV !== 'production', config: FLAT_WORLD_16KM });
+// Day length (real minutes per game day, or "real" for the server's clock) of worlds without a clock yet.
+const dayEnv = process.env.WORLD_DAY_MINUTES;
+const dayMinutes = dayEnv === undefined || dayEnv === '' ? DEFAULT_DAY_MINUTES : dayEnv === 'real' ? 'real' : Number(dayEnv);
+if (dayMinutes !== 'real' && !(dayMinutes >= DAY_MINUTES_LIMITS[0] && dayMinutes <= DAY_MINUTES_LIMITS[1])) {
+  throw new RangeError(`WORLD_DAY_MINUTES must be ${DAY_MINUTES_LIMITS[0]}..${DAY_MINUTES_LIMITS[1]} or "real"; got "${dayEnv}"`);
+}
+const catalog = new FileWorldCatalog(dataRoot, name, { dev: process.env.NODE_ENV !== 'production', config: FLAT_WORLD_16KM, dayMinutes });
 const world = catalog.get(name)!;
 const app = await buildApp({ catalog, logger: true });
 
