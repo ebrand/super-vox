@@ -81,6 +81,32 @@ async function greeted(): Promise<WebSocket> {
 }
 
 describe('HTTP', () => {
+  it('serves the built client, when given one, beside the API', async () => {
+    await app.close();
+    const dir = mkdtempSync(join(tmpdir(), 'super-vox-client-'));
+    try {
+      mkdirSync(join(dir, 'assets'));
+      writeFileSync(join(dir, 'index.html'), '<!doctype html><title>menu</title>');
+      writeFileSync(join(dir, 'play.html'), '<!doctype html><title>play</title>');
+      writeFileSync(join(dir, 'assets', 'main-abc123.js'), 'console.log(1)');
+      app = await buildApp({ world: new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4))), clientDir: dir });
+      const index = await app.inject({ method: 'GET', url: '/' });
+      expect(index.statusCode).toBe(200);
+      expect(index.body).toContain('menu');
+      expect(index.headers['cache-control']).toBe('no-cache');
+      const play = await app.inject({ method: 'GET', url: '/play.html?world=x' });
+      expect(play.body).toContain('play');
+      const js = await app.inject({ method: 'GET', url: '/assets/main-abc123.js' });
+      expect(js.statusCode).toBe(200);
+      expect(js.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+      expect((await app.inject({ method: 'GET', url: '/api/health' })).json()).toMatchObject({ ok: true });
+      expect((await app.inject({ method: 'GET', url: '/nope.html' })).statusCode).toBe(404);
+      expect((await app.inject({ method: 'GET', url: '/../package.json' })).statusCode).toBe(404);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reports health', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/health' });
     expect(res.statusCode).toBe(200);
@@ -228,12 +254,40 @@ describe('tiles and columns', () => {
     // Flat ground at 0: rendered layers -1..0, and one more either side to mesh against. Each
     // column's chunks come before the next column.
     expect(seen).toEqual([
-      { type: 'column', cx: 3, cz: 4, minY: 0, maxY: 0, sent: { lo: -2, hi: 1 } },
+      { type: 'column', cx: 3, cz: 4, minY: 0, maxY: 0, sent: [{ lo: -2, hi: 1 }] },
       { chunk: [3, -2, 4] }, { chunk: [3, -1, 4] }, { chunk: [3, 0, 4] }, { chunk: [3, 1, 4] },
       { type: 'column', cx: -3, cz: 4, minY: null, maxY: null },
-      { type: 'column', cx: 5, cz: 4, minY: 0, maxY: 0, sent: { lo: -2, hi: 1 } },
+      { type: 'column', cx: 5, cz: 4, minY: 0, maxY: 0, sent: [{ lo: -2, hi: 1 }] },
       { chunk: [5, -2, 4] }, { chunk: [5, -1, 4] }, { chunk: [5, 0, 4] }, { chunk: [5, 1, 4] },
     ]);
+    ws.close();
+  });
+
+  it('sends only the surface layers of a deep-sea column, and the ground within sight', async () => {
+    await app.close();
+    // Flat ground, but the columns say: sea floor 200 m (or, at cx 1, 50 m) under the surface at 0.
+    const gen = new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4));
+    Object.assign(gen, { columnRange: (cx: number) => ({ minY: (cx === 1 ? -60 : -215) * 16, maxY: 0, solidTop: (cx === 1 ? -50 : -200) * 16, water: { min: 0, max: 0 } }) });
+    app = await buildApp({ world: new World(FLAT_WORLD_16KM, gen) });
+    wsUrl = (await app.listen({ port: 0, host: '127.0.0.1' })).replace(/^http/, 'ws') + '/ws';
+    const ws = await greeted();
+    const columns: ServerMessage[] = [], chunks: number[][] = [];
+    ws.on('message', (data, isBinary) => {
+      if (!isBinary) columns.push(JSON.parse(String(data)) as ServerMessage);
+      else {
+        const c = decodeChunk(new Uint8Array(data as Buffer).subarray(1));
+        chunks.push([c.cx, c.cy]);
+      }
+    });
+    ws.send(JSON.stringify({ type: 'requestColumn', cx: 0, cz: 4 }));
+    ws.send(JSON.stringify({ type: 'requestColumn', cx: 1, cz: 4 }));
+    // Deep: surface layers -1..0 and one either side. 50-60 m: floor (layer -4) and surface, joined.
+    await until(() => chunks.length >= 4 + 7);
+    expect(columns).toEqual([
+      { type: 'column', cx: 0, cz: 4, minY: -215 * 16, maxY: 0, solidTop: -200 * 16, water: { min: 0, max: 0 }, sent: [{ lo: -2, hi: 1 }] },
+      { type: 'column', cx: 1, cz: 4, minY: -60 * 16, maxY: 0, solidTop: -50 * 16, water: { min: 0, max: 0 }, sent: [{ lo: -5, hi: 1 }] },
+    ]);
+    expect(chunks).toEqual([...[-2, -1, 0, 1].map((cy) => [0, cy]), ...[-5, -4, -3, -2, -1, 0, 1].map((cy) => [1, cy])]);
     ws.close();
   });
 

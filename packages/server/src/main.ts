@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DAY_MINUTES_LIMITS, DEFAULT_DAY_MINUTES, DEFAULT_WORLD_SHAPE, WORLD_SHAPES, defaultPlateTerrain, defaultVoxelize, isWorldShape, type WorldShape } from '@super-vox/shared';
 import { buildApp } from './app.js';
@@ -106,7 +108,10 @@ if (dayMinutes !== 'real' && !(dayMinutes >= DAY_MINUTES_LIMITS[0] && dayMinutes
 }
 const catalog = new FileWorldCatalog(dataRoot, name, { dev: process.env.NODE_ENV !== 'production', dayMinutes });
 const world = catalog.get(name)!;
-const app = await buildApp({ catalog, logger: true });
+// The built client, served at / (CLIENT_DIR, or in production packages/client/dist if built).
+const clientDir = process.env.CLIENT_DIR || (process.env.NODE_ENV === 'production' ? fileURLToPath(new URL('../../client/dist', import.meta.url)) : '');
+if (clientDir && !existsSync(join(clientDir, 'index.html'))) throw new Error(`no built client in ${clientDir} (npm run build)`);
+const app = await buildApp({ catalog, logger: true, ...(clientDir ? { clientDir } : {}) });
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {

@@ -1,9 +1,11 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
+import fastifyStatic from '@fastify/static';
 import {
   BinaryTag,
   EditError,
-  columnLayers,
+  columnSpans,
+  mergeSpans,
   type ChunkCoord,
   PROTOCOL_VERSION,
   decodeClientMessage,
@@ -34,7 +36,11 @@ export type AppOptions = (
        */
       worldWithTolerance?: (tolerance: number) => World;
     }
-) & { logger?: boolean };
+) & {
+  logger?: boolean;
+  /** Directory of the built client (packages/client/dist) to serve at /, if any. */
+  clientDir?: string;
+};
 
 /** A connection, as the dashboard shows it. */
 interface Player {
@@ -59,6 +65,17 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const catalog = 'catalog' in opts ? opts.catalog : singleWorld(opts.world, opts.worldWithTolerance);
 
   app.get('/api/health', async () => ({ ok: true, protocolVersion: PROTOCOL_VERSION }));
+
+  // The pages and their bundles, from the same address as /api and /ws (production).
+  if (opts.clientDir) {
+    await app.register(fastifyStatic, {
+      root: opts.clientDir,
+      // Bundles have content hashes in their names: cache them for good; pages, briefly.
+      setHeaders: (res, path) => {
+        res.header('cache-control', /[\\/]assets[\\/]/.test(path) ? 'public, max-age=31536000, immutable' : 'no-cache');
+      },
+    });
+  }
 
   // Top-down map of a world's generated terrain (see encodeWorldMap). ?width=64..2048 samples,
   // ?world=name (the default world when omitted).
@@ -392,12 +409,12 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             const { cx, cz } = msg;
             queue.add(`k:${cx},${cz}`, () => {
               const range = world.columnRange(cx, cz);
-              // The chunks the client renders, and those just above and below (it meshes against them).
-              const layers = range && columnLayers(range.minY, range.maxY);
-              const sent = layers && { lo: layers.lo - 1, hi: layers.hi + 1 };
-              send({ type: 'column', cx, cz, minY: range?.minY ?? null, maxY: range?.maxY ?? null, ...(sent ? { sent } : {}) });
+              // The chunks the client renders (from above the water), and those just above and
+              // below (it meshes against them).
+              const sent = range && mergeSpans(columnSpans(range).map((s) => ({ lo: s.lo - 1, hi: s.hi + 1 })));
+              send(range ? { type: 'column', cx, cz, ...range, sent: sent! } : { type: 'column', cx, cz, minY: null, maxY: null });
               metrics.totals.columnsOut++;
-              if (sent) for (let cy = sent.lo; cy <= sent.hi; cy++) queueChunk({ cx, cy, cz }, true);
+              for (const s of sent ?? []) for (let cy = s.lo; cy <= s.hi; cy++) queueChunk({ cx, cy, cz }, true);
             });
           }
           break;

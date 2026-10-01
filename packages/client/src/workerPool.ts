@@ -62,6 +62,11 @@ export class MeshWorkerPool {
     }
   }
 
+  /** Number of workers. */
+  get size(): number {
+    return this.workers.length;
+  }
+
   /** Jobs waiting or running. */
   get busy(): number {
     return this.waiting.length + this.running.size;

@@ -148,12 +148,24 @@ export interface ChunkGenerator {
     /** River and lake surfaces over the ground (NO_WATER where none), or null for none. */
     water?: Int32Array | null;
   };
-  /** Lowest and highest ground height (units) over every column of chunk column (cx, cz). */
-  columnRange(cx: number, cz: number): { minY: number; maxY: number };
+  /** Height range (units) of what's in chunk column (cx, cz): see ColumnRange. */
+  columnRange(cx: number, cz: number): ColumnRange;
   /** Y (units) of the sea surface, or null for worlds without a sea. */
   readonly seaLevel: number | null;
   /** The climate for blending biome colours, or null where biomes don't blend. */
   climate?(): ClimateGrid | null;
+}
+
+/**
+ * What a chunk column holds, in units: everything (ground, trees, water) lies within [minY, maxY].
+ * Where there is water over the ground, `water` spans its surfaces and `solidTop` is the top of
+ * everything that isn't water; chunks between the two hold only water.
+ */
+export interface ColumnRange {
+  minY: number;
+  maxY: number;
+  solidTop?: number;
+  water?: { min: number; max: number };
 }
 
 export interface Chunk extends ChunkCoord {

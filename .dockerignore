@@ -1,0 +1,12 @@
+# Never in an image: credentials and local worlds.
+auth
+data
+.env
+.env.*
+# Rebuilt inside the image.
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+.git
+.DS_Store
+docs

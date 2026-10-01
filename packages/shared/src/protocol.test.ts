@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_CANCEL, PROTOCOL_VERSION, columnLayers, decodeClientMessage, encodeMessage } from './protocol.js';
+import { MAX_CANCEL, PROTOCOL_VERSION, SEE_DEPTH, columnLayers, columnSpans, decodeClientMessage, encodeMessage, mergeSpans } from './protocol.js';
 
 describe('protocol', () => {
   it('round-trips hello', () => {
@@ -74,6 +74,32 @@ describe('protocol', () => {
     // Ground from 20 m to just under 47 m: layers 1 to 2; from 47 m (within 1 m of layer 3), 3 too.
     expect(columnLayers(20 * 16, 47 * 16 - 1)).toEqual({ lo: 1, hi: 2 });
     expect(columnLayers(20 * 16, 47 * 16)).toEqual({ lo: 1, hi: 3 });
+  });
+
+  it('renders the water surface and only the ground within sight below it', () => {
+    const m = 16; // units per metre
+    expect(SEE_DEPTH).toBe(96 * m);
+    // Dry land: the whole range.
+    expect(columnSpans({ minY: 20 * m, maxY: 30 * m })).toEqual([columnLayers(20 * m, 30 * m)]);
+    // Shallow sea: floor and surface in one.
+    expect(columnSpans({ minY: -20 * m, maxY: 0, solidTop: -18 * m, water: { min: 0, max: 0 } })).toEqual([{ lo: -2, hi: 0 }]);
+    // Deep sea (floor 200 m down): just the surface.
+    expect(columnSpans({ minY: -215 * m, maxY: 0, solidTop: -200 * m, water: { min: 0, max: 0 } })).toEqual([{ lo: -1, hi: 0 }]);
+    // A slope from 150 m to 50 m down: the part above 96 m down, and the surface.
+    const slope = { minY: -150 * m, maxY: 0, solidTop: -50 * m, water: { min: 0, max: 0 } };
+    expect(columnSpans(slope)).toEqual([{ lo: -7, hi: -4 }, { lo: -1, hi: 0 }]);
+    expect(columnSpans(slope, 40 * m)).toEqual(columnSpans(slope)); // above the water: the same
+    // Swimming 150 m down: all of the slope (within 96 m of us), our own layer, and the surface.
+    expect(columnSpans(slope, -150 * m)).toEqual([{ lo: -10, hi: -4 }, { lo: -1, hi: 0 }]);
+    // Swimming 30 m down over the deep sea: our layer too (nothing else to draw there).
+    expect(columnSpans({ minY: -215 * m, maxY: 0, solidTop: -200 * m, water: { min: 0, max: 0 } }, -30 * m)).toEqual([{ lo: -2, hi: 0 }]);
+    // An islet (solid above the water): everything.
+    expect(columnSpans({ minY: -150 * m, maxY: 12 * m, solidTop: 12 * m, water: { min: 0, max: 0 } })).toEqual([{ lo: -7, hi: 0 }]);
+  });
+
+  it('merges spans that overlap or touch', () => {
+    expect(mergeSpans([{ lo: 5, hi: 6 }, { lo: -1, hi: 0 }, { lo: 1, hi: 2 }, { lo: 6, hi: 9 }])).toEqual([{ lo: -1, hi: 2 }, { lo: 5, hi: 9 }]);
+    expect(mergeSpans([])).toEqual([]);
   });
 
   it('validates poses', () => {

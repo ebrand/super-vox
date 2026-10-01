@@ -8,6 +8,7 @@ import {
   type Block,
   type Chunk,
   type ChunkGenerator,
+  type ColumnRange,
 } from './chunk.js';
 import { Material, type MaterialId } from './materials.js';
 import type { VoxelSize } from './units.js';
@@ -93,7 +94,7 @@ export class FlatGenerator implements ChunkGenerator {
     };
   }
 
-  columnRange(): { minY: number; maxY: number } {
+  columnRange(): ColumnRange {
     return { minY: this.gen.surfaceY, maxY: this.gen.surfaceY };
   }
 

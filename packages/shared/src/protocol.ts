@@ -1,10 +1,12 @@
 import type { DayClock } from './clock.js';
 import type { Edit } from './edit.js';
 import { isValidTileLevel } from './tile.js';
+import type { ColumnRange } from './chunk.js';
+import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 17;
+export const PROTOCOL_VERSION = 18;
 
 export type ClientMessage =
   | {
@@ -54,11 +56,21 @@ export type ServerMessage =
   /** The world's clock was changed (time set, stopped, or a new day length). */
   | { type: 'clock'; clock: DayClock; serverTime: number }
   /**
-   * A column's ground height range; minY/maxY are null for columns outside the world. In reply to
-   * requestColumn, `sent` names the chunk layers (inclusive) the server sends next; a column sent
-   * for another reason (an edit changed it) has none.
+   * What a column holds (see ColumnRange); minY/maxY are null for columns outside the world. In
+   * reply to requestColumn, `sent` names the chunk layers (inclusive spans) the server sends next:
+   * those columnSpans renders from above the water, and one either side. A column sent for another
+   * reason (an edit changed it) has none.
    */
-  | { type: 'column'; cx: number; cz: number; minY: number | null; maxY: number | null; sent?: { lo: number; hi: number } }
+  | {
+      type: 'column';
+      cx: number;
+      cz: number;
+      minY: number | null;
+      maxY: number | null;
+      solidTop?: number;
+      water?: { min: number; max: number };
+      sent?: Span[];
+    }
   /** Reply to requestTile for a tile entirely outside the world. */
   | { type: 'tileUnavailable'; level: number; tx: number; tz: number }
   /** Reply to requestChunk for a chunk outside the world. */
@@ -106,6 +118,48 @@ export const MAX_CANCEL = 4096;
  */
 export function columnLayers(minY: number, maxY: number): { lo: number; hi: number } {
   return { lo: Math.floor((minY - 17) / CHUNK_SIZE), hi: Math.floor((maxY + 16) / CHUNK_SIZE) };
+}
+
+/** Inclusive range of chunk layers. */
+export interface Span {
+  lo: number;
+  hi: number;
+}
+
+/**
+ * How far down through water (units) the ground is worth drawing: light from deeper is all but
+ * absorbed (about 1% left in blue, the clearest; see WATER_ABSORB) whether seen from above the
+ * surface or swimming.
+ */
+export const SEE_DEPTH = 96 * UNITS_PER_METER;
+
+/**
+ * The chunk layers to render for a column (sorted, disjoint spans), seen from height `viewY`
+ * (units; above all water when omitted): the water's surface, the ground down to SEE_DEPTH below
+ * the water or the viewer, whichever is lower, and, under water, the layer the viewer is in.
+ * Chunks holding only deeper water or water between the two are skipped: they draw nothing.
+ */
+export function columnSpans(range: ColumnRange, viewY?: number): Span[] {
+  const { minY, maxY, solidTop, water } = range;
+  if (!water || solidTop === undefined) return [columnLayers(minY, maxY)];
+  const spans: Span[] = [];
+  const under = viewY !== undefined && viewY < water.max;
+  const cutoff = Math.min(water.min, under ? viewY : Infinity) - SEE_DEPTH;
+  if (solidTop >= cutoff) spans.push(columnLayers(Math.max(minY, cutoff), solidTop));
+  spans.push(columnLayers(water.min, water.max));
+  if (under && viewY > minY) spans.push(columnLayers(viewY, viewY));
+  return mergeSpans(spans);
+}
+
+/** Sorts spans and joins those that overlap or touch. */
+export function mergeSpans(spans: Span[]): Span[] {
+  const out: Span[] = [];
+  for (const s of [...spans].sort((a, b) => a.lo - b.lo)) {
+    const last = out[out.length - 1];
+    if (last && s.lo <= last.hi + 1) last.hi = Math.max(last.hi, s.hi);
+    else out.push({ ...s });
+  }
+  return out;
 }
 
 function isInt32(v: unknown): v is number {

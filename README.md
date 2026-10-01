@@ -13,6 +13,8 @@ voxel can be broken into smaller voxels whose size evenly divides its own.
 detail distance (full-detail radius in 16 m chunks, default 4), view distance (default 2048 m)
 and terrain tolerance (the world's own by default; development servers only). URL parameters on
 the game page override them for one visit: `?detail=N`, `?view=M`, `?tolerance=N`.
+`?workers=N` sets the number of mesh workers (default: up to 4; the HUD shows
+how many and their average time per chunk).
 
 ## Voxel rules
 
@@ -286,6 +288,10 @@ the full-detail area, doubling in size with distance up to 1 km. A tile is a
 edges to hide cracks between levels. For full-detail chunk columns the server
 reports each column's exact ground height range, so only chunk layers that
 contain the surface are loaded.
+Over water it also reports the water's surfaces and the top of everything solid:
+chunks holding only water draw nothing, so only the surface is loaded, plus the
+ground within 96 m below the water (deeper, it's too dark to see) or, while
+swimming, below you, and the layer you're in.
 
 Streaming: a column's reply is followed by its chunks (the layers it names in
 `sent`), so the client needn't ask for each; it keeps only a few columns in
@@ -339,4 +345,26 @@ npm run dev:client   # http://localhost:5173 (proxies /api and /ws)
 npm test
 npm run typecheck
 npm run build
+```
+
+## Deploying (Railway)
+
+One service runs everything: the `Dockerfile` builds all three packages and starts the
+server in production mode, which also serves the built pages (so `/`, `/api` and `/ws`
+share an address). `railway.toml` points Railway at the Dockerfile and health-checks
+`/api/health`.
+
+- **Volume:** mount one at `/data` (`WORLD_DATA_DIR`); worlds and their edits live there.
+  Without it, every deploy starts a fresh world.
+- **Production mode** (`NODE_ENV=production`, set by the image): no world creation or
+  deletion, no clock changes, no dashboard, and `?tolerance` is ignored. Anyone with the
+  address can still play and edit voxels.
+- **First start** creates the default world from the `WORLD_*` settings (64 x 32 km round,
+  1/4 m tolerance by default); later starts reuse it. It takes several seconds to build
+  and about 300 MB of memory.
+- `auth/` (credentials) and `data/` are excluded from the image by `.dockerignore`.
+
+```sh
+docker build -t super-vox .
+docker run -p 8787:8787 -v super-vox-data:/data super-vox   # http://localhost:8787
 ```

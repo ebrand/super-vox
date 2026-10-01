@@ -29,6 +29,7 @@ import {
   tileSizeUnits,
   tileStep,
   type Chunk,
+  type ColumnRange,
   type Edit,
   type TileCoord,
   type ChunkCoord,
@@ -95,7 +96,7 @@ export function encodeWorldMap(m: WorldMap): Uint8Array {
 /** What an edit changed: the new chunks, and columns whose height range widened. */
 export interface EditResult {
   changes: { coord: ChunkCoord; bytes: Uint8Array }[];
-  columns: { cx: number; cz: number; minY: number; maxY: number }[];
+  columns: ({ cx: number; cz: number } & ColumnRange)[];
 }
 
 /**
@@ -288,7 +289,7 @@ export class World {
 
   /** Stores, caches, and saves edited chunks; reports widened column ranges. */
   private commit(chunks: Chunk[]): EditResult {
-    const columns = new Map<string, { cx: number; cz: number; before: { minY: number; maxY: number } | null }>();
+    const columns = new Map<string, { cx: number; cz: number; before: ColumnRange | null }>();
     for (const c of chunks) {
       const k = `${c.cx},${c.cz}`;
       if (!columns.has(k)) columns.set(k, { cx: c.cx, cz: c.cz, before: this.columnRange(c.cx, c.cz) });
@@ -304,7 +305,7 @@ export class World {
     const widened: EditResult['columns'] = [];
     for (const { cx, cz, before } of columns.values()) {
       const after = this.columnRange(cx, cz)!;
-      if (!before || after.minY !== before.minY || after.maxY !== before.maxY) widened.push({ cx, cz, ...after });
+      if (!before || after.minY !== before.minY || after.maxY !== before.maxY || after.solidTop !== before.solidTop) widened.push({ cx, cz, ...after });
     }
     return { changes, columns: widened };
   }
@@ -376,12 +377,19 @@ export class World {
   }
 
   /** Ground height range of a chunk column, or null outside the world. */
-  columnRange(cx: number, cz: number): { minY: number; maxY: number } | null {
+  columnRange(cx: number, cz: number): ColumnRange | null {
     const resolved = resolveChunk(this.config, { cx, cy: 0, cz });
     if (!resolved) return null;
     const range = this.generator.columnRange(resolved.cx, resolved.cz);
     const span = this.editSpans.get(`${resolved.cx},${resolved.cz}`);
-    return span ? { minY: Math.min(range.minY, span.minY), maxY: Math.max(range.maxY, span.maxY) } : range;
+    if (!span) return range;
+    // Edited layers count as solid: whatever was built (or flowed) there is drawn.
+    const out: ColumnRange = { minY: Math.min(range.minY, span.minY), maxY: Math.max(range.maxY, span.maxY) };
+    if (range.water && range.solidTop !== undefined) {
+      out.solidTop = Math.max(range.solidTop, span.maxY);
+      out.water = { ...range.water };
+    }
+    return out;
   }
 
   private climateBytes: Uint8Array | null | undefined;

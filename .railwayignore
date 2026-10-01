@@ -1,0 +1,7 @@
+# Never uploaded by `railway up`: credentials and local worlds.
+auth/
+data/
+.env
+.env.*
+node_modules/
+**/dist/

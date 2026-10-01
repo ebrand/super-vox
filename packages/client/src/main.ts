@@ -56,6 +56,8 @@ const toleranceWarning =
   requestedTolerance !== undefined && !isValidTolerance(requestedTolerance)
     ? `ignoring tolerance ${toleranceParam} (use an integer 0..16)`
     : '';
+/** ?workers=N: mesh workers (1..16) instead of the default (up to 4, leaving a core free). */
+const workers = params.has('workers') ? Math.round(numberParam('workers', 4, 1, 16)) : undefined;
 /** ?world=name: which of the server's worlds to join (its default when omitted). */
 const worldName = params.get('world') ?? undefined;
 let joinError = '';
@@ -243,7 +245,7 @@ connection = connect({
           controls.lookAt(spawn);
           controls.minY = unitsToMeters(w.minYUnits) + 1;
           const send = (m: Parameters<NonNullable<typeof connection>['send']>[0]) => connection?.send(m);
-          pool = new MeshWorkerPool();
+          pool = workers === undefined ? new MeshWorkerPool() : new MeshWorkerPool(workers);
           chunks = new ChunkManager(w, scene, material, voxelWater, send, pool, 64, onProgress);
           const waterAt = waterAtFor(chunks);
           inWaterAt = (x, y, z) => waterAt(x * UNITS_PER_METER, y * UNITS_PER_METER, z * UNITS_PER_METER) ?? y < atmosphere.uniforms.waterLevel.value;
@@ -409,6 +411,7 @@ function updateHud(): void {
     (c && t
       ? `chunks ${c.loaded} loaded (${c.columns} columns), ${c.inFlight} in flight, ${c.queued} queued, ${c.meshing} meshing\n` +
         `tiles ${t.loaded}/${t.tiles}, ${t.inFlight} in flight, ${t.queued} queued, ${t.meshing} meshing\n` +
+        (pool ? `meshing on ${pool.size} workers, ${pool.averageMs.toFixed(1)} ms per job\n` : '') +
         `tris ${c.triangles} near + ${t.triangles} far, ~${mb(c.gpuBytes + t.gpuBytes)} MB GPU` +
         (c.errors + t.errors ? `, ${c.errors + t.errors} errors` : '') +
         (settledMs !== null ? `\nsettled in ${(settledMs / 1000).toFixed(2)} s` : '') +
@@ -438,6 +441,7 @@ renderer.setAnimationLoop(() => {
   if (!worldMap?.isOpen) controls.update((frameStart - lastFrame) / 1000);
   lastFrame = frameStart;
   trackVelocity(frameStart);
+  chunks?.setViewY(camera.position.y * UNITS_PER_METER);
   updateLod();
   if (!worldMap?.isOpen) editTool?.update();
   compassRose.update(controls.yaw);

@@ -90,7 +90,7 @@ describe('streaming', () => {
     const { cm, sent } = streaming();
     cm.setRegion([{ cx: 0, cz: 5 }], 0, 5 * CHUNK_SIZE);
     // Ground between 0 and 1 m: layers -1..0 rendered, -2..1 sent.
-    cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 16, sent: { lo: -2, hi: 1 } });
+    cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 16, sent: [{ lo: -2, hi: 1 }] });
     expect(sent.filter((m) => m.type === 'requestChunk')).toEqual([]);
     expect(cm.stats.inFlight).toBe(4);
     for (const cy of [-2, -1, 0, 1]) cm.onChunkBytes(chunkBytes(0, cy, 5));
@@ -101,12 +101,31 @@ describe('streaming', () => {
   it("asks for neighbouring chunks only once their column is known, and only those it doesn't send", () => {
     const { cm, sent } = streaming();
     cm.setRegion([{ cx: 0, cz: 5 }, { cx: 1, cz: 5 }], 0, 5 * CHUNK_SIZE);
-    cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 16, sent: { lo: -2, hi: 1 } }); // renders -1..0
+    cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 16, sent: [{ lo: -2, hi: 1 }] }); // renders -1..0
     expect(sent.filter((m) => m.type === 'requestChunk')).toEqual([]);
-    cm.onColumn({ cx: 1, cz: 5, minY: 40 * 16, maxY: 41 * 16, sent: { lo: 0, hi: 3 } }); // renders 1..2
+    cm.onColumn({ cx: 1, cz: 5, minY: 40 * 16, maxY: 41 * 16, sent: [{ lo: 0, hi: 3 }] }); // renders 1..2
     // Each column meshes against the other's chunks at its own layers: 1,-1 and 0,2 aren't coming.
     const asked = sent.filter((m) => m.type === 'requestChunk').map((m) => { const c = m as { cx: number; cy: number; cz: number }; return `${c.cx},${c.cy},${c.cz}`; });
     expect(asked.sort()).toEqual(['0,2,5', '1,-1,5']);
+  });
+
+  it('draws only the surface over deep water until the viewer dives', () => {
+    const { cm, sent } = streaming();
+    const deep = { cx: 0, cz: 5, minY: -215 * 16, maxY: 0, solidTop: -200 * 16, water: { min: 0, max: 0 } };
+    cm.setViewY(10 * 16); // above the sea
+    cm.setRegion([{ cx: 0, cz: 5 }], 0, 5 * CHUNK_SIZE);
+    cm.onColumn({ ...deep, sent: [{ lo: -2, hi: 1 }] });
+    const rendered = () => [...(cm as unknown as { render: Set<string> }).render].map((k) => Number(k.split(',')[1])).sort((a, b) => a - b);
+    expect(rendered()).toEqual([-1, 0]);
+    expect(sent.filter((m) => m.type === 'requestChunk')).toEqual([]);
+    // Diving to 150 m: the floor (200-215 m, within 96 m) and our own layer; asked for, not sent.
+    cm.setViewY(-150 * 16);
+    expect(rendered()).toEqual([-14, -13, -10, -1, 0]);
+    expect(sent.filter((m) => m.type === 'requestChunk').length).toBeGreaterThan(0);
+    // Back up: the surface again, and what was asked for underneath is cancelled.
+    cm.setViewY(10 * 16);
+    expect(rendered()).toEqual([-1, 0]);
+    expect(sent.some((m) => m.type === 'cancel')).toBe(true);
   });
 
   it('asks for the chunks itself when a column comes without them (e.g. after an edit)', () => {
@@ -119,7 +138,7 @@ describe('streaming', () => {
   it('cancels requests that left the region', () => {
     const { cm, sent } = streaming();
     cm.setRegion([{ cx: 0, cz: 5 }, { cx: 1, cz: 5 }], 0, 5 * CHUNK_SIZE);
-    cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 16, sent: { lo: -2, hi: 1 } });
+    cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 16, sent: [{ lo: -2, hi: 1 }] });
     // Column 1 is still being asked about; column 0's chunks are on their way.
     cm.setRegion([{ cx: 7, cz: 5 }], 7 * CHUNK_SIZE, 5 * CHUNK_SIZE);
     const cancels = sent.filter((m) => m.type === 'cancel') as Extract<ClientMessage, { type: 'cancel' }>[];
@@ -129,7 +148,7 @@ describe('streaming', () => {
     expect(cm.stats.inFlight).toBe(1); // column 7
     // Late answers to cancelled requests are dropped without upsetting the count.
     cm.onChunkBytes(chunkBytes(0, 0, 5));
-    cm.onColumn({ cx: 1, cz: 5, minY: 0, maxY: 16, sent: { lo: -2, hi: 1 } });
+    cm.onColumn({ cx: 1, cz: 5, minY: 0, maxY: 16, sent: [{ lo: -2, hi: 1 }] });
     expect(cm.stats.inFlight).toBe(1);
     expect(cm.chunkAt({ cx: 0, cy: 0, cz: 5 })).toBeUndefined();
   });
@@ -137,7 +156,7 @@ describe('streaming', () => {
   it("doesn't re-mesh for a chunk that arrives again unchanged, but does for a changed one", async () => {
     const { cm, finishAll, counts } = streaming();
     cm.setRegion([{ cx: 0, cz: 5 }], 0, 5 * CHUNK_SIZE);
-    cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 16, sent: { lo: -2, hi: 1 } });
+    cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 16, sent: [{ lo: -2, hi: 1 }] });
     for (const cy of [-2, -1, 0, 1]) cm.onChunkBytes(chunkBytes(0, cy, 5));
     await finishAll();
     const before = counts().ran;
@@ -155,7 +174,7 @@ describe('streaming', () => {
   it('skips meshing chunks that left the region before a worker was free', async () => {
     const { cm, finishAll, counts } = streaming();
     cm.setRegion([{ cx: 0, cz: 5 }], 0, 5 * CHUNK_SIZE);
-    cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 16, sent: { lo: -2, hi: 1 } });
+    cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 16, sent: [{ lo: -2, hi: 1 }] });
     for (const cy of [-2, -1, 0, 1]) cm.onChunkBytes(chunkBytes(0, cy, 5));
     cm.setRegion([{ cx: 7, cz: 5 }], 7 * CHUNK_SIZE, 5 * CHUNK_SIZE);
     await finishAll();

@@ -13,7 +13,7 @@ import type { MeshWorkerPool } from '../src/workerPool.js';
 
 const port = Number(process.argv[2] ?? 8799);
 const runs = process.argv.slice(3).map((a) => a.split('@').map(Number) as [number, number]);
-const DETAIL = 4, VIEW = 5440 * UNITS_PER_METER, WORKERS = 4;
+const DETAIL = 4, VIEW = 5440 * UNITS_PER_METER, WORKERS = Number(process.env.WORKERS ?? 4);
 
 /** Real meshing on WORKERS node threads, one job per worker at a time. Jobs may carry `current()`. */
 function realPool() {

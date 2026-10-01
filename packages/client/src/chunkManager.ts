@@ -3,7 +3,9 @@ import {
   CHUNK_SIZE,
   MAX_CANCEL,
   chunkKey,
-  columnLayers,
+  columnSpans,
+  type ColumnRange,
+  type Span,
   decodeChunk,
   readChunkHeader,
   resolveChunk,
@@ -62,7 +64,9 @@ function sameBytes(a: Uint8Array | null, b: Uint8Array | null): boolean {
 export class ChunkManager {
   private region = new Set<string>();
   /** Chunk-layer range per column; null for columns outside the world. */
-  private readonly ranges = new Map<string, { lo: number; hi: number } | null>();
+  private readonly ranges = new Map<string, ColumnRange | null>();
+  /** Height of the viewer (units), which decides how much is drawn under water (see columnSpans). */
+  private viewY: number | undefined;
   private readonly columnRequested = new Set<string>();
   private columnQueue: ColumnCoord[] = [];
 
@@ -159,15 +163,33 @@ export class ChunkManager {
     return [cx + (k - 1) * n, cx + k * n, cx + (k + 1) * n];
   }
 
-  onColumn(msg: { cx: number; cz: number; minY: number | null; maxY: number | null; sent?: { lo: number; hi: number } }): void {
+  /**
+   * The viewer's height (units). Under water, more of the ground below is drawn (and the layer
+   * the viewer is in is loaded); this reselects when that changes.
+   */
+  setViewY(y: number): void {
+    const before = this.viewY;
+    this.viewY = y;
+    if (before !== undefined && Math.floor(y / CHUNK_SIZE) === Math.floor(before / CHUNK_SIZE)) return;
+    // Only columns with water above the viewer (before or now) draw differently.
+    const low = before === undefined ? y : Math.min(y, before);
+    for (const range of this.ranges.values()) {
+      if (range?.water && range.water.max > low) {
+        this.recompute();
+        return;
+      }
+    }
+  }
+
+  onColumn(msg: { cx: number; cz: number; minY: number | null; maxY: number | null; solidTop?: number; water?: { min: number; max: number }; sent?: Span[] }): void {
     let changed = false;
     for (const cx of this.copiesOf(msg.cx)) {
       const key = colKey(cx, msg.cz);
       if (this.columnRequested.delete(key)) {
         this.inFlight--;
         // The server sends these chunks next, unasked: count them as requested.
-        if (msg.sent) {
-          for (let cy = msg.sent.lo; cy <= msg.sent.hi; cy++) {
+        for (const span of msg.sent ?? []) {
+          for (let cy = span.lo; cy <= span.hi; cy++) {
             const k = chunkKey({ cx, cy, cz: msg.cz });
             if (this.requested.has(k)) continue;
             this.requested.add(k);
@@ -176,7 +198,8 @@ export class ChunkManager {
         }
       }
       if (this.region.has(key)) {
-        this.ranges.set(key, msg.minY === null || msg.maxY === null ? null : columnLayers(msg.minY, msg.maxY));
+        const { minY, maxY, solidTop, water } = msg;
+        this.ranges.set(key, minY === null || maxY === null ? null : { minY, maxY, ...(solidTop !== undefined && water ? { solidTop, water } : {}) });
         changed = true;
       }
     }
@@ -246,7 +269,7 @@ export class ChunkManager {
       const range = this.ranges.get(key);
       if (!range) continue;
       const [cx, cz] = key.split(',').map(Number) as [number, number];
-      for (let cy = range.lo; cy <= range.hi; cy++) {
+      for (const span of columnSpans(range, this.viewY)) for (let cy = span.lo; cy <= span.hi; cy++) {
         render.add(want({ cx, cy, cz }));
         want({ cx, cy: cy - 1, cz });
         want({ cx, cy: cy + 1, cz });

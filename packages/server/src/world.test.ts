@@ -279,3 +279,18 @@ describe('World', () => {
     });
   });
 });
+
+describe('columns over deep water', () => {
+  it('report what is solid and where the water is, counting edited layers as solid', () => {
+    const gen = new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4));
+    // Sea floor 200 m below the surface at 0 (the chunks themselves stay flat ground).
+    gen.columnRange = () => ({ minY: -215 * 16, maxY: 0, solidTop: -200 * 16, water: { min: 0, max: 0 } });
+    const world = new World(FLAT_WORLD_16KM, gen);
+    expect(world.columnRange(3, 4)).toEqual({ minY: -215 * 16, maxY: 0, solidTop: -200 * 16, water: { min: 0, max: 0 } });
+    // An edit 40 m down (layer -3): whatever is there now gets drawn. (The real chunks are flat
+    // ground, so this one digs.)
+    const r = world.applyEdit({ op: 'remove', x: 3 * 256 + 8, y: -40 * 16, z: 4 * 256 + 8 });
+    expect(r.columns).toEqual([{ cx: 3, cz: 4, minY: -215 * 16, maxY: 0, solidTop: -2 * 256, water: { min: 0, max: 0 } }]);
+    expect(world.columnRange(3, 4)!.solidTop).toBe(-2 * 256);
+  });
+});

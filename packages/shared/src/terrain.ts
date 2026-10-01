@@ -10,6 +10,7 @@ import {
   packVoxel,
   type Block,
   type Chunk,
+  type ColumnRange,
   type ChunkGenerator,
   type UniformBlock,
 } from './chunk.js';
@@ -205,8 +206,8 @@ interface Column {
   trees: Tree[];
   /** Water surface per column (units; NO_WATER for none), or null without any water. */
   S: Int32Array | null;
-  /** Highest water surface over the ground, or null. */
-  waterTop: number | null;
+  /** Lowest and highest water surface over the ground, or null. */
+  water: { min: number; max: number } | null;
 }
 
 export class TerrainGenerator implements ChunkGenerator {
@@ -256,18 +257,18 @@ export class TerrainGenerator implements ChunkGenerator {
     return { heights, materials, canopy, water };
   }
 
-  columnRange(cx: number, cz: number): { minY: number; maxY: number } {
-    const { H, trees, waterTop } = this.chunkColumn(cx, cz);
+  columnRange(cx: number, cz: number): ColumnRange {
+    const { H, trees, water } = this.chunkColumn(cx, cz);
     let minY = Infinity, maxY = -Infinity;
     for (const h of H) {
       if (h < minY) minY = h;
       if (h > maxY) maxY = h;
     }
-    // Tree tops (of trees reaching into the column) count too, so crowns are loaded; so does
-    // the sea's surface over ground below it.
+    // Tree tops (of trees reaching into the column) count too, so crowns are loaded.
     for (const t of trees) maxY = Math.max(maxY, t.y + t.height);
-    if (waterTop !== null) maxY = Math.max(maxY, waterTop);
-    return { minY, maxY };
+    if (!water) return { minY, maxY };
+    // Then the water over the ground.
+    return { minY, maxY: Math.max(maxY, water.max), solidTop: maxY, water: { ...water } };
   }
 
   private chunkColumn(cx: number, cz: number): Column {
@@ -284,13 +285,19 @@ export class TerrainGenerator implements ChunkGenerator {
     // Water over the columns: the sea, raised to any river or lake above it.
     const sea = this.source.seaLevel;
     const W = this.source.water?.(x0, z0, CHUNK_SIZE, CHUNK_SIZE) ?? null;
-    let S: Int32Array | null = null, waterTop: number | null = null;
+    let S: Int32Array | null = null, water: { min: number; max: number } | null = null;
     if (sea !== undefined || W) {
       S = new Int32Array(CHUNK_SIZE * CHUNK_SIZE).fill(sea ?? NO_WATER);
       if (W) for (let k = 0; k < S.length; k++) if (W[k]! > S[k]!) S[k] = W[k]!;
-      for (let k = 0; k < S.length; k++) if (S[k]! > H[k]! && (waterTop === null || S[k]! > waterTop)) waterTop = S[k]!;
+      for (let k = 0; k < S.length; k++) {
+        const s = S[k]!;
+        if (s <= H[k]!) continue;
+        if (!water) water = { min: s, max: s };
+        else if (s < water.min) water.min = s;
+        else if (s > water.max) water.max = s;
+      }
     }
-    col = { H, M, trees: this.source.trees?.(x0, z0, x0 + CHUNK_SIZE, z0 + CHUNK_SIZE) ?? [], S, waterTop };
+    col = { H, M, trees: this.source.trees?.(x0, z0, x0 + CHUNK_SIZE, z0 + CHUNK_SIZE) ?? [], S, water };
     this.columns.set(key, col);
     if (this.columns.size > this.columnCacheSize) this.columns.delete(this.columns.keys().next().value!);
     return col;
