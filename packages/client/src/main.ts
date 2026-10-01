@@ -168,6 +168,9 @@ let tiles: TileManager | null = null;
 let editTool: EditTool | null = null;
 let worldMap: WorldMapOverlay | null = null;
 let connection: ReturnType<typeof connect> | null = null;
+/** Reconnection attempts since the last welcome (for backing off). */
+let reconnects = 0;
+const RELOAD_KEY = 'super-vox.reloadedForUpdate';
 let worldLine = '';
 
 /** Translucent sea surface at sea level, kept centred under the camera. */
@@ -248,6 +251,7 @@ function onProgress(): void {
   }
 }
 
+function openConnection(): void {
 connection = connect({
   hello: {
     ...(requestedTolerance !== undefined && !toleranceWarning ? { tolerance: requestedTolerance } : {}),
@@ -383,7 +387,12 @@ connection = connect({
           (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool, water, compassRose, inventoryUi };
           // Start loading now rather than on the first frame (frames pause in hidden tabs).
           updateLod(true);
+        } else {
+          // Back after a reconnect: ask again for whatever is still missing.
+          lodColumn = '';
+          updateLod(true);
         }
+        reconnects = 0;
         updateHud();
         break;
       }
@@ -415,7 +424,21 @@ connection = connect({
         console.error(`[super-vox] server error ${msg.code}: ${msg.message}`);
         // Refused at hello (e.g. no such world), or the world was replaced or deleted while
         // playing: the server closes the connection, so keep the reason on screen.
-        if (!chunks && (msg.code === 'unknown_world' || msg.code === 'bad_message')) {
+        if (msg.code === 'protocol_mismatch') {
+          // The server runs a newer version: load it (once a minute at most, in case it's the page that's stale).
+          joinError = 'the game was updated: reload the page';
+          let last = 0;
+          try {
+            last = Number(sessionStorage.getItem(RELOAD_KEY) ?? 0);
+            if (Date.now() - last > 60_000) {
+              sessionStorage.setItem(RELOAD_KEY, String(Date.now()));
+              joinError = 'the game was updated: reloading';
+              setTimeout(() => location.reload(), 500);
+            }
+          } catch {
+            // Can't remember reloading: leave it to the player.
+          }
+        } else if (!chunks && (msg.code === 'unknown_world' || msg.code === 'bad_message')) {
           joinError = `${msg.message}${worldName !== undefined ? ' (check ?world=)' : ''}`;
         } else if (msg.code === 'world_changed') {
           joinError = `${msg.message}: reload to play it`;
@@ -432,12 +455,21 @@ connection = connect({
   onChunk: (bytes) => chunks?.onChunkBytes(bytes),
   onTile: (bytes) => tiles?.onTileBytes(bytes),
   onClose: () => {
-    worldLine = joinError || 'disconnected';
-    updateHud();
     chunks?.resetRequests();
     tiles?.resetRequests();
+    if (joinError) {
+      worldLine = joinError;
+    } else {
+      // The server went away (e.g. restarting for a new version): try again, backing off.
+      const delay = Math.min(10, 2 ** reconnects++);
+      worldLine = `disconnected: reconnecting in ${delay} s`;
+      setTimeout(openConnection, delay * 1000);
+    }
+    updateHud();
   },
 });
+}
+openConnection();
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
