@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { voxelAt, type Chunk } from './chunk.js';
 import { Material } from './materials.js';
-import { PLATE_CELL, PlateHeights, defaultPlateTerrain, validatePlateTerrain, type PlateTerrainConfig } from './plates.js';
+import { PLATE_CELL, PlateHeights, defaultPlateTerrain, migratePlateTerrain, parsePlateTerrain, validatePlateTerrain, type PlateTerrainConfig } from './plates.js';
 import { TerrainGenerator } from './terrain.js';
 import { CHUNK_SIZE, FLAT_WORLD_16KM, ROUND_WORLD_16x8KM } from './world.js';
 
@@ -42,6 +42,13 @@ describe('validatePlateTerrain', () => {
     expect(() => validatePlateTerrain({ ...ok, maxHeight: 1001 })).toThrow(/maxHeight/);
     expect(() => validatePlateTerrain({ ...ok, terrainSeed: 1.5 })).toThrow(/terrainSeed/);
     expect(() => validatePlateTerrain({ ...ok, islandArcs: 101 })).toThrow(/islandArcs/);
+    expect(() => validatePlateTerrain({ ...ok, beaches: -1 })).toThrow(/beaches/);
+    expect(() => validatePlateTerrain({ ...ok, snowAltitude: 2001 })).toThrow(/snowAltitude/);
+    expect(() => validatePlateTerrain({ ...ok, plains: 101 })).toThrow(/plains/);
+    expect(() => validatePlateTerrain({ ...ok, lowlandFlatness: -1 })).toThrow(/lowlandFlatness/);
+    expect(() => validatePlateTerrain({ ...ok, surfaceRoughness: 101 })).toThrow(/surfaceRoughness/);
+    expect(() => validatePlateTerrain({ ...ok, rockAltitude: -1 })).toThrow(/rockAltitude/);
+    expect(() => validatePlateTerrain({ ...ok, rockSlope: 4 })).toThrow(/rockSlope/);
     expect(() => validatePlateTerrain({ ...ok, hotspots: 41 })).toThrow(/hotspots/);
     expect(() => validatePlateTerrain({ ...ok, hotspots: 2.5 })).toThrow(/hotspots/);
     expect(() => validatePlateTerrain({ ...ok, islandMinSize: 20 })).toThrow(/islandMinSize/);
@@ -281,14 +288,13 @@ describe('PlateHeights', () => {
     }
   });
 
-  it('assigns sand at the shore, snow on the heights, rock high up, grass on lowland', () => {
-    const p = plates({ seaLevel: 20 });
-    const sea = 20 * 16, top = 300 * 16;
+  it('puts sand under the water, snow on the heights, rock high up, grass on lowland', () => {
+    const p = plates({ seaLevel: 20, rockSlope: 90 }); // height rules only
+    const sea = 20 * 16;
     const probe = (h: number) => p.materials(100_000, 100_000, 1, 1, 1, Int32Array.of(h))[0];
     expect(probe(sea - 500)).toBe(Material.Sand);
-    expect(probe(sea + 16)).toBe(Material.Sand);
-    expect(probe(Math.ceil(sea + (top - sea) * 0.85))).toBe(Material.Snow);
-    expect(probe(Math.ceil(sea + (top - sea) * 0.7))).toBe(Material.Stone);
+    expect(probe(sea + 250 * 16)).toBe(Material.Snow);
+    expect(probe(sea + 200 * 16)).toBe(Material.Stone);
     const H = p.heights(0, 0, 500, 500, 512);
     const M = p.materials(0, 0, 500, 500, 512, H);
     expect([...M].filter((m, k) => m === Material.Grass && H[k]! > sea + 64 && H[k]! < sea + 100 * 16).length).toBeGreaterThan(100);
@@ -357,6 +363,225 @@ describe('islands', () => {
       }
       expect(sea).toBeGreaterThan(8);
     }
+  });
+});
+
+/**
+ * Every coast crossed by north-south lines through the world: the width (m) of sand above the
+ * sea inland of the waterline, and the material right at it.
+ */
+function coasts(p: PlateHeights): { width: number; atWater: number }[] {
+  const out: { width: number; atWater: number }[] = [];
+  for (let xm = 300; xm < 16000; xm += 400) {
+    const n = 8000, step = 32; // 2 m
+    const H = p.heights(xm * 16, 0, 1, n, step), M = p.materials(xm * 16, 0, 1, n, step, H);
+    for (let k = 1; k < n; k++) {
+      if (!(H[k - 1]! <= p.seaLevel && H[k]! > p.seaLevel)) continue;
+      let w = 0;
+      while (k + w < n && H[k + w]! > p.seaLevel && M[k + w] === Material.Sand) w++;
+      out.push({ width: w * 2, atWater: M[k]! });
+    }
+  }
+  return out;
+}
+const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[xs.length >> 1]!;
+
+describe('flat ground', () => {
+  const degrees = (p: PlateHeights, i: number) => {
+    const e = p.elevation, C = p.cols;
+    return (Math.atan(Math.hypot(e[i + 1]! - e[i - 1]!, e[i + C]! - e[i - C]!) / (2 * PLATE_CELL)) * 180) / Math.PI;
+  };
+  const landCells = (p: PlateHeights) => {
+    const out: number[] = [];
+    for (let r = 1; r < p.rows - 1; r++) for (let c = 1; c < p.cols - 1; c++) if (p.elevation[c + p.cols * r]! > p.seaLevel) out.push(c + p.cols * r);
+    return out;
+  };
+  /** Whether the ground in the 16 m square at grid cell i varies by at most 1 m (sampled every metre). */
+  const buildable = (p: PlateHeights, i: number) => {
+    const c = i % p.cols, r = (i - c) / p.cols;
+    const H = p.heights(c * PLATE_CELL, r * PLATE_CELL, 16, 16, 16);
+    return Math.max(...H) - Math.min(...H) <= 16;
+  };
+
+  it('has no plains by default', () => {
+    expect(plates().plainness.every((v) => v === 0)).toBe(true);
+  });
+
+  it('turns about the configured share of the land into plains, keeping land and height exact', () => {
+    for (const plainsPct of [30, 60]) {
+      const p = plates({ plains: plainsPct });
+      const land = landCells(p);
+      const share = land.filter((i) => p.plainness[i]! >= 0.5).length / land.length;
+      expect(share).toBeCloseTo(plainsPct / 100, 1);
+      expect(p.landFraction()).toBeCloseTo(0.3, 3);
+      expect(p.elevation.reduce((a, b) => Math.max(a, b))).toBe(300 * 16);
+    }
+  });
+
+  it('makes plains flat enough to build on', () => {
+    const p = plates({ plains: 60 });
+    const inner = landCells(p).filter((i, k) => k % 37 === 0 && p.plainness[i]! > 0.95 && p.elevation[i]! > p.seaLevel + 32);
+    expect(inner.length).toBeGreaterThan(50);
+    expect(inner.filter((i) => buildable(p, i)).length / inner.length).toBeGreaterThan(0.75);
+    // Hilly default land mostly isn't.
+    const q = plates();
+    const hills = landCells(q).filter((i, k) => k % 37 === 0 && q.elevation[i]! > q.seaLevel + 32);
+    expect(hills.filter((i) => buildable(q, i)).length / hills.length).toBeLessThan(0.1);
+  });
+
+  it('blends plains into the hills without cliffs', () => {
+    const steepest = (p: PlateHeights) => landCells(p).reduce((m, i) => Math.max(m, degrees(p, i)), 0);
+    expect(steepest(plates({ plains: 40 }))).toBeLessThanOrEqual(steepest(plates()) + 1);
+  });
+
+  it('flattens lowlands with lowland flatness, keeping the peak height', () => {
+    const median = (p: PlateHeights) => {
+      const d = landCells(p).map((i) => degrees(p, i)).sort((a, b) => a - b);
+      return d[d.length >> 1]!;
+    };
+    const flat = plates({ lowlandFlatness: 100 });
+    expect(median(flat)).toBeLessThan(median(plates()) / 2);
+    expect(flat.elevation.reduce((a, b) => Math.max(a, b))).toBe(300 * 16);
+    expect(flat.landFraction()).toBeCloseTo(0.3, 3);
+  });
+
+  it('scales small-scale bumpiness with surface roughness (0: none)', () => {
+    // Bumpiness: mean absolute second difference along rows of 1 m columns on land (the
+    // ground's overall slope cancels out; only bumps remain).
+    const bumps = (surfaceRoughness: number) => {
+      const p = plates({ surfaceRoughness });
+      let sum = 0, n = 0;
+      for (const i of landCells(p).filter((_, k) => k % 97 === 0)) {
+        const c = i % p.cols, r = (i - c) / p.cols;
+        const H = p.heights(c * PLATE_CELL, r * PLATE_CELL, 32, 1, 16);
+        for (let k = 1; k < 31; k++) sum += Math.abs(H[k - 1]! - 2 * H[k]! + H[k + 1]!), n++;
+      }
+      return sum / n;
+    };
+    const b0 = bumps(0), b50 = bumps(50), b100 = bumps(100);
+    expect(b50).toBeGreaterThan(b0 * 1.3);
+    expect(b100).toBeGreaterThan(b50 * 1.3);
+    // At 0 the ground is exactly the interpolated grid: at a grid cell's centre, its own height.
+    const p = plates({ surfaceRoughness: 0 });
+    const i = landCells(p)[1234]!, c = i % p.cols, r = (i - c) / p.cols;
+    expect(p.heights((c + 0.5) * PLATE_CELL - 0.5, (r + 0.5) * PLATE_CELL - 0.5, 1, 1)[0]).toBe(Math.round(p.elevation[i]!));
+  });
+});
+
+describe('rock and snow', () => {
+  /** The material at a point for ground `metres` above the sea, ignoring steepness. */
+  const at = (over: Partial<PlateTerrainConfig>, metres: number) => {
+    const p = plates({ rockSlope: 90, ...over });
+    return p.materials(128_000, 128_000, 1, 1, 1, Int32Array.of(p.seaLevel + metres * 16))[0];
+  };
+
+  it('puts rock and snow at fixed heights above the sea, whatever the height range', () => {
+    expect(at({}, 170)).toBe(Material.Grass);
+    expect(at({}, 190)).toBe(Material.Stone);
+    expect(at({}, 250)).toBe(Material.Snow);
+    // Same heights in a world reaching 600 m; and measured from the sea, wherever it is.
+    expect(at({ maxHeight: 600 }, 250)).toBe(Material.Snow);
+    expect(at({ seaLevel: 50, maxHeight: 400 }, 190)).toBe(Material.Stone);
+    expect(at({ seaLevel: 50, maxHeight: 400 }, 170)).toBe(Material.Grass);
+    // Configurable; with rock at or above the snow there's no rock band.
+    expect(at({ rockAltitude: 60, snowAltitude: 90 }, 70)).toBe(Material.Stone);
+    expect(at({ rockAltitude: 300, snowAltitude: 240 }, 250)).toBe(Material.Snow);
+    expect(at({ rockAltitude: 300, snowAltitude: 240 }, 230)).toBe(Material.Grass);
+  });
+
+  it('leaves low worlds without snow or high-ground rock', () => {
+    const p = plates({ maxHeight: 100 });
+    const H = p.heights(0, 0, 500, 500, 512), M = p.materials(0, 0, 500, 500, 512, H);
+    expect([...M].some((m) => m === Material.Snow)).toBe(false);
+    // The default world does have snow.
+    const q = plates();
+    const Q = q.materials(0, 0, 500, 500, 512, q.heights(0, 0, 500, 500, 512));
+    expect([...Q].some((m) => m === Material.Snow)).toBe(true);
+  });
+
+  it('bares steep ground, even above the snow line', () => {
+    // A grid cell whose slope (as materials measures it: one cell either side) is over 30 degrees.
+    const p = plates({ maxHeight: 600 });
+    const e = p.elevation, C = p.cols;
+    let cell = -1;
+    for (let i = C + 1; i < e.length - C - 1 && cell < 0; i++) {
+      const deg = (Math.atan(Math.hypot(e[i + 1]! - e[i - 1]!, e[i + C]! - e[i - C]!) / (2 * PLATE_CELL)) * 180) / Math.PI;
+      if (deg > 30 && e[i]! > p.seaLevel + 100 * 16) cell = i;
+    }
+    expect(cell).toBeGreaterThanOrEqual(0);
+    const x = ((cell % C) + 0.5) * PLATE_CELL, z = (Math.floor(cell / C) + 0.5) * PLATE_CELL;
+    const probe = (rockSlope: number, metres: number) => plates({ maxHeight: 600, rockSlope }).materials(x, z, 1, 1, 1, Int32Array.of(p.seaLevel + metres * 16))[0];
+    expect(probe(25, 300)).toBe(Material.Stone); // steep, above the snow line: rock
+    expect(probe(25, 100)).toBe(Material.Stone); // steep, low: rock
+    expect(probe(90, 300)).toBe(Material.Snow);
+    expect(probe(90, 100)).toBe(Material.Grass);
+  });
+
+  it('bares more ground as the rock slope falls', () => {
+    const stone = (rockSlope: number) => {
+      const p = plates({ maxHeight: 600, rockSlope });
+      const M = p.materials(0, 0, 500, 500, 512, p.heights(0, 0, 500, 500, 512));
+      return [...M].filter((m) => m === Material.Stone).length;
+    };
+    expect(stone(20)).toBeGreaterThan(stone(30) * 1.3);
+    expect(stone(30)).toBeGreaterThan(stone(90));
+  });
+});
+
+describe('migratePlateTerrain', () => {
+  it('keeps older worlds looking as they did', () => {
+    // Saved before land/rock/snow settings: water share, rock at 60% and snow at 80% of the
+    // land's range (here 100 m above a sea at 0), rock above slope 0.9.
+    const old = { seed: 4, majorPlates: 5, waterPercent: 65, maxHeight: 100 };
+    expect(migratePlateTerrain(old)).toMatchObject({ seed: 4, majorPlates: 5, landPercent: 35, rockAltitude: 60, snowAltitude: 80, rockSlope: 42 });
+    // A rock line saved as a percentage converts too.
+    expect(migratePlateTerrain({ maxHeight: 300, seaLevel: 100, rockLine: 50 }).rockAltitude).toBe(100);
+    // New settings are kept as they are.
+    expect(migratePlateTerrain(defaultPlateTerrain(2))).toEqual(defaultPlateTerrain(2));
+  });
+
+  it('is not used for new settings: missing ones there take the defaults', () => {
+    expect(parsePlateTerrain({ maxHeight: 100 })).toMatchObject({ snowAltitude: 240, rockAltitude: 180, rockSlope: 25 });
+  });
+});
+
+describe('beaches', () => {
+  it('puts no sand above the water at 0', () => {
+    const p = plates({ beaches: 0 });
+    const H = p.heights(0, 0, 500, 500, 512), M = p.materials(0, 0, 500, 500, 512, H);
+    for (let k = 0; k < H.length; k++) if (M[k] === Material.Sand) expect(H[k]).toBeLessThanOrEqual(p.seaLevel);
+  });
+
+  it('widens beaches as the setting rises: tens of metres by default', () => {
+    const w50 = coasts(plates({ beaches: 50 })).map((c) => c.width);
+    const w100 = coasts(plates({ beaches: 100 })).map((c) => c.width);
+    expect(w50.length).toBeGreaterThan(20);
+    expect(median(w50)).toBeGreaterThanOrEqual(20);
+    expect(median(w50)).toBeLessThanOrEqual(80);
+    expect(median(w100)).toBeGreaterThan(median(w50) * 1.3);
+  });
+
+  it('gives steep coasts narrower beaches and bare rock at the water', () => {
+    const gentle = coasts(plates({ beaches: 50 }));
+    const steep = coasts(plates({ beaches: 50, maxHeight: 600 }));
+    expect(median(steep.map((c) => c.width))).toBeLessThan(median(gentle.map((c) => c.width)) / 2);
+    expect(steep.some((c) => c.atWater === Material.Stone)).toBe(true);
+    // Coastal rock is only a band at the waterline: below the rock altitude, stone elsewhere is
+    // steep ground (over the 25 degree rock slope; slopes here are estimated from sampled heights,
+    // which include small-scale roughness, so allow some margin).
+    const p = plates({ beaches: 50, maxHeight: 600 });
+    const H = p.heights(0, 0, 500, 500, 512), M = p.materials(0, 0, 500, 500, 512, H);
+    let checked = 0;
+    for (let k = 0; k < H.length; k++) {
+      if (M[k] !== Material.Stone || H[k]! >= p.seaLevel + 180 * 16) continue;
+      if (Math.abs(H[k]! - p.seaLevel) > 4 * 16) {
+        const x = (k % 500) * 512, z = Math.floor(k / 500) * 512;
+        const e = (a: number, b: number) => p.heights(a, b, 1, 1)[0]!;
+        expect(Math.hypot(e(x + 512, z) - e(x - 512, z), e(x, z + 512) - e(x, z - 512)) / 1024).toBeGreaterThan(Math.tan((25 * Math.PI) / 180) * 0.75);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
   });
 });
 

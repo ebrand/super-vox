@@ -9,7 +9,7 @@ import {
   WORLD_NAME_PATTERN,
   defaultFlatGen,
   defaultNoiseTerrain,
-  parsePlateTerrain,
+  migratePlateTerrain,
   validatePlateTerrain,
   validateVoxelize,
   type ChunkGenerator,
@@ -64,7 +64,7 @@ export function readWorld(dataRoot: string, name: string): WorldFile | null {
   const file = JSON.parse(readFileSync(path, 'utf8')) as WorldFile;
   if (file.version !== 1) throw new Error(`${path}: unsupported world file version ${file.version}`);
   // Settings added (or renamed) after a world was created take their defaults.
-  if (file.spec.generator === 'plates') file.spec.plates = parsePlateTerrain(file.spec.plates);
+  if (file.spec.generator === 'plates') file.spec.plates = migratePlateTerrain(file.spec.plates);
   validateWorldSpec(file.spec);
   return file;
 }

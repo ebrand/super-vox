@@ -59,8 +59,15 @@ Settings for a new world from the environment:
 | `WORLD_MAX_HEIGHT` | 300 | Highest land, in metres (-1000..1000, above the sea) |
 | `WORLD_MIN_HEIGHT` | -300 | Deepest sea floor, in metres (-1000..1000, below the sea) |
 | `WORLD_SHORE_FRACTAL` | 50 | Coastline raggedness, 0 (smooth) .. 100 (broken, many islands) |
+| `WORLD_BEACHES` | 50 | Sand on gentle coasts, 0 (none above the water) .. 100 (wide); steep coasts stay rocky |
+| `WORLD_ROCK_ALTITUDE` | 180 | Bare rock from this height above the sea, in metres |
+| `WORLD_SNOW_ALTITUDE` | 240 | Snow from this height above the sea, in metres (lower land has none) |
+| `WORLD_ROCK_SLOPE` | 25 | Ground steeper than this many degrees is bare rock, even above the snow (90 = never) |
 | `WORLD_NOISE_SCALE` | 2000 | Size of the largest features in each plate's noise, in metres (100..16000) |
 | `WORLD_NOISE_ROUGHNESS` | 50 | Fine detail in each plate's noise, 0 (smooth swells) .. 100 (rugged) |
+| `WORLD_PLAINS` | 0 | Percent of the land that is plains: broad, nearly flat lowlands |
+| `WORLD_LOWLAND_FLATNESS` | 0 | Flatter low ground and a steeper climb near the peaks, 0 .. 100 |
+| `WORLD_SURFACE_ROUGHNESS` | 50 | Small-scale bumpiness of the ground, 0 (smooth) .. 100 |
 | `WORLD_ISLAND_ARCS` | 0 | Island chains along seams where an oceanic plate meets another, 0 .. 100 |
 | `WORLD_HOTSPOTS` | 0 | Hotspot island groups in oceanic plates (0..40) |
 | `WORLD_ISLAND_MIN_SIZE` | 200 | Smallest arc/hotspot island, across, in metres (50..4000) |
@@ -76,7 +83,11 @@ crowded), and all plates are re-tuned together so each major plate is `WORLD_PLA
 times the area of each minor plate. Borders are warped by noise so they wander. Enough major
 plates (with the minors on them) become continents to cover the land share; the rest is ocean
 floor. Each plate's relief comes from its own seeded noise field, blended with its neighbours'
-over ~400 m either side of their seam. Land rises from the coast inland and the sea floor
+over ~400 m either side of their seam. Plains are regions a few km across (chosen by
+large-scale noise so `WORLD_PLAINS` percent of the land is in one) where the land is replaced by
+a heavily smoothed, lowered copy of itself, blending into the hills over ~1 km; most 16 m squares
+in a plain vary by under 1 m. Lowland flatness raises the land's height curve to a power (up to
+3), and surface roughness scales the 0.4-6 m of small bumps every column gets. Land rises from the coast inland and the sea floor
 deepens away from it, stretched so the highest land is exactly `WORLD_MAX_HEIGHT` and the
 deepest sea floor exactly `WORLD_MIN_HEIGHT`; the coastline is then chosen so exactly
 `WORLD_LAND` percent is above the sea, drawn as a translucent plane. Islands come first:
@@ -87,12 +98,18 @@ roughened with the shoreline setting), rise to a peak, and count toward the land
 continents get exactly what's left (islands may take at most 90% of it). Lakes under ~1 km^2
 more than 700 m from open sea are filled in: all water sits at sea level and land rises with
 distance from any water, so an inland pond would be a hole in a crater. Coastal lagoons and
-inlets stay; an equal amount of the lowest coast goes under water so the land share stays exact. Sand lines the shore and
-sea floor, grass covers lowland, bare rock shows on steep ground and above 60% of the land's
-height range, and snow caps the top 20%. The plate map is built once when a world is opened, on
+inlets stay; an equal amount of the lowest coast goes under water so the land share stays
+exact. The sea floor is sand. Beaches follow the coast's slope: gentle coasts get sand up to
+8 m above the sea at `WORLD_BEACHES` 100 (4 m at the default 50; tens of metres wide), tapering
+to none on steep coasts, which are bare rock at the waterline; beaches also come and go along a
+coast. Grass covers lowland; bare rock covers ground steeper than `WORLD_ROCK_SLOPE` (snow
+doesn't stick there) and everything from `WORLD_ROCK_ALTITUDE` metres above the sea, and snow
+lies from `WORLD_SNOW_ALTITUDE` metres up, so low worlds have none. The plate map is built once when a world is opened, on
 a 32 m grid (a few hundred ms); heights between grid points are interpolated with small-scale
 roughness. Worlds made before these settings existed keep their plate counts, seed, shoreline
-and water share (as `100 - land`); their other settings take the defaults above.
+and water share (as `100 - land`); rock and snow keep their old places (60% and 80% of the land's
+height range, converted to metres, and rock above 42 degrees); other settings take the defaults
+above.
 
 Terrain is voxelized adaptively: a 1 m block is halved (1 -> 1/2 -> 1/4 -> 1/8
 -> 1/16 m) only where the surface passes through it and a coarser voxel would

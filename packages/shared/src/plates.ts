@@ -30,10 +30,24 @@ export interface PlateTerrainConfig {
   landPercent: number;
   /** How ragged coastlines are, 0 (smooth) .. 100 (heavily broken, many islands). */
   shoreFractal: number;
+  /** Sand on gentle coasts: 0 (none above the water) .. 100 (wide beaches). Steep coasts stay rocky. */
+  beaches: number;
+  /** Bare rock from this height above the sea, in metres (0..2000). */
+  rockAltitude: number;
+  /** Snow from this height above the sea, in metres (0..2000); a world whose land stays below it has none. */
+  snowAltitude: number;
+  /** Ground steeper than this many degrees is bare rock, snow line or not (5..90; 90 = never). */
+  rockSlope: number;
   /** Size of the largest features in each plate's noise, in metres (100..16000). */
   noiseScale: number;
   /** How much fine detail each plate's noise has, 0 (smooth swells) .. 100 (rugged). */
   noiseRoughness: number;
+  /** Share of the land that is plains: broad, nearly flat lowlands (0..100, roughly exact). */
+  plains: number;
+  /** Flattens low ground and concentrates the climb near the peaks, 0 (off) .. 100. */
+  lowlandFlatness: number;
+  /** Small-scale bumpiness of the ground, 0 (smooth) .. 100; 50 is the original amount. */
+  surfaceRoughness: number;
   /** Density of island chains along seams where an oceanic plate meets another plate, 0 (none) .. 100. */
   islandArcs: number;
   /** Groups of islands inside oceanic plates, each a main island trailing smaller ones (0..40). */
@@ -55,8 +69,15 @@ export function defaultPlateTerrain(seed = 1): PlateTerrainConfig {
     seaLevel: 0,
     landPercent: 30,
     shoreFractal: 50,
+    beaches: 50,
+    rockAltitude: 180,
+    snowAltitude: 240,
+    rockSlope: 25,
     noiseScale: 2000,
     noiseRoughness: 50,
+    plains: 0,
+    lowlandFlatness: 0,
+    surfaceRoughness: 50,
     islandArcs: 0,
     hotspots: 0,
     islandMinSize: 200,
@@ -71,27 +92,50 @@ export const PLATE_LIMITS = {
   height: [-1000, 1000],
   landPercent: [0, 100],
   shoreFractal: [0, 100],
+  beaches: [0, 100],
+  altitude: [0, 2000],
+  rockSlope: [5, 90],
   noiseScale: [100, 16000],
   noiseRoughness: [0, 100],
+  plains: [0, 100],
+  lowlandFlatness: [0, 100],
+  surfaceRoughness: [0, 100],
   islandArcs: [0, 100],
   hotspots: [0, 40],
   islandSize: [50, 4000],
 } as const;
 
 /**
- * Plate settings from untrusted input (e.g. a JSON request or an older world file): known
- * settings are taken from `raw`, missing ones get their defaults, anything else is dropped.
- * Older worlds' `waterPercent` becomes `landPercent`. Throws RangeError if a setting is invalid.
+ * Plate settings from untrusted input (e.g. a JSON request): known settings are taken from
+ * `raw`, missing ones get their defaults, anything else is dropped. Throws RangeError if a
+ * setting is invalid.
  */
 export function parsePlateTerrain(raw: unknown): PlateTerrainConfig {
   const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
   const seed = typeof r.seed === 'number' ? r.seed : 1;
   const out: Record<string, unknown> = { ...defaultPlateTerrain(seed) };
   for (const key of Object.keys(out)) if (r[key] !== undefined) out[key] = r[key];
-  if (r.landPercent === undefined && typeof r.waterPercent === 'number') out.landPercent = 100 - r.waterPercent;
   const config = out as unknown as PlateTerrainConfig;
   validatePlateTerrain(config);
   return config;
+}
+
+/**
+ * Plate settings saved by an older version, brought up to date so the world looks as it did:
+ * `waterPercent` becomes `landPercent`; rock and snow, which started at 60% and 80% of the land's
+ * height range (or `rockLine` percent), get those heights in metres; steep ground turned to rock
+ * above slope 0.9 (42 degrees). Other missing settings get their defaults.
+ */
+export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
+  const r = { ...((typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>) };
+  if (r.landPercent === undefined && typeof r.waterPercent === 'number') r.landPercent = 100 - r.waterPercent;
+  const d = defaultPlateTerrain();
+  const num = (v: unknown, fallback: number) => (typeof v === 'number' ? v : fallback);
+  const range = num(r.maxHeight, d.maxHeight) - num(r.seaLevel, d.seaLevel);
+  if (r.rockAltitude === undefined) r.rockAltitude = (num(r.rockLine, 60) / 100) * range;
+  if (r.snowAltitude === undefined) r.snowAltitude = 0.8 * range;
+  if (r.rockSlope === undefined) r.rockSlope = 42;
+  return parsePlateTerrain(r);
 }
 
 export function validatePlateTerrain(c: PlateTerrainConfig): void {
@@ -114,8 +158,15 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   if (!(c.seaLevel + 1 <= c.maxHeight)) throw new RangeError(`maxHeight must be at least 1 m above seaLevel; got ${c.maxHeight} and ${c.seaLevel}`);
   num(c.landPercent, L.landPercent, 'landPercent');
   num(c.shoreFractal, L.shoreFractal, 'shoreFractal');
+  num(c.beaches, L.beaches, 'beaches');
+  num(c.rockAltitude, L.altitude, 'rockAltitude', ' m');
+  num(c.snowAltitude, L.altitude, 'snowAltitude', ' m');
+  num(c.rockSlope, L.rockSlope, 'rockSlope', ' degrees');
   num(c.noiseScale, L.noiseScale, 'noiseScale', ' m');
   num(c.noiseRoughness, L.noiseRoughness, 'noiseRoughness');
+  num(c.plains, L.plains, 'plains', '%');
+  num(c.lowlandFlatness, L.lowlandFlatness, 'lowlandFlatness');
+  num(c.surfaceRoughness, L.surfaceRoughness, 'surfaceRoughness');
   num(c.islandArcs, L.islandArcs, 'islandArcs');
   int(c.hotspots, ...L.hotspots, 'hotspots');
   num(c.islandMinSize, L.islandSize, 'islandMinSize', ' m');
@@ -129,15 +180,26 @@ const M = 16; // units per metre
 /** Largest small-scale roughness (units), on the highest ground; the least, on low ground. */
 const DETAIL_MAX = 6 * M;
 const DETAIL_MIN = 0.4 * M;
-/** Sand up to this height above the sea. Bare rock and snow start at these fractions of the land's height range. */
-const BEACH = 2 * M;
-const ROCK_FRACTION = 0.6;
-const SNOW_FRACTION = 0.8;
+/**
+ * Beaches: sand reaches up to BEACH_MAX (at beaches = 100) above the sea where the coast is no
+ * steeper than GENTLE (rise over run, over 64 m), tapering to none at STEEP; coasts steeper than
+ * ROCKY are bare rock from ROCKY_BELOW under the water to ROCKY_ABOVE over it. Coastal slopes at
+ * the default settings run ~0.04-0.15 (median 0.07), so at a median coast a 4 m beach is ~50 m
+ * wide; slopes grow with the height range, giving more rock and less sand.
+ */
+const BEACH_MAX = 8 * M;
+const GENTLE = 0.07;
+const STEEP = 0.14;
+const ROCKY = 0.13;
+const ROCKY_ABOVE = 4 * M;
+const ROCKY_BELOW = 4 * M;
 /** Land rises to its full relief over this distance from the sea; the sea floor deepens over this distance from land. */
 const INLAND = 1500 * M;
 const OFFSHORE = 1500 * M;
 /** Neighbouring plates' relief blends over this distance either side of their seam. */
 const SEAM_BLEND = 400 * M;
+/** Plains sit at this fraction of the smoothed land around them (lowland basins). */
+const PLAIN_LEVEL = 0.35;
 /**
  * Water bodies smaller than this many grid cells (~1 km^2) that lie more than INLAND_LAKE from
  * open sea (bodies at least this big) are filled in as land.
@@ -186,9 +248,14 @@ export class PlateHeights implements HeightSource {
   readonly seaLevel: number;
   readonly minHeight: number;
   readonly maxHeight: number;
-  private readonly beachLine: number;
+  /** Tallest beach (units above the sea) on the gentlest coasts. */
+  private readonly beachHeight: number;
+  /** Noise varying beaches along a coast. */
+  private readonly beachNoise: Octave[];
+  /** Heights (units) where bare rock and snow start, and the slope (rise over run) beyond which ground is rock. */
   private readonly rockLine: number;
   private readonly snowLine: number;
+  private readonly rockSlope: number;
   readonly cols: number;
   readonly rows: number;
   /** Surface height per grid cell (units). */
@@ -202,7 +269,11 @@ export class PlateHeights implements HeightSource {
   readonly islands: readonly Island[];
   /** Grid cells that are island land. */
   readonly islandCells: number;
+  /** Per grid cell: 0 (hills) .. 1 (plain); 0 everywhere without plains. */
+  readonly plainness: Float32Array;
   private readonly detail: Octave[];
+  /** Multiplier on small-scale roughness (surfaceRoughness / 50). */
+  private readonly detailScale: number;
   private readonly wrap: boolean;
 
   constructor(
@@ -213,9 +284,10 @@ export class PlateHeights implements HeightSource {
     const sea = (this.seaLevel = Math.round(config.seaLevel * M));
     const lo = (this.minHeight = Math.round(config.minHeight * M));
     const hi = (this.maxHeight = Math.round(config.maxHeight * M));
-    this.beachLine = sea + BEACH;
-    this.rockLine = sea + (hi - sea) * ROCK_FRACTION;
-    this.snowLine = sea + (hi - sea) * SNOW_FRACTION;
+    this.beachHeight = (config.beaches / 100) * BEACH_MAX;
+    this.rockLine = sea + config.rockAltitude * M;
+    this.snowLine = sea + config.snowAltitude * M;
+    this.rockSlope = Math.tan((config.rockSlope * Math.PI) / 180);
     if (world.widthUnits % PLATE_CELL || world.depthUnits % PLATE_CELL) {
       throw new RangeError(`world size must be a multiple of ${PLATE_CELL} units`);
     }
@@ -677,15 +749,42 @@ export class PlateHeights implements HeightSource {
     const rMin = quantile(relief, 0.005), rMax = quantile(relief, 0.995);
     const r01 = (v: number) => Math.min(1, Math.max(0, (v - rMin) / Math.max(1e-6, rMax - rMin)));
     const shape = new Float32Array(n);
+    // Lowland flatness: a height curve that keeps low ground low and flat.
+    const curve = 1 + 2 * (config.lowlandFlatness / 100);
     let landMax = 0, seaMax = 0;
     for (let i = 0; i < n; i++) {
       if (isLand(i)) {
         let s = smoothstep(0, INLAND / PLATE_CELL, toSea[i]!) ** 0.7 * (0.15 + 0.85 * r01(relief[i]!));
         // Islands also rise to a peak in the middle (volcanic), lower for small ones.
         if (island[i]! > 0) s = Math.max(s, 0.45 * island[i]! ** 1.3 * Math.min(1, islandSize[i]!));
+        if (curve !== 1) s **= curve;
         shape[i] = s;
         landMax = Math.max(landMax, s);
-      } else {
+      }
+    }
+    // Plains: regions a few km across (from large-scale noise, the lowest `plains` percent of it
+    // over land) where the land is replaced by a heavily smoothed, lowered copy of itself, so
+    // hills melt into broad lowlands and wide valley floors; their edges blend over ~1 km.
+    const plainness = (this.plainness = new Float32Array(n));
+    if (config.plains > 0) {
+      const mask = layoutNoise(17, [64000, 32000, 16000], 0.45);
+      const landMask: number[] = [];
+      for (let i = 0; i < n; i++) if (isLand(i)) landMask.push(mask[i]!);
+      const t = quantile(Float32Array.from(landMask), config.plains / 100);
+      const EDGE = 0.35; // in mask units: the blend from hills to plain
+      const R = Math.round((400 * M) / PLATE_CELL);
+      const smooth = blur(blur(shape, cols, rows, R, this.wrap), cols, rows, R, this.wrap); // sea counts as 0
+      for (let i = 0; i < n; i++) {
+        if (!isLand(i)) continue;
+        const w = 1 - smoothstep(t - EDGE / 2, t + EDGE / 2, mask[i]!);
+        plainness[i] = w;
+        shape[i] = shape[i]! + (PLAIN_LEVEL * smooth[i]! - shape[i]!) * w;
+      }
+      landMax = 0;
+      for (let i = 0; i < n; i++) if (isLand(i)) landMax = Math.max(landMax, shape[i]!);
+    }
+    for (let i = 0; i < n; i++) {
+      if (!isLand(i)) {
         const s = smoothstep(0, OFFSHORE / PLATE_CELL, toLand[i]!) ** 0.8 * (0.3 + 0.7 * (1 - r01(relief[i]!)));
         shape[i] = s;
         seaMax = Math.max(seaMax, s);
@@ -697,7 +796,8 @@ export class PlateHeights implements HeightSource {
       if (isLand(i)) {
         const f = shape[i]! / Math.max(1e-6, landMax);
         elevation[i] = Math.max(sea + 1, sea + (hi - sea) * f);
-        rough[i] = f;
+        // Small-scale roughness grows with height, and fades on plains.
+        rough[i] = f * (1 - 0.85 * plainness[i]!);
       } else {
         const f = shape[i]! / Math.max(1e-6, seaMax);
         elevation[i] = Math.min(sea - 1, sea - (sea - lo) * f);
@@ -707,6 +807,9 @@ export class PlateHeights implements HeightSource {
 
     // Small-scale roughness down to 1 m (also hides the 32 m grid's facets).
     this.detail = octaves(config.terrainSeed * 7919 + 5, [512, 256, 128, 64, 32, 16]);
+    this.detailScale = config.surfaceRoughness / 50;
+    // Beaches come and go along a coast over a few hundred metres.
+    this.beachNoise = octaves(config.terrainSeed * 7919 + 13, [8192, 4096, 2048]);
   }
 
   /** Fraction of grid cells above sea level (for tests and tools). */
@@ -773,7 +876,7 @@ export class PlateHeights implements HeightSource {
     for (let k = 0; k < out.length; k++) {
       const e = elev[k]!;
       // Never past the configured bounds: roughness fades out at the very top and bottom.
-      const amp = Math.min(DETAIL_MIN + (DETAIL_MAX - DETAIL_MIN) * rough[k]!, this.maxHeight - e, e - this.minHeight);
+      const amp = Math.min((DETAIL_MIN + (DETAIL_MAX - DETAIL_MIN) * rough[k]!) * this.detailScale, this.maxHeight - e, e - this.minHeight);
       out[k] = Math.round(e + detail[k]! * norm * Math.max(0, amp));
     }
     return out;
@@ -787,13 +890,24 @@ export class PlateHeights implements HeightSource {
     const west = this.interpolate(this.elevation, x0 - e, z0, w, d, step);
     const south = this.interpolate(this.elevation, x0, z0 + e, w, d, step);
     const north = this.interpolate(this.elevation, x0, z0 - e, w, d, step);
+    const vary = fractalGrid(this.beachNoise, x0, z0, w, d, step);
+    const norm = 2 / this.beachNoise.reduce((a, o) => a + o.weight, 0);
+    const sea = this.seaLevel;
     for (let k = 0; k < out.length; k++) {
       const h = heights[k]!;
       const slope = Math.hypot(east[k]! - west[k]!, south[k]! - north[k]!) / (2 * e);
+      const v = vary[k]! * norm; // about -1..1
+      // Steep coasts: bare rock at the waterline (the threshold wanders so the edge isn't a line).
+      const rocky = slope + 0.02 * v > ROCKY && h > sea - ROCKY_BELOW && h <= sea + ROCKY_ABOVE;
+      // Gentle coasts: sand up to a height that shrinks as the coast steepens.
+      const beachTop = sea + this.beachHeight * (1 - smoothstep(GENTLE, STEEP, slope)) * (0.6 + 0.4 * v);
+      // Steep ground is bare rock even above the snow line: steep faces don't hold snow.
       out[k] =
-        h <= this.beachLine ? Material.Sand
+        rocky ? Material.Stone
+        : h <= sea || h <= beachTop ? Material.Sand
+        : slope > this.rockSlope ? Material.Stone
         : h >= this.snowLine ? Material.Snow
-        : h >= this.rockLine || slope > 0.9 ? Material.Stone
+        : h >= this.rockLine ? Material.Stone
         : Material.Grass;
     }
     return out;
