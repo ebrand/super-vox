@@ -297,26 +297,23 @@ describe('tiles and columns', () => {
   it('drops requests cancelled before they were served', async () => {
     const ws = await greeted();
     const chunks: string[] = [];
-    let marker = false;
     ws.on('message', (data, isBinary) => {
       if (!isBinary) return;
-      const f = new Uint8Array(data as Buffer);
-      if (f[0] === BinaryTag.Tile) marker = true;
-      else {
-        const c = decodeChunk(f.subarray(1));
-        chunks.push(`${c.cx},${c.cy},${c.cz}`);
-      }
+      const c = decodeChunk(new Uint8Array(data as Buffer).subarray(1));
+      chunks.push(`${c.cx},${c.cy},${c.cz}`);
     });
     const coords = Array.from({ length: 400 }, (_, i) => ({ cx: i % 20, cy: 0, cz: Math.floor(i / 20) }));
     for (const c of coords) ws.send(JSON.stringify({ type: 'requestChunk', ...c }));
     const dropped = coords.slice(200);
     ws.send(JSON.stringify({ type: 'cancel', chunks: dropped.map((c) => [c.cx, c.cy, c.cz]), columns: [[1, 1]], tiles: [[2, 0, 0]] }));
-    // Answered after everything asked before it.
-    ws.send(JSON.stringify({ type: 'requestTile', level: 2, tx: 1, tz: 1 }));
-    await until(() => marker);
+    // Chunks are answered in the order asked, so this one comes after everything before it.
+    ws.send(JSON.stringify({ type: 'requestChunk', cx: 99, cy: 0, cz: 99 }));
+    const marker = '99,0,99';
+    for (let i = 0; i < 500 && !chunks.includes(marker); i++) await new Promise((r) => setTimeout(r, 10));
+    const before = chunks.slice(0, chunks.indexOf(marker));
     // All the wanted chunks; of the cancelled ones, only any served before the cancel arrived.
-    expect(new Set(chunks.slice(0, 200))).toEqual(new Set(coords.slice(0, 200).map((c) => `${c.cx},${c.cy},${c.cz}`)));
-    expect(chunks.length).toBeLessThan(300);
+    expect(new Set(before.slice(0, 200))).toEqual(new Set(coords.slice(0, 200).map((c) => `${c.cx},${c.cy},${c.cz}`)));
+    expect(before.length).toBeLessThan(300);
     ws.close();
   });
 });

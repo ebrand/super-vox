@@ -2,11 +2,13 @@ import type { DayClock } from './clock.js';
 import type { Edit } from './edit.js';
 import { isValidTileLevel } from './tile.js';
 import type { ColumnRange } from './chunk.js';
+import { HOTBAR_SLOTS, type GameMode } from './items.js';
+import { MAX_MATERIAL_ID } from './materials.js';
 import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 19;
+export const PROTOCOL_VERSION = 20;
 
 export type ClientMessage =
   | {
@@ -35,6 +37,8 @@ export type ClientMessage =
   | { type: 'cancel'; chunks?: [number, number, number][]; tiles?: [number, number, number][]; columns?: [number, number][] }
   /** A voxel edit; answered with `editResult`. `id` is chosen by the client to match the reply. */
   | { type: 'edit'; id: number; edit: Edit }
+  /** The player's hotbar arrangement (HOTBAR_SLOTS item ids, null for empty), kept with their inventory. */
+  | { type: 'setHotbar'; hotbar: (number | null)[] }
   /** Where the player is (world units) and faces (radians, 0 = -Z); sent a couple of times a second, not answered. */
   | { type: 'pose'; x: number; y: number; z: number; yaw: number };
 
@@ -57,6 +61,12 @@ export type ServerMessage =
       /** Whether this connection may edit (signing in is required where the server has accounts). */
       canEdit: boolean;
     }
+  /**
+   * The player's inventory in this world (after welcome, and whenever it changes): the world's
+   * game mode; in survival, how much of each material they have (unit-voxel volumes, see
+   * BLOCK_VOLUME); and their hotbar. Not sent to players who aren't signed in.
+   */
+  | { type: 'inventory'; mode: GameMode; items: [number, number][]; hotbar: (number | null)[] }
   /** The world's clock was changed (time set, stopped, or a new day length). */
   | { type: 'clock'; clock: DayClock; serverTime: number }
   /**
@@ -212,6 +222,14 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
       ...(tiles ? { tiles: tiles as [number, number, number][] } : {}),
       ...(columns ? { columns: columns as [number, number][] } : {}),
     };
+  }
+  if (
+    msg.type === 'setHotbar' &&
+    Array.isArray(msg.hotbar) &&
+    msg.hotbar.length === HOTBAR_SLOTS &&
+    msg.hotbar.every((v) => v === null || (Number.isInteger(v) && (v as number) >= 0 && (v as number) <= MAX_MATERIAL_ID))
+  ) {
+    return { type: 'setHotbar', hotbar: msg.hotbar as (number | null)[] };
   }
   if (msg.type === 'pose' && [msg.x, msg.y, msg.z, msg.yaw].every((v) => typeof v === 'number' && Number.isFinite(v))) {
     return { type: 'pose', x: msg.x as number, y: msg.y as number, z: msg.z as number, yaw: msg.yaw as number };

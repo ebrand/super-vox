@@ -172,6 +172,23 @@ In development (`NODE_ENV` not `production`) the client can ask for another
 tolerance (integer 0..16, the Settings dialog or `?tolerance=N`); those edits
 stay in memory.
 
+## Game modes and inventory
+
+Each world is **survival** (the default) or **creative** (`mode` in its `world.json`;
+`WORLD_MODE` for a new default world). Signed-in players have an inventory per world, kept on
+the server (Postgres with sign-in, else memory):
+
+- **Survival:** you start with 16 blocks each of dirt, stone and wood. Placing uses material up
+  and mining gives it, by volume (a 1/4 m voxel is 1/64 of a block), so every voxel size works.
+  Grassy grounds give dirt, leaves give nothing (for now); water can't be placed yet.
+- **Creative:** everything placeable is unlimited.
+
+The hotbar (bottom of the screen) holds what you place: 1-9 pick a slot. E opens the inventory
+(survival: what you have; creative: everything); click a material to put it in the selected
+slot. The hotbar is kept with your inventory. Players who aren't signed in can't build, so they
+have neither. Inventories are filed under the world's name and when its terrain was made, so a
+recreated world starts everyone afresh.
+
 ## Controls
 
 Click the view to capture the mouse; then moving the mouse looks around and

@@ -17,3 +17,4 @@ export * from './water.js';
 export * from './rivers.js';
 export * from './world.js';
 export * from './protocol.js';
+export * from './items.js';

@@ -1,8 +1,11 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DAY_MINUTES_LIMITS, DEFAULT_DAY_MINUTES, DEFAULT_WORLD_SHAPE, WORLD_SHAPES, defaultPlateTerrain, defaultVoxelize, isWorldShape, type WorldShape } from '@super-vox/shared';
+import { DAY_MINUTES_LIMITS, DEFAULT_GAME_MODE, isGameMode, DEFAULT_DAY_MINUTES, DEFAULT_WORLD_SHAPE, WORLD_SHAPES, defaultPlateTerrain, defaultVoxelize, isWorldShape, type WorldShape } from '@super-vox/shared';
+import type pg from 'pg';
 import { MemoryAccountStore, PgAccountStore, type AccountStore } from './accounts.js';
+import { openDatabase } from './db.js';
+import { MemoryInventoryStore, PgInventoryStore, type InventoryStore } from './inventories.js';
 import { buildApp } from './app.js';
 import { Auth } from './auth.js';
 import { authConfigFromEnv, loadDevSecrets } from './authConfig.js';
@@ -99,7 +102,10 @@ function specForNewWorld(): WorldSpec {
 // folder (resolved from this file, so it's the same however the server is started).
 const dataRoot = process.env.WORLD_DATA_DIR ?? fileURLToPath(new URL('../../../data', import.meta.url));
 const name = process.env.WORLD_NAME ?? 'dev';
-const opened = openWorld(dataRoot, name, specForNewWorld());
+/** WORLD_MODE for a new default world: survival (default) or creative. */
+const modeEnv = process.env.WORLD_MODE || DEFAULT_GAME_MODE;
+if (!isGameMode(modeEnv)) throw new RangeError(`WORLD_MODE must be "survival" or "creative"; got "${modeEnv}"`);
+const opened = openWorld(dataRoot, name, specForNewWorld(), modeEnv);
 const spec = opened.file.spec;
 // Other worlds under dataRoot are served too (?world=name). In development, clients may ask for
 // other tolerances (?tolerance=N; those edits stay in memory) and new worlds can be created.
@@ -120,16 +126,24 @@ const production = process.env.NODE_ENV === 'production';
 const fromAuthDir = production ? [] : loadDevSecrets(process.env, fileURLToPath(new URL('../../../auth', import.meta.url)));
 const authConfig = authConfigFromEnv(process.env, production);
 let accounts: AccountStore | null = null;
+let inventories: InventoryStore | null = null;
+let pool: pg.Pool | null = null;
 if (authConfig) {
-  if (process.env.DATABASE_URL) accounts = await PgAccountStore.open(process.env.DATABASE_URL);
-  else if (production) throw new Error('sign-in needs DATABASE_URL in production');
-  else accounts = new MemoryAccountStore();
+  if (process.env.DATABASE_URL) {
+    pool = await openDatabase(process.env.DATABASE_URL);
+    accounts = new PgAccountStore(pool);
+    inventories = new PgInventoryStore(pool);
+  } else if (production) throw new Error('sign-in needs DATABASE_URL in production');
+  else {
+    accounts = new MemoryAccountStore();
+    inventories = new MemoryInventoryStore();
+  }
 }
 const auth = authConfig && accounts ? new Auth(authConfig, accounts) : undefined;
-const app = await buildApp({ catalog, logger: true, ...(clientDir ? { clientDir } : {}), ...(auth ? { auth } : {}) });
-app.addHook('onClose', async () => accounts?.close?.());
+const app = await buildApp({ catalog, logger: true, ...(clientDir ? { clientDir } : {}), ...(auth ? { auth } : {}), ...(inventories ? { inventories } : {}) });
+app.addHook('onClose', async () => pool?.end());
 app.log.info(
-  { signIn: !!auth, accounts: accounts ? (accounts instanceof PgAccountStore ? 'postgres' : 'memory') : null, fromAuthDir },
+  { signIn: !!auth, accounts: accounts ? (pool ? 'postgres' : 'memory') : null, fromAuthDir },
   auth ? 'sign-in on: only signed-in players may edit' : 'sign-in off: anyone may edit',
 );
 

@@ -46,3 +46,28 @@ export function waterMaterial(level: number): number {
 export type MaterialId = number;
 
 export const MAX_MATERIAL_ID = 0xffff;
+
+/** People's names for materials. */
+const MATERIAL_NAMES: Record<number, string> = {
+  [Material.Stone]: 'stone',
+  [Material.Dirt]: 'dirt',
+  [Material.Grass]: 'grass',
+  [Material.Sand]: 'sand',
+  [Material.Snow]: 'snow',
+  [Material.JungleFloor]: 'jungle floor',
+  [Material.DryGrass]: 'dry grass',
+  [Material.Meadow]: 'meadow',
+  [Material.TaigaFloor]: 'taiga floor',
+  [Material.Tundra]: 'tundra',
+  [Material.DesertSand]: 'desert sand',
+  [Material.Wood]: 'wood',
+  [Material.Leaves]: 'leaves',
+  [Material.Needles]: 'needles',
+  [Material.JungleLeaves]: 'jungle leaves',
+  [Material.AcaciaLeaves]: 'acacia leaves',
+  [Material.Ice]: 'ice',
+};
+
+export function materialName(m: MaterialId): string {
+  return isWater(m) ? 'water' : (MATERIAL_NAMES[m] ?? `material ${m}`);
+}

@@ -30,6 +30,8 @@ import {
   tileStep,
   type Chunk,
   type ColumnRange,
+  type MaterialId,
+  volumeChange,
   type Edit,
   type TileCoord,
   type ChunkCoord,
@@ -93,10 +95,12 @@ export function encodeWorldMap(m: WorldMap): Uint8Array {
   return buf;
 }
 
-/** What an edit changed: the new chunks, and columns whose height range widened. */
+/** What an edit changed: the new chunks, columns whose height range widened, and how much of each material (see volumeChange). */
 export interface EditResult {
   changes: { coord: ChunkCoord; bytes: Uint8Array }[];
   columns: ({ cx: number; cz: number } & ColumnRange)[];
+  /** Unit-voxel volume of each material added (positive) or removed (negative). */
+  change: Map<MaterialId, number>;
 }
 
 /**
@@ -294,6 +298,8 @@ export class World {
       const k = `${c.cx},${c.cz}`;
       if (!columns.has(k)) columns.set(k, { cx: c.cx, cz: c.cz, before: this.columnRange(c.cx, c.cz) });
     }
+    const before = chunks.map((c) => this.current({ cx: c.cx, cy: c.cy, cz: c.cz }));
+    const change = volumeChange(before, chunks);
     const changes = chunks.map((chunk) => {
       this.recordEdited(chunk);
       const coord = { cx: chunk.cx, cy: chunk.cy, cz: chunk.cz };
@@ -307,7 +313,7 @@ export class World {
       const after = this.columnRange(cx, cz)!;
       if (!before || after.minY !== before.minY || after.maxY !== before.maxY || after.solidTop !== before.solidTop) widened.push({ cx, cz, ...after });
     }
-    return { changes, columns: widened };
+    return { changes, columns: widened, change };
   }
 
   /** Encoded chunks and tiles held in the caches, and how many each may hold. */

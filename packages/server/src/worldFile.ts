@@ -17,6 +17,9 @@ import {
   validateVoxelize,
   type ChunkGenerator,
   type DayClock,
+  type GameMode,
+  DEFAULT_GAME_MODE,
+  isGameMode,
   type HeightSource,
   type PlateTerrainConfig,
   type VoxelizeConfig,
@@ -41,6 +44,21 @@ export interface WorldFile {
   spec: WorldSpec;
   /** The world's time of day (kept when the spec is replaced). */
   clock?: DayClock;
+  /** Creative or survival; absent is DEFAULT_GAME_MODE (survival). Kept when the spec is replaced. */
+  mode?: GameMode;
+}
+
+/** A world's game mode. */
+export function modeOf(file: WorldFile): GameMode {
+  return file.mode ?? DEFAULT_GAME_MODE;
+}
+
+/**
+ * What players' inventories in a world are filed under: its name and when its terrain was made,
+ * so a world created again (or given new terrain, which discards its edits) starts everyone afresh.
+ */
+export function inventoryKeyOf(file: WorldFile): string {
+  return `${file.name}@${file.updatedAt ?? file.createdAt}`;
 }
 
 export class WorldExistsError extends Error {}
@@ -84,17 +102,19 @@ export function readWorld(dataRoot: string, name: string): WorldFile | null {
   const clock = parseClock(file.clock);
   if (clock) file.clock = clock;
   else delete file.clock;
+  if (file.mode !== undefined && !isGameMode(file.mode)) throw new Error(`${path}: unknown game mode ${JSON.stringify(file.mode)}`);
   return file;
 }
 
 /** Creates world `name` with `spec`; throws WorldExistsError if it already exists. */
-export function createWorld(dataRoot: string, name: string, spec: WorldSpec): WorldFile {
+export function createWorld(dataRoot: string, name: string, spec: WorldSpec, mode: GameMode = DEFAULT_GAME_MODE): WorldFile {
   checkName(name);
   validateWorldSpec(spec);
+  if (!isGameMode(mode)) throw new RangeError(`unknown game mode ${JSON.stringify(mode)}`);
   const dir = join(dataRoot, name);
   if (existsSync(join(dir, 'world.json'))) throw new WorldExistsError(`world "${name}" already exists`);
   mkdirSync(dir, { recursive: true });
-  const file: WorldFile = { version: 1, name, createdAt: new Date().toISOString(), spec };
+  const file: WorldFile = { version: 1, name, createdAt: new Date().toISOString(), spec, mode };
   writeFileSync(join(dir, 'world.json'), JSON.stringify(file, null, 2) + '\n', { flag: 'wx' });
   return file;
 }
@@ -166,11 +186,11 @@ export function listWorlds(dataRoot: string): WorldFile[] {
  * with, so its terrain never changes under its saved edits; `ignored` says
  * whether `specForNew` differed from it.
  */
-export function openWorld(dataRoot: string, name: string, specForNew: WorldSpec): { file: WorldFile; dir: string; created: boolean; ignored: boolean } {
+export function openWorld(dataRoot: string, name: string, specForNew: WorldSpec, modeForNew: GameMode = DEFAULT_GAME_MODE): { file: WorldFile; dir: string; created: boolean; ignored: boolean } {
   const dir = join(dataRoot, name);
   const file = readWorld(dataRoot, name);
   if (file) return { file, dir, created: false, ignored: JSON.stringify(file.spec) !== JSON.stringify(specForNew) };
-  return { file: createWorld(dataRoot, name, specForNew), dir, created: true, ignored: false };
+  return { file: createWorld(dataRoot, name, specForNew, modeForNew), dir, created: true, ignored: false };
 }
 
 /** Builds the generator (and its height source, for tolerance variants) for a spec. */

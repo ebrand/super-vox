@@ -2,6 +2,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   DEFAULT_DAY_MINUTES,
+  DEFAULT_GAME_MODE,
   DEFAULT_WORLD_SHAPE,
   TerrainGenerator,
   applyClockChange,
@@ -10,6 +11,7 @@ import {
   isValidWorldName,
   type ClockChange,
   type DayClock,
+  type GameMode,
   type HeightSource,
   type PlateTerrainConfig,
   type WorldConfig,
@@ -17,7 +19,7 @@ import {
 } from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
 import { World } from './world.js';
-import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, listWorlds, readWorld, saveClock, updateWorld, worldConfigOf, type WorldFile } from './worldFile.js';
+import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, readWorld, saveClock, updateWorld, worldConfigOf, type WorldFile } from './worldFile.js';
 
 /** What the HTTP API shows about a world. */
 export type WorldSummary = Pick<WorldFile, 'name' | 'createdAt' | 'updatedAt' | 'spec'> & {
@@ -46,6 +48,8 @@ export interface WorldCatalog {
   clock(name: string | undefined): DayClock | null;
   /** Changes a world's clock (now) and returns it; throws NoSuchWorldError. Absent where not allowed. */
   setClock?: (name: string, change: ClockChange) => DayClock;
+  /** World `name`'s game mode and the key its players' inventories are filed under; null if no such world. */
+  play(name: string | undefined): { mode: GameMode; inventoryKey: string } | null;
   /** Worlds open now (being played or recently asked for), by name. */
   openWorlds(): { name: string; world: World }[];
   /** Bytes of saved edits of world `name` on disk (0 if none or not kept on disk). */
@@ -58,9 +62,16 @@ export function localUtcOffsetMinutes(now = new Date()): number {
 }
 
 /** A catalog of exactly one world (tests, and servers without a data directory). */
-export function singleWorld(world: World, withTolerance?: (tolerance: number) => World, name = 'default', dayMinutes: number | 'real' = DEFAULT_DAY_MINUTES): WorldCatalog {
+export function singleWorld(
+  world: World,
+  withTolerance?: (tolerance: number) => World,
+  name = 'default',
+  dayMinutes: number | 'real' = DEFAULT_DAY_MINUTES,
+  mode: GameMode = DEFAULT_GAME_MODE,
+): WorldCatalog {
   let clock = defaultClock(Date.now(), dayMinutes, localUtcOffsetMinutes());
   return {
+    play: (n) => (n === undefined || n === name ? { mode, inventoryKey: `${name}@single` } : null),
     clock: (n) => (n === undefined || n === name ? clock : null),
     openWorlds: () => [{ name, world }],
     diskBytes: () => 0,
@@ -172,6 +183,13 @@ export class FileWorldCatalog implements WorldCatalog {
     }
     // A real-time clock follows the server's current time zone (daylight saving).
     return c.dayMinutes === 'real' ? { ...c, utcOffsetMinutes: localUtcOffsetMinutes() } : c;
+  }
+
+  play(name: string | undefined): { mode: GameMode; inventoryKey: string } | null {
+    const n = name ?? this.defaultName;
+    if (!isValidWorldName(n)) return null;
+    const file = this.open.get(n)?.file ?? readWorld(this.dataRoot, n);
+    return file ? { mode: modeOf(file), inventoryKey: inventoryKeyOf(file) } : null;
   }
 
   openWorlds(): { name: string; world: World }[] {

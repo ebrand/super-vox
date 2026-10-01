@@ -8,9 +8,11 @@ import {
   blockIndex,
   blockVoxelContaining,
   breakSizesFor,
+  materialName,
   nextBreakSize,
   type ClientMessage,
   type Edit,
+  type MaterialId,
   type ServerMessage,
 } from '@super-vox/shared';
 import type { ChunkManager } from './chunkManager.js';
@@ -26,13 +28,7 @@ const WHEEL_GESTURE_GAP = 200;
 /** How far away voxels can be edited (units): 32 m. */
 const REACH = 32 * UNITS_PER_METER;
 
-const MATERIALS = [
-  { id: Material.Stone, name: 'stone' },
-  { id: Material.Dirt, name: 'dirt' },
-  { id: Material.Grass, name: 'grass' },
-  // Fills the whole 1 m block (as a source) and flows.
-  { id: Material.Water, name: 'water' },
-] as const;
+
 
 /** Sizes the tool offers: the five that tile a 1 m block (1/16, 1/8, 1/4, 1/2, 1 m). */
 export const TOOL_SIZES = GRID_SIZES;
@@ -80,8 +76,9 @@ const mod = (v: number, m: number) => ((v % m) + m) % m;
  * In dig and place, Option positions the box in 1/16 m steps instead of
  * snapping to its size. In every mode, middle click breaks the aimed voxel into the next
  * smaller size, B breaks it into the selected size, X removes it. The size
- * (one of the five standard sizes) changes with Command+wheel or [ ], the
- * material with 1-4 (4: water, which fills whole blocks and flows). The server applies edits and sends back changed chunks.
+ * (one of the five standard sizes) changes with Command+wheel or [ ]; the material is the
+ * selected hotbar slot (see InventoryUi; water fills whole blocks and flows). The server applies
+ * edits (in survival, from your inventory) and sends back changed chunks.
  */
 export class EditTool {
   mode: Mode = MODES[0];
@@ -89,7 +86,6 @@ export class EditTool {
   onModeChange: ((mode: Mode) => void) | null = null;
   /** Index into TOOL_SIZES of the selected size. */
   private sizeIndex = TOOL_SIZES.indexOf(4);
-  materialIndex = 0;
   private target: Box | null = null;
   private placement: (Box & { valid: boolean; reason: string }) | null = null;
   private dig: Box | null = null;
@@ -120,6 +116,8 @@ export class EditTool {
     private readonly camera: THREE.Camera,
     private readonly chunks: ChunkManager,
     private readonly send: (msg: ClientMessage) => void,
+    /** The material to place (the selected hotbar slot), if any. */
+    private readonly materialOf: () => MaterialId | null,
     /** The player's body (units), which placement must not overlap; null if not colliding. */
     private readonly body: () => Aabb | null = () => null,
   ) {
@@ -206,8 +204,10 @@ export class EditTool {
     else this.sizeIndex = index;
   }
 
-  get material(): (typeof MATERIALS)[number] {
-    return MATERIALS[this.materialIndex]!;
+  /** The material placements use (the selected hotbar slot), if any. */
+  get material(): { id: MaterialId; name: string } | null {
+    const id = this.materialOf();
+    return id === null ? null : { id, name: materialName(id) };
   }
 
   /** Switches to the next mode (hybrid -> dig -> place -> hybrid). */
@@ -322,8 +322,8 @@ export class EditTool {
           ? 'click: remove · ⌘+click: remove everything in the box (⌘ shows it) · ⌥: 1/16 m steps'
           : 'click: place · ⌥: 1/16 m steps';
     return (
-      `mode: ${this.mode} (Tab: hybrid / dig / place) · ${size} ${this.material.name} · ${target}\n` +
-      `${actions} · middle-click: break smaller · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-4: material (4: water)` +
+      `mode: ${this.mode} (Tab: hybrid / dig / place) · ${size} ${this.material?.name ?? 'nothing (E: inventory)'} · ${target}\n` +
+      `${actions} · middle-click: break smaller · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-9: hotbar · E: inventory` +
       msg
     );
   }
@@ -359,7 +359,6 @@ export class EditTool {
     }
     if (e.code === 'BracketLeft') this.stepSize(-1, false);
     else if (e.code === 'BracketRight') this.stepSize(1, false);
-    else if (/^Digit[1-4]$/.test(e.code)) this.materialIndex = Number(e.code.slice(5)) - 1;
     else if (e.code === 'KeyX') this.remove();
     else if (e.code === 'KeyB' && this.target) {
       if (!breakSizesFor(this.target.size).includes(this.size)) {
@@ -375,7 +374,12 @@ export class EditTool {
     if (!this.placement) return;
     if (!this.placement.valid) return this.say(`can't place: ${this.placement.reason}`);
     const { x, y, z, size } = this.placement;
-    this.submit({ op: 'place', x, y, z, size, material: this.material.id }, 'place');
+    const material = this.material;
+    if (!material) {
+      this.say('nothing in this hotbar slot (E: inventory)');
+      return;
+    }
+    this.submit({ op: 'place', x, y, z, size, material: material.id }, 'place');
     // A size chosen in hybrid applies to one placement; then it matches the target again.
     if (this.mode === 'hybrid') this.hybridSize = null;
   }

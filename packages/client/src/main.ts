@@ -16,6 +16,7 @@ import { PLAYER, moveAabb, playerBox } from './physics.js';
 import { loadSettings } from './settings.js';
 import { MeshWorkerPool } from './workerPool.js';
 import { WorldMapOverlay } from './worldMap.js';
+import { InventoryUi } from './inventory.js';
 import { createCompassRose } from './compassRose.js';
 import { solidAtFor, waterAtFor } from './worldQuery.js';
 
@@ -103,6 +104,13 @@ let serverOffset = 0;
 const worldHours = () => (clock ? clockHours(clock, Date.now() + serverOffset) : 10);
 applyLighting(lighting, worldHours(), atmosphere, lightingUniforms, view);
 /** L: sliders for the lighting (saved in this browser), and the world's time. */
+/** Hotbar and inventory screen (E); the server keeps what's in them (see InventoryUi). */
+const inventoryUi = new InventoryUi(document.body, (hotbar) => connection?.send({ type: 'setHotbar', hotbar }));
+// Clicking back into the world (capturing the mouse) closes it.
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement) inventoryUi.close();
+});
+
 const lightingPanel = new LightingPanel(
   lighting,
   (l) => {
@@ -250,6 +258,7 @@ connection = connect({
           (msg.canEdit ? '' : '\nnot signed in: look around, or sign in on the menu (/) to build');
         clock = msg.clock;
         serverOffset = msg.serverTime - Date.now();
+        inventoryUi.enabled = msg.canEdit;
         if (!chunks) {
           world = w;
           if (msg.seaLevel !== null) addSea(msg.seaLevel);
@@ -309,6 +318,17 @@ connection = connect({
               return;
             }
             if (worldMap?.isOpen) return;
+            // Inventory: E opens and closes it (freeing the mouse to click), Esc closes it; 1-9 pick a hotbar slot.
+            if (e.code === 'KeyE' || (e.code === 'Escape' && inventoryUi.isOpen)) {
+              if (e.code === 'KeyE' && !inventoryUi.isOpen && controls.pointerLocked) document.exitPointerLock();
+              if (e.code === 'Escape') inventoryUi.close();
+              else inventoryUi.toggle();
+              return;
+            }
+            if (/^Digit[1-9]$/.test(e.code)) {
+              inventoryUi.select(Number(e.code.slice(5)) - 1);
+              return;
+            }
             if (e.code === 'KeyI') {
               setInfoVisible(statusEl.hidden === true);
               return;
@@ -328,7 +348,7 @@ connection = connect({
             } else return;
             updateHud();
           });
-          editTool = new EditTool(scene, camera, chunks, send, () => (controls.collide ? playerBox(eyeUnits()) : null));
+          editTool = new EditTool(scene, camera, chunks, send, () => inventoryUi.material, () => (controls.collide ? playerBox(eyeUnits()) : null));
           const modeTag = document.getElementById('mode')!;
           editTool.onModeChange = (mode) => {
             modeTag.textContent = mode.toUpperCase();
@@ -364,6 +384,10 @@ connection = connect({
         break;
       case 'tileUnavailable':
         tiles?.onTileUnavailable(msg);
+        break;
+      case 'inventory':
+        inventoryUi.update(msg);
+        updateHud();
         break;
       case 'editResult':
         editTool?.onServerMessage(msg);
@@ -461,13 +485,14 @@ setInterval(() => {
 
 renderer.setAnimationLoop(() => {
   const frameStart = performance.now();
-  // Movement and editing pause while the map is open.
-  if (!worldMap?.isOpen) controls.update((frameStart - lastFrame) / 1000);
+  // Movement and editing pause while the map or the inventory is open.
+  const paused = worldMap?.isOpen || inventoryUi.isOpen;
+  if (!paused) controls.update((frameStart - lastFrame) / 1000);
   lastFrame = frameStart;
   trackVelocity(frameStart);
   chunks?.setViewY(camera.position.y * UNITS_PER_METER);
   updateLod();
-  if (!worldMap?.isOpen) editTool?.update();
+  if (!paused) editTool?.update();
   compassRose.update(controls.yaw);
   worldMap?.update();
   if (sea) sea.position.set(camera.position.x, sea.position.y, camera.position.z);

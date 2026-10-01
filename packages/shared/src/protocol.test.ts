@@ -102,6 +102,14 @@ describe('protocol', () => {
     expect(mergeSpans([])).toEqual([]);
   });
 
+  it('validates hotbars', () => {
+    const nine = [1, 2, null, null, null, null, null, null, 12];
+    expect(decodeClientMessage(JSON.stringify({ type: 'setHotbar', hotbar: nine }))).toEqual({ type: 'setHotbar', hotbar: nine });
+    for (const hotbar of [nine.slice(1), [...nine, 1], [1.5, ...nine.slice(1)], [-1, ...nine.slice(1)], ['1', ...nine.slice(1)], 'x']) {
+      expect(decodeClientMessage(JSON.stringify({ type: 'setHotbar', hotbar }))).toBeNull();
+    }
+  });
+
   it('validates poses', () => {
     expect(decodeClientMessage('{"type":"pose","x":1.5,"y":-3,"z":200,"yaw":0.7,"extra":1}')).toEqual({ type: 'pose', x: 1.5, y: -3, z: 200, yaw: 0.7 });
     expect(decodeClientMessage('{"type":"pose","x":1,"y":2,"z":3}')).toBeNull();

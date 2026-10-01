@@ -3,10 +3,13 @@ import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import fastifyCookie from '@fastify/cookie';
 import type { Auth, SignedIn } from './auth.js';
+import { starterInventory, type InventoryStore } from './inventories.js';
+import { PlayerInventory } from './playerInventory.js';
 import {
   BinaryTag,
   EditError,
   columnSpans,
+  creativeHotbar,
   mergeSpans,
   type ChunkCoord,
   PROTOCOL_VERSION,
@@ -44,6 +47,8 @@ export type AppOptions = (
   clientDir?: string;
   /** Google sign-in. With it, only signed-in players may edit; without, anyone may (development). */
   auth?: Auth;
+  /** Signed-in players' inventories (see PlayerInventory); without, editing is unlimited. */
+  inventories?: InventoryStore;
 };
 
 /** A connection, as the dashboard shows it. */
@@ -317,6 +322,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const whoReady: Promise<SignedIn | null> = opts.auth ? opts.auth.signedIn(req.cookies).catch(() => null) : Promise.resolve(null);
     let who: SignedIn | null = null;
     const canEdit = () => !opts.auth || who !== null;
+    /** The signed-in player's inventory here; null until loaded (or without accounts). */
+    let inventory: PlayerInventory | null = null;
+    let inventoryLoading = false;
     const send = (msg: ServerMessage) => out(socket, encodeMessage(msg));
     const sendBinary = (tag: number, bytes: Uint8Array) => out(socket, frame(tag, bytes));
     let greeted = false;
@@ -343,6 +351,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       );
     socket.on('close', () => {
       queue.close();
+      void inventory?.flush();
       clients.delete(socket);
       clientWorld.delete(socket);
       players.delete(socket);
@@ -401,6 +410,30 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               player: who ? { name: who.account.name, admin: who.admin } : null,
               canEdit: canEdit(),
             });
+            const play = catalog.play(msg.world);
+            const store = opts.inventories;
+            if (!who || !store || !play) return;
+            const accountId = who.account.id;
+            inventoryLoading = true;
+            void store
+              .load(accountId, play.inventoryKey)
+              .then((saved) => {
+                if (socket.readyState !== socket.OPEN) return;
+                inventory = new PlayerInventory(play.mode, saved ?? (play.mode === 'survival' ? starterInventory() : { items: new Map(), hotbar: creativeHotbar() }), (inv) =>
+                  store.save(accountId, play.inventoryKey, inv).catch((err: unknown) => {
+                    metrics.error('inventory', err instanceof Error ? err.message : String(err), clientWorld.get(socket));
+                    app.log.error(err, 'saving an inventory failed');
+                  }),
+                );
+                send(inventory.message());
+              })
+              .catch((err: unknown) => {
+                metrics.error('inventory', err instanceof Error ? err.message : String(err), clientWorld.get(socket));
+                app.log.error(err, 'loading an inventory failed');
+              })
+              .finally(() => {
+                inventoryLoading = false;
+              });
           });
           break;
 
@@ -452,6 +485,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             send({ type: 'editResult', id: msg.id, ok: false, error: 'sign in to build' });
             return;
           }
+          if (opts.inventories && who && !inventory) {
+            send({ type: 'editResult', id: msg.id, ok: false, error: inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded" });
+            return;
+          }
+          const refused = inventory?.refuse(msg.edit);
+          if (refused) {
+            send({ type: 'editResult', id: msg.id, ok: false, error: refused });
+            return;
+          }
           let result: EditResult;
           try {
             result = world.applyEdit(msg.edit);
@@ -465,7 +507,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           metrics.totals.edits++;
           players.get(socket)!.edits++;
           send({ type: 'editResult', id: msg.id, ok: true });
+          if (inventory?.apply(result.change)) send(inventory.message());
           broadcast(world, result);
+          break;
+        }
+
+        case 'setHotbar': {
+          if (!inventory) return;
+          const why = inventory.setHotbar(msg.hotbar);
+          if (why) send({ type: 'error', code: 'bad_hotbar', message: why });
           break;
         }
 
