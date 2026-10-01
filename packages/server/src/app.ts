@@ -314,7 +314,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       app.log.error(err);
     });
     /** Queues a chunk request; `front` for a column's chunks, sent ahead of other waiting columns. */
-    const queueChunk = (c: ChunkCoord, front = false) =>
+    const queueChunk = (c: ChunkCoord, lane: 'front' | 'near' = 'near') =>
       queue.add(
         `c:${c.cx},${c.cy},${c.cz}`,
         () => {
@@ -327,7 +327,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           metrics.totals.chunksOut++;
           players.get(socket)!.chunks++;
         },
-        front,
+        lane,
       );
     socket.on('close', () => {
       queue.close();
@@ -404,7 +404,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
                 metrics.totals.tilesOut++;
                 players.get(socket)!.tiles++;
               }
-            });
+            }, 'far');
           } else {
             const { cx, cz } = msg;
             queue.add(`k:${cx},${cz}`, () => {
@@ -414,7 +414,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               const sent = range && mergeSpans(columnSpans(range).map((s) => ({ lo: s.lo - 1, hi: s.hi + 1 })));
               send(range ? { type: 'column', cx, cz, ...range, sent: sent! } : { type: 'column', cx, cz, minY: null, maxY: null });
               metrics.totals.columnsOut++;
-              for (const s of sent ?? []) for (let cy = s.lo; cy <= s.hi; cy++) queueChunk({ cx, cy, cz }, true);
+              for (const s of sent ?? []) for (let cy = s.lo; cy <= s.hi; cy++) queueChunk({ cx, cy, cz }, 'front');
             });
           }
           break;

@@ -43,8 +43,11 @@ const HORIZONTAL = [
 
 const colKey = (cx: number, cz: number) => `${cx},${cz}`;
 
-/** Column requests outstanding at once (see pump). */
-const MAX_COLUMNS_IN_FLIGHT = 4;
+/**
+ * Column requests outstanding at once, by default (see pump). Enough to cover the round trip to
+ * a distant server for a wide detail area (detail 8 brings 17 new columns per 16 m flown).
+ */
+export const MAX_COLUMNS_IN_FLIGHT = 16;
 
 function sameBytes(a: Uint8Array | null, b: Uint8Array | null): boolean {
   if (a === b) return true;
@@ -87,7 +90,10 @@ export class ChunkManager {
   private readonly meshes = new Map<string, { mesh: THREE.Object3D | null; mask: number }>();
   /** Mesh jobs running; `stale` once the chunk (or a neighbour) changed since it started. */
   private readonly jobs = new Map<string, { token: number; mask: number; stale?: boolean }>();
+  /** Meshes kept, after leaving the selection, until their replacements are in (oldest first). */
   private readonly stale = new Map<string, THREE.Object3D>();
+  /** When each stale mesh was retired (performance.now()). */
+  private readonly staleAt = new Map<string, number>();
   private nextToken = 1;
   private errors = 0;
   private focusX = 0;
@@ -103,6 +109,7 @@ export class ChunkManager {
     private readonly pool: MeshWorkerPool,
     private readonly maxInFlight: number,
     private readonly onChange: () => void,
+    private readonly maxColumnsInFlight = MAX_COLUMNS_IN_FLIGHT,
   ) {}
 
   get stats(): ChunkStats {
@@ -236,10 +243,17 @@ export class ChunkManager {
     this.inFlight = 0;
   }
 
-  /** Removes meshes that left the region (call once replacements are in place). */
-  retireStale(): void {
-    for (const m of this.stale.values()) disposePackedMesh(m);
-    this.stale.clear();
+  /**
+   * Removes meshes that left the region: all of them (once replacements are in place), or those
+   * that left more than `maxAgeMs` ago (while moving, everything is never in place at once).
+   */
+  retireStale(maxAgeMs?: number, now = performance.now()): void {
+    for (const [key, m] of this.stale) {
+      if (maxAgeMs !== undefined && now - this.staleAt.get(key)! < maxAgeMs) break; // the rest are newer
+      disposePackedMesh(m);
+      this.stale.delete(key);
+      this.staleAt.delete(key);
+    }
   }
 
   dispose(): void {
@@ -336,13 +350,15 @@ export class ChunkManager {
   private retire(key: string, mesh: THREE.Object3D): void {
     const old = this.stale.get(key);
     if (old) disposePackedMesh(old);
+    this.stale.delete(key);
     this.stale.set(key, mesh);
+    this.staleAt.set(key, performance.now());
   }
 
   private pump(): void {
     // Few columns at a time: each brings its chunks (counted in flight once its reply arrives), so
     // more would let the server's queue grow past what we can cancel when we move on.
-    while (this.inFlight < this.maxInFlight && this.columnRequested.size < MAX_COLUMNS_IN_FLIGHT && this.columnQueue.length > 0) {
+    while (this.inFlight < this.maxInFlight && this.columnRequested.size < this.maxColumnsInFlight && this.columnQueue.length > 0) {
       const c = this.columnQueue.shift()!;
       const key = colKey(c.cx, c.cz);
       if (!this.region.has(key) || this.ranges.has(key) || this.columnRequested.has(key)) continue;
@@ -474,6 +490,7 @@ export class ChunkManager {
     if (stale) {
       disposePackedMesh(stale);
       this.stale.delete(key);
+      this.staleAt.delete(key);
     }
     if (mesh) this.scene.add(mesh);
     this.meshes.set(key, { mesh, mask });

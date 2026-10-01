@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RequestQueue } from './requestQueue.js';
+import { FAR_EVERY, RequestQueue } from './requestQueue.js';
 
 /** A queue run by hand: `step()` runs one scheduled batch. */
 function manual(budgetMs = 1000) {
@@ -15,8 +15,8 @@ describe('RequestQueue', () => {
     const ran: string[] = [];
     q.add('a', () => {
       ran.push('a');
-      q.add('a1', () => ran.push('a1'), true);
-      q.add('c', () => ran.push('c again'), true); // already waiting
+      q.add('a1', () => ran.push('a1'), 'front');
+      q.add('c', () => ran.push('c again'), 'front'); // already waiting
     });
     q.add('b', () => ran.push('b'));
     q.add('b', () => ran.push('b again'));
@@ -60,4 +60,15 @@ describe('RequestQueue', () => {
     expect(errors).toHaveLength(1);
     expect(scheduled()).toBe(0);
   });
+
+  it('serves tiles behind columns and chunks, but every FAR_EVERY-th turn while those wait', () => {
+    const { q, step } = manual();
+    const ran: string[] = [];
+    for (let i = 0; i < 3; i++) q.add(`t${i}`, () => ran.push(`t${i}`), 'far');
+    for (let i = 0; i < 8; i++) q.add(`c${i}`, () => ran.push(`c${i}`));
+    step();
+    expect(FAR_EVERY).toBe(4);
+    expect(ran).toEqual(['c0', 'c1', 'c2', 't0', 'c3', 'c4', 'c5', 't1', 'c6', 'c7', 't2']);
+  });
 });
+

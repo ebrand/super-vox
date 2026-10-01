@@ -435,6 +435,14 @@ setInterval(() => {
   lastPose = key;
 }, 500);
 
+// While moving, loading never finishes all at once (see onProgress), so meshes that were replaced
+// are dropped a few seconds on instead; otherwise they pile up for as long as you fly.
+const STALE_MS = 3000;
+setInterval(() => {
+  chunks?.retireStale(STALE_MS);
+  tiles?.retireStale(STALE_MS);
+}, 500);
+
 renderer.setAnimationLoop(() => {
   const frameStart = performance.now();
   // Movement and editing pause while the map is open.

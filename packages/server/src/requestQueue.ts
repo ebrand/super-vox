@@ -1,13 +1,23 @@
 /**
- * A connection's pending requests (chunks, tiles, columns), served in arrival order a few
- * milliseconds' worth at a time. Between batches the event loop reads the socket again, so a
- * `cancel` for requests the client has flown past arrives before they're generated, and other
- * connections get their turn.
+ * Which of a connection's requests go first: `front`, the chunks of a column just answered (so
+ * columns finish in the order asked); `near`, full-detail columns and chunks, around the player;
+ * `far`, low-detail tiles, which get every FAR_EVERY-th turn while near work waits so distant
+ * terrain still fills in.
+ */
+export type Lane = 'front' | 'near' | 'far';
+
+/** While near work waits, one far job in this many. */
+export const FAR_EVERY = 4;
+
+/**
+ * A connection's pending requests (chunks, tiles, columns), served by lane (see Lane), each lane
+ * in arrival order, a few milliseconds' worth at a time. Between batches the event loop reads the
+ * socket again, so a `cancel` for requests the client has flown past arrives before they're
+ * generated, and other connections get their turn.
  */
 export class RequestQueue {
-  /** Served first: the chunks of a column just answered, so columns finish in the order asked. */
-  private readonly front = new Map<string, () => void>();
-  private readonly main = new Map<string, () => void>();
+  private readonly lanes: Record<Lane, Map<string, () => void>> = { front: new Map(), near: new Map(), far: new Map() };
+  private sinceFar = 0;
   private scheduled = false;
   private closed = false;
 
@@ -19,25 +29,42 @@ export class RequestQueue {
   ) {}
 
   get size(): number {
-    return this.front.size + this.main.size;
+    return this.lanes.front.size + this.lanes.near.size + this.lanes.far.size;
   }
 
   /** Queues `job` under `key`, unless a request with that key is already waiting. */
-  add(key: string, job: () => void, front = false): void {
-    if (this.closed || this.front.has(key) || this.main.has(key)) return;
-    (front ? this.front : this.main).set(key, job);
+  add(key: string, job: () => void, lane: Lane = 'near'): void {
+    if (this.closed || this.waiting(key)) return;
+    this.lanes[lane].set(key, job);
     this.wake();
   }
 
   /** Drops a waiting request; false if it isn't waiting (already served, or never asked). */
   cancel(key: string): boolean {
-    return this.front.delete(key) || this.main.delete(key);
+    return this.lanes.front.delete(key) || this.lanes.near.delete(key) || this.lanes.far.delete(key);
   }
 
   close(): void {
     this.closed = true;
-    this.front.clear();
-    this.main.clear();
+    for (const lane of Object.values(this.lanes)) lane.clear();
+  }
+
+  private waiting(key: string): boolean {
+    return this.lanes.front.has(key) || this.lanes.near.has(key) || this.lanes.far.has(key);
+  }
+
+  private next(): Map<string, () => void> | null {
+    const { front, near, far } = this.lanes;
+    if (front.size) return front;
+    if (far.size && (!near.size || this.sinceFar >= FAR_EVERY - 1)) {
+      this.sinceFar = 0;
+      return far;
+    }
+    if (near.size) {
+      this.sinceFar++;
+      return near;
+    }
+    return null;
   }
 
   private wake(): void {
@@ -51,10 +78,9 @@ export class RequestQueue {
     const t0 = performance.now();
     // At least one job per batch, then more while the budget lasts.
     do {
-      const lane = this.front.size ? this.front : this.main;
-      const next = lane.entries().next();
-      if (next.done) return;
-      const [key, job] = next.value;
+      const lane = this.next();
+      if (!lane) return;
+      const [key, job] = lane.entries().next().value!;
       lane.delete(key);
       try {
         job();

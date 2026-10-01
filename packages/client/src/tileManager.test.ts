@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type * as THREE from 'three';
-import { encodeTile, TILE_SAMPLES, type ClientMessage, type TileCoord } from '@super-vox/shared';
+import * as THREE from 'three';
+import { decodeTile, encodeTile, TILE_SAMPLES, type ClientMessage, type TileCoord } from '@super-vox/shared';
+import { packQuads } from './mesher.js';
+import { meshTile } from './tileMesher.js';
 import { TileManager } from './tileManager.js';
 import type { MeshWorkerPool } from './workerPool.js';
 
@@ -91,6 +93,30 @@ describe('TileManager', () => {
     expect(sent.filter((m) => m.type === 'requestTile')).toHaveLength(4); // A, C, B, A again
     tm.onTileBytes(tileBytes(C)); // a late answer to the cancelled request: ignored
     expect(tm.stats.inFlight).toBe(2);
+  });
+
+  it('drops replaced tiles that have waited too long, even while others are still loading', async () => {
+    const sent: ClientMessage[] = [];
+    // A pool that really meshes, so tiles get meshes to retire.
+    const pool = {
+      run: async (job: { tile: Uint8Array }) => {
+        const m = meshTile(decodeTile(job.tile))!;
+        return { id: 0, ms: 0, buffers: packQuads(m.quads), baseY: m.baseY };
+      },
+    } as unknown as MeshWorkerPool;
+    const scene = new THREE.Scene();
+    const tm = new TileManager(scene, new THREE.MeshBasicMaterial(), new THREE.MeshBasicMaterial(), (m) => sent.push(m), pool, 8, () => {});
+    tm.setTiles([A], 0, 0);
+    tm.onTileBytes(tileBytes(A));
+    await flush();
+    tm.setTiles([B], 0, 0); // A is replaced by B, which never arrives
+    expect(tm.staleCount).toBe(1);
+    const t = performance.now();
+    tm.retireStale(3000, t + 1000);
+    expect(tm.staleCount).toBe(1); // too soon
+    tm.retireStale(3000, t + 4000);
+    expect(tm.staleCount).toBe(0);
+    expect(scene.children).toHaveLength(0);
   });
 });
 

@@ -35,7 +35,10 @@ export class TileManager {
   private inFlight = 0;
   private readonly meshes = new Map<string, THREE.Object3D | null>();
   private readonly jobs = new Map<string, number>();
+  /** Meshes kept, after leaving the selection, until their replacements are in (oldest first). */
   private readonly stale = new Map<string, THREE.Object3D>();
+  /** When each stale mesh was retired (performance.now()). */
+  private readonly staleAt = new Map<string, number>();
   private nextToken = 1;
   private errors = 0;
 
@@ -135,9 +138,14 @@ export class TileManager {
     this.inFlight = 0;
   }
 
-  retireStale(): void {
-    for (const m of this.stale.values()) disposePackedMesh(m);
-    this.stale.clear();
+  /** Removes tiles that left the selection: all, or those that left more than `maxAgeMs` ago. */
+  retireStale(maxAgeMs?: number, now = performance.now()): void {
+    for (const [key, m] of this.stale) {
+      if (maxAgeMs !== undefined && now - this.staleAt.get(key)! < maxAgeMs) break; // the rest are newer
+      disposePackedMesh(m);
+      this.stale.delete(key);
+      this.staleAt.delete(key);
+    }
   }
 
   dispose(): void {
@@ -149,7 +157,9 @@ export class TileManager {
   private retire(key: string, mesh: THREE.Object3D): void {
     const old = this.stale.get(key);
     if (old) disposePackedMesh(old);
+    this.stale.delete(key);
     this.stale.set(key, mesh);
+    this.staleAt.set(key, performance.now());
   }
 
   private pump(): void {
@@ -199,6 +209,7 @@ export class TileManager {
     if (stale) {
       disposePackedMesh(stale);
       this.stale.delete(key);
+      this.staleAt.delete(key);
     }
     if (mesh) this.scene.add(mesh);
     this.meshes.set(key, mesh);
