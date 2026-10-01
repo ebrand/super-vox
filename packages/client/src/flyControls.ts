@@ -59,6 +59,10 @@ export class FlyControls {
   walking = false;
   /** Whether the world below the camera has loaded (gravity waits for it). */
   groundLoaded: () => boolean = () => true;
+  /** Whether a point (metres) is in water; walking there swims. */
+  inWater: (x: number, y: number, z: number) => boolean = () => false;
+  /** Walking with the middle of the body in water, after the last update. */
+  swimming = false;
   private walk: WalkState = { vy: 0, grounded: false };
   private readonly keys = new Set<string>();
   private dragging = false;
@@ -162,10 +166,14 @@ export class FlyControls {
       const dir = moveDirection(this.yaw, this.keys);
       dir.y = 0;
       if (dir.lengthSq() > 0) dir.normalize();
-      const speed = step / Math.max(Math.min(dt, 0.1), 1e-6);
+      // The middle of the body (the eye is 1.62 m up a 1.8 m player).
+      const p = this.camera.position;
+      this.swimming = this.inWater(p.x, p.y - 0.75, p.z);
+      const swim = this.swimming ? { up: this.keys.has('Space') || this.keys.has('KeyE'), down: this.keys.has('KeyC') || this.keys.has('KeyQ') } : undefined;
+      const speed = (step / Math.max(Math.min(dt, 0.1), 1e-6)) * (swim ? 0.5 : 1);
       const r = walkStep(
         this.walk,
-        { dx: dir.x, dz: dir.z, speed, jump: this.keys.has('Space') },
+        { dx: dir.x, dz: dir.z, speed, jump: this.keys.has('Space'), ...(swim ? { swim } : {}) },
         Math.min(dt, 0.1),
         this.collide,
         this.groundLoaded(),
@@ -173,6 +181,7 @@ export class FlyControls {
       this.walk = r.state;
       this.camera.position.add(new THREE.Vector3(...r.delta));
     } else {
+      this.swimming = false;
       this.walk = { vy: 0, grounded: false };
       const delta = moveDirection(this.yaw, this.keys).multiplyScalar(step);
       this.camera.position.add(this.collide ? new THREE.Vector3(...this.collide([delta.x, delta.y, delta.z]).delta) : delta);

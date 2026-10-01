@@ -1,6 +1,8 @@
 import {
   CHUNK_SIZE,
   EditError,
+  NO_CANOPY,
+  encodeClimate,
   NO_GROUND,
   applyEdit,
   decodeChunk,
@@ -25,6 +27,7 @@ import {
   type ChunkCoord,
   type ChunkGenerator,
   type WorldConfig,
+  type Tile,
 } from '@super-vox/shared';
 import type { ChunkStore } from './chunkStore.js';
 
@@ -218,7 +221,18 @@ export class World {
         heights[i + TILE_SAMPLES * j] = outside ? NO_GROUND : Math.max(-32767, Math.min(32767, s.heights[i + TILE_SAMPLES * j]!));
       }
     }
-    const bytes = encodeTile({ ...t, heights, materials: s.materials });
+    // Forest canopy, if any, floats above the ground.
+    let canopy: Pick<Tile, 'canopyTop' | 'canopyBottom' | 'canopyMaterials'> = {};
+    if (s.canopy) {
+      const top = new Int16Array(TILE_SAMPLES * TILE_SAMPLES).fill(NO_GROUND), bottom = new Int16Array(TILE_SAMPLES * TILE_SAMPLES).fill(NO_GROUND);
+      for (let k = 0; k < top.length; k++) {
+        if (s.canopy.top[k] === NO_CANOPY || heights[k] === NO_GROUND) continue;
+        top[k] = Math.max(-32767, Math.min(32767, s.canopy.top[k]!));
+        bottom[k] = Math.max(-32767, Math.min(32767, s.canopy.bottom[k]!));
+      }
+      canopy = { canopyTop: top, canopyBottom: bottom, canopyMaterials: s.canopy.material };
+    }
+    const bytes = encodeTile({ ...t, heights, materials: s.materials, ...canopy });
     lruSet(this.tileCache, key, bytes, this.cacheSize);
     return bytes;
   }
@@ -230,6 +244,17 @@ export class World {
     const range = this.generator.columnRange(resolved.cx, resolved.cz);
     const span = this.editSpans.get(`${resolved.cx},${resolved.cz}`);
     return span ? { minY: Math.min(range.minY, span.minY), maxY: Math.max(range.maxY, span.maxY) } : range;
+  }
+
+  private climateBytes: Uint8Array | null | undefined;
+
+  /** The climate for blending biome colours (see encodeClimate), or null where biomes don't blend. */
+  getEncodedClimate(): Uint8Array | null {
+    if (this.climateBytes === undefined) {
+      const c = this.generator.climate?.() ?? null;
+      this.climateBytes = c ? encodeClimate(c) : null;
+    }
+    return this.climateBytes;
   }
 
   /**
@@ -249,8 +274,10 @@ export class World {
     const materials = new Uint8Array(cols * rows);
     for (let j = 0; j < rows; j++) {
       for (let i = 0; i < cols; i++) {
-        heights[i + cols * j] = Math.max(-32767, Math.min(32767, s.heights[i + n * j]!));
-        materials[i + cols * j] = Math.min(255, s.materials[i + n * j]!);
+        // The map shows forests from above: their canopy where there is one.
+        const k = i + n * j, tree = s.canopy && s.canopy.top[k] !== NO_CANOPY;
+        heights[i + cols * j] = Math.max(-32767, Math.min(32767, tree ? s.canopy!.top[k]! : s.heights[k]!));
+        materials[i + cols * j] = Math.min(255, tree ? s.canopy!.material[k]! : s.materials[k]!);
       }
     }
     const map = { cols, rows, step, seaLevel: this.seaLevel, heights, materials };

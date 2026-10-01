@@ -35,15 +35,16 @@ describe('meshTile', () => {
     const f = (i: number, j: number) => ((i * 7 + j * 13) % 11) * 5 - 20;
     const level = 3;
     const m = meshTile(tile(level, f))!;
-    const step = tileStep(level), skirt = skirtDepth(level);
-    // Expected wall area per direction: drops to lower in-tile neighbours plus skirts at the tile edge.
+    const step = tileStep(level);
+    // Expected wall area per direction: drops to lower in-tile neighbours, plus skirts at the tile
+    // edge reaching down to the tile's base.
     const expected = [0, 0, n * n * step * step, 0, 0, 0];
     const sides = [[1, 0, 0], [-1, 0, 1], [0, 1, 4], [0, -1, 5]] as const;
     for (let j = 0; j < n; j++) {
       for (let i = 0; i < n; i++) {
         for (const [di, dj, dir] of sides) {
           const ii = i + di, jj = j + dj;
-          const drop = ii < 0 || jj < 0 || ii >= n || jj >= n ? skirt : Math.max(0, f(i, j) - f(ii, jj));
+          const drop = ii < 0 || jj < 0 || ii >= n || jj >= n ? f(i, j) - m.baseY : Math.max(0, f(i, j) - f(ii, jj));
           expected[dir]! += drop * step;
         }
       }
@@ -55,6 +56,48 @@ describe('meshTile', () => {
         for (let v = q.v; v < q.v + q.dv; v += step) expect(q.plane + m.baseY).toBe(f(v / step, u / step));
       }
     }
+  });
+
+  it('walls tall edge columns (forest canopy) all the way down, leaving no opening', () => {
+    // One 20 m column of canopy on the tile's east edge, the rest ground at 0.
+    const level = 2, step = tileStep(level);
+    const m = meshTile(tile(level, (i, j) => (i === n - 1 && j === 5 ? 320 : 0)))!;
+    // Its outward (+X) skirt (possibly merged with neighbours' into several quads) covers
+    // everything from the tile's base to its top.
+    const pieces = m.quads
+      .filter((q) => q.dir === 0 && q.plane === n * step && q.v <= 5 * step && q.v + q.dv > 5 * step)
+      .map((q) => [q.u, q.u + q.du] as const)
+      .sort((a, b) => a[0] - b[0]);
+    let reached = 0;
+    for (const [a, b] of pieces) {
+      expect(a).toBeLessThanOrEqual(reached); // no gap
+      reached = Math.max(reached, b);
+    }
+    expect(reached).toBe(320 - m.baseY);
+  });
+
+  it('draws forest canopy as slabs over the ground, without walls between touching crowns', () => {
+    const level = 1, step = tileStep(level);
+    const t = tile(level, () => 0);
+    const N = n * n;
+    t.canopyTop = new Int16Array(N).fill(NO_GROUND);
+    t.canopyBottom = new Int16Array(N).fill(NO_GROUND);
+    t.canopyMaterials = new Uint16Array(N);
+    // Two neighbouring crowns: 4-10 m and 6-12 m over cells (5,5) and (6,5).
+    const set = (i: number, j: number, b: number, top: number) => ((t.canopyBottom![i + n * j] = b), (t.canopyTop![i + n * j] = top), (t.canopyMaterials![i + n * j] = 13));
+    set(5, 5, 64, 160);
+    set(6, 5, 96, 192);
+    const m = meshTile(t)!;
+    const leaves = m.quads.filter((q) => q.material === 13);
+    // The ground is still drawn under them, as one flat top face.
+    expect(m.quads.filter((q) => q.dir === 2 && q.material !== 13).reduce((a, q) => a + q.du * q.dv, 0)).toBe(N * step * step);
+    // Tops and undersides at the crowns' heights.
+    expect(leaves.filter((q) => q.dir === 2).map((q) => q.plane + m.baseY).sort()).toEqual([160, 192]);
+    expect(leaves.filter((q) => q.dir === 3).map((q) => q.plane + m.baseY).sort()).toEqual([64, 96]);
+    // Between them (+X face of cell 5 at x = 6 steps), only the part of 4-10 m the other crown
+    // (6-12 m) doesn't cover: 4-6 m.
+    const between = leaves.filter((q) => q.dir === 0 && q.plane === 6 * step);
+    expect(between.map((q) => [q.u + m.baseY, q.u + q.du + m.baseY])).toEqual([[64, 96]]);
   });
 
   it('skips cells outside the world and walls them off', () => {

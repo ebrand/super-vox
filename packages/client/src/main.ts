@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CHUNK_SIZE, UNITS_PER_METER, isValidTolerance, unitsToMeters, type WorldConfig } from '@super-vox/shared';
+import { CHUNK_SIZE, UNITS_PER_METER, decodeClimate, isValidTolerance, unitsToMeters, type WorldConfig } from '@super-vox/shared';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool } from './editTool.js';
@@ -7,6 +7,11 @@ import { FlyControls } from './flyControls.js';
 import { selectLod } from './lod.js';
 import { TileManager } from './tileManager.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
+import { createAtmosphere, createSky } from './atmosphere.js';
+import { WATER_LAYER, WaterRenderer, createSeaMaterial } from './water.js';
+import { createTint } from './tint.js';
+import { applyLighting, loadLighting, saveLighting } from './lighting.js';
+import { LightingPanel } from './lightingPanel.js';
 import { PLAYER, moveAabb, playerBox } from './physics.js';
 import { loadSettings } from './settings.js';
 import { MeshWorkerPool } from './workerPool.js';
@@ -46,15 +51,38 @@ renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
-const sky = new THREE.Color(0x87a9c9);
+const atmosphere = createAtmosphere(view);
 const scene = new THREE.Scene();
-scene.background = sky;
-scene.fog = new THREE.Fog(sky, view * 0.4, view);
+scene.background = atmosphere.uniforms.horizonColor.value;
+scene.add(createSky(atmosphere));
 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, view * 1.5);
 const controls = new FlyControls(camera, renderer.domElement);
 
-const material = createVoxelMaterial();
+const material = createVoxelMaterial(atmosphere);
+/** Draws water over the rest of the scene, shading it from what lies behind. */
+const water = new WaterRenderer(renderer, atmosphere);
+const lightingUniforms = { aoStrength: material.uniforms.aoStrength!, exposure: material.uniforms.exposure! };
+applyLighting(loadLighting(), atmosphere, lightingUniforms, view);
+/** L: sliders for the lighting, applied live and saved in this browser. */
+const lightingPanel = new LightingPanel(loadLighting(), (l) => {
+  applyLighting(l, atmosphere, lightingUniforms, view);
+  saveLighting(l);
+});
+document.body.append(lightingPanel.root);
+
+/** Biome colours blend where the world's climate says so (no data: plain material colours). */
+async function loadTint(wrapX: boolean): Promise<void> {
+  try {
+    const res = await fetch(`/api/world/climate${worldName !== undefined ? `?world=${encodeURIComponent(worldName)}` : ''}`);
+    if (res.status !== 200) return;
+    const climate = decodeClimate(new Uint8Array(await res.arrayBuffer()));
+    material.setTint(createTint(climate, wrapX));
+    worldMap?.setClimate(climate);
+  } catch (err) {
+    console.warn('[super-vox] no biome colour blending:', err);
+  }
+}
 let world: WorldConfig | null = null;
 let pool: MeshWorkerPool | null = null;
 let chunks: ChunkManager | null = null;
@@ -67,10 +95,11 @@ let worldLine = '';
 /** Translucent sea surface at sea level, kept centred under the camera. */
 let sea: THREE.Mesh | null = null;
 function addSea(seaLevelUnits: number): void {
-  sea = new THREE.Mesh(
-    new THREE.PlaneGeometry(view * 2.5, view * 2.5),
-    new THREE.MeshBasicMaterial({ color: 0x2f6d9c, transparent: true, opacity: 0.6, depthWrite: false, fog: true, side: THREE.DoubleSide }),
-  );
+  atmosphere.uniforms.seaLevelM.value = seaLevelUnits / UNITS_PER_METER;
+  atmosphere.uniforms.waterLevel.value = seaLevelUnits / UNITS_PER_METER;
+  controls.inWater = (_x, y) => y < seaLevelUnits / UNITS_PER_METER;
+  sea = new THREE.Mesh(new THREE.PlaneGeometry(view * 2.5, view * 2.5), createSeaMaterial(water.uniforms));
+  sea.layers.set(WATER_LAYER);
   sea.rotation.x = -Math.PI / 2;
   // Half a smallest voxel below sea level: ground whose voxel tops sit exactly at sea level would
   // otherwise be coplanar with the water, and no depth buffer can settle a tie.
@@ -134,6 +163,7 @@ connection = connect({
         if (!chunks) {
           world = w;
           if (msg.seaLevel !== null) addSea(msg.seaLevel);
+          void loadTint(w.wrapX);
           // Start above and behind the spawn point, looking at it.
           const spawn = new THREE.Vector3(unitsToMeters(msg.spawn.x), unitsToMeters(msg.spawn.y), unitsToMeters(msg.spawn.z));
           camera.position.set(spawn.x, spawn.y + 12, spawn.z + 24);
@@ -182,6 +212,11 @@ connection = connect({
               return;
             }
             if (worldMap?.isOpen) return;
+            if (e.code === 'KeyL') {
+              if (!lightingPanel.isOpen && controls.pointerLocked) document.exitPointerLock();
+              lightingPanel.toggle();
+              return;
+            }
             if (e.code === 'KeyN') {
               // No-clip: fly through terrain (walking needs collision, so it flies).
               controls.collide = controls.collide ? null : collide;
@@ -209,7 +244,7 @@ connection = connect({
             if (error) editTool?.say(error);
             updateHud();
           };
-          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool };
+          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool, water };
           // Start loading now rather than on the first frame (frames pause in hidden tabs).
           updateLod(true);
         }
@@ -276,10 +311,10 @@ function updateHud(): void {
     `camera ${f.x.toFixed(1)}, ${f.y.toFixed(1)}, ${f.z.toFixed(1)} m, speed ${controls.speed.toFixed(0)} m/s\n` +
     (controls.pointerLocked ? 'mouse: look · Esc: release mouse' : 'click: capture mouse (or drag to look)') +
     (controls.walking
-      ? ' · walking: WASD move · Space: jump'
+      ? controls.swimming ? ' · swimming: WASD move · Space: up · C: down' : ' · walking: WASD move · Space: jump'
       : ' · flying: WASD move · Space/E: up · Q/C: down') +
     ' · Shift: 5x · wheel: speed (⌘+wheel: voxel size)' +
-    ` · F: ${controls.walking ? 'fly' : 'walk'} · N: no-clip (${controls.collide ? 'off' : 'on'}) · M: map\n` +
+    ` · F: ${controls.walking ? 'fly' : 'walk'} · N: no-clip (${controls.collide ? 'off' : 'on'}) · M: map · L: lighting\n` +
     (editTool ? `${editTool.hudLines()}\n` : '') +
     (c && t
       ? `chunks ${c.loaded} loaded (${c.columns} columns), ${c.inFlight} in flight, ${c.queued} queued, ${c.meshing} meshing\n` +
@@ -303,7 +338,8 @@ renderer.setAnimationLoop(() => {
   if (!worldMap?.isOpen) editTool?.update();
   worldMap?.update();
   if (sea) sea.position.set(camera.position.x, sea.position.y, camera.position.z);
-  renderer.render(scene, camera);
+  atmosphere.uniforms.underwater.value = camera.position.y < atmosphere.uniforms.waterLevel.value ? 1 : 0;
+  water.render(scene, camera);
 
   frames++;
   const now = performance.now();

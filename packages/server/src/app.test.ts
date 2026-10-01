@@ -13,6 +13,7 @@ import {
   defaultNoiseTerrain,
   PROTOCOL_VERSION,
   decodeChunk,
+  decodeClimate,
   decodeTile,
   defaultFlatGen,
   defaultPlateTerrain,
@@ -401,6 +402,22 @@ describe('named worlds', () => {
     expect(invalid.json().error).toMatch(/landPercent/);
     expect(readWorld(root, 'bad')).toBeNull();
     await a.close();
+  });
+
+  it('serves the climate of worlds whose biomes blend, and nothing for the rest', async () => {
+    const { a } = await catalogApp();
+    expect((await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'clim', plates: { seed: 2 } } })).statusCode).toBe(201);
+    const res = await a.inject({ method: 'GET', url: '/api/world/climate?world=clim' });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('application/octet-stream');
+    const c = decodeClimate(new Uint8Array(res.rawPayload));
+    expect(c).toMatchObject({ cols: 500, rows: 500, cell: 512, seaLevel: 0 });
+    expect(c.ecotone.degrees).toBeGreaterThan(0);
+    // Flat worlds, unknown worlds, and worlds with sharp borders.
+    expect((await a.inject({ method: 'GET', url: '/api/world/climate' })).statusCode).toBe(204);
+    expect((await a.inject({ method: 'GET', url: '/api/world/climate?world=nope' })).statusCode).toBe(404);
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/clim', payload: { plates: { seed: 2, biomeBlend: 0 } } })).statusCode).toBe(200);
+    expect((await a.inject({ method: 'GET', url: '/api/world/climate?world=clim' })).statusCode).toBe(204);
   });
 
   it('updates a world, discarding its edits, and disconnects its players', async () => {

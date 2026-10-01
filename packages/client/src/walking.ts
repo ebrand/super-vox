@@ -15,6 +15,12 @@ export interface WalkState {
   grounded: boolean;
 }
 
+/** Swimming speed up or down (m/s), and how fast a body that isn't swimming sinks. */
+export const SWIM_SPEED = 3;
+export const SINK_SPEED = 0.6;
+/** How quickly water drag brings vertical speed to the swimming speed (per second). */
+export const WATER_DRAG = 5;
+
 export interface WalkInput {
   /** Horizontal move direction on the ground (unit or zero), metres per metre. */
   dx: number;
@@ -22,6 +28,11 @@ export interface WalkInput {
   /** Horizontal speed (m/s). */
   speed: number;
   jump: boolean;
+  /**
+   * In water (the middle of the body below its surface): instead of gravity, sink slowly, or swim
+   * up (`up`) or down (`down`). Horizontal speed is the caller's (slower in water).
+   */
+  swim?: { up: boolean; down: boolean };
 }
 
 /** Moves by `delta` (m) with collision; returns the allowed move and which axes were blocked. */
@@ -40,9 +51,16 @@ export function walkStep(
   groundLoaded: boolean,
 ): { delta: [number, number, number]; state: WalkState } {
   let vy = state.vy;
-  if (input.jump && state.grounded) vy = JUMP_SPEED;
-  if (groundLoaded) vy = Math.max(-TERMINAL_SPEED, vy - GRAVITY * dt);
-  else vy = Math.max(0, vy);
+  if (input.swim) {
+    // Drag pulls vertical speed toward the swimming speed.
+    const target = input.swim.up ? SWIM_SPEED : input.swim.down ? -SWIM_SPEED : -SINK_SPEED;
+    vy += (target - vy) * Math.min(1, WATER_DRAG * dt);
+    if (!groundLoaded) vy = Math.max(0, vy);
+  } else {
+    if (input.jump && state.grounded) vy = JUMP_SPEED;
+    if (groundLoaded) vy = Math.max(-TERMINAL_SPEED, vy - GRAVITY * dt);
+    else vy = Math.max(0, vy);
+  }
   const r = move([input.dx * input.speed * dt, vy * dt, input.dz * input.speed * dt]);
   const blockedDown = r.blocked[1] && vy < 0;
   const blockedUp = r.blocked[1] && vy > 0;

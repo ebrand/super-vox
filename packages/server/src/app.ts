@@ -47,6 +47,16 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     return reply.type('application/octet-stream').send(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
   });
 
+  // A world's climate for blending biome colours (see encodeClimate); 204 where biomes don't
+  // blend. ?world=name (the default world when omitted).
+  app.get<{ Querystring: { world?: string } }>('/api/world/climate', async (req, reply) => {
+    const world = catalog.get(req.query.world);
+    if (!world) return reply.code(404).send({ error: 'no such world' });
+    const bytes = world.getEncodedClimate();
+    if (!bytes) return reply.code(204).send();
+    return reply.type('application/octet-stream').send(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  });
+
   // The worlds on this server and how each was generated.
   app.get('/api/worlds', async () => ({ default: catalog.defaultName, canCreate: catalog.create !== undefined, worlds: catalog.list() }));
 

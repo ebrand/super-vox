@@ -1,6 +1,7 @@
-import { BIOME_GROUND, classifyBiome, type BiomeId } from './biomes.js';
+import { BIOME_GROUND, classifyBiome, sameBiome, type BiomeId, type Ecotone } from './biomes.js';
+import type { ClimateGrid } from './climate.js';
 import { Material } from './materials.js';
-import { treesIn, type Tree } from './trees.js';
+import { canopyOver, treesIn, type Canopy, type Climate, type Tree } from './trees.js';
 import { fractalGrid, ridgedGrid, type Octave } from './noise.js';
 import type { HeightSource } from './terrain.js';
 import type { WorldConfig } from './world.js';
@@ -73,6 +74,12 @@ export interface PlateTerrainConfig {
   rainfall: number;
   /** With biomes: ground colder than this (degrees C) is snow, with a band of bare rock just below on high ground. */
   snowTemperature: number;
+  /**
+   * How gradually biomes give way to each other, 0 (sharp borders) .. 100: borders become ragged,
+   * trees of neighbouring biomes mix across a band (and forests thin out across it), and ground
+   * colours blend.
+   */
+  biomeBlend: number;
   /** Compass direction rain comes from, degrees (0 north, 90 east, 180 south, 270 west); lands behind mountains from it are drier. */
   windFrom: number;
   /** How many trees, 0 (none) .. 100 (twice the natural density for each biome); 50 is natural. */
@@ -120,6 +127,7 @@ export function defaultPlateTerrain(seed = 1): PlateTerrainConfig {
     rainfall: 50,
     windFrom: 270,
     snowTemperature: -4,
+    biomeBlend: 50,
     trees: 50,
     islandArcs: 0,
     hotspots: 0,
@@ -152,6 +160,7 @@ export const PLATE_LIMITS = {
   altitudeCooling: [0, 5],
   rainfall: [0, 100],
   windFrom: [0, 360],
+  biomeBlend: [0, 100],
   trees: [0, 100],
   islandArcs: [0, 100],
   hotspots: [0, 40],
@@ -177,7 +186,8 @@ export function parsePlateTerrain(raw: unknown): PlateTerrainConfig {
  * Plate settings saved by an older version, brought up to date so the world looks as it did:
  * `waterPercent` becomes `landPercent`; rock and snow, which started at 60% and 80% of the land's
  * height range (or `rockLine` percent), get those heights in metres; steep ground turned to rock
- * above slope 0.9 (42 degrees), along a plain contour; there were no mountains, biomes or trees. Other missing settings get their defaults.
+ * above slope 0.9 (42 degrees), along a plain contour; there were no mountains, biomes or trees,
+ * and biome borders were sharp. Other missing settings get their defaults.
  */
 export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   const r = { ...((typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>) };
@@ -191,6 +201,7 @@ export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   if (r.snowFractal === undefined) r.snowFractal = 0;
   if (r.biomes === undefined) r.biomes = 0;
   if (r.trees === undefined) r.trees = 0;
+  if (r.biomeBlend === undefined) r.biomeBlend = 0;
   // Worlds from before the current mountains have none. (The first plate worlds saved a
   // `mountainHeight` that meant something else, possibly below maxHeight: replace it.)
   if (r.mountains === undefined) {
@@ -243,6 +254,7 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   num(c.rainfall, L.rainfall, 'rainfall');
   num(c.windFrom, L.windFrom, 'windFrom', ' degrees');
   num(c.snowTemperature, L.temperature, 'snowTemperature', ' degrees C');
+  num(c.biomeBlend, L.biomeBlend, 'biomeBlend');
   num(c.trees, L.trees, 'trees');
   num(c.islandArcs, L.islandArcs, 'islandArcs');
   int(c.hotspots, ...L.hotspots, 'hotspots');
@@ -287,6 +299,15 @@ const SHADOW_FULL = 250 * M;
 const SNOW_FRACTAL_MAX = 60 * M;
 /** With biomes: how far the snow temperature wanders (degrees C) at snowFractal = 100. */
 const SNOW_FRACTAL_DEGREES = 2;
+/**
+ * At biomeBlend = 100: how far (+-) local noise shifts the climate biomes are classified from,
+ * making borders ragged (degrees C, moisture); and the ecotone, the band across which
+ * neighbouring biomes' trees and colours mix.
+ */
+const RAGGED_DEGREES = 4;
+const RAGGED_MOISTURE = 0.12;
+const ECOTONE_DEGREES = 6;
+const ECOTONE_MOISTURE = 0.2;
 /** With biomes: bare rock below the snow, this many degrees warmer, on ground this high above the sea. */
 const ROCK_BAND_DEGREES = 1.5;
 const ROCK_BAND_MIN_HEIGHT = 100 * M;
@@ -356,6 +377,10 @@ export class PlateHeights implements HeightSource {
   /** Fractal noise moving the snow line up and down, and how far (units). */
   private readonly snowNoise: Octave[];
   private readonly snowWander: number;
+  /** Biome borders: how far noise shifts the climate (0: sharp), and the ecotone trees mix across. */
+  private readonly ragged: Ecotone;
+  private readonly raggedNoise: [Octave[], Octave[]];
+  readonly ecotone: Ecotone;
   /** Heights (units) where bare rock and snow start, and the slope (rise over run) beyond which ground is rock. */
   private readonly rockLine: number;
   private readonly snowLine: number;
@@ -1097,6 +1122,12 @@ export class PlateHeights implements HeightSource {
     // The snow line wanders at every scale from ~1 km down to 16 m.
     this.snowNoise = octaves(config.terrainSeed * 7919 + 37, [16384, 8192, 4096, 2048, 1024, 512, 256], 0.65);
     this.snowWander = (config.snowFractal / 100) * SNOW_FRACTAL_MAX;
+    // Biome borders wander at every scale from ~1 km down to 16 m.
+    const blend = config.biomes === 1 ? config.biomeBlend / 100 : 0;
+    this.ragged = { degrees: blend * RAGGED_DEGREES, moisture: blend * RAGGED_MOISTURE };
+    this.ecotone = { degrees: blend * ECOTONE_DEGREES, moisture: blend * ECOTONE_MOISTURE };
+    const borders = [16384, 8192, 4096, 2048, 1024, 512, 256];
+    this.raggedNoise = [octaves(config.terrainSeed * 7919 + 53, borders, 0.75), octaves(config.terrainSeed * 7919 + 59, borders, 0.75)];
   }
 
   /** Fraction of grid cells above sea level (for tests and tools). */
@@ -1201,6 +1232,10 @@ export class PlateHeights implements HeightSource {
   }
 
   materials(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): Uint16Array {
+    return this.materialsWith(x0, z0, w, d, step, heights, this.climateSamples(x0, z0, w, d, step, heights, true));
+  }
+
+  private materialsWith(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array, climate: ReturnType<PlateHeights['climateSamples']>): Uint16Array {
     const out = new Uint16Array(w * d);
     // Coarse slope (rise over run) from the 32 m grid, via central differences one cell apart.
     const e = PLATE_CELL;
@@ -1211,7 +1246,6 @@ export class PlateHeights implements HeightSource {
     const vary = fractalGrid(this.beachNoise, x0, z0, w, d, step);
     const norm = 2 / this.beachNoise.reduce((a, o) => a + o.weight, 0);
     const sea = this.seaLevel;
-    const climate = this.climateSamples(x0, z0, w, d, step, heights);
     // With biomes, snow and rock follow the ground's temperature; without, fixed heights.
     // Either way the snow line wanders (in degrees or metres), computed only where some ground
     // is within its reach.
@@ -1263,25 +1297,42 @@ export class PlateHeights implements HeightSource {
     return out;
   }
 
+  /** The forest canopy over samples, for distant views (see canopyOver). */
+  canopy(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array, materials: Uint16Array): Canopy | null {
+    if (this.treeDensity <= 0) return null;
+    const climate = this.climateSamples(x0, z0, w, d, step, heights);
+    return canopyOver(
+      x0, z0, w, d, step, heights, materials,
+      climate && { temperature: climate.biomeTemperature, moisture: climate.biomeMoisture }, this.treeDensity, this.treeSeed,
+      () => this.trees(x0, z0, x0 + w * step, z0 + d * step),
+      this.ecotone,
+    );
+  }
+
   /** Trees with any part in the box [x0, x1) x [z0, z1) (units). */
   trees(x0: number, z0: number, x1: number, z1: number): Tree[] {
     return treesIn(
       {
         ground: (xs, zs) => {
           const heights = new Int32Array(xs.length), materials = new Uint16Array(xs.length);
-          const biomes = this.temperature ? new Uint8Array(xs.length) : null;
+          const climate: Climate | null = this.temperature ? { temperature: new Float64Array(xs.length), moisture: new Float64Array(xs.length) } : null;
           for (let k = 0; k < xs.length; k++) {
             const h = this.heights(xs[k]!, zs[k]!, 1, 1);
             heights[k] = h[0]!;
-            materials[k] = this.materials(xs[k]!, zs[k]!, 1, 1, 1, h)[0]!;
-            if (biomes) biomes[k] = this.biomes(xs[k]!, zs[k]!, 1, 1, 1, h)![0]!;
+            const c = this.climateSamples(xs[k]!, zs[k]!, 1, 1, 1, h);
+            materials[k] = this.materialsWith(xs[k]!, zs[k]!, 1, 1, 1, h, c)[0]!;
+            if (climate && c) {
+              (climate.temperature as Float64Array)[k] = c.biomeTemperature[0]!;
+              (climate.moisture as Float64Array)[k] = c.biomeMoisture[0]!;
+            }
           }
-          return { heights, materials, biomes };
+          return { heights, materials, climate };
         },
       },
       this.treeSeed,
       this.treeDensity,
       x0, z0, x1, z1,
+      this.ecotone,
     );
   }
 
@@ -1290,20 +1341,62 @@ export class PlateHeights implements HeightSource {
    * for worlds without biomes.
    */
   biomes(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): Uint8Array | null {
-    return this.climateSamples(x0, z0, w, d, step, heights)?.biome ?? null;
+    return this.climateSamples(x0, z0, w, d, step, heights, true)?.biome ?? null;
   }
 
-  /** Ground temperature (degrees C, colder with height) and biome per sample, or null without biomes. */
-  private climateSamples(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): { temperature: Float64Array; biome: Uint8Array } | null {
+  /**
+   * Per sample, or null without biomes: ground temperature (degrees C, colder with height); the
+   * temperature and moisture biomes are classified from (shifted by local noise when borders are
+   * ragged); and the biome. With `biomesOnly`, the shifted climate is left unshifted where the
+   * shift can't change any biome in the block (saving the noise; the biomes are the same).
+   */
+  private climateSamples(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array, biomesOnly = false): { temperature: Float64Array; biomeTemperature: Float64Array; biomeMoisture: Float64Array; biome: Uint8Array } | null {
     if (!this.temperature || !this.moisture) return null;
     const temperature = this.interpolate(this.temperature, x0, z0, w, d, step);
     const m = this.interpolate(this.moisture, x0, z0, w, d, step);
-    const biome = new Uint8Array(w * d);
-    for (let k = 0; k < biome.length; k++) {
-      temperature[k] = temperature[k]! - this.cooling * Math.max(0, heights[k]! - this.seaLevel);
-      biome[k] = classifyBiome(temperature[k]!, m[k]!);
+    for (let k = 0; k < temperature.length; k++) temperature[k] = temperature[k]! - this.cooling * Math.max(0, heights[k]! - this.seaLevel);
+    let biomeTemperature = temperature, biomeMoisture = m;
+    let shift = this.ragged.degrees > 0;
+    if (shift && biomesOnly) {
+      let tLo = Infinity, tHi = -Infinity, mLo = Infinity, mHi = -Infinity;
+      for (let k = 0; k < temperature.length; k++) {
+        tLo = Math.min(tLo, temperature[k]!); tHi = Math.max(tHi, temperature[k]!);
+        mLo = Math.min(mLo, m[k]!); mHi = Math.max(mHi, m[k]!);
+      }
+      // The noise stays within its amplitude (clamped below).
+      const dt = this.ragged.degrees, dm = this.ragged.moisture;
+      shift = !sameBiome(tLo - dt, tHi + dt, mLo - dm, mHi + dm);
     }
-    return { temperature, biome };
+    if (shift) {
+      const [nt, nm] = this.raggedNoise;
+      // Scaled by the octaves' weight so each spans about -1..1.
+      const ft = fractalGrid(nt, x0, z0, w, d, step), fm = fractalGrid(nm, x0, z0, w, d, step);
+      const st = (2 / nt.reduce((a, o) => a + o.weight, 0)) * this.ragged.degrees, sm = (2 / nm.reduce((a, o) => a + o.weight, 0)) * this.ragged.moisture;
+      const dt = this.ragged.degrees, dm = this.ragged.moisture;
+      biomeTemperature = temperature.map((t, k) => t + Math.max(-dt, Math.min(dt, ft[k]! * st)));
+      biomeMoisture = m.map((v, k) => v + Math.max(-dm, Math.min(dm, fm[k]! * sm)));
+    }
+    const biome = new Uint8Array(w * d);
+    for (let k = 0; k < biome.length; k++) biome[k] = classifyBiome(biomeTemperature[k]!, biomeMoisture[k]!);
+    return { temperature, biomeTemperature, biomeMoisture, biome };
+  }
+
+  /**
+   * The climate on the terrain grid, for blending biome colours, or null where biomes don't blend
+   * (no biomes, or sharp borders).
+   */
+  climate(): ClimateGrid | null {
+    if (!this.temperature || !this.moisture || this.ecotone.degrees <= 0) return null;
+    return {
+      cols: this.cols,
+      rows: this.rows,
+      cell: PLATE_CELL,
+      seaLevel: this.seaLevel,
+      cooling: this.cooling,
+      ecotone: this.ecotone,
+      temperature: this.temperature,
+      moisture: this.moisture,
+    };
   }
 }
 

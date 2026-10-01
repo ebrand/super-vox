@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { Biome } from './biomes.js';
+import { Biome, classifyBiome, type BiomeId } from './biomes.js';
 import { rasterizeVoxels, voxelAt, type Chunk } from './chunk.js';
 import { Material } from './materials.js';
 import { PlateHeights, defaultPlateTerrain, migratePlateTerrain, type PlateTerrainConfig } from './plates.js';
 import { TerrainGenerator, type HeightSource } from './terrain.js';
-import { TREE_REACH, TreeKind, plantTrees, type Tree } from './trees.js';
+import { CANOPY_EXACT_STEP, NO_CANOPY, TREE_REACH, TreeKind, crownTop, plantTrees, type Tree } from './trees.js';
 import { CHUNK_SIZE, FLAT_WORLD_16KM } from './world.js';
 
 const cache = new Map<string, PlateHeights>();
@@ -15,8 +15,13 @@ const world = (over: Partial<PlateTerrainConfig> = {}) => {
   if (!p) cache.set(key, (p = new PlateHeights(FLAT_WORLD_16KM, cfg)));
   return p;
 };
-/** A 600 m square with plenty of temperate and boreal forest in seed 9. */
+/** A 600 m square of boreal forest in seed 9. */
 const BOX = [3500 * 16, 6300 * 16, 4100 * 16, 6900 * 16] as const;
+/** A 640 m square across a border between boreal and temperate forest in seed 9. */
+const BORDER = [1300 * 16, 7360 * 16, 1940 * 16, 8000 * 16] as const;
+const kindOf = (b: BiomeId) => (b === Biome.Jungle ? TreeKind.Jungle : b === Biome.Savanna ? TreeKind.Acacia : b === Biome.Boreal || b === Biome.Tundra ? TreeKind.Conifer : TreeKind.Broadleaf);
+/** Trees with a tree of another kind within 20 m. */
+const mixed = (trees: Tree[]) => trees.filter((t) => trees.some((u) => u.kind !== t.kind && Math.hypot(u.x - t.x, u.z - t.z) < 20 * 16)).length;
 
 describe('trees', () => {
   it('are deterministic, and a smaller box sees the same trees', () => {
@@ -31,15 +36,32 @@ describe('trees', () => {
     for (const t of half) expect(all.get(key(t))).toEqual(t);
   });
 
-  it('grow only on vegetated ground, with the kind of their biome', () => {
-    const p = world();
-    for (const t of p.trees(...BOX)) {
+  it('grow only on vegetated ground, with the kind of their biome (sharp borders)', () => {
+    const p = world({ biomeBlend: 0 });
+    for (const t of [...p.trees(...BOX), ...p.trees(...BORDER)]) {
       const h = Int32Array.of(t.y);
       expect([Material.Grass, Material.TaigaFloor, Material.Meadow, Material.Tundra, Material.JungleFloor, Material.DryGrass]).toContain(p.materials(t.x, t.z, 1, 1, 1, h)[0]);
       const b = p.biomes(t.x, t.z, 1, 1, 1, h)![0]!;
-      const expected = b === Biome.Jungle ? TreeKind.Jungle : b === Biome.Savanna ? TreeKind.Acacia : b === Biome.Boreal || b === Biome.Tundra ? TreeKind.Conifer : TreeKind.Broadleaf;
-      expect(t.kind).toBe(expected);
+      expect(t.kind).toBe(kindOf(b as BiomeId));
       expect(t.y).toBeGreaterThan(p.seaLevel);
+    }
+  });
+
+  it('mix across a border when biomes blend, each of a kind found within its ecotone', () => {
+    const sharp = world({ biomeBlend: 0 }).trees(...BORDER);
+    const p = world({ biomeBlend: 50 }), blended = p.trees(...BORDER);
+    // Both kinds on both sides: far more trees have a neighbour of the other kind.
+    expect(sharp.filter((t) => t.kind === TreeKind.Broadleaf).length).toBeGreaterThan(1000);
+    expect(sharp.filter((t) => t.kind === TreeKind.Conifer).length).toBeGreaterThan(1000);
+    expect(mixed(blended)).toBeGreaterThan(mixed(sharp) * 8);
+    // Every tree's kind belongs to some climate within the ecotone around its own.
+    const e = p.ecotone;
+    expect(e.degrees).toBeGreaterThan(0);
+    for (const t of blended) {
+      const c = (p as unknown as { climateSamples: (...a: unknown[]) => { biomeTemperature: Float64Array; biomeMoisture: Float64Array } }).climateSamples(t.x, t.z, 1, 1, 1, Int32Array.of(t.y));
+      const kinds = new Set<number>();
+      for (let a = -1; a <= 1; a += 0.05) for (let b = -1; b <= 1; b += 0.05) kinds.add(kindOf(classifyBiome(c.biomeTemperature[0]! + a * e.degrees, c.biomeMoisture[0]! + b * e.moisture)));
+      expect(kinds).toContain(t.kind);
     }
   });
 
@@ -116,4 +138,113 @@ describe('trees', () => {
       if (voxelAt(chunk, x, y, z)) expect(Math.hypot(x - t.x, z - t.z)).toBeLessThanOrEqual(TREE_REACH);
     }
   });
+
+describe('forest canopy (distant terrain)', () => {
+  const FERTILE: number[] = [Material.Grass, Material.TaigaFloor, Material.Meadow, Material.Tundra, Material.JungleFloor, Material.DryGrass];
+  const LEAVES: number[] = [Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves];
+  /** Ground and surface (with canopy) samples over the square. */
+  const sample = (p: PlateHeights, x0: number, z0: number, n: number, step: number) => {
+    const gen = new TerrainGenerator(FLAT_WORLD_16KM, { minVoxelSize: 1, tolerance: 4 }, p);
+    const ground = p.heights(x0, z0, n, n, step), groundMat = p.materials(x0, z0, n, n, step, ground);
+    const s = gen.surfaceSamples(x0, z0, step, n);
+    // Ground stays ground; the canopy floats over it. Seen from above: canopy where there is one.
+    expect(s.heights).toEqual(ground);
+    const heights = Int32Array.from(ground), materials = Uint16Array.from(groundMat);
+    if (s.canopy) {
+      for (let k = 0; k < n * n; k++) {
+        if (s.canopy.top[k] === NO_CANOPY) continue;
+        expect(s.canopy.bottom[k]).toBeGreaterThanOrEqual(ground[k]!);
+        // A crown has thickness, unless it sits right on the ground (a low branch on a slope).
+        if (s.canopy.bottom[k]! > ground[k]!) expect(s.canopy.bottom[k]).toBeLessThan(s.canopy.top[k]!);
+        heights[k] = s.canopy.top[k]!;
+        materials[k] = s.canopy.material[k]!;
+      }
+    }
+    return { ground, groundMat, surface: { heights, materials } };
+  };
+
+  it('shows the actual crowns up close: treetop heights over the trunks', () => {
+    const p = world();
+    const step = CANOPY_EXACT_STEP / 4; // 1 m
+    const [x0, z0] = BOX, n = 128;
+    const { ground, surface } = sample(p, x0, z0, n, step);
+    const trees = p.trees(x0, z0, x0 + n * step, z0 + n * step);
+    let checked = 0;
+    for (const t of trees) {
+      const i = Math.round((t.x - x0) / step), j = Math.round((t.z - z0) / step);
+      if (i < 0 || j < 0 || i >= n || j >= n) continue;
+      const k = i + n * j;
+      // At least this tree's own top over its trunk (another crown may rise above it).
+      expect(surface.heights[k]).toBeGreaterThanOrEqual(Math.round(t.y + crownTop(t, x0 + i * step - t.x, z0 + j * step - t.z)) - 1);
+      expect(LEAVES).toContain(surface.materials[k]);
+      expect(surface.heights[k]!).toBeGreaterThan(ground[k]!);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(50);
+  });
+
+  it('far away, matches the real forest cover and height on average', () => {
+    const p = world();
+    const stats = (step: number) => {
+      const [x0, z0] = BOX, n = Math.floor((600 * 16) / step);
+      const { ground, groundMat, surface } = sample(p, x0, z0, n, step);
+      let land = 0, covered = 0, height = 0;
+      for (let k = 0; k < n * n; k++) {
+        if (ground[k]! <= p.seaLevel || !FERTILE.includes(groundMat[k]!)) continue;
+        land++;
+        if (surface.heights[k]! > ground[k]!) (covered++, (height += (surface.heights[k]! - ground[k]!) / 16));
+      }
+      return { cover: covered / land, height: height / covered };
+    };
+    const exact = stats(32), far = stats(256); // 2 m and 16 m samples
+    expect(far.cover).toBeGreaterThan(exact.cover - 0.08);
+    expect(far.cover).toBeLessThan(exact.cover + 0.08);
+    expect(far.height).toBeGreaterThan(exact.height * 0.85);
+    expect(far.height).toBeLessThan(exact.height * 1.15);
+  });
+
+  it('far away, mixes leaf kinds across a blended border, as the trees do', () => {
+    // 16 m samples over the border: canopy samples of one leaf with the other within 2 samples.
+    const mixedCanopy = (biomeBlend: number) => {
+      const p = world({ biomeBlend }), step = 256, n = 40, [x0, z0] = BORDER;
+      const h = p.heights(x0, z0, n, n, step), m = p.materials(x0, z0, n, n, step, h), c = p.canopy(x0, z0, n, n, step, h, m)!;
+      let mix = 0;
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        const leaf = c.material[i + n * j]!;
+        if (c.top[i + n * j] === NO_CANOPY) continue;
+        let other = false;
+        for (let b = -2; b <= 2; b++) for (let a = -2; a <= 2; a++) {
+          const ii = i + a, jj = j + b;
+          if (ii < 0 || jj < 0 || ii >= n || jj >= n || c.top[ii + n * jj] === NO_CANOPY) continue;
+          if (c.material[ii + n * jj] !== leaf) other = true;
+        }
+        if (other) mix++;
+      }
+      return mix;
+    };
+    const sharp = mixedCanopy(0);
+    expect(sharp).toBeGreaterThan(20); // there is a border
+    expect(mixedCanopy(50)).toBeGreaterThan(sharp * 3);
+  });
+
+  it('leaves bare ground, sea, and tree-less worlds alone', () => {
+    // No canopy over sand, rock, snow, desert or sea; and none at all without trees.
+    const p = world();
+    const [x0, z0] = BOX;
+    for (const step of [32, 256]) {
+      const n = 64;
+      const { ground, groundMat, surface } = sample(p, x0, z0, n, step);
+      for (let k = 0; k < n * n; k++) {
+        if (!FERTILE.includes(groundMat[k]!) || ground[k]! <= p.seaLevel) {
+          // Bare ground can still lie under a neighbouring tree's crown up close, never far away.
+          if (step > CANOPY_EXACT_STEP) expect(surface.heights[k]).toBe(ground[k]);
+        }
+      }
+    }
+    const none = world({ trees: 0 });
+    const s = sample(none, x0, z0, 64, 256);
+    expect(s.surface.heights).toEqual(s.ground);
+    expect(s.surface.materials).toEqual(s.groundMat);
+  });
+});
 });

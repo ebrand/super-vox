@@ -1,4 +1,4 @@
-import { Biome, type BiomeId } from './biomes.js';
+import { Biome, SHARP, blendedBiome, type BiomeId, type Ecotone } from './biomes.js';
 import {
   BLOCK_SIZE,
   BLOCKS_PER_AXIS,
@@ -13,6 +13,18 @@ import { Material, type MaterialId } from './materials.js';
 import { hash2 } from './noise.js';
 import type { VoxelSize } from './units.js';
 import { CHUNK_SIZE } from './world.js';
+
+/** Leaf material of each biome's trees. */
+const BIOME_LEAVES: Record<BiomeId, MaterialId> = {
+  [Biome.Ice]: Material.Needles,
+  [Biome.Tundra]: Material.Needles,
+  [Biome.Boreal]: Material.Needles,
+  [Biome.Temperate]: Material.Leaves,
+  [Biome.Grassland]: Material.Leaves,
+  [Biome.Jungle]: Material.JungleLeaves,
+  [Biome.Savanna]: Material.AcaciaLeaves,
+  [Biome.Desert]: Material.Leaves,
+};
 
 /** Tree shapes. */
 export const TreeKind = { Broadleaf: 0, Conifer: 1, Jungle: 2, Acacia: 3 } as const;
@@ -56,6 +68,22 @@ const DENSITY: Record<BiomeId, number> = {
   [Biome.Desert]: 0,
 };
 
+/**
+ * A forest seen from far away, per biome at density 50: the share of the ground under a crown and
+ * the canopy's mean height above the ground (m), measured from the trees themselves (sampling the
+ * crowns every 2 m over three worlds); and where crowns start, as a fraction of that height.
+ */
+const CANOPY: Record<BiomeId, { cover: number; height: number; base: number }> = {
+  [Biome.Ice]: { cover: 0, height: 0, base: 0 },
+  [Biome.Tundra]: { cover: 0.004, height: 2.5, base: 0.2 },
+  [Biome.Boreal]: { cover: 0.54, height: 10, base: 0.2 },
+  [Biome.Temperate]: { cover: 0.54, height: 13.5, base: 0.45 },
+  [Biome.Grassland]: { cover: 0.03, height: 8.5, base: 0.45 },
+  [Biome.Jungle]: { cover: 0.93, height: 34.5, base: 0.7 },
+  [Biome.Savanna]: { cover: 0.16, height: 8, base: 0.7 },
+  [Biome.Desert]: { cover: 0, height: 0, base: 0 },
+};
+
 /** Ground trees grow on. */
 const FERTILE = new Set<MaterialId>([Material.Grass, Material.JungleFloor, Material.DryGrass, Material.Meadow, Material.TaigaFloor, Material.Tundra]);
 
@@ -66,9 +94,15 @@ const LEAVES: Record<TreeKindId, MaterialId> = {
   [TreeKind.Acacia]: Material.AcaciaLeaves,
 };
 
-/** What a world tells the forest about a point: ground height, ground material, biome. */
+/** Ground temperature (degrees C) and moisture (0..1) per sample, as biomes are classified from. */
+export interface Climate {
+  temperature: ArrayLike<number>;
+  moisture: ArrayLike<number>;
+}
+
+/** What a world tells the forest about points: ground height, ground material, climate (null: no biomes). */
 export interface GroundSampler {
-  ground(xs: number[], zs: number[]): { heights: Int32Array; materials: Uint16Array; biomes: Uint8Array | null };
+  ground(xs: number[], zs: number[]): { heights: Int32Array; materials: Uint16Array; climate: Climate | null };
 }
 
 /** Deterministic random numbers for a cell: r(k) in [0, 1). */
@@ -79,9 +113,11 @@ function cellRandom(seed: number, cx: number, cz: number) {
 /**
  * Trees with any part within the box [x0, x1) x [z0, z1) (units), in a fixed order (by cell),
  * so every chunk resolves overlapping crowns the same way. `density` scales the per-biome
- * chances (50 = as listed above, 100 = double, capped at one tree per cell).
+ * chances (50 = as listed above, 100 = double, capped at one tree per cell). Each tree takes the
+ * biome of its climate nudged at random within the `ecotone`, so near a border the two biomes'
+ * trees mix, and a forest thins out over the width of the ecotone instead of stopping at a line.
  */
-export function treesIn(sampler: GroundSampler, seed: number, density: number, x0: number, z0: number, x1: number, z1: number): Tree[] {
+export function treesIn(sampler: GroundSampler, seed: number, density: number, x0: number, z0: number, x1: number, z1: number, ecotone: Ecotone = SHARP): Tree[] {
   if (density <= 0) return [];
   const c0 = Math.floor((x0 - TREE_REACH) / TREE_CELL), c1 = Math.floor((x1 + TREE_REACH) / TREE_CELL);
   const r0 = Math.floor((z0 - TREE_REACH) / TREE_CELL), r1 = Math.floor((z1 + TREE_REACH) / TREE_CELL);
@@ -100,7 +136,7 @@ export function treesIn(sampler: GroundSampler, seed: number, density: number, x
   cand.forEach((t, k) => {
     const mat = g.materials[k]!;
     if (!FERTILE.has(mat)) return;
-    const biome = (g.biomes ? g.biomes[k]! : Biome.Temperate) as BiomeId;
+    const biome = g.climate ? blendedBiome(g.climate.temperature[k]!, g.climate.moisture[k]!, ecotone, t.rnd(6), t.rnd(7), t.rnd(8), t.rnd(9)) : Biome.Temperate;
     if (t.rnd(2) >= Math.min(1, DENSITY[biome] * scale)) return;
     const tree = shapeTree(biome, t.x, g.heights[k]!, t.z, t.rnd);
     // Only trees that reach into the box.
@@ -143,6 +179,25 @@ function shapeTree(biome: BiomeId, x: number, y: number, z: number, rnd: (k: num
   const crown = height * (0.28 + 0.08 * rnd(4));
   crownOf(5, height * 0.66, crown * 0.45, crown * 0.75, crown * 0.6);
   return { x, y, z, kind: TreeKind.Broadleaf, height, trunk: small ? between(5, 0.25, 0.4) : between(5, 0.35, 0.6), crown, blobs };
+}
+
+/**
+ * Height of the top of the tree's crown above the point (relative to the trunk base, units), or
+ * -Infinity where the crown doesn't cover it: what a tree looks like from above.
+ */
+export function crownTop(t: Tree, px: number, pz: number): number {
+  if (t.kind === TreeKind.Conifer) {
+    const d = Math.hypot(px, pz), base = t.height * 0.2;
+    if (d > t.crown + 0.3 * M) return -Infinity;
+    const u = Math.min(1, Math.max(0, 1 - (d - 0.3 * M) / t.crown));
+    return base + u * (t.height - base);
+  }
+  let top = -Infinity;
+  for (const b of t.blobs) {
+    const q = ((px - b.dx) ** 2 + (pz - b.dz) ** 2) / (b.rx * b.rx);
+    if (q <= 1) top = Math.max(top, b.dy + b.ry * Math.sqrt(1 - q));
+  }
+  return top;
 }
 
 /** Whether the point (relative to the trunk base, units) is inside the tree's crown (testing only `blobs` if given). */
@@ -323,4 +378,106 @@ function addVoxels(block: Block, add: Add[]): Block {
   }
   if (packed.length === before) return block;
   return { kind: 'voxels', packed: Uint16Array.from(packed), materials: Uint16Array.from(materials) };
+}
+
+/** Samples at most this far apart (units) see the actual trees; further apart, the statistical canopy. */
+export const CANOPY_EXACT_STEP = 4 * M;
+/** No canopy over a sample. */
+export const NO_CANOPY = -(2 ** 31);
+
+/** Forest canopy over a grid of samples: crown top and bottom (units, NO_CANOPY where bare) and leaf material. */
+export interface Canopy {
+  top: Int32Array;
+  bottom: Int32Array;
+  material: Uint16Array;
+}
+
+/**
+ * Height of the underside of the tree's crown above the point (relative to the trunk base),
+ * where crownTop covers it.
+ */
+export function crownBottom(t: Tree, px: number, pz: number): number {
+  if (t.kind === TreeKind.Conifer) return t.height * 0.2;
+  let bottom = Infinity;
+  for (const b of t.blobs) {
+    const q = ((px - b.dx) ** 2 + (pz - b.dz) ** 2) / (b.rx * b.rx);
+    if (q <= 1) bottom = Math.min(bottom, b.dy - b.ry * Math.sqrt(1 - q));
+  }
+  return bottom;
+}
+
+/**
+ * The forest canopy over samples (w x d from (x0, z0), `step` apart, with their ground heights
+ * and materials), as distant terrain shows it: crowns floating over the ground. Close together,
+ * the trees' actual crowns (`trees` with any part in the sampled area); far apart, a forest of
+ * the typical cover and height of the biome of each sample's climate, nudged within the `ecotone`
+ * as trees are (deterministic per sample). Null without trees.
+ */
+export function canopyOver(
+  x0: number, z0: number, w: number, d: number, step: number,
+  heights: Int32Array, materials: Uint16Array,
+  climate: Climate | null, density: number, seed: number,
+  trees: () => Tree[],
+  ecotone: Ecotone = SHARP,
+): Canopy | null {
+  if (density <= 0) return null;
+  const top = new Int32Array(w * d).fill(NO_CANOPY), bottom = new Int32Array(w * d).fill(NO_CANOPY), material = new Uint16Array(w * d);
+  if (step <= CANOPY_EXACT_STEP) {
+    // Bucket trees by candidate cell, then look up the few within reach of each sample.
+    const buckets = new Map<string, Tree[]>();
+    for (const t of trees()) {
+      const key = `${Math.floor(t.x / TREE_CELL)},${Math.floor(t.z / TREE_CELL)}`;
+      let b = buckets.get(key);
+      if (!b) buckets.set(key, (b = []));
+      b.push(t);
+    }
+    const R = Math.ceil(TREE_REACH / TREE_CELL);
+    for (let j = 0; j < d; j++) {
+      for (let i = 0; i < w; i++) {
+        const k = i + w * j, x = x0 + i * step, z = z0 + j * step;
+        const cx = Math.floor(x / TREE_CELL), cz = Math.floor(z / TREE_CELL);
+        let hi = -Infinity, lo = Infinity, leaf = 0;
+        for (let b = -R; b <= R; b++) {
+          for (let a = -R; a <= R; a++) {
+            for (const t of buckets.get(`${cx + a},${cz + b}`) ?? []) {
+              const y = crownTop(t, x - t.x, z - t.z);
+              if (y === -Infinity) continue;
+              if (t.y + y > hi) [hi, leaf] = [t.y + y, LEAVES[t.kind]];
+              lo = Math.min(lo, t.y + crownBottom(t, x - t.x, z - t.z));
+            }
+          }
+        }
+        if (hi > heights[k]!) {
+          top[k] = Math.round(hi);
+          // At least a leaf voxel thick (crowns thin to nothing at their rims), above the ground.
+          bottom[k] = Math.max(heights[k]!, Math.min(Math.round(lo), top[k]! - LEAF_VOXEL));
+          material[k] = leaf;
+        }
+      }
+    }
+    return top.some((v) => v !== NO_CANOPY) ? { top, bottom, material } : null;
+  }
+  // Statistical canopy: cover scales like independent trees (more trees overlap more).
+  const scale = density / 50;
+  let any = false;
+  for (let j = 0; j < d; j++) {
+    for (let i = 0; i < w; i++) {
+      const k = i + w * j;
+      if (!FERTILE.has(materials[k]!)) continue;
+      const gx = Math.floor((x0 + i * step) / step), gz = Math.floor((z0 + j * step) / step);
+      const biome = climate
+        ? blendedBiome(climate.temperature[k]!, climate.moisture[k]!, ecotone, hash2(gx, gz, seed + 2), hash2(gx, gz, seed + 3), hash2(gx, gz, seed + 4), hash2(gx, gz, seed + 5))
+        : Biome.Temperate;
+      const c = CANOPY[biome];
+      if (c.cover <= 0) continue;
+      const cover = 1 - (1 - c.cover) ** scale;
+      if (hash2(gx, gz, seed ^ step) >= cover) continue;
+      const h = c.height * M * (0.75 + 0.5 * hash2(gz, gx, seed + 1));
+      top[k] = Math.round(heights[k]! + h);
+      bottom[k] = Math.round(heights[k]! + h * c.base);
+      material[k] = BIOME_LEAVES[biome];
+      any = true;
+    }
+  }
+  return any ? { top, bottom, material } : null;
 }

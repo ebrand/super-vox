@@ -688,6 +688,27 @@ describe('biomes', () => {
     expect(forest(wet)).toBeGreaterThan(forest(dry) + 0.3);
   });
 
+  it('blend into ragged borders, and are sharp at biomeBlend 0 and in older worlds', () => {
+    expect(defaultPlateTerrain().biomeBlend).toBe(50);
+    expect(migratePlateTerrain({}).biomeBlend).toBe(0);
+    expect(() => parsePlateTerrain({ biomeBlend: 101 })).toThrow(RangeError);
+    // Border length: neighbouring samples (8 m apart) of different biomes, over 2 km of seed 9.
+    const border = (biomeBlend: number) => {
+      const p = plates({ seed: 9, terrainSeed: 9, biomes: 1, biomeBlend });
+      const S = 256, x0 = 1000 * 16, z0 = 7000 * 16, H = p.heights(x0, z0, S, S, 128), B = p.biomes(x0, z0, S, S, 128, H)!;
+      let n = 0;
+      for (let j = 0; j < S; j++) for (let i = 0; i < S; i++) {
+        const k = i + S * j;
+        if (i + 1 < S && B[k] !== B[k + 1]) n++;
+        if (j + 1 < S && B[k] !== B[k + S]) n++;
+      }
+      return n;
+    };
+    const sharp = border(0);
+    expect(sharp).toBeGreaterThan(300);
+    expect(border(50)).toBeGreaterThan(sharp * 1.5);
+  });
+
   it('get colder with height', () => {
     // Same column: the higher the ground, the colder its biome.
     const p = plates({ biomes: 1, mountains: 60, altitudeCooling: 3 });

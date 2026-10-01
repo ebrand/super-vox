@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PlateHeights, defaultPlateTerrain, FLAT_WORLD_16KM, ROUND_WORLD_16x8KM } from '@super-vox/shared';
 import { buildPreview } from './generatorPreview.js';
+import { TINTED } from './materials.js';
 
 describe('buildPreview', () => {
   const config = { ...defaultPlateTerrain(3), landPercent: 40 };
@@ -49,6 +50,21 @@ describe('buildPreview', () => {
     expect(withIslands.islands.hotspot).toBeGreaterThan(0);
     expect(withIslands.islands.land).toBeGreaterThan(0);
     expect(withIslands.land).toBeCloseTo(0.4, 2);
+  });
+
+  it('blends ground colours between biomes as the game does, and not with sharp borders', () => {
+    const colors = pv.map.colors!;
+    expect(colors).toHaveLength(128 * 128 * 3);
+    let tinted = 0;
+    for (let k = 0; k < 128 * 128; k++) {
+      // Only vegetated or desert ground is tinted; sea floor, beaches, rock and treetops aren't.
+      if (TINTED.has(pv.map.materials[k]!)) {
+        tinted++;
+        expect(Number.isNaN(colors[k * 3]!)).toBe(false);
+      } else expect(Number.isNaN(colors[k * 3]!)).toBe(true);
+    }
+    expect(tinted).toBeGreaterThan(100);
+    expect(buildPreview({ ...config, biomeBlend: 0 }, 32).map.colors).toBeUndefined();
   });
 
   it('rejects invalid settings', () => {

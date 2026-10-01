@@ -1,63 +1,104 @@
 import * as THREE from 'three';
-import { PALETTE_SIZE, paletteColors } from './materials.js';
+import { ATMOSPHERE_GLSL, type Atmosphere } from './atmosphere.js';
+import { PALETTE_SIZE, TINTED, paletteColors } from './materials.js';
+import { LUT_H, LUT_T_MAX, LUT_T_MIN, LUT_W } from './tintColors.js';
+
+/**
+ * Biome colour blending: the world's climate grid as a texture (temperature and moisture per
+ * cell, see ClimateGrid) and a lookup of ground colour by climate (see biomeTintLut). Ground of
+ * the TINTED materials takes the colour of its local climate, so biomes shade into each other.
+ */
+export interface Tint {
+  climate: THREE.Texture;
+  lut: THREE.Texture;
+  /** World size covered by the climate texture (metres), sea level (m) and cooling (C per m). */
+  extent: THREE.Vector2;
+  seaLevelM: number;
+  coolingPerM: number;
+}
+
 
 /**
  * Voxel material for packed meshes (see MeshBuffers): positions are
  * chunk-local units (the mesh is scaled by 1/16), and each vertex carries its
- * face direction, voxel size, grid phase, and material id (see MeshBuffers). Colors come from a palette
- * uniform. Merged quads cover many voxels, so voxel edges are drawn in the
- * fragment shader and fade out with distance to avoid moire.
+ * face direction, voxel size, grid phase, material id and corner occlusion (see MeshBuffers).
+ * Colors come from a palette uniform. Merged quads cover many voxels, so voxel edges are drawn in the
+ * fragment shader and fade out with distance to avoid moire. Lit by the sun and by sky and ground
+ * light (less in occluded corners), and hazed by the atmosphere.
  */
-export function createVoxelMaterial(): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
-    fog: true,
+export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMaterial & { setTint(tint: Tint | null): void } {
+  const empty = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  empty.needsUpdate = true;
+  const material = new THREE.ShaderMaterial({
     defines: { PALETTE_SIZE },
-    uniforms: THREE.UniformsUtils.merge([
-      THREE.UniformsLib.fog,
-      {
-        sunDir: { value: new THREE.Vector3(0.4, 0.8, 0.3).normalize() },
-        palette: { value: paletteColors().map(([r, g, b]) => new THREE.Vector3(r, g, b)) },
-      },
-    ]),
+    uniforms: {
+      ...atmosphere.uniforms,
+      palette: { value: paletteColors().map(([r, g, b]) => new THREE.Vector3(r, g, b)) },
+      tinted: { value: Array.from({ length: PALETTE_SIZE }, (_, id) => (TINTED.has(id) ? 1 : 0)) },
+      tintOn: { value: 0 },
+      climateTex: { value: empty as THREE.Texture },
+      tintLut: { value: empty as THREE.Texture },
+      climateExtent: { value: new THREE.Vector2(1, 1) },
+      climateSea: { value: 0 },
+      climateCooling: { value: 0 },
+      aoStrength: { value: 0.2 },
+      exposure: { value: 1 },
+    },
     vertexShader: /* glsl */ `
       attribute vec4 face;
       uniform vec3 palette[PALETTE_SIZE];
+      uniform float tinted[PALETTE_SIZE];
       varying vec3 vColor;
       varying vec3 vNormal;
       varying vec3 vUnits;
+      varying vec3 vWorld;
       varying float vSize;
       varying vec2 vPhase;
+      varying float vAo;
+      varying float vTinted;
       #include <common>
-      #include <fog_pars_vertex>
       #include <logdepthbuf_pars_vertex>
       const vec3 NORMALS[6] = vec3[6](
         vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0),
         vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
         vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0));
       void main() {
-        // face = (dir | (size - 1) << 3, phaseA | phaseB << 4, material lo, material hi)
+        // face = (dir | (size - 1) << 3, phaseA | phaseB << 4, material lo, material hi | ao << 6)
         float b0 = floor(face.x + 0.5);
         float b1 = floor(face.y + 0.5);
+        float b3 = floor(face.w + 0.5);
         vNormal = NORMALS[int(mod(b0, 8.0))];
         vSize = floor(b0 / 8.0) + 1.0;
         vPhase = vec2(mod(b1, 16.0), floor(b1 / 16.0));
-        int material = int(face.z + face.w * 256.0 + 0.5);
+        vAo = floor(b3 / 64.0);
+        int material = int(face.z + mod(b3, 64.0) * 256.0 + 0.5);
         vColor = material < PALETTE_SIZE ? palette[material] : vec3(1.0, 0.0, 1.0);
+        vTinted = material < PALETTE_SIZE ? tinted[material] : 0.0;
         vUnits = position;
-        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_Position = projectionMatrix * mvPosition;
+        vec4 world = modelMatrix * vec4(position, 1.0);
+        vWorld = world.xyz;
+        gl_Position = projectionMatrix * viewMatrix * world;
         #include <logdepthbuf_vertex>
-        #include <fog_vertex>
       }
     `,
     fragmentShader: /* glsl */ `
-      uniform vec3 sunDir;
+      ${ATMOSPHERE_GLSL}
+      uniform float tintOn;
+      uniform sampler2D climateTex;
+      uniform sampler2D tintLut;
+      uniform vec2 climateExtent;
+      uniform float climateSea;
+      uniform float climateCooling;
+      uniform float aoStrength;
+      uniform float exposure;
       varying vec3 vColor;
       varying vec3 vNormal;
       varying vec3 vUnits;
+      varying vec3 vWorld;
       varying float vSize;
       varying vec2 vPhase;
-      #include <fog_pars_fragment>
+      varying float vAo;
+      varying float vTinted;
       #include <logdepthbuf_pars_fragment>
       void main() {
         #include <logdepthbuf_fragment>
@@ -71,12 +112,38 @@ export function createVoxelMaterial(): THREE.ShaderMaterial {
         float line = 1.0 - min(min(grid.x, grid.y), 1.0);
         // Fade lines once a voxel spans only a few pixels.
         line *= 1.0 - smoothstep(0.15, 0.35, max(fw.x, fw.y));
-        float light = 0.55 + 0.45 * max(dot(n, sunDir), 0.0);
-        vec3 rgb = vColor * light * (1.0 - 0.35 * line);
-        gl_FragColor = vec4(rgb, 1.0);
+        vec3 base = vColor;
+        if (tintOn > 0.5 && vTinted > 0.5) {
+          // The ground colour of the local climate: temperature falls with height.
+          vec2 c = texture2D(climateTex, vWorld.xz / climateExtent).rg;
+          float t = c.r * 127.5 - 64.0 - climateCooling * max(0.0, vWorld.y - climateSea);
+          // Samples sit at texel centres: first and last at the range's ends.
+          vec2 at = clamp(vec2((t - ${LUT_T_MIN.toFixed(1)}) / ${(LUT_T_MAX - LUT_T_MIN).toFixed(1)}, c.g), 0.0, 1.0);
+          base = texture2D(tintLut, (at * vec2(${LUT_W - 1}.0, ${LUT_H - 1}.0) + 0.5) / vec2(${LUT_W}.0, ${LUT_H}.0)).rgb;
+        }
+        // Corner occlusion: 0 (open) .. 3 (tucked into a corner).
+        float ao = max(0.0, 1.0 - aoStrength * vAo);
+        float sky = 0.5 + 0.5 * n.y;
+        vec3 light = mix(groundAmbient, skyAmbient, sky) * ao + sunColor * max(dot(n, sunDir), 0.0) * mix(1.0, ao, 0.5);
+        // Below the water, light that reached down through it (red is lost first).
+        if (vWorld.y < waterLevel) light *= exp(-WATER_ABSORB * 0.5 * (waterLevel - vWorld.y));
+        vec3 rgb = base * light * exposure * (1.0 - 0.35 * line);
+        gl_FragColor = vec4(applyHaze(rgb, vWorld), 1.0);
         #include <colorspace_fragment>
-        #include <fog_fragment>
       }
     `,
+  });
+  return Object.assign(material, {
+    setTint(tint: Tint | null) {
+      const u = material.uniforms;
+      u.tintOn!.value = tint ? 1 : 0;
+      u.climateTex!.value = tint?.climate ?? empty;
+      u.tintLut!.value = tint?.lut ?? empty;
+      if (tint) {
+        u.climateExtent!.value = tint.extent;
+        u.climateSea!.value = tint.seaLevelM;
+        u.climateCooling!.value = tint.coolingPerM;
+      }
+    },
   });
 }

@@ -18,7 +18,7 @@ import {
   type Block,
   type Chunk,
 } from '@super-vox/shared';
-import { DIRS, QUAD_INDEX_PATTERN, mergeFaces, packQuads, quadIndices, visibleFaces, type Neighbors, type Quad } from './mesher.js';
+import { DIRS, MAX_MESH_MATERIAL, QUAD_INDEX_PATTERN, mergeFaces, packQuads, quadIndices, visibleFaces, type Neighbors, type Quad } from './mesher.js';
 
 function rng(seed: number): () => number {
   let s = seed >>> 0;
@@ -178,6 +178,93 @@ describe('visibleFaces', () => {
       expect(raw.area).toBe(expected.size); // no overlapping faces
     });
   }
+});
+
+describe('ambient occlusion', () => {
+  /** A 3 x 3 floor of 1 m blocks at by = 0, plus solid blocks at `walls` on top. */
+  const scene = (walls: [number, number, number][]) => {
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    for (let bz = 0; bz < 3; bz++) for (let bx = 0; bx < 3; bx++) chunk.blocks[blockIndex(bx, 0, bz)] = { kind: 'uniform', size: 16, material: 1 };
+    for (const [x, y, z] of walls) chunk.blocks[blockIndex(x, y, z)] = { kind: 'uniform', size: 16, material: 2 };
+    return visibleFaces(chunk, NO_NEIGHBORS);
+  };
+  /** Occlusion at world corner (x, z) of the floor's top face over block (bx, bz). */
+  const floorAo = (faces: Quad[], bx: number, bz: number, x: number, z: number) => {
+    const q = faces.find((f) => f.dir === 2 && f.plane === 16 && f.u <= bz * 16 && f.u + f.du >= bz * 16 + 16 && f.v <= bx * 16 && f.v + f.dv >= bx * 16 + 16)!;
+    // Top faces: U is Z, V is X.
+    const cu = z === q.u ? 0 : 1, cv = x === q.v ? 0 : 1;
+    return (q.ao ?? [0, 0, 0, 0])[cv ? 3 - cu : cu]!;
+  };
+
+  it('leaves open faces unshaded', () => {
+    const faces = scene([]);
+    expect(faces.filter((f) => f.dir === 2).every((f) => !f.ao)).toBe(true);
+    expect(faces.filter((f) => f.dir === 2).reduce((a, f) => a + f.du * f.dv, 0)).toBe(9 * 256);
+  });
+
+  it('darkens ground along the foot of a wall, the wall along its foot, and the corner diagonal to it', () => {
+    const faces = scene([[1, 1, 1]]);
+    // West of the wall: the corners at the wall (x = 16) are shaded, the far ones aren't.
+    expect([floorAo(faces, 0, 1, 16, 16), floorAo(faces, 0, 1, 16, 32)]).toEqual([1, 1]);
+    expect([floorAo(faces, 0, 1, 0, 16), floorAo(faces, 0, 1, 0, 32)]).toEqual([0, 0]);
+    // The floor block diagonal to the wall: only its corner touching the wall's corner.
+    expect(floorAo(faces, 0, 0, 16, 16)).toBe(1);
+    expect(floorAo(faces, 0, 0, 0, 0) + floorAo(faces, 0, 0, 16, 0) + floorAo(faces, 0, 0, 0, 16)).toBe(0);
+    // The wall's west face: bottom corners shaded by the floor (beside and diagonal: 2), top
+    // corners open.
+    const west = faces.find((f) => f.dir === 1 && f.plane === 16)!;
+    // -X faces: U is Y, V is Z; corners (y, z): (16, 16), (32, 16), (32, 32), (16, 32).
+    expect(west.ao).toEqual([2, 0, 0, 2]);
+  });
+
+  it('merges shaded faces into strips along the edge that shades them', () => {
+    // A 1/4 m grid block: a full floor layer, and a ridge one cell high along X at z = 0.
+    const n = 4, materials = new Uint16Array(n ** 3);
+    for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) materials[x + n * z] = 1;
+    for (let x = 0; x < n; x++) materials[x + n * (0 + n * 1)] = 1;
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    chunk.blocks[0] = { kind: 'grid', size: 4, materials };
+    const faces = visibleFaces(chunk, NO_NEIGHBORS);
+    // The floor's top beside the ridge (z in [4, 8)), shaded on its ridge side: one strip along X
+    // where the ridge is beside and diagonal to every corner (2), and an end cell either side
+    // where the ridge ends (1 at the outer corner).
+    const strip = faces.filter((f) => f.dir === 2 && f.plane === 4 && f.u === 4).sort((p, q) => p.v - q.v);
+    // Top faces: U is Z, V is X; corners (z, x): (4, x0), (8, x0), (8, x1), (4, x1).
+    expect(strip.map((f) => [f.v, f.dv, f.du, f.ao])).toEqual([
+      [0, 4, 4, [1, 0, 0, 2]],
+      [4, 8, 4, [2, 0, 0, 2]],
+      [12, 4, 4, [2, 0, 0, 1]],
+    ]);
+  });
+
+  it('merges strips the other way for a ridge along Z', () => {
+    const n = 4, materials = new Uint16Array(n ** 3);
+    for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) materials[x + n * z] = 1;
+    for (let z = 0; z < n; z++) materials[0 + n * (z + n * 1)] = 1;
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    chunk.blocks[0] = { kind: 'grid', size: 4, materials };
+    const strip = visibleFaces(chunk, NO_NEIGHBORS).filter((f) => f.dir === 2 && f.plane === 4 && f.v === 4).sort((p, q) => p.u - q.u);
+    expect(strip.map((f) => [f.u, f.du, f.dv, f.ao])).toEqual([
+      [0, 4, 4, [1, 2, 0, 0]],
+      [4, 8, 4, [2, 2, 0, 0]],
+      [12, 4, 4, [2, 1, 0, 0]],
+    ]);
+  });
+
+  it('fully shades an inside corner between two walls', () => {
+    const faces = scene([[1, 1, 0], [0, 1, 1]]);
+    expect(floorAo(faces, 0, 0, 16, 16)).toBe(3);
+  });
+
+  it('reaches into neighbouring chunks across a face, and treats diagonal chunks as open', () => {
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    chunk.blocks[blockIndex(15, 0, 5)] = { kind: 'uniform', size: 16, material: 1 };
+    const east = emptyChunk({ cx: 1, cy: 0, cz: 0 });
+    east.blocks[blockIndex(0, 1, 5)] = { kind: 'uniform', size: 16, material: 1 };
+    const top = visibleFaces(chunk, [east, null, null, null, null, null]).find((f) => f.dir === 2)!;
+    // The corners at x = 256 touch the block on top of the east chunk.
+    expect(top.ao).toEqual([0, 0, 1, 1]);
+  });
 });
 
 describe('visibleFaces with shared block objects', () => {
@@ -355,11 +442,35 @@ describe('packQuads', () => {
       expect([Math.min(...us), Math.max(...us), Math.min(...ws), Math.max(...ws)]).toEqual([q.u, q.u + q.du, q.v, q.v + q.dv]);
       for (let k = 0; k < 4; k++) {
         const f = buf.faces.subarray((qi * 4 + k) * 4, (qi * 4 + k) * 4 + 4);
-        expect([f[0]! & 7, (f[0]! >> 3) + 1, f[1]! & 15, f[1]! >> 4, f[2]! | (f[3]! << 8)]).toEqual([
+        expect([f[0]! & 7, (f[0]! >> 3) + 1, f[1]! & 15, f[1]! >> 4, f[2]! | ((f[3]! & 63) << 8)]).toEqual([
           q.dir, q.size, q.pa ?? 0, q.pb ?? 0, q.material,
         ]);
+        // The corner's occlusion: Quad.ao is ordered (u, v), (u+du, v), (u+du, v+dv), (u, v+dv).
+        const cu = vs[k]![U[axis]!] === q.u ? 0 : 1, cv = vs[k]![V[axis]!] === q.v ? 0 : 1;
+        expect(f[3]! >> 6).toBe((q.ao ?? [0, 0, 0, 0])[cv ? 3 - cu : cu]);
       }
     });
+    expect(quads.some((q) => q.ao)).toBe(true);
+  });
+
+  it('clamps material ids beyond 14 bits (drawn as unknown)', () => {
+    const buf = packQuads([{ dir: 2, plane: 16, u: 0, v: 0, du: 16, dv: 16, material: 0xfff0, size: 16, ao: [3, 3, 3, 3] }]);
+    expect(buf.faces[2]! | ((buf.faces[3]! & 63) << 8)).toBe(MAX_MESH_MATERIAL);
+    expect(buf.faces[3]! >> 6).toBe(3);
+  });
+
+  it('splits each quad along the diagonal between its two most occluded corners', () => {
+    for (const dir of [2, 3]) {
+      for (let dark = 0; dark < 4; dark++) {
+        const ao = [0, 0, 0, 0] as [number, number, number, number];
+        ao[dark] = 2;
+        ao[(dark + 2) % 4] = 1;
+        const buf = packQuads([{ dir, plane: 16, u: 0, v: 0, du: 16, dv: 16, material: 1, size: 16, ao }]);
+        // The pattern's shared vertices (0 and 2) are both on the diagonal.
+        const occ = (k: number) => buf.faces[k * 4 + 3]! >> 6;
+        expect([occ(0), occ(2)].sort()).toEqual([1, 2]);
+      }
+    }
   });
 
   it('builds a shared index buffer from one repeating pattern', () => {

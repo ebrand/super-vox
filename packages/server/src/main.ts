@@ -60,6 +60,7 @@ function specForNewWorld(): WorldSpec {
         rainfall: numberEnv('WORLD_RAINFALL', d.rainfall),
         windFrom: numberEnv('WORLD_WIND_FROM', d.windFrom),
         snowTemperature: numberEnv('WORLD_SNOW_TEMPERATURE', d.snowTemperature),
+        biomeBlend: numberEnv('WORLD_BIOME_BLEND', d.biomeBlend),
         trees: numberEnv('WORLD_TREES', d.trees),
         islandArcs: numberEnv('WORLD_ISLAND_ARCS', d.islandArcs),
         hotspots: numberEnv('WORLD_HOTSPOTS', d.hotspots),

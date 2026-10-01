@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { moveAabb, playerBox } from './physics.js';
 import type { SolidAt } from './picking.js';
-import { GRAVITY, JUMP_SPEED, walkStep, type Mover, type WalkState } from './walking.js';
+import { GRAVITY, JUMP_SPEED, SINK_SPEED, SWIM_SPEED, walkStep, type Mover, type WalkState } from './walking.js';
 
 /** Flat ground at y < 0 (units), plus extra solid boxes in units. */
 function world(...boxes: [number, number, number, number, number, number][]): SolidAt {
@@ -107,5 +107,62 @@ describe('walkStep', () => {
     // Once loaded it falls.
     for (let i = 0; i < 60; i++) p.step(0, 0, false, 1 / 60, 4, true);
     expect(p.pos[1]).toBeLessThan(10);
+  });
+});
+
+describe('swimming', () => {
+  /** A player over flat ground at y = 0, in water below `surface` (m), eye starting at `eyeY`. */
+  const swimmer = (eyeY: number, surface = 5) => {
+    const pos: [number, number, number] = [0, eyeY, 0];
+    let state: WalkState = { vy: 0, grounded: false };
+    const move: Mover = (d) => {
+      const r = moveAabb(playerBox([pos[0] * 16, pos[1] * 16, pos[2] * 16]), [d[0] * 16, d[1] * 16, d[2] * 16], world());
+      return { delta: [r.delta[0] / 16, r.delta[1] / 16, r.delta[2] / 16], blocked: r.blocked };
+    };
+    return {
+      pos,
+      get state() { return state; },
+      run(seconds: number, up = false, down = false, loaded = true) {
+        for (let t = 0; t < seconds; t += 1 / 60) {
+          const swim = pos[1] - 0.75 < surface ? { swim: { up, down } } : {};
+          const r = walkStep(state, { dx: 0, dz: 0, speed: 2, jump: up, ...swim }, 1 / 60, move, loaded);
+          pos[1] += r.delta[1];
+          state = r.state;
+        }
+      },
+    };
+  };
+
+  it('sinks slowly instead of falling, and settles on the bottom', () => {
+    const s = swimmer(4.5);
+    s.run(0.5);
+    expect(s.state.vy).toBeLessThan(0);
+    expect(s.state.vy).toBeGreaterThanOrEqual(-SINK_SPEED - 1e-9);
+    s.run(8);
+    expect(s.pos[1]).toBeCloseTo(EYE, 2);
+    expect(s.state.grounded).toBe(true);
+  });
+
+  it('swims up and down at swimming speed', () => {
+    const up = swimmer(3, 50);
+    up.run(2, true);
+    expect(up.state.vy).toBeCloseTo(SWIM_SPEED, 3);
+    const down = swimmer(40, 50);
+    down.run(2, false, true);
+    expect(down.state.vy).toBeCloseTo(-SWIM_SPEED, 3);
+  });
+
+  it('bobs at the surface while swimming up, instead of flying out', () => {
+    const s = swimmer(2);
+    s.run(6, true);
+    // Surface at 5 m: the body's middle (eye - 0.75) stays around it.
+    expect(s.pos[1] - 0.75).toBeGreaterThan(4.3);
+    expect(s.pos[1] - 0.75).toBeLessThan(5.8);
+  });
+
+  it('does not sink while the ground below is not loaded', () => {
+    const s = swimmer(4);
+    s.run(1, false, false, false);
+    expect(s.pos[1]).toBe(4);
   });
 });

@@ -82,6 +82,7 @@ Settings for a new world from the environment:
 | `WORLD_WIND_FROM` | 270 | Compass direction rain comes from (270 = west); land behind mountains is drier |
 | `WORLD_TREES` | 50 | Forest density: 0 (none), 50 (natural for each biome), 100 (double) |
 | `WORLD_SNOW_TEMPERATURE` | -4 | With biomes: ground colder than this (degrees C) is snow, with bare rock just below it on high ground |
+| `WORLD_BIOME_BLEND` | 50 | With biomes: how gradually biomes give way to each other, 0 (sharp borders) .. 100 (wide, ragged transitions) |
 | `WORLD_ISLAND_ARCS` | 0 | Island chains along seams where an oceanic plate meets another, 0 .. 100 |
 | `WORLD_HOTSPOTS` | 0 | Hotspot island groups in oceanic plates (0..40) |
 | `WORLD_ISLAND_MIN_SIZE` | 200 | Smallest arc/hotspot island, across, in metres (50..4000) |
@@ -118,7 +119,14 @@ more than 100 m up; the snow line fractal wanders it by up to 2 degrees. Worlds 
 desert, rock or snow) with a chance by biome: jungle trees (25-40 m, wide flat crowns), temperate
 broadleaf (12-20 m, smaller on grassland), boreal conifers (10-25 m, tiered; dwarf on tundra) and
 savanna acacias (6-10 m, flat-topped). They are voxels like the ground (1/4 m wood, 1/2 m leaves),
-can be dug, and are solid. Distant terrain doesn't show them yet. Plains are regions a few km across (chosen by
+can be dug, and are solid. Distant terrain shows forests as floating canopy slabs: the actual
+crowns up close, each biome's typical cover and height further away. Biome blending: borders
+become ragged (local noise shifts the climate biomes are classified from by up to 4 degrees and
+0.12 moisture at 100), each tree takes the biome of its climate nudged at random within an
+ecotone (up to +-6 degrees, +-0.2 moisture), so neighbouring forests mix and forests thin out
+across the band, and biome grounds take the colour of their local climate, blended by the same
+ecotone (in the game, the generator preview and the map). Worlds made before blending keep sharp
+borders. Plains are regions a few km across (chosen by
 large-scale noise so `WORLD_PLAINS` percent of the land is in one) where the land is replaced by
 a heavily smoothed, lowered copy of itself, blending into the hills over ~1 km; most 16 m squares
 in a plain vary by under 1 m. Lowland flatness raises the land's height curve to a power (up to
@@ -171,7 +179,16 @@ through everything. Gravity waits until the ground below you has loaded.
 in the same colours the game renders, with your position and facing, the spawn
 point, a 1 km grid, and a scale bar. Hover for coordinates, ground height, and
 surface; click to go there. M or Esc closes it. The server serves it at
-`/api/world/map?width=N` (64..2048 samples across, default 1024).
+`/api/world/map?width=N` (64..2048 samples across, default 1024), and a world's climate grid
+for blending biome colours at `/api/world/climate` (204 where biomes don't blend).
+
+Lighting: a warm sun (about 30 degrees up, low enough to shade the sides of things), blue-ish sky light from above and dim warm light
+bounced from the ground, with ambient occlusion darkening the corners and creases of nearby
+voxels (not of distant terrain). Haze thickens with distance and thins with height (peaks and
+high viewpoints see further), takes the sun's colour when looking toward it, and closes in fully
+at the view distance into a sky that matches it. **L** opens a lighting panel (sun height,
+direction, strength and warmth; sky light; ground bounce; corner shading; haze; exposure),
+applied live and saved in this browser.
 
 Editing has three modes; Tab cycles hybrid -> dig -> place (the overlay shows
 the current one). Aim with the crosshair (reach 32 m) while the mouse is

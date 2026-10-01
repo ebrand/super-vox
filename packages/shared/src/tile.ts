@@ -23,6 +23,13 @@ export interface Tile extends TileCoord {
   /** TILE_SAMPLES^2 heights in units (row-major, i + TILE_SAMPLES * j), or NO_GROUND. */
   heights: Int16Array;
   materials: Uint16Array;
+  /**
+   * Forest canopy floating above the ground, per sample: crown top and bottom (units; NO_GROUND
+   * where there's none) and leaf material. Absent for tiles without trees.
+   */
+  canopyTop?: Int16Array;
+  canopyBottom?: Int16Array;
+  canopyMaterials?: Uint16Array;
 }
 
 export function tileSizeUnits(level: number): number {
@@ -51,10 +58,12 @@ export function tileInWorld(world: WorldConfig, t: TileCoord): boolean {
 }
 
 /**
- * Tile format (little-endian): u8 version (1), u8 level, i32 tx, i32 tz,
- * then TILE_SAMPLES^2 x i16 heights, then TILE_SAMPLES^2 x u16 materials.
+ * Tile format (little-endian): u8 version (2), u8 level, i32 tx, i32 tz,
+ * then TILE_SAMPLES^2 x i16 heights, then TILE_SAMPLES^2 x u16 materials; then, if the tile
+ * has a forest canopy, TILE_SAMPLES^2 each of i16 canopy tops, i16 canopy bottoms and u16
+ * canopy materials.
  */
-export const TILE_FORMAT_VERSION = 1;
+export const TILE_FORMAT_VERSION = 2;
 const HEADER = 10;
 const N = TILE_SAMPLES * TILE_SAMPLES;
 
@@ -62,7 +71,11 @@ export class TileDecodeError extends Error {}
 
 export function encodeTile(tile: Tile): Uint8Array {
   if (tile.heights.length !== N || tile.materials.length !== N) throw new RangeError('tile arrays must hold TILE_SAMPLES^2 entries');
-  const buf = new Uint8Array(HEADER + N * 4);
+  const canopy = tile.canopyTop && tile.canopyBottom && tile.canopyMaterials;
+  if (canopy && (tile.canopyTop!.length !== N || tile.canopyBottom!.length !== N || tile.canopyMaterials!.length !== N)) {
+    throw new RangeError('tile canopy arrays must hold TILE_SAMPLES^2 entries');
+  }
+  const buf = new Uint8Array(HEADER + N * (canopy ? 10 : 4));
   const v = new DataView(buf.buffer);
   v.setUint8(0, TILE_FORMAT_VERSION);
   v.setUint8(1, tile.level);
@@ -71,12 +84,20 @@ export function encodeTile(tile: Tile): Uint8Array {
   for (let i = 0; i < N; i++) {
     v.setInt16(HEADER + i * 2, tile.heights[i]!, true);
     v.setUint16(HEADER + N * 2 + i * 2, tile.materials[i]!, true);
+    if (canopy) {
+      v.setInt16(HEADER + N * 4 + i * 2, tile.canopyTop![i]!, true);
+      v.setInt16(HEADER + N * 6 + i * 2, tile.canopyBottom![i]!, true);
+      v.setUint16(HEADER + N * 8 + i * 2, tile.canopyMaterials![i]!, true);
+    }
   }
   return buf;
 }
 
 export function decodeTile(bytes: Uint8Array): Tile {
-  if (bytes.byteLength !== HEADER + N * 4) throw new TileDecodeError(`tile must be ${HEADER + N * 4} bytes, got ${bytes.byteLength}`);
+  const canopy = bytes.byteLength === HEADER + N * 10;
+  if (!canopy && bytes.byteLength !== HEADER + N * 4) {
+    throw new TileDecodeError(`tile must be ${HEADER + N * 4} or ${HEADER + N * 10} bytes, got ${bytes.byteLength}`);
+  }
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (v.getUint8(0) !== TILE_FORMAT_VERSION) throw new TileDecodeError(`unsupported tile format ${v.getUint8(0)}`);
   const level = v.getUint8(1);
@@ -87,7 +108,18 @@ export function decodeTile(bytes: Uint8Array): Tile {
     heights[i] = v.getInt16(HEADER + i * 2, true);
     materials[i] = v.getUint16(HEADER + N * 2 + i * 2, true);
   }
-  return { level, tx: v.getInt32(2, true), tz: v.getInt32(6, true), heights, materials };
+  const tile: Tile = { level, tx: v.getInt32(2, true), tz: v.getInt32(6, true), heights, materials };
+  if (canopy) {
+    tile.canopyTop = new Int16Array(N);
+    tile.canopyBottom = new Int16Array(N);
+    tile.canopyMaterials = new Uint16Array(N);
+    for (let i = 0; i < N; i++) {
+      tile.canopyTop[i] = v.getInt16(HEADER + N * 4 + i * 2, true);
+      tile.canopyBottom[i] = v.getInt16(HEADER + N * 6 + i * 2, true);
+      tile.canopyMaterials[i] = v.getUint16(HEADER + N * 8 + i * 2, true);
+    }
+  }
+  return tile;
 }
 
 /** Reads the tile coordinates from an encoded tile. */

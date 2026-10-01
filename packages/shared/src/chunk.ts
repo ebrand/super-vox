@@ -1,3 +1,5 @@
+import type { ClimateGrid } from './climate.js';
+import type { Canopy } from './trees.js';
 import { MAX_VOXEL_SIZE, type VoxelSize } from './units.js';
 import { CHUNK_SIZE, type ChunkCoord } from './world.js';
 import type { MaterialId } from './materials.js';
@@ -139,11 +141,13 @@ export interface ChunkGenerator {
    * sample (i, j) at column (x0 + i * step, z0 + j * step); used for distant
    * low-detail tiles. Row-major (i + n * j).
    */
-  surfaceSamples(x0: number, z0: number, step: number, n: number): { heights: Int32Array; materials: Uint16Array };
+  surfaceSamples(x0: number, z0: number, step: number, n: number): { heights: Int32Array; materials: Uint16Array; canopy?: Canopy | null };
   /** Lowest and highest ground height (units) over every column of chunk column (cx, cz). */
   columnRange(cx: number, cz: number): { minY: number; maxY: number };
   /** Y (units) of the sea surface, or null for worlds without a sea. */
   readonly seaLevel: number | null;
+  /** The climate for blending biome colours, or null where biomes don't blend. */
+  climate?(): ClimateGrid | null;
 }
 
 export interface Chunk extends ChunkCoord {

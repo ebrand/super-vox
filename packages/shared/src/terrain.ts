@@ -1,4 +1,5 @@
-import { plantTrees, type Tree } from './trees.js';
+import type { ClimateGrid } from './climate.js';
+import { plantTrees, type Canopy, type Tree } from './trees.js';
 import {
   BLOCK_SIZE,
   BLOCKS_PER_AXIS,
@@ -37,6 +38,10 @@ export interface HeightSource {
   materials?(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): Uint16Array;
   /** Y (units) of the sea surface, if this terrain has a sea. */
   readonly seaLevel?: number;
+  /** Optional forest canopy over samples (given their ground heights and materials), for distant views. */
+  canopy?(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array, materials: Uint16Array): Canopy | null;
+  /** Optional climate for blending biome colours (null where biomes don't blend). */
+  climate?(): ClimateGrid | null;
   /** Optional trees with any part in the box [x0, x1) x [z0, z1) (units), in a fixed order. */
   trees?(x0: number, z0: number, x1: number, z1: number): Tree[];
 }
@@ -215,10 +220,16 @@ export class TerrainGenerator implements ChunkGenerator {
     return this.source.heights(x, z, 1, 1)[0]!;
   }
 
-  surfaceSamples(x0: number, z0: number, step: number, n: number): { heights: Int32Array; materials: Uint16Array } {
+  climate(): ClimateGrid | null {
+    return this.source.climate?.() ?? null;
+  }
+
+  surfaceSamples(x0: number, z0: number, step: number, n: number): { heights: Int32Array; materials: Uint16Array; canopy: Canopy | null } {
     const heights = this.source.heights(x0, z0, n, n, step);
     const materials = this.source.materials?.(x0, z0, n, n, step, heights) ?? new Uint16Array(n * n).fill(Material.Grass);
-    return { heights, materials };
+    // Distant terrain and maps show forests as their canopy, above the ground.
+    const canopy = this.source.canopy?.(x0, z0, n, n, step, heights, materials) ?? null;
+    return { heights, materials, canopy };
   }
 
   columnRange(cx: number, cz: number): { minY: number; maxY: number } {

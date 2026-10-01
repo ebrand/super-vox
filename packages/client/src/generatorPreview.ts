@@ -1,4 +1,5 @@
-import { FLAT_WORLD_16KM, PlateHeights, type PlateTerrainConfig, type WorldConfig } from '@super-vox/shared';
+import { FLAT_WORLD_16KM, NO_CANOPY, PlateHeights, type PlateTerrainConfig, type WorldConfig } from '@super-vox/shared';
+import { climateTintColors } from './tintColors.js';
 import type { MapData } from './worldMap.js';
 
 export interface PreviewStats {
@@ -45,6 +46,16 @@ export function buildPreview(config: PlateTerrainConfig, size: number, world: Wo
   const h = p.heights(step / 2, step / 2, cols, rows, step);
   const m = p.materials(step / 2, step / 2, cols, rows, step, h);
   const biome = p.biomes(step / 2, step / 2, cols, rows, step, h);
+  // Forests, seen from above as the map shows them (biomes and stats are about the ground).
+  const canopy = p.canopy(step / 2, step / 2, cols, rows, step, h, m);
+  const canopyH = Int32Array.from(h), canopyM = Uint16Array.from(m);
+  if (canopy) {
+    for (let k = 0; k < h.length; k++) {
+      if (canopy.top[k] === NO_CANOPY) continue;
+      canopyH[k] = canopy.top[k]!;
+      canopyM[k] = canopy.material[k]!;
+    }
+  }
   let biomeShares: number[] | null = null;
   if (biome) {
     const count = new Array<number>(8).fill(0);
@@ -55,7 +66,7 @@ export function buildPreview(config: PlateTerrainConfig, size: number, world: Wo
   const heights = new Int16Array(h.length);
   let lo = Infinity, hi = -Infinity;
   for (let k = 0; k < h.length; k++) {
-    heights[k] = h[k]!;
+    heights[k] = Math.max(-32767, Math.min(32767, canopyH[k]!));
     lo = Math.min(lo, h[k]!);
     hi = Math.max(hi, h[k]!);
   }
@@ -66,8 +77,12 @@ export function buildPreview(config: PlateTerrainConfig, size: number, world: Wo
   for (const k of p.plateOf) area[k]!++;
   const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
   const majorAreas = area.filter((_, k) => p.plates[k]!.major), minorAreas = area.filter((_, k) => !p.plates[k]!.major);
+  const map: MapData = { cols, rows, step, seaLevel: p.seaLevel, heights, materials: Uint8Array.from(canopyM) };
+  // Ground colours blend between biomes as in the game.
+  const climate = p.climate();
+  if (climate) map.colors = climateTintColors(map, climate);
   return {
-    map: { cols, rows, step, seaLevel: p.seaLevel, heights, materials: Uint8Array.from(m) },
+    map,
     plateOf,
     plates: p.plates.map((q) => ({ major: q.major, continental: q.continental })),
     biome,

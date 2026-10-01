@@ -52,12 +52,21 @@ export interface Quad {
    */
   pa?: number;
   pb?: number;
+  /**
+   * Ambient occlusion at the corners (u, v), (u+du, v), (u+du, v+dv), (u, v+dv): 0 (open) .. 3
+   * (in a corner). Omitted = all 0.
+   */
+  ao?: readonly [number, number, number, number];
 }
 
 /** Chunks adjacent in each of the six directions; null means empty. */
 export type Neighbors = readonly (Chunk | null)[];
 
 function blockAt(chunk: Chunk, neighbors: Neighbors, b: [number, number, number]): Block {
+  let out = 0;
+  for (let axis = 0; axis < 3; axis++) if (b[axis]! < 0 || b[axis]! >= BLOCKS_PER_AXIS) out++;
+  // Diagonal neighbour chunks aren't passed: treated as empty.
+  if (out > 1) return null;
   for (let axis = 0; axis < 3; axis++) {
     const c = b[axis]!;
     if (c < 0 || c >= BLOCKS_PER_AXIS) {
@@ -236,14 +245,54 @@ function blockFaces(block: Exclude<Block, null>, nbBlocks: readonly Block[]): Qu
   return out;
 }
 
+/** Whether the unit cell at chunk-local (x, y, z) is solid; cells of chunks not passed are empty. */
+function solidCell(chunk: Chunk, neighbors: Neighbors, b: [number, number, number], x: number, y: number, z: number): boolean {
+  b[0] = Math.floor(x / BLOCK_SIZE); b[1] = Math.floor(y / BLOCK_SIZE); b[2] = Math.floor(z / BLOCK_SIZE);
+  const block = blockAt(chunk, neighbors, b);
+  if (!block) return false;
+  if (block.kind === 'uniform') return true;
+  const lx = x - b[0] * BLOCK_SIZE, ly = y - b[1] * BLOCK_SIZE, lz = z - b[2] * BLOCK_SIZE;
+  if (block.kind === 'grid') {
+    const s = block.size, n = BLOCK_SIZE / s;
+    return block.materials[gridCellIndex(n, Math.floor(lx / s), Math.floor(ly / s), Math.floor(lz / s))] !== 0;
+  }
+  return rasterizeVoxels(block).materials[unitIndex(lx, ly, lz)] !== 0;
+}
+
 /**
- * Collects every visible voxel face of `chunk`, merged within each block.
- * Faces against a null neighbor are visible. Blocks with identical contents
- * and identical neighbor objects share one computation.
+ * Ambient occlusion at the four corners of a face (chunk-local units), from the cells just in
+ * front of it: at each corner, the two beside it along the face's edges and the one diagonal to
+ * it, sampled at the face's voxel size. Both sides solid: 3; otherwise the number solid.
+ */
+function faceOcclusion(chunk: Chunk, neighbors: Neighbors, q: Quad, b: [number, number, number]): [number, number, number, number] {
+  const axis = AXIS_OF[q.dir]!, ua = U_AXIS[axis]!, va = V_AXIS[axis]!;
+  const s = q.size, half = s / 2;
+  // Centre of the front layer along the axis.
+  const layer = SIGN_OF[q.dir]! > 0 ? q.plane + half : q.plane - half;
+  const p = [0, 0, 0];
+  const solid = (u: number, v: number) => {
+    p[axis] = layer; p[ua] = u; p[va] = v;
+    return solidCell(chunk, neighbors, b, Math.floor(p[0]!), Math.floor(p[1]!), Math.floor(p[2]!));
+  };
+  const corner = (cu: number, cv: number, su: number, sv: number) => {
+    // su, sv: away from the face along U and V.
+    const a = solid(cu + su * half, cv - sv * half), c = solid(cu - su * half, cv + sv * half);
+    if (a && c) return 3;
+    return (a ? 1 : 0) + (c ? 1 : 0) + (solid(cu + su * half, cv + sv * half) ? 1 : 0);
+  };
+  const u0 = q.u, v0 = q.v, u1 = q.u + q.du, v1 = q.v + q.dv;
+  return [corner(u0, v0, -1, -1), corner(u1, v0, 1, -1), corner(u1, v1, 1, 1), corner(u0, v1, -1, 1)];
+}
+
+/**
+ * Collects every visible voxel face of `chunk`, merged within each block, with ambient occlusion
+ * at their corners. Faces against a null neighbor are visible. Blocks with identical contents
+ * and identical neighbor objects share the face search.
  */
 export function visibleFaces(chunk: Chunk, neighbors: Neighbors): Quad[] {
   const out: Quad[] = [];
   const b: [number, number, number] = [0, 0, 0];
+  const probe: [number, number, number] = [0, 0, 0];
   const nbBlocks: Block[] = new Array(6);
   const ids = new Map<Block, number>([[null, 0]]);
   const idOf = (x: Block) => {
@@ -267,19 +316,20 @@ export function visibleFaces(chunk: Chunk, neighbors: Neighbors): Quad[] {
         }
         let local = memo.get(key);
         if (!local) {
-          local = mergeFaces(blockFaces(block, nbBlocks));
+          local = blockFaces(block, nbBlocks);
           memo.set(key, local);
         }
+        if (local.length === 0) continue;
         const origin = [bx * BLOCK_SIZE, by * BLOCK_SIZE, bz * BLOCK_SIZE];
-        for (const q of local) {
+        // Occlusion depends on more than the six neighbours, so it's found per block, then merged.
+        const placed = local.map((q) => {
           const axis = AXIS_OF[q.dir]!;
-          out.push({
-            ...q,
-            plane: q.plane + origin[axis]!,
-            u: q.u + origin[U_AXIS[axis]]!,
-            v: q.v + origin[V_AXIS[axis]]!,
-          });
-        }
+          const g: Quad = { ...q, plane: q.plane + origin[axis]!, u: q.u + origin[U_AXIS[axis]]!, v: q.v + origin[V_AXIS[axis]]! };
+          const ao = faceOcclusion(chunk, neighbors, g, probe);
+          if (ao[0] || ao[1] || ao[2] || ao[3]) g.ao = ao;
+          return g;
+        });
+        for (const q of mergeFaces(placed)) out.push(q);
       }
     }
   }
@@ -294,18 +344,51 @@ function gcd(a: number, b: number): number {
 /**
  * Greedily merges coplanar faces that share direction, material, and voxel
  * size into larger rectangles. The union of the output equals the union of
- * the input.
+ * the input. Faces with the same occlusion at all four corners merge (keeping it); faces with
+ * differing corners are kept as they are.
  */
 export function mergeFaces(faces: Quad[]): Quad[] {
   const groups = new Map<string, Quad[]>();
+  const out: Quad[] = [];
+  // Faces whose occlusion only varies across V (or U) merge in strips along U (or V) with faces
+  // of the same span and shading; others with uneven corners stay as they are.
+  const strips = new Map<string, Quad[]>();
   for (const f of faces) {
-    const key = `${f.dir}|${f.plane}|${f.material}|${f.size}|${f.pa ?? 0}|${f.pb ?? 0}`;
+    const ao = f.ao;
+    const kind = `${f.dir}|${f.plane}|${f.material}|${f.size}|${f.pa ?? 0}|${f.pb ?? 0}`;
+    if (ao && !(ao[0] === ao[1] && ao[1] === ao[2] && ao[2] === ao[3])) {
+      const alongU = ao[0] === ao[1] && ao[3] === ao[2], alongV = ao[0] === ao[3] && ao[1] === ao[2];
+      if (!alongU && !alongV) {
+        out.push(f);
+        continue;
+      }
+      const key = alongU ? `${kind}|u|${f.v}|${f.dv}|${ao}` : `${kind}|v|${f.u}|${f.du}|${ao}`;
+      let g = strips.get(key);
+      if (!g) strips.set(key, (g = []));
+      g.push(f);
+      continue;
+    }
+    const key = `${kind}|${ao ? ao[0] : 0}`;
     let g = groups.get(key);
     if (!g) groups.set(key, (g = []));
     g.push(f);
   }
 
-  const out: Quad[] = [];
+  for (const [key, group] of strips) {
+    const alongU = key.includes('|u|');
+    group.sort((p, q) => (alongU ? p.u - q.u : p.v - q.v));
+    let run = { ...group[0]! };
+    for (const f of group.slice(1)) {
+      if (alongU && f.u === run.u + run.du) run.du += f.du;
+      else if (!alongU && f.v === run.v + run.dv) run.dv += f.dv;
+      else {
+        out.push(run);
+        run = { ...f };
+      }
+    }
+    out.push(run);
+  }
+
   for (const group of groups.values()) {
     const first = group[0]!;
     let minU = Infinity, minV = Infinity, maxU = -Infinity, maxV = -Infinity;
@@ -349,12 +432,14 @@ export function mergeFaces(faces: Quad[]): Quad[] {
 /**
  * Packed mesh data, 10 bytes per vertex and 4 vertices per quad:
  * - `positions`: chunk-local units (0..256) as u16 x, y, z.
- * - `faces`, the same for all 4 vertices of a quad:
+ * - `faces`, per vertex (the same for all 4 vertices of a quad but the last 2 bits):
  *   byte 0: direction (0..5) | (voxel size - 1) << 3;
  *   byte 1: grid phase a (0..15) | phase b << 4 (see Quad.pa/pb);
- *   bytes 2-3: material, little-endian.
+ *   bytes 2-3: material (14 bits, little-endian; higher ids are drawn as unknown)
+ *   | the corner's occlusion (0..3) << 14.
  * Corners are ordered so every quad is drawn with the same index pattern
- * (see quadIndexPattern) and faces outward.
+ * (see quadIndexPattern) and faces outward, starting where the quad's diagonal should run
+ * between its two most occluded corners (so occlusion shades evenly).
  */
 export interface MeshBuffers {
   positions: Uint16Array;
@@ -376,6 +461,10 @@ export function quadIndices(quads: number): Uint32Array {
   return out;
 }
 
+const NO_AO = [0, 0, 0, 0] as const;
+/** Highest material id a mesh can carry (14 bits); higher ids are clamped to it (drawn as unknown). */
+export const MAX_MESH_MATERIAL = 0x3fff;
+
 /** Packs quads into vertex buffers. */
 export function packQuads(quads: Quad[]): MeshBuffers {
   const n = quads.length;
@@ -387,20 +476,23 @@ export function packQuads(quads: Quad[]): MeshBuffers {
     const ua = U_AXIS[axis]!;
     const va = V_AXIS[axis]!;
     // Counter-clockwise seen from outside: U then V for +dirs, V then U for -dirs.
-    const corners =
-      sign > 0
-        ? [[q.u, q.v], [q.u + q.du, q.v], [q.u + q.du, q.v + q.dv], [q.u, q.v + q.dv]]
-        : [[q.u, q.v], [q.u, q.v + q.dv], [q.u + q.du, q.v + q.dv], [q.u + q.du, q.v]];
-    corners.forEach(([u, v], k) => {
-      p[axis] = q.plane; p[ua] = u!; p[va] = v!;
+    const ao = q.ao ?? NO_AO;
+    // Corner k as an index into Quad.ao.
+    let order = sign > 0 ? [0, 1, 2, 3] : [0, 3, 2, 1];
+    // Triangles split along corners 0-2; run that diagonal between the more occluded pair.
+    if (ao[order[0]!]! + ao[order[2]!]! < ao[order[1]!]! + ao[order[3]!]!) order = [order[1]!, order[2]!, order[3]!, order[0]!];
+    const material = Math.min(q.material, MAX_MESH_MATERIAL);
+    order.forEach((c, k) => {
+      const u = c === 1 || c === 2 ? q.u + q.du : q.u, v = c >= 2 ? q.v + q.dv : q.v;
+      p[axis] = q.plane; p[ua] = u; p[va] = v;
       const vi = qi * 4 + k;
       positions[vi * 3] = p[0]!;
       positions[vi * 3 + 1] = p[1]!;
       positions[vi * 3 + 2] = p[2]!;
       faces[vi * 4] = q.dir | ((q.size - 1) << 3);
       faces[vi * 4 + 1] = (q.pa ?? 0) | ((q.pb ?? 0) << 4);
-      faces[vi * 4 + 2] = q.material & 0xff;
-      faces[vi * 4 + 3] = q.material >> 8;
+      faces[vi * 4 + 2] = material & 0xff;
+      faces[vi * 4 + 3] = (material >> 8) | (ao[c]! << 6);
     });
   });
   return { positions, faces, quadCount: n };

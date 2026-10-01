@@ -1,5 +1,6 @@
-import { UNITS_PER_METER } from '@super-vox/shared';
+import { UNITS_PER_METER, type ClimateGrid } from '@super-vox/shared';
 import { materialColor, materialName } from './materials.js';
+import { climateTintColors } from './tintColors.js';
 
 /** Top-down surface samples for the whole world (see the server's /api/world/map). */
 export interface MapData {
@@ -10,6 +11,8 @@ export interface MapData {
   seaLevel: number | null;
   heights: Int16Array;
   materials: Uint8Array;
+  /** Optional colour per sample (linear RGB triples) overriding its material's; NaN: the material's. */
+  colors?: Float32Array;
 }
 
 export function decodeWorldMap(buf: ArrayBuffer): MapData {
@@ -42,16 +45,16 @@ export function linearToSrgb(c: number): number {
  * like the game lights a face with the given surface normal, with the sea
  * plane blended over it when it's under water.
  */
-export function mapColor(material: number, normal: readonly [number, number, number], underwater: boolean): [number, number, number] {
+export function mapColor(material: number, normal: readonly [number, number, number], underwater: boolean, color: readonly [number, number, number] = materialColor(material)): [number, number, number] {
   const light = 0.55 + 0.45 * Math.max(0, normal[0] * SUN[0] + normal[1] * SUN[1] + normal[2] * SUN[2]);
-  const base = materialColor(material).map((c) => linearToSrgb(Math.min(1, c * light))) as [number, number, number];
+  const base = color.map((c) => linearToSrgb(Math.min(1, c * light))) as [number, number, number];
   if (!underwater) return base;
   return base.map((c, k) => SEA_OPACITY * SEA_RGB[k]! + (1 - SEA_OPACITY) * c) as [number, number, number];
 }
 
 /** RGBA pixels for the whole map, row-major, one pixel per sample. */
 export function renderMap(map: MapData): Uint8ClampedArray<ArrayBuffer> {
-  const { cols, rows, step, heights, materials, seaLevel } = map;
+  const { cols, rows, step, heights, materials, seaLevel, colors } = map;
   const px = new Uint8ClampedArray(cols * rows * 4);
   const h = (i: number, j: number) => heights[Math.max(0, Math.min(cols - 1, i)) + cols * Math.max(0, Math.min(rows - 1, j))]!;
   for (let j = 0; j < rows; j++) {
@@ -61,7 +64,8 @@ export function renderMap(map: MapData): Uint8ClampedArray<ArrayBuffer> {
       const dz = (h(i, j + 1) - h(i, j - 1)) / (2 * step);
       const len = Math.hypot(dx, 1, dz);
       const k = i + cols * j;
-      const c = mapColor(materials[k]!, [-dx / len, 1 / len, -dz / len], seaLevel !== null && heights[k]! < seaLevel);
+      const own = colors && !Number.isNaN(colors[k * 3]!) ? ([colors[k * 3]!, colors[k * 3 + 1]!, colors[k * 3 + 2]!] as const) : undefined;
+      const c = mapColor(materials[k]!, [-dx / len, 1 / len, -dz / len], seaLevel !== null && heights[k]! < seaLevel, own);
       px.set([c[0] * 255, c[1] * 255, c[2] * 255, 255], k * 4);
     }
   }
@@ -87,6 +91,7 @@ export class WorldMapOverlay {
   private readonly marks: HTMLCanvasElement;
   private readonly info: HTMLDivElement;
   private map: MapData | null = null;
+  private climate: ClimateGrid | null = null;
   private loading: Promise<void> | null = null;
   isOpen = false;
 
@@ -174,16 +179,28 @@ export class WorldMapOverlay {
     g.stroke();
   }
 
+  /** Blends biome colours on the map as in the game (see climateTintColors). */
+  setClimate(climate: ClimateGrid): void {
+    this.climate = climate;
+    if (this.map) this.paint();
+  }
+
+  private paint(): void {
+    const map = this.map!;
+    if (this.climate && !map.colors) map.colors = climateTintColors(map, this.climate);
+    this.image.width = map.cols;
+    this.image.height = map.rows;
+    this.image.getContext('2d')!.putImageData(new ImageData(renderMap(map), map.cols, map.rows), 0, 0);
+  }
+
   private async load(): Promise<void> {
     this.loading ??= (async () => {
       const t0 = performance.now();
       const res = await fetch(this.url);
       if (!res.ok) throw new Error(`map request failed: ${res.status}`);
       const map = decodeWorldMap(await res.arrayBuffer());
-      this.image.width = map.cols;
-      this.image.height = map.rows;
-      this.image.getContext('2d')!.putImageData(new ImageData(renderMap(map), map.cols, map.rows), 0, 0);
       this.map = map;
+      this.paint();
       this.info.textContent = `map ${map.cols} x ${map.rows} (${(map.step / UNITS_PER_METER).toFixed(1)} m per pixel), ${Math.round(performance.now() - t0)} ms · hover for details, click to go there · M or Esc to close`;
       this.update();
     })().catch((err) => {
