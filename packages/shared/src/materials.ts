@@ -13,6 +13,12 @@ export const Material = {
   TaigaFloor: 9,
   Tundra: 10,
   DesertSand: 11,
+  /** Trees (see trees.ts). */
+  Wood: 12,
+  Leaves: 13,
+  Needles: 14,
+  JungleLeaves: 15,
+  AcaciaLeaves: 16,
 } as const;
 
 export type MaterialId = number;

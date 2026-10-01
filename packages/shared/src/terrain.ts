@@ -1,3 +1,4 @@
+import { plantTrees, type Tree } from './trees.js';
 import {
   BLOCK_SIZE,
   BLOCKS_PER_AXIS,
@@ -36,6 +37,8 @@ export interface HeightSource {
   materials?(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): Uint16Array;
   /** Y (units) of the sea surface, if this terrain has a sea. */
   readonly seaLevel?: number;
+  /** Optional trees with any part in the box [x0, x1) x [z0, z1) (units), in a fixed order. */
+  trees?(x0: number, z0: number, x1: number, z1: number): Tree[];
 }
 
 /** What lies beneath a surface material, down to DIRT_DEPTH. */
@@ -186,8 +189,8 @@ type Node = number | Node[];
 
 /** Voxelizes any HeightSource adaptively into chunks. */
 export class TerrainGenerator implements ChunkGenerator {
-  /** Per chunk column: surface heights and (if the source provides them) top materials. */
-  private readonly columns = new Map<string, { H: Int32Array; M: Uint16Array | null }>();
+  /** Per chunk column: surface heights, (if the source provides them) top materials, and trees. */
+  private readonly columns = new Map<string, { H: Int32Array; M: Uint16Array | null; trees: Tree[] }>();
   private readonly uniform = new Map<MaterialId, UniformBlock>();
   private readonly grassSlack: number;
 
@@ -219,16 +222,18 @@ export class TerrainGenerator implements ChunkGenerator {
   }
 
   columnRange(cx: number, cz: number): { minY: number; maxY: number } {
-    const { H } = this.chunkColumn(cx, cz);
+    const { H, trees } = this.chunkColumn(cx, cz);
     let minY = Infinity, maxY = -Infinity;
     for (const h of H) {
       if (h < minY) minY = h;
       if (h > maxY) maxY = h;
     }
+    // Tree tops (of trees reaching into the column) count too, so crowns are loaded.
+    for (const t of trees) maxY = Math.max(maxY, t.y + t.height);
     return { minY, maxY };
   }
 
-  private chunkColumn(cx: number, cz: number): { H: Int32Array; M: Uint16Array | null } {
+  private chunkColumn(cx: number, cz: number): { H: Int32Array; M: Uint16Array | null; trees: Tree[] } {
     const key = `${cx},${cz}`;
     let col = this.columns.get(key);
     if (col) {
@@ -238,7 +243,11 @@ export class TerrainGenerator implements ChunkGenerator {
     }
     const x0 = cx * CHUNK_SIZE, z0 = cz * CHUNK_SIZE;
     const H = this.source.heights(x0, z0, CHUNK_SIZE, CHUNK_SIZE);
-    col = { H, M: this.source.materials?.(x0, z0, CHUNK_SIZE, CHUNK_SIZE, 1, H) ?? null };
+    col = {
+      H,
+      M: this.source.materials?.(x0, z0, CHUNK_SIZE, CHUNK_SIZE, 1, H) ?? null,
+      trees: this.source.trees?.(x0, z0, x0 + CHUNK_SIZE, z0 + CHUNK_SIZE) ?? [],
+    };
     this.columns.set(key, col);
     if (this.columns.size > this.columnCacheSize) this.columns.delete(this.columns.keys().next().value!);
     return col;
@@ -273,7 +282,7 @@ export class TerrainGenerator implements ChunkGenerator {
     if (x0 < 0 || x0 >= w.widthUnits || z0 < 0 || z0 >= w.depthUnits) return chunk;
     if (y0 < w.minYUnits || y0 >= w.maxYUnits) return chunk;
 
-    const { H, M } = this.chunkColumn(coord.cx, coord.cz);
+    const { H, M, trees } = this.chunkColumn(coord.cx, coord.cz);
     // Per block column: min / max surface height, and the top material at the minimum.
     const bMin = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(2 ** 31 - 1);
     const bMax = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(-(2 ** 31));
@@ -305,6 +314,7 @@ export class TerrainGenerator implements ChunkGenerator {
         }
       }
     }
+    if (trees.length > 0) plantTrees(chunk, trees);
     return chunk;
   }
 

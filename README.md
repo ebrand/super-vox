@@ -80,6 +80,7 @@ Settings for a new world from the environment:
 | `WORLD_ALTITUDE_COOLING` | 1.5 | Degrees C colder per 100 m of height |
 | `WORLD_RAINFALL` | 50 | How wet the land is, 0 (dry) .. 100 (soaked) |
 | `WORLD_WIND_FROM` | 270 | Compass direction rain comes from (270 = west); land behind mountains is drier |
+| `WORLD_TREES` | 50 | Forest density: 0 (none), 50 (natural for each biome), 100 (double) |
 | `WORLD_SNOW_TEMPERATURE` | -4 | With biomes: ground colder than this (degrees C) is snow, with bare rock just below it on high ground |
 | `WORLD_ISLAND_ARCS` | 0 | Island chains along seams where an oceanic plate meets another, 0 .. 100 |
 | `WORLD_HOTSPOTS` | 0 | Hotspot island groups in oceanic plates (0..40) |
@@ -113,7 +114,11 @@ desert when hot as it dries out. Each has its own ground (taiga floor, meadow, d
 floor, desert sand, ...); beaches, rocky shores and steep rock still take priority. With biomes,
 snow lies wherever the ground is colder than `WORLD_SNOW_TEMPERATURE` (so polar lowlands are snowy
 and tropical peaks are not), with a band of bare rock ~1.5 degrees warmer just below it on ground
-more than 100 m up; the snow line fractal wanders it by up to 2 degrees. Worlds made before biomes have none (grass everywhere). Plains are regions a few km across (chosen by
+more than 100 m up; the snow line fractal wanders it by up to 2 degrees. Worlds made before biomes have none (grass everywhere). Trees: one candidate per 6 m cell (jittered), growing where the ground is vegetated (not sand,
+desert, rock or snow) with a chance by biome: jungle trees (25-40 m, wide flat crowns), temperate
+broadleaf (12-20 m, smaller on grassland), boreal conifers (10-25 m, tiered; dwarf on tundra) and
+savanna acacias (6-10 m, flat-topped). They are voxels like the ground (1/4 m wood, 1/2 m leaves),
+can be dug, and are solid. Distant terrain doesn't show them yet. Plains are regions a few km across (chosen by
 large-scale noise so `WORLD_PLAINS` percent of the land is in one) where the land is replaced by
 a heavily smoothed, lowered copy of itself, blending into the hills over ~1 km; most 16 m squares
 in a plain vary by under 1 m. Lowland flatness raises the land's height curve to a power (up to

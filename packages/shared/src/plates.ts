@@ -1,5 +1,6 @@
 import { BIOME_GROUND, classifyBiome, type BiomeId } from './biomes.js';
 import { Material } from './materials.js';
+import { treesIn, type Tree } from './trees.js';
 import { fractalGrid, ridgedGrid, type Octave } from './noise.js';
 import type { HeightSource } from './terrain.js';
 import type { WorldConfig } from './world.js';
@@ -74,6 +75,8 @@ export interface PlateTerrainConfig {
   snowTemperature: number;
   /** Compass direction rain comes from, degrees (0 north, 90 east, 180 south, 270 west); lands behind mountains from it are drier. */
   windFrom: number;
+  /** How many trees, 0 (none) .. 100 (twice the natural density for each biome); 50 is natural. */
+  trees: number;
   /** Density of island chains along seams where an oceanic plate meets another plate, 0 (none) .. 100. */
   islandArcs: number;
   /** Groups of islands inside oceanic plates, each a main island trailing smaller ones (0..40). */
@@ -117,6 +120,7 @@ export function defaultPlateTerrain(seed = 1): PlateTerrainConfig {
     rainfall: 50,
     windFrom: 270,
     snowTemperature: -4,
+    trees: 50,
     islandArcs: 0,
     hotspots: 0,
     islandMinSize: 200,
@@ -148,6 +152,7 @@ export const PLATE_LIMITS = {
   altitudeCooling: [0, 5],
   rainfall: [0, 100],
   windFrom: [0, 360],
+  trees: [0, 100],
   islandArcs: [0, 100],
   hotspots: [0, 40],
   islandSize: [50, 4000],
@@ -172,7 +177,7 @@ export function parsePlateTerrain(raw: unknown): PlateTerrainConfig {
  * Plate settings saved by an older version, brought up to date so the world looks as it did:
  * `waterPercent` becomes `landPercent`; rock and snow, which started at 60% and 80% of the land's
  * height range (or `rockLine` percent), get those heights in metres; steep ground turned to rock
- * above slope 0.9 (42 degrees), along a plain contour; there were no mountains and no biomes. Other missing settings get their defaults.
+ * above slope 0.9 (42 degrees), along a plain contour; there were no mountains, biomes or trees. Other missing settings get their defaults.
  */
 export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   const r = { ...((typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>) };
@@ -185,6 +190,7 @@ export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   if (r.rockSlope === undefined) r.rockSlope = 42;
   if (r.snowFractal === undefined) r.snowFractal = 0;
   if (r.biomes === undefined) r.biomes = 0;
+  if (r.trees === undefined) r.trees = 0;
   // Worlds from before the current mountains have none. (The first plate worlds saved a
   // `mountainHeight` that meant something else, possibly below maxHeight: replace it.)
   if (r.mountains === undefined) {
@@ -237,6 +243,7 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   num(c.rainfall, L.rainfall, 'rainfall');
   num(c.windFrom, L.windFrom, 'windFrom', ' degrees');
   num(c.snowTemperature, L.temperature, 'snowTemperature', ' degrees C');
+  num(c.trees, L.trees, 'trees');
   num(c.islandArcs, L.islandArcs, 'islandArcs');
   int(c.hotspots, ...L.hotspots, 'hotspots');
   num(c.islandMinSize, L.islandSize, 'islandMinSize', ' m');
@@ -344,6 +351,8 @@ export class PlateHeights implements HeightSource {
   readonly moisture: Float32Array | null;
   private readonly cooling: number;
   private readonly snowTemp: number;
+  private readonly treeDensity: number;
+  private readonly treeSeed: number;
   /** Fractal noise moving the snow line up and down, and how far (units). */
   private readonly snowNoise: Octave[];
   private readonly snowWander: number;
@@ -1038,6 +1047,8 @@ export class PlateHeights implements HeightSource {
     //     rain shadow behind mountains (seen from the wind's direction).
     this.cooling = (config.altitudeCooling / 100) / M; // degrees C per unit of height
     this.snowTemp = config.snowTemperature;
+    this.treeDensity = config.trees;
+    this.treeSeed = config.terrainSeed * 7919 + 47;
     if (config.biomes === 1) {
       const temp = (this.temperature = new Float32Array(n));
       const wet = (this.moisture = new Float32Array(n));
@@ -1250,6 +1261,28 @@ export class PlateHeights implements HeightSource {
         : Material.Grass;
     }
     return out;
+  }
+
+  /** Trees with any part in the box [x0, x1) x [z0, z1) (units). */
+  trees(x0: number, z0: number, x1: number, z1: number): Tree[] {
+    return treesIn(
+      {
+        ground: (xs, zs) => {
+          const heights = new Int32Array(xs.length), materials = new Uint16Array(xs.length);
+          const biomes = this.temperature ? new Uint8Array(xs.length) : null;
+          for (let k = 0; k < xs.length; k++) {
+            const h = this.heights(xs[k]!, zs[k]!, 1, 1);
+            heights[k] = h[0]!;
+            materials[k] = this.materials(xs[k]!, zs[k]!, 1, 1, 1, h)[0]!;
+            if (biomes) biomes[k] = this.biomes(xs[k]!, zs[k]!, 1, 1, 1, h)![0]!;
+          }
+          return { heights, materials, biomes };
+        },
+      },
+      this.treeSeed,
+      this.treeDensity,
+      x0, z0, x1, z1,
+    );
   }
 
   /**
