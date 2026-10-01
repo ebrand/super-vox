@@ -9,7 +9,8 @@ import { CHUNK_SIZE, FLAT_WORLD_16KM, ROUND_WORLD_16x8KM } from './world.js';
 const cache = new Map<string, PlateHeights>();
 /** A plate world with `over` settings; mountains, biomes, rivers and lakes are off unless asked for, so other features are tested alone. */
 function plates(over: Partial<PlateTerrainConfig> = {}, world = FLAT_WORLD_16KM): PlateHeights {
-  const cfg = { ...defaultPlateTerrain(1), mountains: 0, biomes: 0, rivers: 0, lakes: 0, ...over };
+  // (Climate as before equators: cold north, hot south.)
+  const cfg = { ...defaultPlateTerrain(1), mountains: 0, biomes: 0, rivers: 0, lakes: 0, equator: 0, northTemperature: -6, southTemperature: 26, ...over };
   const key = JSON.stringify([cfg, world.wrapX, world.depthUnits]);
   let p = cache.get(key);
   if (!p) cache.set(key, (p = new PlateHeights(world, cfg)));

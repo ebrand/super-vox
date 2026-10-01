@@ -142,31 +142,50 @@ export class ChunkManager {
     this.recompute();
   }
 
+  /**
+   * The chunk X coordinates near the focus that `cx` stands for. On a world that wraps east-west
+   * the client keeps going past the seam (chunk -1 is the world's last column), while the server
+   * names chunks by where they are in the world; so what it sends goes to every copy near here.
+   */
+  private copiesOf(cx: number): number[] {
+    if (!this.world.wrapX) return [cx];
+    const n = this.world.widthUnits / CHUNK_SIZE;
+    const k = Math.round((this.focusX / CHUNK_SIZE - cx) / n);
+    return [cx + (k - 1) * n, cx + k * n, cx + (k + 1) * n];
+  }
+
   onColumn(msg: { cx: number; cz: number; minY: number | null; maxY: number | null }): void {
-    const key = colKey(msg.cx, msg.cz);
-    if (this.columnRequested.delete(key)) this.inFlight--;
-    if (this.region.has(key)) {
-      this.ranges.set(key, msg.minY === null || msg.maxY === null ? null : columnLayers(msg.minY, msg.maxY));
-      this.recompute();
-    } else {
-      this.pump();
+    let changed = false;
+    for (const cx of this.copiesOf(msg.cx)) {
+      const key = colKey(cx, msg.cz);
+      if (this.columnRequested.delete(key)) this.inFlight--;
+      if (this.region.has(key)) {
+        this.ranges.set(key, msg.minY === null || msg.maxY === null ? null : columnLayers(msg.minY, msg.maxY));
+        changed = true;
+      }
     }
+    if (changed) this.recompute();
+    else this.pump();
     this.onChange();
   }
 
   onChunkBytes(bytes: Uint8Array): void {
     const coord = readChunkHeader(bytes);
-    const key = chunkKey(coord);
-    if (this.requested.delete(key)) this.inFlight--;
-    if (this.wanted.has(key)) this.store(key, coord, bytes);
+    for (const cx of this.copiesOf(coord.cx)) {
+      const c = { ...coord, cx }, key = chunkKey(c);
+      if (this.requested.delete(key)) this.inFlight--;
+      if (this.wanted.has(key)) this.store(key, c, bytes);
+    }
     this.pump();
     this.onChange();
   }
 
   onChunkUnavailable(coord: ChunkCoord): void {
-    const key = chunkKey(coord);
-    if (this.requested.delete(key)) this.inFlight--;
-    if (this.wanted.has(key)) this.store(key, coord, null);
+    for (const cx of this.copiesOf(coord.cx)) {
+      const c = { ...coord, cx }, key = chunkKey(c);
+      if (this.requested.delete(key)) this.inFlight--;
+      if (this.wanted.has(key)) this.store(key, c, null);
+    }
     this.pump();
     this.onChange();
   }

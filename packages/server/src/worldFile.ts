@@ -9,6 +9,8 @@ import {
   WORLD_NAME_PATTERN,
   defaultFlatGen,
   defaultNoiseTerrain,
+  WORLD_SHAPES,
+  isWorldShape,
   migratePlateTerrain,
   parseClock,
   validatePlateTerrain,
@@ -19,11 +21,13 @@ import {
   type PlateTerrainConfig,
   type VoxelizeConfig,
   type WorldConfig,
+  type WorldShape,
 } from '@super-vox/shared';
 
 /** How a world's terrain is generated: chosen when it is created, then fixed. */
 export type WorldSpec =
-  | { generator: 'plates'; plates: PlateTerrainConfig; voxelize: VoxelizeConfig }
+  /** `shape`: round 16 x 8 km or flat 16 x 16 km; absent (worlds made before shapes) is flat. */
+  | { generator: 'plates'; plates: PlateTerrainConfig; voxelize: VoxelizeConfig; shape?: WorldShape }
   | { generator: 'noise'; seed: number; voxelize: VoxelizeConfig }
   | { generator: 'flat'; resolution: number };
 
@@ -42,8 +46,14 @@ export interface WorldFile {
 export class WorldExistsError extends Error {}
 export class NoSuchWorldError extends Error {}
 
+/** The world a spec makes (its size and whether it wraps). */
+export function worldConfigOf(spec: WorldSpec): WorldConfig {
+  return spec.generator === 'plates' && spec.shape ? WORLD_SHAPES[spec.shape] : FLAT_WORLD_16KM;
+}
+
 export function validateWorldSpec(spec: WorldSpec): void {
   if (spec.generator === 'plates') {
+    if (spec.shape !== undefined && !isWorldShape(spec.shape)) throw new RangeError(`unknown world shape ${String(spec.shape)}`);
     validatePlateTerrain(spec.plates);
     validateVoxelize(spec.voxelize);
   } else if (spec.generator === 'noise') {

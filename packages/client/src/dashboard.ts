@@ -168,6 +168,8 @@ async function showMap(world: string): Promise<void> {
   if (!map || mapSelect.value !== world) return;
   mapCanvas.width = map.cols;
   mapCanvas.height = map.rows;
+  // The world's own proportions (round worlds are twice as wide as deep).
+  mapCanvas.style.aspectRatio = `${map.cols} / ${map.rows}`;
   mapCanvas.getContext('2d')!.putImageData(new ImageData(renderMap(map), map.cols, map.rows), 0, 0);
   shownMap = { world, map };
 }

@@ -21,6 +21,8 @@ export const Material = {
   AcaciaLeaves: 16,
   /** Water: a source (sea, lakes, placed water) at 17, flowing water 1..7 blocks from one at 18..24 (see water.ts). */
   Water: 17,
+  /** Polar ice (round worlds' north and south edges). */
+  Ice: 25,
 } as const;
 
 /** Flowing water reaches this many blocks from its source. */

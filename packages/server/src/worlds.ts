@@ -2,7 +2,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   DEFAULT_DAY_MINUTES,
-  FLAT_WORLD_16KM,
+  DEFAULT_WORLD_SHAPE,
   TerrainGenerator,
   applyClockChange,
   defaultClock,
@@ -13,10 +13,11 @@ import {
   type HeightSource,
   type PlateTerrainConfig,
   type WorldConfig,
+  type WorldShape,
 } from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
 import { World } from './world.js';
-import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, listWorlds, readWorld, saveClock, updateWorld, type WorldFile } from './worldFile.js';
+import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, listWorlds, readWorld, saveClock, updateWorld, worldConfigOf, type WorldFile } from './worldFile.js';
 
 /** What the HTTP API shows about a world. */
 export type WorldSummary = Pick<WorldFile, 'name' | 'createdAt' | 'updatedAt' | 'spec'> & {
@@ -36,9 +37,9 @@ export interface WorldCatalog {
   get(name: string | undefined, tolerance?: number): World | null;
   list(): WorldSummary[];
   /** Creates a plate world; absent where changing worlds isn't allowed (as are update and delete). */
-  create?: (name: string, plates: PlateTerrainConfig) => WorldSummary;
+  create?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape) => WorldSummary;
   /** Replaces a world's settings with plate settings, discarding its edits. */
-  update?: (name: string, plates: PlateTerrainConfig) => WorldSummary;
+  update?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape) => WorldSummary;
   /** Deletes a world (never the default one: DefaultWorldError). */
   delete?: (name: string) => void;
   /** World `name`'s clock (the default world when undefined), or null if there is no such world. */
@@ -91,8 +92,8 @@ interface Opened {
  */
 export class FileWorldCatalog implements WorldCatalog {
   private readonly open = new Map<string, Opened>();
-  readonly create?: (name: string, plates: PlateTerrainConfig) => WorldSummary;
-  readonly update?: (name: string, plates: PlateTerrainConfig) => WorldSummary;
+  readonly create?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape) => WorldSummary;
+  readonly update?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape) => WorldSummary;
   readonly delete?: (name: string) => void;
   readonly setClock?: (name: string, change: ClockChange) => DayClock;
   private readonly clocks = new Map<string, DayClock>();
@@ -112,12 +113,15 @@ export class FileWorldCatalog implements WorldCatalog {
         this.clocks.set(name, next);
         return next;
       };
-      this.create = (name, plates) => this.summary(createWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize: defaultVoxelize() }));
-      this.update = (name, plates) => {
+      this.create = (name, plates, shape = DEFAULT_WORLD_SHAPE) =>
+        this.summary(createWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize: defaultVoxelize(), shape }));
+      this.update = (name, plates, shape) => {
         const old = readWorld(this.dataRoot, name);
-        // Keep its voxelization; only the terrain settings change.
+        // Keep its voxelization (and its shape, unless a new one is given); the terrain settings change.
         const voxelize = old && old.spec.generator !== 'flat' ? old.spec.voxelize : defaultVoxelize();
-        const file = updateWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize });
+        const keep = old && old.spec.generator === 'plates' ? old.spec.shape : undefined;
+        const s = shape ?? keep;
+        const file = updateWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize, ...(s ? { shape: s } : {}) });
         this.open.delete(name); // rebuilt from the new settings on next use
         return this.summary(file);
       };
@@ -144,7 +148,7 @@ export class FileWorldCatalog implements WorldCatalog {
     if (tolerance === undefined || !this.opts.dev || !o.heights || spec.generator === 'flat' || tolerance === spec.voxelize.tolerance) return o.world;
     let w = o.variants.get(tolerance);
     if (!w) {
-      const config = this.opts.config ?? FLAT_WORLD_16KM;
+      const config = this.opts.config ?? worldConfigOf(spec);
       const gen = new TerrainGenerator(config, { ...spec.voxelize, tolerance }, o.heights);
       o.variants.set(tolerance, (w = new World(config, gen, { tolerance, cacheSize: 1024 })));
     }
@@ -197,7 +201,7 @@ export class FileWorldCatalog implements WorldCatalog {
   }
 
   private build(file: WorldFile): Opened {
-    const config = this.opts.config ?? FLAT_WORLD_16KM;
+    const config = this.opts.config ?? worldConfigOf(file.spec);
     const { generator, heights } = generatorFor(file.spec, config);
     const tolerance = file.spec.generator === 'flat' ? null : file.spec.voxelize.tolerance;
     const world = new World(config, generator, { tolerance, store: new FileChunkStore(join(this.dataRoot, file.name, 'chunks')) });

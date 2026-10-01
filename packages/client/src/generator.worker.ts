@@ -1,20 +1,21 @@
 /// <reference lib="webworker" />
-import type { PlateTerrainConfig } from '@super-vox/shared';
+import { WORLD_SHAPES, type PlateTerrainConfig, type WorldShape } from '@super-vox/shared';
 import { buildPreview, type Preview } from './generatorPreview.js';
 
 export interface PreviewRequest {
   id: number;
   config: PlateTerrainConfig;
   size: number;
+  shape: WorldShape;
 }
 
 export type PreviewResponse = { id: number; ok: true; preview: Preview } | { id: number; ok: false; error: string };
 
 self.onmessage = (ev: MessageEvent<PreviewRequest>) => {
-  const { id, config, size } = ev.data;
+  const { id, config, size, shape } = ev.data;
   let res: PreviewResponse;
   try {
-    res = { id, ok: true, preview: buildPreview(config, size) };
+    res = { id, ok: true, preview: buildPreview(config, size, WORLD_SHAPES[shape]) };
   } catch (err) {
     res = { id, ok: false, error: err instanceof Error ? err.message : String(err) };
   }

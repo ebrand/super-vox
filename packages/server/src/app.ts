@@ -8,9 +8,12 @@ import {
   encodeMessage,
   isValidWorldName,
   clockHours,
+  isWorldShape,
+  normalizeX,
   parseClockChange,
   parsePlateTerrain,
   type ServerMessage,
+  type WorldShape,
 } from '@super-vox/shared';
 import type { WebSocket } from 'ws';
 import { encodeWorldMap, type EditResult, type World } from './world.js';
@@ -131,7 +134,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   // Development only (no accounts yet): create a plate world. Body: { name, plates }.
   app.post<{ Body: unknown }>('/api/worlds', async (req, reply) => {
     if (!catalog.create) return reply.code(403).send({ error: 'creating worlds is not enabled on this server' });
-    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { name?: unknown; plates?: unknown };
+    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { name?: unknown; plates?: unknown; shape?: unknown };
+    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: 'shape must be "round-16x8" or "flat-16x16"' });
     if (!isValidWorldName(body.name)) {
       return reply.code(400).send({ error: 'name must be 1-64 lower-case letters, digits, "-" or "_", starting with a letter or digit' });
     }
@@ -143,7 +147,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       throw err;
     }
     try {
-      return reply.code(201).send(catalog.create(body.name, plates));
+      return reply.code(201).send(catalog.create(body.name, plates, body.shape as WorldShape | undefined));
     } catch (err) {
       if (err instanceof WorldExistsError) return reply.code(409).send({ error: err.message });
       throw err;
@@ -156,7 +160,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (!catalog.update) return reply.code(403).send({ error: 'changing worlds is not enabled on this server' });
     const { name } = req.params;
     if (!isValidWorldName(name)) return reply.code(404).send({ error: 'no such world' });
-    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { plates?: unknown };
+    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { plates?: unknown; shape?: unknown };
+    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: 'shape must be "round-16x8" or "flat-16x16"' });
     let plates;
     try {
       plates = parsePlateTerrain(body.plates);
@@ -165,7 +170,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       throw err;
     }
     try {
-      const summary = catalog.update(name, plates);
+      const summary = catalog.update(name, plates, body.shape as WorldShape | undefined);
       evict(name, 'world_changed', `the world "${name}" was regenerated with new settings`);
       return reply.send(summary);
     } catch (err) {
@@ -406,7 +411,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
 
         case 'pose': {
           const p = players.get(socket);
-          if (p) p.pose = { x: msg.x, y: msg.y, z: msg.z, yaw: msg.yaw, at: Date.now() };
+          // (Where in the world: on a round world the client's x keeps going past the seam.)
+          if (p) p.pose = { x: greeted ? normalizeX(world.config, msg.x) : msg.x, y: msg.y, z: msg.z, yaw: msg.yaw, at: Date.now() };
           break;
         }
       }

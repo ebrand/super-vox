@@ -82,6 +82,9 @@ Settings for a new world from the environment:
 | `WORLD_WIND_FROM` | 270 | Compass direction rain comes from (270 = west); land behind mountains is drier |
 | `WORLD_TREES` | 50 | Forest density: 0 (none), 50 (natural for each biome), 100 (double) |
 | `WORLD_SNOW_TEMPERATURE` | -4 | With biomes: ground colder than this (degrees C) is snow, with bare rock just below it on high ground |
+| `WORLD_SHAPE` | round-16x8 | Shape of a new default world: `round-16x8` (wraps east-west, polar ice north and south) or `flat-16x16` |
+| `WORLD_EQUATOR` | 1 | 1: hottest across the middle, cooling to both edges; 0: from the north edge to the south edge |
+| `WORLD_EQUATOR_TEMPERATURE` | 28 | With an equator: sea-level temperature across the middle (degrees C) |
 | `WORLD_RIVERS` | 50 | Rivers: 0 (none) .. 100 (many small streams) |
 | `WORLD_LAKES` | 50 | Lakes in land basins: 0 (filled in) .. 100 (even small basins) |
 | `WORLD_BIOME_BLEND` | 50 | With biomes: how gradually biomes give way to each other, 0 (sharp borders) .. 100 (wide, ragged transitions) |
@@ -208,6 +211,16 @@ in; where enough water gathers (more in wet country) a river runs, wider downstr
 falling all the way to the sea or a lake. Rivers cut a channel with a sand bed and a valley around
 it (banks rising at 0.3 out to ~100 m), and their and lakes' water is source water like the sea's.
 Distant terrain and the map show them as water over their beds.
+
+World shapes: new worlds are round by default, 16 km around east-west (walk or fly past the
+seam and you're back where you started; nothing changes as you cross) and 8 km north to south,
+with polar ice at the north and south edges: a band ~700 m wide that rises from a low shelf over
+the sea to a 70 m ice wall at the edge. Flat 16 x 16 km worlds are still available (the
+generator's World menu, `"shape": "flat-16x16"` in the API, or `WORLD_SHAPE=flat-16x16` for a
+new default world); worlds made before shapes stay flat. The climate has an equator across the
+middle (`equator`, `equatorTemperature`, default 28 C) cooling to `northTemperature` and
+`southTemperature` (default -8 C) at the edges; worlds from before keep their cold-north,
+hot-south climate.
 
 World dashboard (`/dashboard.html`, linked from the menu; development servers only, from
 `GET /api/dashboard`): live server health (CPU, memory, event loop delay, network), five minutes

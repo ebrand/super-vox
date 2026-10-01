@@ -484,7 +484,8 @@ describe('named worlds', () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toContain('application/octet-stream');
     const c = decodeClimate(new Uint8Array(res.rawPayload));
-    expect(c).toMatchObject({ cols: 500, rows: 500, cell: 512, seaLevel: 0 });
+    // New worlds are round: 16 km around, 8 km north to south.
+    expect(c).toMatchObject({ cols: 500, rows: 250, cell: 512, seaLevel: 0 });
     expect(c.ecotone.degrees).toBeGreaterThan(0);
     // Flat worlds, unknown worlds, and worlds with sharp borders.
     expect((await a.inject({ method: 'GET', url: '/api/world/climate' })).statusCode).toBe(204);

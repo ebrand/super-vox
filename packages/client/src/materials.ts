@@ -21,6 +21,7 @@ const COLORS: Record<number, readonly [number, number, number]> = {
   [Material.Needles]: [0.05, 0.17, 0.08],
   [Material.JungleLeaves]: [0.04, 0.22, 0.03],
   [Material.AcaciaLeaves]: [0.22, 0.3, 0.07],
+  [Material.Ice]: [0.62, 0.74, 0.84],
   // Water (drawn by its own shader; this is for places that show a flat colour).
   ...Object.fromEntries(Array.from({ length: MAX_FLOW + 1 }, (_, l) => [Material.Water + l, [0.05, 0.2, 0.3] as const])),
 };
@@ -54,6 +55,7 @@ const NAMES: Record<number, string> = {
   [Material.JungleLeaves]: 'jungle leaves',
   [Material.AcaciaLeaves]: 'acacia leaves',
   [Material.Water]: 'water',
+  [Material.Ice]: 'ice',
   ...Object.fromEntries(Array.from({ length: MAX_FLOW }, (_, l) => [Material.Water + 1 + l, `flowing water (${l + 1})`])),
 };
 

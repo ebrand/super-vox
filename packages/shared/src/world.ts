@@ -38,6 +38,18 @@ export const ROUND_WORLD_16x8KM: WorldConfig = {
   wrapX: true,
 };
 
+/**
+ * The shapes a world can have: round (16 km around east-west, wrapping, 8 km north-south between
+ * polar ice) or flat (16 x 16 km with edges all round).
+ */
+export type WorldShape = 'round-16x8' | 'flat-16x16';
+export const WORLD_SHAPES: Record<WorldShape, WorldConfig> = { 'round-16x8': ROUND_WORLD_16x8KM, 'flat-16x16': FLAT_WORLD_16KM };
+export const DEFAULT_WORLD_SHAPE: WorldShape = 'round-16x8';
+
+export function isWorldShape(v: unknown): v is WorldShape {
+  return v === 'round-16x8' || v === 'flat-16x16';
+}
+
 /** Maps x into [0, width) for wrapping worlds; returns x unchanged otherwise. */
 export function normalizeX(world: WorldConfig, x: number): number {
   if (!world.wrapX) return x;

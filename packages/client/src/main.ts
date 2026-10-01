@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CHUNK_SIZE, UNITS_PER_METER, clockHours, decodeClimate, formatHours, isValidTolerance, unitsToMeters, type DayClock, type WorldConfig } from '@super-vox/shared';
+import { CHUNK_SIZE, UNITS_PER_METER, clockHours, decodeClimate, formatHours, isValidTolerance, normalizeX, unitsToMeters, type DayClock, type WorldConfig } from '@super-vox/shared';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool } from './editTool.js';
@@ -245,12 +245,16 @@ connection = connect({
           };
           worldMap = new WorldMapOverlay(
             { width: w.widthUnits, depth: w.depthUnits },
-            () => ({ x: camera.position.x * UNITS_PER_METER, z: camera.position.z * UNITS_PER_METER, yaw: controls.yaw }),
+            // (On a round world, where you are in it: past the seam counts from the other side.)
+            () => ({ x: normalizeX(w, camera.position.x * UNITS_PER_METER), z: camera.position.z * UNITS_PER_METER, yaw: controls.yaw }),
             { x: msg.spawn.x, z: msg.spawn.z },
             (x, z, surfaceY) => {
               // Land on the ground there (a little above it; walking settles onto it).
               const ground = Math.max(surfaceY, msg.seaLevel ?? surfaceY);
-              camera.position.set(x / UNITS_PER_METER, ground / UNITS_PER_METER + PLAYER.eye / UNITS_PER_METER + 2, z / UNITS_PER_METER);
+              // On a round world, go to the copy of that spot nearest where we are.
+              const here = camera.position.x * UNITS_PER_METER;
+              const vx = w.wrapX ? x + Math.round((here - x) / w.widthUnits) * w.widthUnits : x;
+              camera.position.set(vx / UNITS_PER_METER, ground / UNITS_PER_METER + PLAYER.eye / UNITS_PER_METER + 2, z / UNITS_PER_METER);
               updateLod();
             },
             `/api/world/map?width=1024${worldName !== undefined ? `&world=${encodeURIComponent(worldName)}` : ''}`,

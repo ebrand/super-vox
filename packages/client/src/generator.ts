@@ -1,4 +1,4 @@
-import { BIOME_NAMES, Biome, PLATE_LIMITS, defaultPlateTerrain, isValidWorldName, validatePlateTerrain, type BiomeId, type PlateTerrainConfig } from '@super-vox/shared';
+import { BIOME_NAMES, Biome, DEFAULT_WORLD_SHAPE, PLATE_LIMITS, defaultPlateTerrain, isValidWorldName, isWorldShape, validatePlateTerrain, type BiomeId, type PlateTerrainConfig, type WorldShape } from '@super-vox/shared';
 import type { PreviewRequest, PreviewResponse } from './generator.worker.js';
 import type { Preview } from './generatorPreview.js';
 import { materialName } from './materials.js';
@@ -55,6 +55,8 @@ const FIELDS: FieldSpec[] = [
   { key: 'biomes', label: 'Biomes', section: 'Climate', min: 0, max: 1, step: 1, toggle: true, hint: 'Jungle, forests, grassland, savanna, desert, tundra and ice from temperature and moisture' },
   { key: 'northTemperature', label: 'North temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 1, unit: '°C', hint: 'At sea level on the north edge' },
   { key: 'southTemperature', label: 'South temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 1, unit: '°C', hint: 'At sea level on the south edge' },
+  { key: 'equator', label: 'Equator', section: 'Climate', min: 0, max: 1, step: 1, toggle: true, hint: 'Hottest across the middle, colder toward both edges (off: from the north edge to the south edge)' },
+  { key: 'equatorTemperature', label: 'Equator temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 1, unit: '°C', hint: 'At sea level across the middle (with an equator)' },
   { key: 'altitudeCooling', label: 'Altitude cooling', section: 'Climate', min: L.altitudeCooling[0], max: L.altitudeCooling[1], step: 0.1, unit: '°C/100 m', hint: 'Colder with height (real air: ~0.65)' },
   { key: 'rainfall', label: 'Rainfall', section: 'Climate', min: L.rainfall[0], max: L.rainfall[1], step: 1, hint: '0 dry … 100 soaked; wet near the sea, drier inland' },
   { key: 'snowTemperature', label: 'Snow temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 0.5, unit: '°C', hint: 'Ground colder than this is snow; a band of bare rock lies just below it on high ground' },
@@ -88,9 +90,20 @@ function fromHash(): PlateTerrainConfig {
 }
 
 function toHash(config: PlateTerrainConfig): void {
-  const params = new URLSearchParams(FIELDS.map((f) => [f.key, String(config[f.key])]));
+  const params = new URLSearchParams([['shape', shape], ...FIELDS.map((f) => [f.key, String(config[f.key])])]);
   history.replaceState(null, '', `#${params}`);
 }
+
+/** The world's shape: round (16 km around, 8 km north-south) or flat (16 x 16 km). */
+const hashShape = new URLSearchParams(location.hash.slice(1)).get('shape');
+let shape: WorldShape = isWorldShape(hashShape) ? hashShape : DEFAULT_WORLD_SHAPE;
+const shapeEl = document.getElementById('shape') as HTMLSelectElement;
+shapeEl.value = shape;
+shapeEl.addEventListener('change', () => {
+  shape = shapeEl.value as WorldShape;
+  toHash(config);
+  requestPreview();
+});
 
 let config = fromHash();
 
@@ -245,7 +258,7 @@ function requestPreview(): void {
   busy = true;
   sent = config;
   canvas.classList.add('busy');
-  const req: PreviewRequest = { id: nextId++, config, size: PREVIEW_SIZE };
+  const req: PreviewRequest = { id: nextId++, config, size: PREVIEW_SIZE, shape };
   worker.postMessage(req);
 }
 
@@ -306,6 +319,7 @@ function draw(): void {
   const { map, plateOf, plates } = preview;
   const { cols, rows } = map;
   canvas.width = cols;
+  canvas.style.aspectRatio = `${cols} / ${rows}`;
   canvas.height = rows;
   const mode = viewEl.value;
   const px = renderMap(map);
@@ -411,7 +425,7 @@ interface WorldInfo {
   createdAt: string;
   updatedAt?: string;
   editedChunks: number;
-  spec: { generator: string; plates?: PlateTerrainConfig };
+  spec: { generator: string; plates?: PlateTerrainConfig; shape?: WorldShape };
 }
 
 interface WorldsReply {
@@ -484,7 +498,7 @@ async function loadWorlds(): Promise<void> {
     name.textContent = w.name;
     name.title = `created ${w.createdAt}` + (w.updatedAt ? `, regenerated ${w.updatedAt}` : '') + `, ${w.editedChunks} edited chunks`;
     const kind = document.createElement('em');
-    kind.textContent = w.spec.generator + (w.name === data.default ? ', default' : '');
+    kind.textContent = w.spec.generator + (w.spec.generator === 'plates' ? (w.spec.shape === 'round-16x8' ? ', round' : ', flat') : '') + (w.name === data.default ? ', default' : '');
     li.append(name, kind);
     if (w.spec.plates) {
       const load = document.createElement('button');
@@ -494,6 +508,8 @@ async function loadWorlds(): Promise<void> {
       const plates = w.spec.plates;
       load.addEventListener('click', () => {
         config = { ...defaultPlateTerrain(plates.seed), ...plates };
+        shape = w.spec.shape ?? 'flat-16x16';
+        shapeEl.value = shape;
         editing = { name: w.name, editedChunks: w.editedChunks };
         showForm();
         toHash(config);
@@ -548,7 +564,7 @@ updateYesEl.addEventListener('click', async () => {
   const name = editing.name;
   updateYesEl.disabled = true;
   try {
-    const res = await fetch(`/api/worlds/${encodeURIComponent(name)}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ plates: config }) });
+    const res = await fetch(`/api/worlds/${encodeURIComponent(name)}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ plates: config, shape }) });
     if (res.status === 200) {
       message(`Saved "${name}".`, 'good', { href: playHref(name), text: `Play ${name}` });
       await loadWorlds();
@@ -571,7 +587,7 @@ createEl.addEventListener('click', async () => {
   }
   createEl.disabled = true;
   try {
-    const res = await fetch('/api/worlds', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, plates: config }) });
+    const res = await fetch('/api/worlds', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, plates: config, shape }) });
     if (res.status === 201) {
       message(`Created "${name}".`, 'good', { href: playHref(name), text: `Play ${name}` });
       nameEl.value = '';

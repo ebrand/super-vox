@@ -109,6 +109,10 @@ export class WorldMapOverlay {
     this.image = this.root.querySelector('canvas.image')!;
     this.marks = this.root.querySelector('canvas.marks')!;
     this.info = this.root.querySelector('div.info')!;
+    // The world's own proportions (a round world is twice as wide as it is deep).
+    const frame = this.root.querySelector('div.frame') as HTMLDivElement, ratio = worldSize.width / worldSize.depth;
+    frame.style.aspectRatio = `${worldSize.width} / ${worldSize.depth}`;
+    frame.style.width = `min(92vw, ${88 * ratio}vh)`;
     this.marks.addEventListener('mousemove', (e) => this.hover(e));
     this.marks.addEventListener('mouseleave', () => this.showInfo(null));
     this.marks.addEventListener('click', (e) => {

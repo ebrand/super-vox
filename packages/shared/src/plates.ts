@@ -70,6 +70,12 @@ export interface PlateTerrainConfig {
   /** Sea-level temperature (degrees C) at the north and south edges of the world. */
   northTemperature: number;
   southTemperature: number;
+  /**
+   * 1: an equator across the middle of the world at equatorTemperature, cooling toward both
+   * edges; 0: temperature runs straight from the north edge to the south edge.
+   */
+  equator: number;
+  equatorTemperature: number;
   /** How much colder it gets with height, degrees C per 100 m (0..5). */
   altitudeCooling: number;
   /** How wet the land is, 0 (dry) .. 100 (soaked); 50 is moderate. */
@@ -127,8 +133,10 @@ export function defaultPlateTerrain(seed = 1): PlateTerrainConfig {
     lowlandFlatness: 0,
     surfaceRoughness: 50,
     biomes: 1,
-    northTemperature: -6,
-    southTemperature: 26,
+    northTemperature: -8,
+    southTemperature: -8,
+    equator: 1,
+    equatorTemperature: 28,
     altitudeCooling: 1.5,
     rainfall: 50,
     windFrom: 270,
@@ -213,6 +221,12 @@ export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   if (r.trees === undefined) r.trees = 0;
   if (r.biomeBlend === undefined) r.biomeBlend = 0;
   if (r.rivers === undefined) r.rivers = 0;
+  // Before equators, temperature ran from the north edge to the south edge (then -6 and 26 C).
+  if (r.equator === undefined) {
+    r.equator = 0;
+    if (r.northTemperature === undefined) r.northTemperature = -6;
+    if (r.southTemperature === undefined) r.southTemperature = 26;
+  }
   if (r.lakes === undefined) r.lakes = 0;
   // Worlds from before the current mountains have none. (The first plate worlds saved a
   // `mountainHeight` that meant something else, possibly below maxHeight: replace it.)
@@ -262,6 +276,8 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   if (c.biomes !== 0 && c.biomes !== 1) throw new RangeError(`biomes must be 0 or 1; got ${c.biomes}`);
   num(c.northTemperature, L.temperature, 'northTemperature', ' degrees C');
   num(c.southTemperature, L.temperature, 'southTemperature', ' degrees C');
+  if (c.equator !== 0 && c.equator !== 1) throw new RangeError(`equator must be 0 or 1; got ${c.equator}`);
+  num(c.equatorTemperature, L.temperature, 'equatorTemperature', ' degrees C');
   num(c.altitudeCooling, L.altitudeCooling, 'altitudeCooling', ' degrees C per 100 m');
   num(c.rainfall, L.rainfall, 'rainfall');
   num(c.windFrom, L.windFrom, 'windFrom', ' degrees');
@@ -311,6 +327,14 @@ const SHADOW_REACH = 3000 * M;
 const SHADOW_FULL = 250 * M;
 /** How far the snow line wanders up and down (units) at snowFractal = 100. */
 const SNOW_FRACTAL_MAX = 60 * M;
+/**
+ * Polar ice on round worlds: within ICE_BAND of the north and south edges (wobbling by +-30%),
+ * ice rising from a low shelf (ICE_SHELF above the sea) to a wall ICE_WALL high at the edge.
+ */
+const ICE_BAND = 700 * M;
+const ICE_SHELF = 3 * M;
+const ICE_WALL = 70 * M;
+
 /** With biomes: how far the snow temperature wanders (degrees C) at snowFractal = 100. */
 const SNOW_FRACTAL_DEGREES = 2;
 /**
@@ -421,6 +445,8 @@ export class PlateHeights implements HeightSource {
   readonly collisions: readonly { plates: readonly [number, number]; kind: 'continental' | 'coastal' }[];
   /** Per grid cell: 0 (hills) .. 1 (plain); 0 everywhere without plains. */
   readonly plainness: Float32Array;
+  /** Noise for the polar ice's edge and surface (round worlds), or null without polar ice. */
+  private readonly ice: { edge: Octave[]; surface: Octave[] } | null;
   /** Rivers and lakes (null without either). */
   readonly hydrology: Hydrology | null;
   private readonly rivers: RiverIndex | null;
@@ -1100,9 +1126,13 @@ export class PlateHeights implements HeightSource {
       const mNoise = layoutNoise(43, [64000, 32000, 16000, 8000], 0.55);
       for (let r = 0; r < rows; r++) {
         const lat = (r + 0.5) / rows; // 0 north .. 1 south
+        // With an equator: from the nearer edge's temperature up to the equator's at the middle.
+        const t0 = config.equator
+          ? (lat < 0.5 ? config.northTemperature : config.southTemperature) + (config.equatorTemperature - (lat < 0.5 ? config.northTemperature : config.southTemperature)) * (1 - Math.abs(lat - 0.5) * 2)
+          : config.northTemperature + (config.southTemperature - config.northTemperature) * lat;
         for (let c = 0; c < cols; c++) {
           const i = c + cols * r;
-          temp[i] = config.northTemperature + (config.southTemperature - config.northTemperature) * lat + 4 * tNoise[i]!;
+          temp[i] = t0 + 4 * tNoise[i]!;
         }
       }
       const a = (config.windFrom * Math.PI) / 180; // compass: 0 = from north (-z), 90 = from east (+x)
@@ -1147,6 +1177,9 @@ export class PlateHeights implements HeightSource {
     this.ecotone = { degrees: blend * ECOTONE_DEGREES, moisture: blend * ECOTONE_MOISTURE };
     const borders = [16384, 8192, 4096, 2048, 1024, 512, 256];
     this.raggedNoise = [octaves(config.terrainSeed * 7919 + 53, borders, 0.75), octaves(config.terrainSeed * 7919 + 59, borders, 0.75)];
+
+    // Polar ice at the north and south edges of round worlds (the edges you can't go past).
+    this.ice = this.wrap ? { edge: octaves(config.terrainSeed * 7919 + 67, [32768, 16384, 8192, 4096], 0.5), surface: octaves(config.terrainSeed * 7919 + 71, [2048, 1024, 512, 256], 0.5) } : null;
 
     // 14. Rivers and lakes: water drains toward the sea; basins become lakes or are filled in,
     //     and rivers run where enough water gathers (more in wetter country).
@@ -1271,8 +1304,43 @@ export class PlateHeights implements HeightSource {
         }
       }
     }
+    // Polar ice covers whatever is near the north and south edges.
+    const ice = this.iceTops(x0, z0, w, d, step);
+    if (ice) {
+      for (let k = 0; k < heights.length; k++) {
+        if (ice[k]! <= heights[k]!) continue;
+        heights[k] = Math.round(ice[k]!);
+        if (water) water[k] = NO_WATER;
+      }
+    }
     this.lastSurface = { key, heights, water };
     return this.lastSurface;
+  }
+
+  /** The polar ice's surface over samples (units; -Infinity where there's none), or null if none is near. */
+  private iceTops(x0: number, z0: number, w: number, d: number, step: number): Float64Array | null {
+    if (!this.ice) return null;
+    const D = this.world.depthUnits, reach = ICE_BAND * 1.4;
+    const zLo = z0, zHi = z0 + (d - 1) * step;
+    if (zLo > reach && zHi < D - reach) return null;
+    const norm = (os: Octave[]) => 2 / os.reduce((a, o) => a + o.weight, 0);
+    // The band's width along each edge, by x.
+    const north = fractalGrid(this.ice.edge, x0, 0, w, 1, step), south = fractalGrid(this.ice.edge, x0, D, w, 1, step);
+    const ne = norm(this.ice.edge);
+    const rough = fractalGrid(this.ice.surface, x0, z0, w, d, step), ns = norm(this.ice.surface);
+    const out = new Float64Array(w * d).fill(-Infinity);
+    for (let j = 0; j < d; j++) {
+      const z = z0 + j * step;
+      for (let i = 0; i < w; i++) {
+        const nearNorth = z < D / 2;
+        const band = ICE_BAND * (1 + 0.3 * (nearNorth ? north[i]! : south[i]!) * ne);
+        const dist = nearNorth ? z : D - z;
+        if (dist >= band) continue;
+        const t = 1 - Math.max(0, dist) / band; // 0 at the band's inner edge .. 1 at the world's edge
+        out[i + w * j] = this.seaLevel + ICE_SHELF + (ICE_WALL - ICE_SHELF) * t ** 2.5 + rough[i + w * j]! * ns * 0.6 * M;
+      }
+    }
+    return out;
   }
 
   private groundHeights(x0: number, z0: number, w: number, d: number, step = 1): Int32Array {
@@ -1355,10 +1423,15 @@ export class PlateHeights implements HeightSource {
         snowShift = f.map((v) => Math.max(-wander, Math.min(wander, v * s)));
       }
     }
-    // River and lake beds (only looked up where this world has any).
+    // River and lake beds (only looked up where this world has any), and polar ice.
     const standing = this.hydrology ? this.surface(x0, z0, w, d, step).water : null;
+    const ice = this.iceTops(x0, z0, w, d, step);
     for (let k = 0; k < out.length; k++) {
       const h = heights[k]!;
+      if (ice && ice[k]! >= h - M) {
+        out[k] = Material.Ice;
+        continue;
+      }
       if (standing && standing[k]! > h) {
         out[k] = Material.Sand;
         continue;

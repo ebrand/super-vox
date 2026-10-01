@@ -304,6 +304,7 @@ export class TerrainGenerator implements ChunkGenerator {
    * exposed, so those get the surface material too.
    */
   private materialFor(minH: number, top: number, surface: MaterialId): MaterialId {
+    if (surface === Material.Ice) return Material.Ice; // ice sheets are ice all the way down
     const depth = minH - top;
     if (depth <= this.grassSlack) return surface;
     if (depth < DIRT_DEPTH) return subsurface(surface);

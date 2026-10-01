@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { DAY_MINUTES_LIMITS, DEFAULT_DAY_MINUTES, FLAT_WORLD_16KM, defaultPlateTerrain, defaultVoxelize } from '@super-vox/shared';
+import { DAY_MINUTES_LIMITS, DEFAULT_DAY_MINUTES, DEFAULT_WORLD_SHAPE, defaultPlateTerrain, defaultVoxelize, isWorldShape, type WorldShape } from '@super-vox/shared';
 import { buildApp } from './app.js';
 import { openWorld, type WorldSpec } from './worldFile.js';
 import { FileWorldCatalog } from './worlds.js';
@@ -16,6 +16,14 @@ function numberEnv(name: string, fallback: number): number {
 }
 
 /** Settings for a world that doesn't exist yet (WORLD_GENERATOR: plates (default), noise, or flat). */
+/** WORLD_SHAPE for a new default world: round-16x8 (default) or flat-16x16. */
+function worldShapeEnv(): WorldShape {
+  const v = process.env.WORLD_SHAPE;
+  if (v === undefined || v === '') return DEFAULT_WORLD_SHAPE;
+  if (!isWorldShape(v)) throw new RangeError(`WORLD_SHAPE must be "round-16x8" or "flat-16x16"; got "${v}"`);
+  return v;
+}
+
 function specForNewWorld(): WorldSpec {
   const kind = process.env.WORLD_GENERATOR ?? 'plates';
   const voxelize = {
@@ -55,6 +63,8 @@ function specForNewWorld(): WorldSpec {
         surfaceRoughness: numberEnv('WORLD_SURFACE_ROUGHNESS', d.surfaceRoughness),
         biomes: numberEnv('WORLD_BIOMES', d.biomes),
         northTemperature: numberEnv('WORLD_NORTH_TEMPERATURE', d.northTemperature),
+        equator: numberEnv('WORLD_EQUATOR', d.equator),
+        equatorTemperature: numberEnv('WORLD_EQUATOR_TEMPERATURE', d.equatorTemperature),
         southTemperature: numberEnv('WORLD_SOUTH_TEMPERATURE', d.southTemperature),
         altitudeCooling: numberEnv('WORLD_ALTITUDE_COOLING', d.altitudeCooling),
         rainfall: numberEnv('WORLD_RAINFALL', d.rainfall),
@@ -70,6 +80,7 @@ function specForNewWorld(): WorldSpec {
         islandMaxSize: numberEnv('WORLD_ISLAND_MAX_SIZE', d.islandMaxSize),
       },
       voxelize,
+      shape: worldShapeEnv(),
     };
   }
   if (kind === 'noise') return { generator: 'noise', seed, voxelize };
@@ -92,7 +103,7 @@ const dayMinutes = dayEnv === undefined || dayEnv === '' ? DEFAULT_DAY_MINUTES :
 if (dayMinutes !== 'real' && !(dayMinutes >= DAY_MINUTES_LIMITS[0] && dayMinutes <= DAY_MINUTES_LIMITS[1])) {
   throw new RangeError(`WORLD_DAY_MINUTES must be ${DAY_MINUTES_LIMITS[0]}..${DAY_MINUTES_LIMITS[1]} or "real"; got "${dayEnv}"`);
 }
-const catalog = new FileWorldCatalog(dataRoot, name, { dev: process.env.NODE_ENV !== 'production', config: FLAT_WORLD_16KM, dayMinutes });
+const catalog = new FileWorldCatalog(dataRoot, name, { dev: process.env.NODE_ENV !== 'production', dayMinutes });
 const world = catalog.get(name)!;
 const app = await buildApp({ catalog, logger: true });
 
