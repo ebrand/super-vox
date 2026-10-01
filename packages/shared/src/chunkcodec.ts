@@ -7,6 +7,7 @@ import {
   type Chunk,
   type VoxelsBlock,
 } from './chunk.js';
+import { isWater } from './materials.js';
 import type { ChunkCoord } from './world.js';
 
 /**
@@ -117,7 +118,12 @@ export function summarizeChunk(bytes: Uint8Array): 'air' | 'solid' | 'mixed' {
     const kind = view.getUint8(o);
     const size = view.getUint8(o + 1);
     o += 2;
-    if (kind === KIND_UNIFORM) o += 2;
+    if (kind === KIND_UNIFORM) {
+      // Water doesn't hide what's next to it.
+      if (o + 2 > bytes.byteLength) throw new ChunkDecodeError('truncated chunk data');
+      if (isWater(view.getUint16(o, true))) allUniform = false;
+      o += 2;
+    }
     else if (kind === KIND_GRID) {
       if (!isGridSize(size)) throw new ChunkDecodeError(`invalid voxel size ${size}`);
       o += (BLOCK_SIZE / size) ** 3 * 2;

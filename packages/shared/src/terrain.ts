@@ -1,5 +1,6 @@
 import type { ClimateGrid } from './climate.js';
 import { plantTrees, type Canopy, type Tree } from './trees.js';
+import { setBlockWater } from './water.js';
 import {
   BLOCK_SIZE,
   BLOCKS_PER_AXIS,
@@ -239,8 +240,11 @@ export class TerrainGenerator implements ChunkGenerator {
       if (h < minY) minY = h;
       if (h > maxY) maxY = h;
     }
-    // Tree tops (of trees reaching into the column) count too, so crowns are loaded.
+    // Tree tops (of trees reaching into the column) count too, so crowns are loaded; so does
+    // the sea's surface over ground below it.
     for (const t of trees) maxY = Math.max(maxY, t.y + t.height);
+    const sea = this.source.seaLevel;
+    if (sea !== undefined && minY < sea) maxY = Math.max(maxY, sea);
     return { minY, maxY };
   }
 
@@ -326,13 +330,31 @@ export class TerrainGenerator implements ChunkGenerator {
       }
     }
     if (trees.length > 0) plantTrees(chunk, trees);
+    // The sea over the ground (blocks through the ground got theirs as they were built).
+    const sea = this.source.seaLevel;
+    if (sea !== undefined && y0 < sea) {
+      for (let by = 0; by < BLOCKS_PER_AXIS; by++) {
+        const below = sea - (y0 + by * BLOCK_SIZE);
+        if (below <= 0) break;
+        for (let i = by * BLOCKS_PER_AXIS * BLOCKS_PER_AXIS; i < (by + 1) * BLOCKS_PER_AXIS * BLOCKS_PER_AXIS; i++) {
+          if (!chunk.blocks[i]) chunk.blocks[i] = setBlockWater(null, 0, Math.min(BLOCK_SIZE, below));
+        }
+      }
+    }
     return chunk;
   }
 
-  /** Voxelizes the block whose corner is at chunk-local (lx, lz) and world y `y0`. */
+  /**
+   * Voxelizes the block whose corner is at chunk-local (lx, lz) and world y `y0`; open space
+   * below sea level is source water.
+   */
   private buildBlock(H: Int32Array, M: Uint16Array | null, lx: number, y0: number, lz: number): Block {
     const root = this.buildNode(H, M, lx, y0, lz, BLOCK_SIZE);
-    if (typeof root === 'number') return root === 0 ? null : this.uniformBlock(root);
+    const sea = this.source.seaLevel === undefined ? -Infinity : this.source.seaLevel - y0; // block-local
+    if (typeof root === 'number') {
+      if (root !== 0) return this.uniformBlock(root);
+      return sea > 0 ? setBlockWater(null, 0, Math.min(BLOCK_SIZE, sea)) : null;
+    }
     const packed: number[] = [];
     const materials: number[] = [];
     const walk = (node: Node, x: number, y: number, z: number, s: number) => {
@@ -340,6 +362,13 @@ export class TerrainGenerator implements ChunkGenerator {
         if (node !== 0) {
           packed.push(packVoxel(x, y, z, s));
           materials.push(node);
+        } else if (y + s <= sea) {
+          packed.push(packVoxel(x, y, z, s));
+          materials.push(Material.Water);
+        } else if (y < sea && s > 1) {
+          // Open space the sea's surface cuts through: halves.
+          const t = s / 2;
+          for (let i = 0; i < 8; i++) walk(0, x + (i & 1) * t, y + ((i >> 2) & 1) * t, z + ((i >> 1) & 1) * t, t);
         }
         return;
       }

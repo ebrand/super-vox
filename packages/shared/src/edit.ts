@@ -9,7 +9,7 @@ import {
   type Block,
   type Chunk,
 } from './chunk.js';
-import type { MaterialId } from './materials.js';
+import { isWater, type MaterialId } from './materials.js';
 import { breakSizesFor, isValidVoxelSize } from './units.js';
 import { voxelFitsInBlock } from './voxel.js';
 import { CHUNK_SIZE } from './world.js';
@@ -67,6 +67,12 @@ export function blockVoxelContaining(block: Block, x: number, y: number, z: numb
   if (i === 0) return null;
   const v = unpackVoxel(block.packed[i - 1]!);
   return { ...v, material: block.materials[i - 1]! };
+}
+
+/** The solid (non-water) voxel covering a block-local unit cell, or null for air or water. */
+function solidVoxelContaining(block: Block, x: number, y: number, z: number): BlockVoxel | null {
+  const v = blockVoxelContaining(block, x, y, z);
+  return v && !isWater(v.material) ? v : null;
 }
 
 /** Every voxel of a block, in block-local units. */
@@ -128,13 +134,13 @@ export function applyEdit(chunk: Chunk, edit: Edit): Chunk {
   let voxels: BlockVoxel[];
   switch (edit.op) {
     case 'remove': {
-      const target = blockVoxelContaining(block, bx, by, bz);
+      const target = solidVoxelContaining(block, bx, by, bz);
       if (!target) throw new EditError('nothing to remove there');
       voxels = blockVoxels(block).filter((v) => !(v.x === target.x && v.y === target.y && v.z === target.z));
       break;
     }
     case 'break': {
-      const target = blockVoxelContaining(block, bx, by, bz);
+      const target = solidVoxelContaining(block, bx, by, bz);
       if (!target) throw new EditError('nothing to break there');
       if (!breakSizesFor(target.size).includes(edit.pieceSize)) {
         throw new EditError(`a ${target.size}/16 m voxel cannot be broken into ${edit.pieceSize}/16 m pieces`);
@@ -161,13 +167,16 @@ export function applyEdit(chunk: Chunk, edit: Edit): Chunk {
       if (!Number.isInteger(edit.material) || edit.material < 1 || edit.material > 0xffff) {
         throw new EditError(`invalid material ${edit.material}`);
       }
+      // Water is placed a whole block at a time, by the world (it flows).
+      if (isWater(edit.material)) throw new EditError('water fills whole blocks; place it through the world');
       if (!voxelFitsInBlock(edit.x, edit.y, edit.z, edit.size)) {
         throw new EditError('a voxel cannot cross a 1 m gridline');
       }
-      const existing = blockVoxels(block);
       const s = edit.size;
       const overlaps = (v: BlockVoxel) =>
         v.x < bx + s && bx < v.x + v.size && v.y < by + s && by < v.y + v.size && v.z < bz + s && bz < v.z + v.size;
+      // Water in the way is pushed out (its block refills around the new voxel as it flows).
+      const existing = blockVoxels(block).filter((v) => !(isWater(v.material) && overlaps(v)));
       if (existing.some(overlaps)) throw new EditError('that space is occupied');
       voxels = [...existing, { x: bx, y: by, z: bz, size: s, material: edit.material }];
       break;
@@ -264,8 +273,9 @@ export function removeBoxFromChunk(chunk: Chunk, box: RemoveBoxEdit): Chunk | nu
         const block = chunk.blocks[bi] ?? null;
         if (!block) continue;
         const origin = [bx * BLOCK_SIZE, by * BLOCK_SIZE, bz * BLOCK_SIZE];
+        // Water isn't removed: it flows into what's dug out.
         const inBox = (v: BlockVoxel) =>
-          [v.x, v.y, v.z].every((c, a) => origin[a]! + c < hi[a]! && lo[a]! < origin[a]! + c + v.size);
+          !isWater(v.material) && [v.x, v.y, v.z].every((c, a) => origin[a]! + c < hi[a]! && lo[a]! < origin[a]! + c + v.size);
         const all = blockVoxels(block);
         const kept = all.filter((v) => !inBox(v));
         if (kept.length === all.length) continue;

@@ -8,7 +8,7 @@ import { selectLod } from './lod.js';
 import { TileManager } from './tileManager.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
 import { createAtmosphere, createSky } from './atmosphere.js';
-import { WATER_LAYER, WaterRenderer, createSeaMaterial } from './water.js';
+import { WATER_LAYER, WaterRenderer, createSeaMaterial, createVoxelWaterMaterial } from './water.js';
 import { createTint } from './tint.js';
 import { applyLighting, loadLighting, saveLighting } from './lighting.js';
 import { LightingPanel } from './lightingPanel.js';
@@ -16,7 +16,7 @@ import { PLAYER, moveAabb, playerBox } from './physics.js';
 import { loadSettings } from './settings.js';
 import { MeshWorkerPool } from './workerPool.js';
 import { WorldMapOverlay } from './worldMap.js';
-import { solidAtFor } from './worldQuery.js';
+import { solidAtFor, waterAtFor } from './worldQuery.js';
 
 const statusEl = document.getElementById('status')!;
 /** I: shows or hides the info panel (remembered in this browser). */
@@ -77,6 +77,9 @@ const controls = new FlyControls(camera, renderer.domElement);
 const material = createVoxelMaterial(atmosphere);
 /** Draws water over the rest of the scene, shading it from what lies behind. */
 const water = new WaterRenderer(renderer, atmosphere);
+const voxelWater = createVoxelWaterMaterial(water.uniforms);
+/** Whether a point (metres) is in water: from the loaded chunks, else below the sea. */
+let inWaterAt: (x: number, y: number, z: number) => boolean = (_x, y) => y < atmosphere.uniforms.waterLevel.value;
 const lightingUniforms = { aoStrength: material.uniforms.aoStrength!, exposure: material.uniforms.exposure! };
 let lighting = loadLighting();
 /** The world's clock (from the server), and the server's clock minus ours (ms). */
@@ -134,11 +137,12 @@ let worldLine = '';
 
 /** Translucent sea surface at sea level, kept centred under the camera. */
 let sea: THREE.Mesh | null = null;
+let seaMaterial: ReturnType<typeof createSeaMaterial> | null = null;
 function addSea(seaLevelUnits: number): void {
   atmosphere.uniforms.seaLevelM.value = seaLevelUnits / UNITS_PER_METER;
   atmosphere.uniforms.waterLevel.value = seaLevelUnits / UNITS_PER_METER;
-  controls.inWater = (_x, y) => y < seaLevelUnits / UNITS_PER_METER;
-  sea = new THREE.Mesh(new THREE.PlaneGeometry(view * 2.5, view * 2.5), createSeaMaterial(water.uniforms));
+  seaMaterial = createSeaMaterial(water.uniforms);
+  sea = new THREE.Mesh(new THREE.PlaneGeometry(view * 2.5, view * 2.5), seaMaterial);
   sea.layers.set(WATER_LAYER);
   sea.rotation.x = -Math.PI / 2;
   // Half a smallest voxel below sea level: ground whose voxel tops sit exactly at sea level would
@@ -163,6 +167,9 @@ function updateLod(force = false): void {
   if (!force && column === lodColumn) return;
   lodColumn = column;
   const sel = selectLod(world, fx, fz, detail, view * UNITS_PER_METER);
+  // Everything within `detail` chunks (Chebyshev) of the focus is full-detail chunks; one chunk in
+  // from that, they were loaded from the last position too.
+  seaMaterial?.setNear(fx / UNITS_PER_METER, fz / UNITS_PER_METER, (Math.max(0, detail - 1) * CHUNK_SIZE) / UNITS_PER_METER);
   lodChangedAt = performance.now();
   settledMs = null;
   chunks.setRegion(sel.columns, fx, fz);
@@ -213,7 +220,10 @@ connection = connect({
           controls.minY = unitsToMeters(w.minYUnits) + 1;
           const send = (m: Parameters<NonNullable<typeof connection>['send']>[0]) => connection?.send(m);
           pool = new MeshWorkerPool();
-          chunks = new ChunkManager(w, scene, material, send, pool, 64, onProgress);
+          chunks = new ChunkManager(w, scene, material, voxelWater, send, pool, 64, onProgress);
+          const waterAt = waterAtFor(chunks);
+          inWaterAt = (x, y, z) => waterAt(x * UNITS_PER_METER, y * UNITS_PER_METER, z * UNITS_PER_METER) ?? y < atmosphere.uniforms.waterLevel.value;
+          controls.inWater = (x, y, z) => inWaterAt(x, y, z);
           tiles = new TileManager(scene, material, send, pool, 32, onProgress);
           const solidAt = solidAtFor(chunks);
           const eyeUnits = () => [camera.position.x * UNITS_PER_METER, camera.position.y * UNITS_PER_METER, camera.position.z * UNITS_PER_METER] as const;
@@ -392,7 +402,7 @@ renderer.setAnimationLoop(() => {
   if (sea) sea.position.set(camera.position.x, sea.position.y, camera.position.z);
   applyLighting(lighting, worldHours(), atmosphere, lightingUniforms, view);
   lightingPanel.updateTime();
-  atmosphere.uniforms.underwater.value = camera.position.y < atmosphere.uniforms.waterLevel.value ? 1 : 0;
+  atmosphere.uniforms.underwater.value = inWaterAt(camera.position.x, camera.position.y, camera.position.z) ? 1 : 0;
   water.render(scene, camera);
 
   frames++;

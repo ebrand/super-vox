@@ -1,4 +1,4 @@
-import { BIOME_GROUND, Material, type MaterialId } from '@super-vox/shared';
+import { BIOME_GROUND, MAX_FLOW, Material, type MaterialId } from '@super-vox/shared';
 
 /** Number of material colors the shader can look up; ids beyond render magenta. */
 export const PALETTE_SIZE = 64;
@@ -21,6 +21,8 @@ const COLORS: Record<number, readonly [number, number, number]> = {
   [Material.Needles]: [0.05, 0.17, 0.08],
   [Material.JungleLeaves]: [0.04, 0.22, 0.03],
   [Material.AcaciaLeaves]: [0.22, 0.3, 0.07],
+  // Water (drawn by its own shader; this is for places that show a flat colour).
+  ...Object.fromEntries(Array.from({ length: MAX_FLOW + 1 }, (_, l) => [Material.Water + l, [0.05, 0.2, 0.3] as const])),
 };
 
 const UNKNOWN = [1, 0, 1] as const;
@@ -51,6 +53,8 @@ const NAMES: Record<number, string> = {
   [Material.Needles]: 'needles',
   [Material.JungleLeaves]: 'jungle leaves',
   [Material.AcaciaLeaves]: 'acacia leaves',
+  [Material.Water]: 'water',
+  ...Object.fromEntries(Array.from({ length: MAX_FLOW }, (_, l) => [Material.Water + 1 + l, `flowing water (${l + 1})`])),
 };
 
 export function materialName(id: MaterialId): string {

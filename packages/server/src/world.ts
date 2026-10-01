@@ -4,6 +4,12 @@ import {
   NO_CANOPY,
   encodeClimate,
   NO_GROUND,
+  BLOCK_SIZE,
+  WaterFlow,
+  blockHasRoom,
+  blockIndex,
+  isWater,
+  setBlockWater,
   applyEdit,
   decodeChunk,
   editChunk,
@@ -30,6 +36,9 @@ import {
   type Tile,
 } from '@super-vox/shared';
 import type { ChunkStore } from './chunkStore.js';
+
+/** 1 m blocks along a chunk's edge. */
+const BLOCKS_PER_CHUNK_AXIS = CHUNK_SIZE / BLOCK_SIZE;
 
 /** Surface samples covering the whole world (see World.getMap). */
 export interface WorldMap {
@@ -86,6 +95,8 @@ export class World {
   readonly tolerance: number | null;
   /** Sea level (units), or null without a sea. */
   readonly seaLevel: number | null;
+  /** Water flowing after edits (see stepWater). */
+  private readonly flow = new WaterFlow();
 
   constructor(
     readonly config: WorldConfig,
@@ -129,6 +140,78 @@ export class World {
    * or (for removeBox) removes nothing.
    */
   applyEdit(edit: Edit): EditResult {
+    const result = this.applyEditOnly(edit);
+    // Water around whatever changed may flow.
+    const size = edit.op === 'place' || edit.op === 'removeBox' ? edit.size : 1;
+    for (let by = edit.y >> 4; by <= (edit.y + size - 1) >> 4; by++)
+      for (let bz = edit.z >> 4; bz <= (edit.z + size - 1) >> 4; bz++)
+        for (let bx = edit.x >> 4; bx <= (edit.x + size - 1) >> 4; bx++) this.flow.touch(bx, by, bz);
+    return result;
+  }
+
+  /** Blocks waiting for water to flow. */
+  get waterPending(): number {
+    return this.flow.pending;
+  }
+
+  /**
+   * Lets water flow one step (see WaterFlow), saving the chunks it changed; null if nothing
+   * changed. Call a few times a second.
+   */
+  stepWater(limit = 4096): EditResult | null {
+    if (this.flow.pending === 0) return null;
+    const working = new Map<string, Chunk>();
+    const n = BLOCKS_PER_CHUNK_AXIS;
+    const local = (b: number) => ((b % n) + n) % n;
+    const chunkOf = (bx: number, by: number, bz: number) => {
+      const resolved = resolveChunk(this.config, { cx: Math.floor(bx / n), cy: Math.floor(by / n), cz: Math.floor(bz / n) });
+      if (!resolved) return null;
+      const key = chunkKey(resolved);
+      return { key, chunk: working.get(key) ?? this.current(resolved) };
+    };
+    const changed = this.flow.step(
+      {
+        getBlock: (bx, by, bz) => {
+          const c = chunkOf(bx, by, bz);
+          return c ? c.chunk.blocks[blockIndex(local(bx), local(by), local(bz))] ?? null : undefined;
+        },
+        setBlock: (bx, by, bz, block) => {
+          const c = chunkOf(bx, by, bz);
+          if (!c) return;
+          const blocks = working.has(c.key) ? c.chunk.blocks : c.chunk.blocks.slice();
+          blocks[blockIndex(local(bx), local(by), local(bz))] = block;
+          working.set(c.key, { cx: c.chunk.cx, cy: c.chunk.cy, cz: c.chunk.cz, blocks });
+        },
+      },
+      limit,
+    );
+    return changed.length ? this.commit([...working.values()]) : null;
+  }
+
+  private applyEditOnly(edit: Edit): EditResult {
+    if (edit.op === 'place' && isWater(edit.material)) {
+      // Water fills the open space of every 1 m block the cube touches, as a source.
+      const next = new Map<string, Chunk>();
+      const n = BLOCKS_PER_CHUNK_AXIS;
+      for (let by = edit.y >> 4; by <= (edit.y + edit.size - 1) >> 4; by++) {
+        for (let bz = edit.z >> 4; bz <= (edit.z + edit.size - 1) >> 4; bz++) {
+          for (let bx = edit.x >> 4; bx <= (edit.x + edit.size - 1) >> 4; bx++) {
+            const resolved = resolveChunk(this.config, { cx: Math.floor(bx / n), cy: Math.floor(by / n), cz: Math.floor(bz / n) });
+            if (!resolved) continue;
+            const key = chunkKey(resolved);
+            const chunk = next.get(key) ?? this.current(resolved);
+            const i = blockIndex(((bx % n) + n) % n, ((by % n) + n) % n, ((bz % n) + n) % n);
+            const block = chunk.blocks[i] ?? null;
+            if (!blockHasRoom(block)) continue;
+            const blocks = chunk.blocks.slice();
+            blocks[i] = setBlockWater(block, 0);
+            next.set(key, { cx: chunk.cx, cy: chunk.cy, cz: chunk.cz, blocks });
+          }
+        }
+      }
+      if (next.size === 0) throw new EditError('no room for water there');
+      return this.commit([...next.values()]);
+    }
     if (edit.op === 'removeBox') {
       validateRemoveBox(edit);
       const changed: Chunk[] = [];

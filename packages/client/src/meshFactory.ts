@@ -43,17 +43,23 @@ export function createPackedMesh(
   return mesh;
 }
 
-export function meshQuads(mesh: THREE.Mesh): number {
-  return mesh.userData.quads as number;
+/** Packed meshes, or groups of them: quads in all of them. */
+export function meshQuads(obj: THREE.Object3D): number {
+  let n = 0;
+  obj.traverse((o) => (n += (o.userData.quads as number | undefined) ?? 0));
+  return n;
 }
 
-export function meshGpuBytes(mesh: THREE.Mesh): number {
-  return meshQuads(mesh) * BYTES_PER_QUAD;
+export function meshGpuBytes(obj: THREE.Object3D): number {
+  return meshQuads(obj) * BYTES_PER_QUAD;
 }
 
-/** Frees a packed mesh's GPU buffers without freeing the shared index. */
-export function disposePackedMesh(mesh: THREE.Mesh): void {
-  mesh.removeFromParent();
-  mesh.geometry.setIndex(null);
-  mesh.geometry.dispose();
+/** Frees a packed mesh's (or a group of them's) GPU buffers without freeing the shared index. */
+export function disposePackedMesh(obj: THREE.Object3D): void {
+  obj.removeFromParent();
+  obj.traverse((o) => {
+    if (!(o instanceof THREE.Mesh)) return;
+    o.geometry.setIndex(null);
+    o.geometry.dispose();
+  });
 }

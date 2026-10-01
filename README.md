@@ -190,6 +190,15 @@ at the view distance into a sky that matches it. **L** opens a lighting panel (n
 and direction, sun strength and warmth; sky light; ground bounce; corner shading; haze;
 exposure), applied live and saved in this browser.
 
+Water is a material: below sea level every open cell is source water, and water you place (key
+4 in the edit tool) fills the open space of a whole 1 m block as a source. It isn't solid (you
+see, aim and swim through it) and flows on the server a block at a time, five steps a second,
+like Minecraft's: it falls into open space, spreads sideways over anything it can't fall into,
+one level weaker per block up to 7 blocks from a source (shallower the further it goes), dries
+up when nothing feeds it, and open space between two sources becomes a source. Digging below sea
+level next to the sea lets it in; a pit dug inland stays dry. Near the player the sea is these
+voxels; further away a flat sea surface stands in for it.
+
 Day and night: each world has a clock kept by the server (saved in its world.json, so it
 carries on across restarts and terrain updates), a 24-minute day by default or real time (the
 server's clock and time zone). New worlds take `WORLD_DAY_MINUTES` (1..1440 or `real`, default

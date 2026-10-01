@@ -19,7 +19,27 @@ export const Material = {
   Needles: 14,
   JungleLeaves: 15,
   AcaciaLeaves: 16,
+  /** Water: a source (sea, lakes, placed water) at 17, flowing water 1..7 blocks from one at 18..24 (see water.ts). */
+  Water: 17,
 } as const;
+
+/** Flowing water reaches this many blocks from its source. */
+export const MAX_FLOW = 7;
+
+/** Whether a material is water (a source or flowing). */
+export function isWater(m: number): boolean {
+  return m >= Material.Water && m <= Material.Water + MAX_FLOW;
+}
+
+/** Flow level of a water material: 0 for a source, 1..MAX_FLOW for flowing water. */
+export function waterLevelOf(m: number): number {
+  return m - Material.Water;
+}
+
+/** Water material for a flow level (0 = source). */
+export function waterMaterial(level: number): number {
+  return Material.Water + level;
+}
 
 export type MaterialId = number;
 

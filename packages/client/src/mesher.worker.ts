@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
-import { decodeChunk, decodeTile } from '@super-vox/shared';
-import { mergeFaces, packQuads, visibleFaces, type MeshBuffers } from './mesher.js';
+import { chunkWithoutWater, decodeChunk, decodeTile } from '@super-vox/shared';
+import { mergeFaces, packQuads, visibleFaces, waterQuads, type MeshBuffers } from './mesher.js';
 import { meshTile } from './tileMesher.js';
 
 export type MeshRequest =
@@ -16,6 +16,8 @@ export type MeshRequest =
 export interface MeshResponse {
   id: number;
   buffers: MeshBuffers | null;
+  /** Chunks only: the water surfaces (see waterQuads), or null for none. */
+  water?: MeshBuffers | null;
   /** Tiles only: world Y (units) of the mesh origin. */
   baseY?: number;
   /** Time spent meshing in the worker. */
@@ -28,7 +30,8 @@ self.onmessage = (ev: MessageEvent<MeshRequest>) => {
   const t0 = performance.now();
   const reply = (res: Omit<MeshResponse, 'id' | 'ms'>) => {
     const msg: MeshResponse = { id: req.id, ms: performance.now() - t0, ...res };
-    self.postMessage(msg, res.buffers ? [res.buffers.positions.buffer, res.buffers.faces.buffer] : []);
+    const transfer = [res.buffers, res.water].flatMap((b) => (b ? [b.positions.buffer, b.faces.buffer] : []));
+    self.postMessage(msg, transfer);
   };
   try {
     if (req.kind === 'tile') {
@@ -37,8 +40,11 @@ self.onmessage = (ev: MessageEvent<MeshRequest>) => {
       return;
     }
     const chunk = decodeChunk(req.center);
-    const quads = mergeFaces(visibleFaces(chunk, req.neighbors.map((n) => (n ? decodeChunk(n) : null))));
-    reply({ buffers: quads.length ? packQuads(quads) : null });
+    const neighbors = req.neighbors.map((n) => (n ? decodeChunk(n) : null));
+    // Terrain without its water (so the bottom shows through), then the water's surfaces.
+    const quads = mergeFaces(visibleFaces(chunkWithoutWater(chunk), neighbors.map((n) => n && chunkWithoutWater(n))));
+    const water = waterQuads(chunk, neighbors);
+    reply({ buffers: quads.length ? packQuads(quads) : null, water: water.length ? packQuads(water) : null });
   } catch (err) {
     reply({ buffers: null, error: String(err) });
   }

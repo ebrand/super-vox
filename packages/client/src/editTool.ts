@@ -30,6 +30,8 @@ const MATERIALS = [
   { id: Material.Stone, name: 'stone' },
   { id: Material.Dirt, name: 'dirt' },
   { id: Material.Grass, name: 'grass' },
+  // Fills the whole 1 m block (as a source) and flows.
+  { id: Material.Water, name: 'water' },
 ] as const;
 
 /** Sizes the tool offers: the five that tile a 1 m block (1/16, 1/8, 1/4, 1/2, 1 m). */
@@ -79,7 +81,7 @@ const mod = (v: number, m: number) => ((v % m) + m) % m;
  * snapping to its size. In every mode, middle click breaks the aimed voxel into the next
  * smaller size, B breaks it into the selected size, X removes it. The size
  * (one of the five standard sizes) changes with Command+wheel or [ ], the
- * material with 1-3. The server applies edits and sends back changed chunks.
+ * material with 1-4 (4: water, which fills whole blocks and flows). The server applies edits and sends back changed chunks.
  */
 export class EditTool {
   mode: Mode = MODES[0];
@@ -321,7 +323,7 @@ export class EditTool {
           : 'click: place · ⌥: 1/16 m steps';
     return (
       `mode: ${this.mode} (Tab: hybrid / dig / place) · ${size} ${this.material.name} · ${target}\n` +
-      `${actions} · middle-click: break smaller · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-3: material` +
+      `${actions} · middle-click: break smaller · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-4: material (4: water)` +
       msg
     );
   }
@@ -357,7 +359,7 @@ export class EditTool {
     }
     if (e.code === 'BracketLeft') this.stepSize(-1, false);
     else if (e.code === 'BracketRight') this.stepSize(1, false);
-    else if (e.code === 'Digit1' || e.code === 'Digit2' || e.code === 'Digit3') this.materialIndex = Number(e.code.slice(5)) - 1;
+    else if (/^Digit[1-4]$/.test(e.code)) this.materialIndex = Number(e.code.slice(5)) - 1;
     else if (e.code === 'KeyX') this.remove();
     else if (e.code === 'KeyB' && this.target) {
       if (!breakSizesFor(this.target.size).includes(this.size)) {

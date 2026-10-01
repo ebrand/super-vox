@@ -15,10 +15,13 @@ import {
   materialAt,
   packVoxel,
   voxelAt,
+  Material,
+  chunkWithoutWater,
+  setBlockWater,
   type Block,
   type Chunk,
 } from '@super-vox/shared';
-import { DIRS, MAX_MESH_MATERIAL, QUAD_INDEX_PATTERN, mergeFaces, packQuads, quadIndices, visibleFaces, type Neighbors, type Quad } from './mesher.js';
+import { DIRS, MAX_MESH_MATERIAL, QUAD_INDEX_PATTERN, mergeFaces, packQuads, quadIndices, visibleFaces, waterQuads, type Neighbors, type Quad } from './mesher.js';
 
 function rng(seed: number): () => number {
   let s = seed >>> 0;
@@ -251,6 +254,25 @@ describe('ambient occlusion', () => {
     ]);
   });
 
+  it("ignores tiny steps (1/16 and 1/8 m) but shades along taller ones, however thin", () => {
+    // A floor of 1/16 m voxels (one layer) with a bump h units high on its middle row.
+    const shadedBeside = (h: number) => {
+      const packed: number[] = [], materials: number[] = [];
+      for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
+        packed.push(packVoxel(x, 0, z, 1)); materials.push(1);
+        if (z === 8) for (let y = 1; y <= h; y++) { packed.push(packVoxel(x, y, z, 1)); materials.push(1); }
+      }
+      const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+      chunk.blocks[0] = { kind: 'voxels', packed: Uint16Array.from(packed), materials: Uint16Array.from(materials) };
+      // Floor tops (plane 1) right beside the bump.
+      return visibleFaces(chunk, NO_NEIGHBORS).filter((f) => f.dir === 2 && f.plane === 1 && (f.u === 7 || f.u + f.du === 8)).some((f) => f.ao);
+    };
+    expect(shadedBeside(1)).toBe(false);
+    expect(shadedBeside(2)).toBe(false);
+    expect(shadedBeside(3)).toBe(true);
+    expect(shadedBeside(4)).toBe(true);
+  });
+
   it('fully shades an inside corner between two walls', () => {
     const faces = scene([[1, 1, 0], [0, 1, 1]]);
     expect(floorAo(faces, 0, 0, 16, 16)).toBe(3);
@@ -476,5 +498,52 @@ describe('packQuads', () => {
   it('builds a shared index buffer from one repeating pattern', () => {
     const idx = quadIndices(3);
     expect([...idx]).toEqual([...QUAD_INDEX_PATTERN, ...QUAD_INDEX_PATTERN.map((i) => i + 4), ...QUAD_INDEX_PATTERN.map((i) => i + 8)]);
+  });
+});
+
+describe('water meshing', () => {
+  /** A pond: a stone floor (by = 0), water 2 m deep over it (by = 1, 2), a stone block standing in it. */
+  const pond = () => {
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    for (let bz = 0; bz < 16; bz++) for (let bx = 0; bx < 16; bx++) {
+      chunk.blocks[blockIndex(bx, 0, bz)] = { kind: 'uniform', size: 16, material: Material.Stone };
+      for (const by of [1, 2]) chunk.blocks[blockIndex(bx, by, bz)] = setBlockWater(null, 0);
+    }
+    chunk.blocks[blockIndex(5, 1, 5)] = { kind: 'uniform', size: 16, material: Material.Stone };
+    return chunk;
+  };
+
+  it('draws only where water meets air: the surface, not the floor or the stone in it', () => {
+    const q = waterQuads(pond(), [null, null, null, null, null, null]);
+    expect(q.every((f) => f.material === Material.Water && !f.ao)).toBe(true);
+    // Only upward faces, all at the surface (y = 3 m), covering the whole pond.
+    expect(q.every((f) => f.dir === 2 && f.plane === 3 * 16)).toBe(true);
+    expect(q.reduce((a, f) => a + f.du * f.dv, 0)).toBe(256 * 256);
+    // Merged into a few big quads.
+    expect(q.length).toBeLessThanOrEqual(2);
+  });
+
+  it('shows the ground under the water: terrain meshes without it', () => {
+    const terrain = mergeFaces(visibleFaces(chunkWithoutWater(pond()), NO_NEIGHBORS));
+    // The floor's top is visible under the water, and the stone block's sides.
+    expect(terrain.some((f) => f.dir === 2 && f.plane === 16)).toBe(true);
+    expect(terrain.some((f) => f.dir === 0 && f.plane === 6 * 16)).toBe(true);
+    // With the water in, the floor would have been hidden.
+    expect(mergeFaces(visibleFaces(pond(), NO_NEIGHBORS)).some((f) => f.dir === 2 && f.plane === 16 && f.material === Material.Stone)).toBe(false);
+  });
+
+  it('shows a wall of water beside a dug hole, but not at the edge of the loaded area', () => {
+    const chunk = pond();
+    chunk.blocks[blockIndex(10, 2, 10)] = null; // a 1 m hole in the surface layer, beside water
+    const q = waterQuads(chunk, NO_NEIGHBORS);
+    // Four walls facing into the hole (and the hole's floor is water: a surface 1 m lower).
+    expect(q.filter((f) => f.dir !== 2 && f.dir !== 3).length).toBeGreaterThanOrEqual(4);
+    expect(q.some((f) => f.dir === 2 && f.plane === 2 * 16)).toBe(true);
+    // No walls on the chunk's sides (no neighbours loaded there).
+    expect(q.some((f) => (f.dir === 0 && f.plane === 256) || (f.dir === 1 && f.plane === 0))).toBe(false);
+  });
+
+  it('draws nothing for chunks without water', () => {
+    expect(waterQuads(randomChunk(5), randomNeighbors(5))).toEqual([]);
   });
 });

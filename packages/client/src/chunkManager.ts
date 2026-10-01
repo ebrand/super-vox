@@ -1,4 +1,4 @@
-import type * as THREE from 'three';
+import * as THREE from 'three';
 import {
   CHUNK_SIZE,
   chunkKey,
@@ -13,6 +13,7 @@ import {
 } from '@super-vox/shared';
 import type { ColumnCoord } from './lod.js';
 import { createPackedMesh, disposePackedMesh, meshGpuBytes, meshQuads } from './meshFactory.js';
+import { WATER_LAYER } from './water.js';
 import { DIRS } from './mesher.js';
 import type { MeshWorkerPool } from './workerPool.js';
 
@@ -73,9 +74,11 @@ export class ChunkManager {
   private render = new Set<string>();
   private wanted = new Set<string>();
   /** Current mesh per rendered chunk (null = no visible faces) and the open-side mask it was built with. */
-  private readonly meshes = new Map<string, { mesh: THREE.Mesh | null; mask: number }>();
-  private readonly jobs = new Map<string, { token: number; mask: number }>();
-  private readonly stale = new Map<string, THREE.Mesh>();
+  /** Per chunk: its terrain and water meshes (a group), or null for nothing to draw. */
+  private readonly meshes = new Map<string, { mesh: THREE.Object3D | null; mask: number }>();
+  /** Mesh jobs running; `stale` once the chunk (or a neighbour) changed since it started. */
+  private readonly jobs = new Map<string, { token: number; mask: number; stale?: boolean }>();
+  private readonly stale = new Map<string, THREE.Object3D>();
   private nextToken = 1;
   private errors = 0;
   private focusX = 0;
@@ -85,6 +88,8 @@ export class ChunkManager {
     private readonly world: WorldConfig,
     private readonly scene: THREE.Scene,
     private readonly material: THREE.Material,
+    /** For water surfaces (drawn on WATER_LAYER). */
+    private readonly waterMaterial: THREE.Material,
     private readonly send: (msg: ClientMessage) => void,
     private readonly pool: MeshWorkerPool,
     private readonly maxInFlight: number,
@@ -93,7 +98,7 @@ export class ChunkManager {
 
   get stats(): ChunkStats {
     let triangles = 0, gpuBytes = 0, meshed = 0;
-    const count = (m: THREE.Mesh) => {
+    const count = (m: THREE.Object3D) => {
       triangles += meshQuads(m) * 2;
       gpuBytes += meshGpuBytes(m);
     };
@@ -250,7 +255,7 @@ export class ChunkManager {
     this.pump();
   }
 
-  private retire(key: string, mesh: THREE.Mesh): void {
+  private retire(key: string, mesh: THREE.Object3D): void {
     const old = this.stale.get(key);
     if (old) disposePackedMesh(old);
     this.stale.set(key, mesh);
@@ -298,7 +303,10 @@ export class ChunkManager {
       for (const k of [key, ...this.neighborCoords(coord).map(chunkKey)]) {
         const m = this.meshes.get(k);
         if (m) m.mask = -1;
-        this.jobs.delete(k);
+        // A job already meshing finishes (so a chunk changing faster than it meshes, like
+        // flowing water, still updates), then meshes again.
+        const job = this.jobs.get(k);
+        if (job) job.stale = true;
       }
     }
     this.data.set(key, bytes);
@@ -322,8 +330,10 @@ export class ChunkManager {
     const coord = this.coords.get(key);
     const center = this.data.get(key);
     if (!coord || center === undefined) return;
-    const mask = this.openMask(coord);
-    if (this.meshes.get(key)?.mask === mask || this.jobs.get(key)?.mask === mask) return;
+    let mask = this.openMask(coord);
+    const running = this.jobs.get(key);
+    if (running?.stale) return; // meshes again when it's done
+    if (this.meshes.get(key)?.mask === mask || running?.mask === mask) return;
 
     if (center === null || this.kinds.get(key) === 'air') {
       this.setMesh(key, null, mask);
@@ -349,20 +359,32 @@ export class ChunkManager {
     const token = this.nextToken++;
     this.jobs.set(key, { token, mask });
     void this.pool.run({ kind: 'chunk', center, neighbors }).then((res) => {
-      if (this.jobs.get(key)?.token !== token) return; // superseded or no longer rendered
+      const job = this.jobs.get(key);
+      if (job?.token !== token) return; // superseded or no longer rendered
       this.jobs.delete(key);
+      if (job.stale) mask = -1; // out of date: shown now, redone below
       if (res.error) {
         this.errors++;
         console.error(`[super-vox] meshing chunk ${key} failed: ${res.error}`);
       } else {
         const origin = { x: coord.cx * CHUNK_SIZE, y: coord.cy * CHUNK_SIZE, z: coord.cz * CHUNK_SIZE };
-        this.setMesh(key, res.buffers ? createPackedMesh(res.buffers, origin, this.material, `chunk ${key}`) : null, mask);
+        const group = new THREE.Group();
+        group.name = `chunk ${key}`;
+        if (res.buffers) group.add(createPackedMesh(res.buffers, origin, this.material, `chunk ${key}`));
+        if (res.water) {
+          const water = createPackedMesh(res.water, origin, this.waterMaterial, `water ${key}`);
+          water.layers.set(WATER_LAYER);
+          water.renderOrder = 4; // before the far sea, which it hides
+          group.add(water);
+        }
+        this.setMesh(key, group.children.length ? group : null, mask);
       }
+      if (job.stale) this.tryMesh(key);
       this.onChange();
     });
   }
 
-  private setMesh(key: string, mesh: THREE.Mesh | null, mask: number): void {
+  private setMesh(key: string, mesh: THREE.Object3D | null, mask: number): void {
     const prev = this.meshes.get(key)?.mesh;
     if (prev) disposePackedMesh(prev);
     const stale = this.stale.get(key);

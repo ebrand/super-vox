@@ -101,9 +101,11 @@ export const WATER_GLSL = /* glsl */ `
     rgb += fromBelow ? vec3(0.0) : glowColor * 1.4 * pow(max(dot(r, sunDir), 0.0), 400.0);
 
     // Foam where it's very shallow: broken up by the ripples, drifting with them.
-    float shallow = 1.0 - smoothstep(0.05, 0.7, depth);
-    float froth = smoothstep(0.1, 0.5, sin(worldPos.x * 2.3 + slope.x * 6.0 + time * 0.7) * sin(worldPos.z * 2.1 - slope.y * 6.0 - time * 0.5) + shallow * 0.8);
-    rgb = mix(rgb, vec3(0.9, 0.93, 0.95) * (skyAmbient * 1.4 + sunColor * max(sunDir.y, 0.2)), shallow * froth * 0.85 * (fromBelow ? 0.0 : 1.0));
+    // (Thin flowing water over the ground stays mostly clear: foam is a light lace, strongest
+    // right at the waterline.)
+    float shallow = 1.0 - smoothstep(0.0, 0.12, depth);
+    float froth = smoothstep(0.4, 0.8, sin(worldPos.x * 2.3 + slope.x * 6.0 + time * 0.7) * sin(worldPos.z * 2.1 - slope.y * 6.0 - time * 0.5) + shallow * 0.6);
+    rgb = mix(rgb, vec3(0.9, 0.93, 0.95) * (skyAmbient * 1.4 + sunColor * max(sunDir.y, 0.2)), shallow * froth * 0.45 * (fromBelow ? 0.0 : 1.0));
     return rgb;
   }
 `;
@@ -122,9 +124,10 @@ export function waterUniforms(atmosphere: Atmosphere) {
 }
 
 /** The sea surface (a large flat plane, kept under the camera). */
-export function createSeaMaterial(uniforms: ReturnType<typeof waterUniforms>): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
-    uniforms,
+export function createSeaMaterial(uniforms: ReturnType<typeof waterUniforms>): THREE.ShaderMaterial & { setNear(x: number, z: number, half: number): void } {
+  const near = { nearCentre: { value: new THREE.Vector2() }, nearHalf: { value: 0 } };
+  const material = new THREE.ShaderMaterial({
+    uniforms: { ...uniforms, ...near },
     depthWrite: false,
     side: THREE.DoubleSide,
     vertexShader: /* glsl */ `
@@ -141,14 +144,26 @@ export function createSeaMaterial(uniforms: ReturnType<typeof waterUniforms>): T
     fragmentShader: /* glsl */ `
       ${ATMOSPHERE_GLSL}
       ${WATER_GLSL}
+      uniform vec2 nearCentre;
+      uniform float nearHalf;
       varying vec3 vWorld;
       #include <logdepthbuf_pars_fragment>
       void main() {
+        // Near the player, the sea is water voxels (and holes dug below sea level stay dry).
+        vec2 d = abs(vWorld.xz - nearCentre);
+        if (max(d.x, d.y) < nearHalf) discard;
         #include <logdepthbuf_fragment>
         gl_FragColor = vec4(applyHaze(waterColor(vWorld, vec3(0.0, 1.0, 0.0)), vWorld), 1.0);
         #include <colorspace_fragment>
       }
     `,
+  });
+  return Object.assign(material, {
+    /** The square (centre and half-width, metres) where water voxels take over from the plane. */
+    setNear(x: number, z: number, half: number) {
+      near.nearCentre.value.set(x, z);
+      near.nearHalf.value = half;
+    },
   });
 }
 
@@ -236,4 +251,45 @@ export class WaterRenderer {
     r.autoClear = autoClear;
     camera.layers.mask = layers;
   }
+}
+
+/**
+ * Water voxels' surfaces (packed meshes, see MeshBuffers): shaded like the sea, from what lies
+ * behind them; they write depth, so the far sea plane doesn't show through near water.
+ */
+export function createVoxelWaterMaterial(uniforms: ReturnType<typeof waterUniforms>): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms,
+    side: THREE.DoubleSide,
+    vertexShader: /* glsl */ `
+      attribute vec4 face;
+      varying vec3 vWorld;
+      varying vec3 vNormal;
+      #include <common>
+      #include <logdepthbuf_pars_vertex>
+      const vec3 NORMALS[6] = vec3[6](
+        vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
+        vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0));
+      void main() {
+        vNormal = NORMALS[int(mod(floor(face.x + 0.5), 8.0))];
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        vWorld = w.xyz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+        #include <logdepthbuf_vertex>
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      ${ATMOSPHERE_GLSL}
+      ${WATER_GLSL}
+      varying vec3 vWorld;
+      varying vec3 vNormal;
+      #include <logdepthbuf_pars_fragment>
+      void main() {
+        #include <logdepthbuf_fragment>
+        gl_FragColor = vec4(applyHaze(waterColor(vWorld, vNormal), vWorld), 1.0);
+        #include <colorspace_fragment>
+      }
+    `,
+  });
 }

@@ -28,6 +28,9 @@ export type AppOptions = (
     }
 ) & { logger?: boolean };
 
+/** Time between water flow steps. */
+export const WATER_STEP_MS = 200;
+
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
   await app.register(websocket);
@@ -163,6 +166,27 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       clientWorld.delete(client);
     }
   };
+  /**
+   * Sends changed chunks to everyone viewing `world` (column ranges first, so clients load any
+   * newly needed layers before the chunk data arrives).
+   */
+  const broadcast = (world: World, result: EditResult) => {
+    const frames = result.changes.map((c) => frame(BinaryTag.Chunk, c.bytes));
+    const columns = result.columns.map((c) => encodeMessage({ type: 'column', ...c }));
+    for (const [client, w] of clients) {
+      if (w !== world || client.readyState !== client.OPEN) continue;
+      for (const m of columns) client.send(m);
+      for (const f of frames) client.send(f);
+    }
+  };
+  // Water flows a step five times a second in worlds someone is in.
+  const flowing = setInterval(() => {
+    for (const world of new Set(clients.values())) {
+      const result = world.stepWater();
+      if (result) broadcast(world, result);
+    }
+  }, WATER_STEP_MS);
+  app.addHook('onClose', async () => clearInterval(flowing));
   const frame = (tag: number, bytes: Uint8Array) => {
     const f = new Uint8Array(1 + bytes.byteLength);
     f[0] = tag;
@@ -260,15 +284,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             return;
           }
           send({ type: 'editResult', id: msg.id, ok: true });
-          // Everyone viewing this world gets the new chunks (column ranges first, so
-          // clients load any newly needed layers before the chunk data arrives).
-          const frames = result.changes.map((c) => frame(BinaryTag.Chunk, c.bytes));
-          const columns = result.columns.map((c) => encodeMessage({ type: 'column', ...c }));
-          for (const [client, w] of clients) {
-            if (w !== world || client.readyState !== client.OPEN) continue;
-            for (const m of columns) client.send(m);
-            for (const f of frames) client.send(f);
-          }
+          broadcast(world, result);
           break;
         }
 

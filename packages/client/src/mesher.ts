@@ -1,4 +1,9 @@
 import {
+  Material,
+  blockWater,
+  emptyChunk,
+  isWater,
+  setBlockWater,
   BLOCK_SIZE,
   BLOCKS_PER_AXIS,
   blockIndex,
@@ -259,16 +264,21 @@ function solidCell(chunk: Chunk, neighbors: Neighbors, b: [number, number, numbe
   return rasterizeVoxels(block).materials[unitIndex(lx, ly, lz)] !== 0;
 }
 
+/** Ambient occlusion looks past this far out from a face (units, 1/8 m), whatever its voxel size. */
+const AO_REACH = 2;
+
 /**
  * Ambient occlusion at the four corners of a face (chunk-local units), from the cells just in
  * front of it: at each corner, the two beside it along the face's edges and the one diagonal to
- * it, sampled at the face's voxel size. Both sides solid: 3; otherwise the number solid.
+ * it, AO_REACH out from the face. The samples depend only on the corner, so faces of any size
+ * agree where they meet, and steps no higher than AO_REACH cast no creases. Both sides solid: 3;
+ * otherwise the number solid.
  */
 function faceOcclusion(chunk: Chunk, neighbors: Neighbors, q: Quad, b: [number, number, number]): [number, number, number, number] {
   const axis = AXIS_OF[q.dir]!, ua = U_AXIS[axis]!, va = V_AXIS[axis]!;
-  const s = q.size, half = s / 2;
-  // Centre of the front layer along the axis.
-  const layer = SIGN_OF[q.dir]! > 0 ? q.plane + half : q.plane - half;
+  const half = 0.5; // the cells touching the corner
+  // Out along the face's normal (a cell centre).
+  const layer = SIGN_OF[q.dir]! > 0 ? q.plane + AO_REACH + 0.5 : q.plane - AO_REACH - 0.5;
   const p = [0, 0, 0];
   const solid = (u: number, v: number) => {
     p[axis] = layer; p[ua] = u; p[va] = v;
@@ -289,7 +299,7 @@ function faceOcclusion(chunk: Chunk, neighbors: Neighbors, q: Quad, b: [number, 
  * at their corners. Faces against a null neighbor are visible. Blocks with identical contents
  * and identical neighbor objects share the face search.
  */
-export function visibleFaces(chunk: Chunk, neighbors: Neighbors): Quad[] {
+export function visibleFaces(chunk: Chunk, neighbors: Neighbors, occlusion = true): Quad[] {
   const out: Quad[] = [];
   const b: [number, number, number] = [0, 0, 0];
   const probe: [number, number, number] = [0, 0, 0];
@@ -325,8 +335,10 @@ export function visibleFaces(chunk: Chunk, neighbors: Neighbors): Quad[] {
         const placed = local.map((q) => {
           const axis = AXIS_OF[q.dir]!;
           const g: Quad = { ...q, plane: q.plane + origin[axis]!, u: q.u + origin[U_AXIS[axis]]!, v: q.v + origin[V_AXIS[axis]]! };
-          const ao = faceOcclusion(chunk, neighbors, g, probe);
-          if (ao[0] || ao[1] || ao[2] || ao[3]) g.ao = ao;
+          if (occlusion) {
+            const ao = faceOcclusion(chunk, neighbors, g, probe);
+            if (ao[0] || ao[1] || ao[2] || ao[3]) g.ao = ao;
+          }
           return g;
         });
         for (const q of mergeFaces(placed)) out.push(q);
@@ -334,6 +346,35 @@ export function visibleFaces(chunk: Chunk, neighbors: Neighbors): Quad[] {
     }
   }
   return out;
+}
+
+/** A chunk of nothing but water. */
+const ALL_WATER: Chunk = { ...emptyChunk({ cx: 0, cy: 0, cz: 0 }), blocks: new Array(4096).fill(setBlockWater(null, 0)) };
+
+/**
+ * Faces where a chunk's water meets air (water against solid ground or more water draws
+ * nothing), merged as one material. Missing neighbours beside it count as water, so the edge of
+ * the loaded area shows no walls of water; above and below, as air.
+ */
+export function waterQuads(chunk: Chunk, neighbors: Neighbors): Quad[] {
+  const wet = chunk.blocks.map((b) => blockWater(b ?? null) !== null);
+  if (!wet.includes(true)) return [];
+  // Only blocks with water, and those next to them (which can hide its faces), matter.
+  const blocks = chunk.blocks.map((b, i) => {
+    if (wet[i]) return b;
+    const x = i % BLOCKS_PER_AXIS, z = Math.floor(i / BLOCKS_PER_AXIS) % BLOCKS_PER_AXIS, y = Math.floor(i / (BLOCKS_PER_AXIS * BLOCKS_PER_AXIS));
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] as const) {
+      const nx = x + dx, ny = y + dy, nz = z + dz;
+      if (nx < 0 || ny < 0 || nz < 0 || nx >= BLOCKS_PER_AXIS || ny >= BLOCKS_PER_AXIS || nz >= BLOCKS_PER_AXIS) continue;
+      if (wet[blockIndex(nx, ny, nz)]) return b;
+    }
+    return null;
+  });
+  const around = neighbors.map((n, d) => n ?? (d === 2 || d === 3 ? null : ALL_WATER));
+  const faces = visibleFaces({ ...chunk, blocks }, around, false)
+    .filter((q) => isWater(q.material))
+    .map((q): Quad => ({ dir: q.dir, plane: q.plane, u: q.u, v: q.v, du: q.du, dv: q.dv, material: Material.Water, size: 16 }));
+  return mergeFaces(faces);
 }
 
 function gcd(a: number, b: number): number {
