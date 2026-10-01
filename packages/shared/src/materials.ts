@@ -6,6 +6,13 @@ export const Material = {
   Grass: 3,
   Sand: 4,
   Snow: 5,
+  /** Biome grounds (see biomes.ts). */
+  JungleFloor: 6,
+  DryGrass: 7,
+  Meadow: 8,
+  TaigaFloor: 9,
+  Tundra: 10,
+  DesertSand: 11,
 } as const;
 
 export type MaterialId = number;

@@ -10,6 +10,12 @@ const COLORS: Record<number, readonly [number, number, number]> = {
   [Material.Grass]: [0.18, 0.4, 0.1],
   [Material.Sand]: [0.62, 0.55, 0.36],
   [Material.Snow]: [0.86, 0.88, 0.9],
+  [Material.JungleFloor]: [0.07, 0.27, 0.05],
+  [Material.DryGrass]: [0.42, 0.38, 0.13],
+  [Material.Meadow]: [0.3, 0.44, 0.12],
+  [Material.TaigaFloor]: [0.11, 0.24, 0.13],
+  [Material.Tundra]: [0.3, 0.29, 0.2],
+  [Material.DesertSand]: [0.7, 0.47, 0.25],
 };
 
 const UNKNOWN = [1, 0, 1] as const;
@@ -29,6 +35,12 @@ const NAMES: Record<number, string> = {
   [Material.Grass]: 'grass',
   [Material.Sand]: 'sand',
   [Material.Snow]: 'snow',
+  [Material.JungleFloor]: 'jungle floor',
+  [Material.DryGrass]: 'dry grass',
+  [Material.Meadow]: 'meadow',
+  [Material.TaigaFloor]: 'taiga floor',
+  [Material.Tundra]: 'tundra',
+  [Material.DesertSand]: 'desert sand',
 };
 
 export function materialName(id: MaterialId): string {

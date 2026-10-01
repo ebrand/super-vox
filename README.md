@@ -56,18 +56,31 @@ Settings for a new world from the environment:
 | `WORLD_PLATE_SIZE_RATIO` | 6 | Area of a major plate over a minor one (1..50) |
 | `WORLD_LAND` | 30 | Percent of the world above the sea (exact); the rest is sea |
 | `WORLD_SEA_LEVEL` | 0 | Sea surface, in metres |
-| `WORLD_MAX_HEIGHT` | 300 | Highest land, in metres (-1000..1000, above the sea) |
+| `WORLD_MAX_HEIGHT` | 300 | Highest land outside mountain ranges, in metres (-1000..1000, above the sea) |
+| `WORLD_MOUNTAINS` | 50 | Percent of converging plate seams that raise mountain ranges (0 = none) |
+| `WORLD_MOUNTAIN_HEIGHT` | 600 | Highest mountain peak, in metres (at least `WORLD_MAX_HEIGHT`) |
+| `WORLD_MOUNTAIN_WIDTH` | 2500 | Width of a mountain range, in metres (500..8000) |
+| `WORLD_MOUNTAIN_RUGGEDNESS` | 60 | 0 (rounded massifs) .. 100 (sharp ridges) |
+| `WORLD_MOUNTAIN_DETAIL` | 50 | Gullies, spurs and crags on mountain sides (16-256 m), 0 .. 100 |
 | `WORLD_MIN_HEIGHT` | -300 | Deepest sea floor, in metres (-1000..1000, below the sea) |
 | `WORLD_SHORE_FRACTAL` | 50 | Coastline raggedness, 0 (smooth) .. 100 (broken, many islands) |
 | `WORLD_BEACHES` | 50 | Sand on gentle coasts, 0 (none above the water) .. 100 (wide); steep coasts stay rocky |
-| `WORLD_ROCK_ALTITUDE` | 180 | Bare rock from this height above the sea, in metres |
-| `WORLD_SNOW_ALTITUDE` | 240 | Snow from this height above the sea, in metres (lower land has none) |
+| `WORLD_ROCK_ALTITUDE` | 180 | Without biomes: bare rock from this height above the sea, in metres |
+| `WORLD_SNOW_ALTITUDE` | 240 | Without biomes: snow from this height above the sea, in metres (lower land has none) |
+| `WORLD_SNOW_FRACTAL` | 50 | How ragged the snow line is: 0 (a contour) .. 100 (wandering ±60 m, at scales from 1 km to 16 m) |
 | `WORLD_ROCK_SLOPE` | 25 | Ground steeper than this many degrees is bare rock, even above the snow (90 = never) |
 | `WORLD_NOISE_SCALE` | 2000 | Size of the largest features in each plate's noise, in metres (100..16000) |
 | `WORLD_NOISE_ROUGHNESS` | 50 | Fine detail in each plate's noise, 0 (smooth swells) .. 100 (rugged) |
 | `WORLD_PLAINS` | 0 | Percent of the land that is plains: broad, nearly flat lowlands |
 | `WORLD_LOWLAND_FLATNESS` | 0 | Flatter low ground and a steeper climb near the peaks, 0 .. 100 |
 | `WORLD_SURFACE_ROUGHNESS` | 50 | Small-scale bumpiness of the ground, 0 (smooth) .. 100 |
+| `WORLD_BIOMES` | 1 | Biomes from climate (1) or grass everywhere (0) |
+| `WORLD_NORTH_TEMPERATURE` | -6 | Sea-level temperature at the north edge, degrees C |
+| `WORLD_SOUTH_TEMPERATURE` | 26 | Sea-level temperature at the south edge, degrees C |
+| `WORLD_ALTITUDE_COOLING` | 1.5 | Degrees C colder per 100 m of height |
+| `WORLD_RAINFALL` | 50 | How wet the land is, 0 (dry) .. 100 (soaked) |
+| `WORLD_WIND_FROM` | 270 | Compass direction rain comes from (270 = west); land behind mountains is drier |
+| `WORLD_SNOW_TEMPERATURE` | -4 | With biomes: ground colder than this (degrees C) is snow, with bare rock just below it on high ground |
 | `WORLD_ISLAND_ARCS` | 0 | Island chains along seams where an oceanic plate meets another, 0 .. 100 |
 | `WORLD_HOTSPOTS` | 0 | Hotspot island groups in oceanic plates (0..40) |
 | `WORLD_ISLAND_MIN_SIZE` | 200 | Smallest arc/hotspot island, across, in metres (50..4000) |
@@ -83,7 +96,24 @@ crowded), and all plates are re-tuned together so each major plate is `WORLD_PLA
 times the area of each minor plate. Borders are warped by noise so they wander. Enough major
 plates (with the minors on them) become continents to cover the land share; the rest is ocean
 floor. Each plate's relief comes from its own seeded noise field, blended with its neighbours'
-over ~400 m either side of their seam. Plains are regions a few km across (chosen by
+over ~400 m either side of their seam. Mountains: every plate drifts in its own direction; where two plates converge and at least one is
+continental, the fastest-closing `WORLD_MOUNTAINS` percent of those seams raise a range
+`WORLD_MOUNTAIN_WIDTH` wide (centred on the seam between two continents; set back inland where
+ocean dives under a continent, with a trench offshore). Ranges vary along their length, fade out
+at their ends, are shaped by ridged gradient noise (sharp crests, V-shaped valleys; mountain
+sides also get finer ridged detail, 16-256 m across, up to ~30 m tall at the default
+`WORLD_MOUNTAIN_DETAIL`, added per column), and ramp up from
+~700 m inland of the coast, so coastal ranges make steep, rocky shores rather than cliffs. They
+rise on top of the land, scaled so the highest peak is exactly `WORLD_MOUNTAIN_HEIGHT`; worlds
+made before mountains have none. Biomes: each column's biome comes from its temperature (from the north edge's to the south
+edge's, wandering a few degrees, colder with height) and moisture (wet by the sea, drier inland
+and in the rain shadow behind mountains, scaled by rainfall), after Whittaker's diagram: ice,
+tundra and boreal forest when cold; temperate forest or grassland when mild; jungle, savanna or
+desert when hot as it dries out. Each has its own ground (taiga floor, meadow, dry grass, jungle
+floor, desert sand, ...); beaches, rocky shores and steep rock still take priority. With biomes,
+snow lies wherever the ground is colder than `WORLD_SNOW_TEMPERATURE` (so polar lowlands are snowy
+and tropical peaks are not), with a band of bare rock ~1.5 degrees warmer just below it on ground
+more than 100 m up; the snow line fractal wanders it by up to 2 degrees. Worlds made before biomes have none (grass everywhere). Plains are regions a few km across (chosen by
 large-scale noise so `WORLD_PLAINS` percent of the land is in one) where the land is replaced by
 a heavily smoothed, lowered copy of itself, blending into the hills over ~1 km; most 16 m squares
 in a plain vary by under 1 m. Lowland flatness raises the land's height curve to a power (up to

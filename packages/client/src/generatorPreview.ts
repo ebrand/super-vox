@@ -13,6 +13,10 @@ export interface PreviewStats {
   minors: number;
   /** Average major plate area over average minor plate area (NaN without minors). */
   sizeRatio: number;
+  /** Share of the land in each biome (indexed by BiomeId), or null without biomes. */
+  biomes: number[] | null;
+  /** Colliding seams that raise mountain ranges. */
+  ranges: number;
   /** Islands placed by arcs and hotspots, and their share of the world (0..1). */
   islands: { arc: number; hotspot: number; land: number };
 }
@@ -22,6 +26,8 @@ export interface Preview {
   /** Plate index per map sample, row-major like the map. */
   plateOf: Uint16Array;
   plates: { major: boolean; continental: boolean }[];
+  /** Biome per map sample (BiomeId), or null for worlds without biomes. */
+  biome: Uint8Array | null;
   stats: PreviewStats;
 }
 
@@ -38,6 +44,14 @@ export function buildPreview(config: PlateTerrainConfig, size: number, world: Wo
   const cols = size, rows = Math.round(world.depthUnits / step);
   const h = p.heights(step / 2, step / 2, cols, rows, step);
   const m = p.materials(step / 2, step / 2, cols, rows, step, h);
+  const biome = p.biomes(step / 2, step / 2, cols, rows, step, h);
+  let biomeShares: number[] | null = null;
+  if (biome) {
+    const count = new Array<number>(8).fill(0);
+    let land = 0;
+    for (let k = 0; k < h.length; k++) if (h[k]! > p.seaLevel) (land++, count[biome[k]!]!++);
+    biomeShares = count.map((c) => c / Math.max(1, land));
+  }
   const heights = new Int16Array(h.length);
   let lo = Infinity, hi = -Infinity;
   for (let k = 0; k < h.length; k++) {
@@ -56,6 +70,7 @@ export function buildPreview(config: PlateTerrainConfig, size: number, world: Wo
     map: { cols, rows, step, seaLevel: p.seaLevel, heights, materials: Uint8Array.from(m) },
     plateOf,
     plates: p.plates.map((q) => ({ major: q.major, continental: q.continental })),
+    biome,
     stats: {
       ms: performance.now() - t0,
       land: p.landFraction(),
@@ -64,6 +79,8 @@ export function buildPreview(config: PlateTerrainConfig, size: number, world: Wo
       majors: majorAreas.length,
       minors: minorAreas.length,
       sizeRatio: mean(majorAreas) / mean(minorAreas),
+      ranges: p.collisions.length,
+      biomes: biomeShares,
       islands: {
         arc: p.islands.filter((i) => i.kind === 'arc').length,
         hotspot: p.islands.filter((i) => i.kind === 'hotspot').length,

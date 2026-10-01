@@ -100,3 +100,78 @@ export function fractalGrid(
   }
   return out;
 }
+
+/**
+ * Ridged gradient noise over a `w x d` grid of columns (sampled like fractalGrid): each octave is
+ * Perlin-style gradient noise n, folded into crests as (1 - |n|)^2, and the octaves are averaged
+ * by weight. Returns values in [0, 1], high along ridgelines. Gradient noise has no lattice-aligned
+ * creases, unlike folded value noise, so ridges follow the noise rather than the grid.
+ */
+export function ridgedGrid(octaves: readonly Octave[], x0: number, z0: number, w: number, d: number, step = 1): Float64Array {
+  const out = new Float64Array(w * d);
+  const fx = new Float64Array(w), ux = new Float64Array(w), ix = new Int32Array(w);
+  const fz = new Float64Array(d), uz = new Float64Array(d), iz = new Int32Array(d);
+  const wrapX = (o: Octave, gx: number) => (o.periodX > 0 ? ((gx % o.periodX) + o.periodX) % o.periodX : gx);
+  let wsum = 0;
+  for (const o of octaves) {
+    wsum += o.weight;
+    for (let i = 0; i < w; i++) {
+      const p = (x0 + i * step + 0.5) / o.spacing;
+      ix[i] = Math.floor(p);
+      fx[i] = p - ix[i]!;
+      ux[i] = fade(fx[i]!);
+    }
+    for (let j = 0; j < d; j++) {
+      const p = (z0 + j * step + 0.5) / o.spacing;
+      iz[j] = Math.floor(p);
+      fz[j] = p - iz[j]!;
+      uz[j] = fade(fz[j]!);
+    }
+    const lx0 = ix[0]!, lz0 = iz[0]!;
+    const lw = ix[w - 1]! - lx0 + 2, ld = iz[d - 1]! - lz0 + 2;
+    // Unit gradients at lattice points (cached for the region when it is small enough).
+    const cached = lw * ld <= 4 * w * d;
+    const gxs = cached ? new Float64Array(lw * ld) : null, gzs = cached ? new Float64Array(lw * ld) : null;
+    if (gxs && gzs) {
+      for (let b = 0; b < ld; b++) {
+        for (let a = 0; a < lw; a++) {
+          const t = hash2(wrapX(o, lx0 + a), lz0 + b, o.seed) * Math.PI * 2;
+          gxs[a + lw * b] = Math.cos(t);
+          gzs[a + lw * b] = Math.sin(t);
+        }
+      }
+    }
+    const corner = (gx: number, gz: number, px: number, pz: number) => {
+      const t = hash2(wrapX(o, gx), gz, o.seed) * Math.PI * 2;
+      return Math.cos(t) * px + Math.sin(t) * pz;
+    };
+    const wt = o.weight;
+    for (let j = 0; j < d; j++) {
+      const gz = iz[j]!, tz = fz[j]!, vz = uz[j]!, row = lw * (gz - lz0);
+      for (let i = 0; i < w; i++) {
+        const gx = ix[i]!, tx = fx[i]!, vx = ux[i]!;
+        let n00: number, n10: number, n01: number, n11: number;
+        if (gxs && gzs) {
+          const k = gx - lx0 + row;
+          n00 = gxs[k]! * tx + gzs[k]! * tz;
+          n10 = gxs[k + 1]! * (tx - 1) + gzs[k + 1]! * tz;
+          n01 = gxs[k + lw]! * tx + gzs[k + lw]! * (tz - 1);
+          n11 = gxs[k + lw + 1]! * (tx - 1) + gzs[k + lw + 1]! * (tz - 1);
+        } else {
+          n00 = corner(gx, gz, tx, tz);
+          n10 = corner(gx + 1, gz, tx - 1, tz);
+          n01 = corner(gx, gz + 1, tx, tz - 1);
+          n11 = corner(gx + 1, gz + 1, tx - 1, tz - 1);
+        }
+        const a = n00 + (n10 - n00) * vx;
+        const b = n01 + (n11 - n01) * vx;
+        // 2D gradient noise stays within about +-0.7; scale to about +-1 before folding.
+        const v = a + (b - a) * vz;
+        const nAbs = Math.min(1, (v < 0 ? -v : v) / 0.7);
+        out[i + w * j]! += wt * (1 - nAbs) * (1 - nAbs);
+      }
+    }
+  }
+  if (wsum > 0) for (let k = 0; k < out.length; k++) out[k] = out[k]! / wsum;
+  return out;
+}

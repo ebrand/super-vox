@@ -18,6 +18,6 @@ self.onmessage = (ev: MessageEvent<PreviewRequest>) => {
   } catch (err) {
     res = { id, ok: false, error: err instanceof Error ? err.message : String(err) };
   }
-  const transfer = res.ok ? [res.preview.map.heights.buffer, res.preview.map.materials.buffer, res.preview.plateOf.buffer] : [];
+  const transfer = res.ok ? [res.preview.map.heights.buffer, res.preview.map.materials.buffer, res.preview.plateOf.buffer, ...(res.preview.biome ? [res.preview.biome.buffer] : [])] : [];
   self.postMessage(res, transfer);
 };

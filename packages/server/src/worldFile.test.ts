@@ -56,7 +56,8 @@ describe('readWorld / createWorld / listWorlds', () => {
     if (spec.generator !== 'plates') throw new Error('unreachable');
     // Kept: its own settings. Water became land. Mountains are gone. New settings take defaults.
     // Rock and snow stay where they were (60% / 80% of the default 300 m range, rock above 42 degrees).
-    expect(spec.plates).toEqual({ ...defaultPlateTerrain(4), majorPlates: 5, minorPlates: 12, landPercent: 35, shoreFractal: 30, rockAltitude: 180, snowAltitude: 240, rockSlope: 42 });
+    // There were no mountains then.
+    expect(spec.plates).toEqual({ ...defaultPlateTerrain(4), majorPlates: 5, minorPlates: 12, landPercent: 35, shoreFractal: 30, rockAltitude: 180, snowAltitude: 240, rockSlope: 42, snowFractal: 0, mountains: 0, biomes: 0 });
   });
 
   it('refuses to create a world twice', () => {

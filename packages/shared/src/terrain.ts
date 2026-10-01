@@ -40,9 +40,20 @@ export interface HeightSource {
 
 /** What lies beneath a surface material, down to DIRT_DEPTH. */
 function subsurface(top: MaterialId): MaterialId {
-  if (top === Material.Grass) return Material.Dirt;
-  if (top === Material.Sand) return Material.Sand;
-  return Material.Stone;
+  switch (top) {
+    case Material.Grass:
+    case Material.JungleFloor:
+    case Material.DryGrass:
+    case Material.Meadow:
+    case Material.TaigaFloor:
+    case Material.Tundra:
+      return Material.Dirt;
+    case Material.Sand:
+    case Material.DesertSand:
+      return Material.Sand;
+    default:
+      return Material.Stone;
+  }
 }
 
 /**

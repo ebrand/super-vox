@@ -27,7 +27,9 @@ export function createVoxelMaterial(): THREE.ShaderMaterial {
       varying vec3 vUnits;
       varying float vSize;
       varying vec2 vPhase;
+      #include <common>
       #include <fog_pars_vertex>
+      #include <logdepthbuf_pars_vertex>
       const vec3 NORMALS[6] = vec3[6](
         vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0),
         vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
@@ -44,6 +46,7 @@ export function createVoxelMaterial(): THREE.ShaderMaterial {
         vUnits = position;
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * mvPosition;
+        #include <logdepthbuf_vertex>
         #include <fog_vertex>
       }
     `,
@@ -55,7 +58,9 @@ export function createVoxelMaterial(): THREE.ShaderMaterial {
       varying float vSize;
       varying vec2 vPhase;
       #include <fog_pars_fragment>
+      #include <logdepthbuf_pars_fragment>
       void main() {
+        #include <logdepthbuf_fragment>
         vec3 n = vNormal;
         vec2 p = abs(n.x) > 0.5 ? vUnits.yz : (abs(n.y) > 0.5 ? vUnits.xz : vUnits.xy);
         // Voxels never cross 1 m blocks, so each voxel's grid starts at its

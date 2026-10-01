@@ -39,7 +39,9 @@ const toleranceWarning =
 const worldName = params.get('world') ?? undefined;
 let joinError = '';
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+// A logarithmic depth buffer: with a 5 cm near plane and views of several km, a normal 24-bit
+// buffer can only tell surfaces ~0.4 m apart at 600 m, so shallow coasts fought with the sea.
+const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
@@ -70,7 +72,9 @@ function addSea(seaLevelUnits: number): void {
     new THREE.MeshBasicMaterial({ color: 0x2f6d9c, transparent: true, opacity: 0.6, depthWrite: false, fog: true, side: THREE.DoubleSide }),
   );
   sea.rotation.x = -Math.PI / 2;
-  sea.position.y = seaLevelUnits / UNITS_PER_METER;
+  // Half a smallest voxel below sea level: ground whose voxel tops sit exactly at sea level would
+  // otherwise be coplanar with the water, and no depth buffer can settle a tie.
+  sea.position.y = (seaLevelUnits - 0.5) / UNITS_PER_METER;
   sea.renderOrder = 5;
   sea.name = 'sea';
   scene.add(sea);

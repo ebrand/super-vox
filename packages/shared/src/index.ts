@@ -1,5 +1,6 @@
 export * from './units.js';
 export * from './materials.js';
+export * from './biomes.js';
 export * from './voxel.js';
 export * from './chunk.js';
 export * from './flatgen.js';

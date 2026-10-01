@@ -45,6 +45,10 @@
       #toolbar { display: flex; gap: 12px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
       #toolbar label { display: flex; gap: 4px; align-items: center; }
       #stats { color: var(--dim); font: 12px ui-monospace, monospace; }
+      #legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; color: var(--dim); }
+      #legend span { display: inline-flex; align-items: center; gap: 4px; }
+      #legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+      .field input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
       #stats.bad { color: var(--bad); }
       #stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 12px; position: relative; }
       #map { max-width: 100%; max-height: 100%; aspect-ratio: 1; height: 100%; image-rendering: auto; border: 1px solid var(--line); background: #000; }
@@ -88,8 +92,10 @@
             <option value="terrain">terrain</option>
             <option value="borders" selected>terrain + plate borders</option>
             <option value="plates">plates (minors hatched)</option>
+            <option value="biomes">biomes</option>
           </select>
         </label>
+        <span id="legend" hidden></span>
         <span id="stats">building…</span>
       </div>
       <div id="stage">

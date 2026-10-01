@@ -1,4 +1,4 @@
-import { PLATE_LIMITS, defaultPlateTerrain, isValidWorldName, validatePlateTerrain, type PlateTerrainConfig } from '@super-vox/shared';
+import { BIOME_NAMES, Biome, PLATE_LIMITS, defaultPlateTerrain, isValidWorldName, validatePlateTerrain, type BiomeId, type PlateTerrainConfig } from '@super-vox/shared';
 import type { PreviewRequest, PreviewResponse } from './generator.worker.js';
 import type { Preview } from './generatorPreview.js';
 import { materialName } from './materials.js';
@@ -21,6 +21,8 @@ interface FieldSpec {
   log?: boolean;
   /** A seed: no slider, a button for a random one instead. */
   seed?: boolean;
+  /** An on/off setting (1/0): a checkbox. */
+  toggle?: boolean;
 }
 
 const L = PLATE_LIMITS;
@@ -31,7 +33,7 @@ const FIELDS: FieldSpec[] = [
   { key: 'plateSizeRatio', label: 'Major : minor size', section: 'Plates', min: L.plateSizeRatio[0], max: L.plateSizeRatio[1], step: 0.5, unit: ': 1', hint: 'Area of a major plate relative to a minor one' },
   { key: 'landPercent', label: 'Land', section: 'Land and sea', min: L.landPercent[0], max: L.landPercent[1], step: 1, unit: '%' },
   { key: 'seaLevel', label: 'Sea level', section: 'Land and sea', min: L.height[0], max: L.height[1], step: 1, unit: 'm' },
-  { key: 'maxHeight', label: 'Highest land', section: 'Land and sea', min: L.height[0], max: L.height[1], step: 1, unit: 'm' },
+  { key: 'maxHeight', label: 'Highest hills', section: 'Land and sea', min: L.height[0], max: L.height[1], step: 1, unit: 'm', hint: 'Top of the land outside mountain ranges' },
   { key: 'minHeight', label: 'Deepest sea floor', section: 'Land and sea', min: L.height[0], max: L.height[1], step: 1, unit: 'm' },
   { key: 'shoreFractal', label: 'Shoreline fractal', section: 'Land and sea', min: L.shoreFractal[0], max: L.shoreFractal[1], step: 1, hint: '0 smooth coasts … 100 broken coasts, many islands' },
   { key: 'terrainSeed', label: 'Terrain seed', section: 'Relief', min: 0, max: MAX_SEED, step: 1, seed: true, hint: "Each plate's noise; reroll the relief, keep the plates" },
@@ -40,10 +42,23 @@ const FIELDS: FieldSpec[] = [
   { key: 'plains', label: 'Plains', section: 'Relief', min: L.plains[0], max: L.plains[1], step: 1, unit: '%', hint: 'Share of the land that is broad, nearly flat lowland (good for building)' },
   { key: 'lowlandFlatness', label: 'Lowland flatness', section: 'Relief', min: L.lowlandFlatness[0], max: L.lowlandFlatness[1], step: 1, hint: 'Flatter low ground, steeper climb near the peaks (flat coasts get wider beaches)' },
   { key: 'surfaceRoughness', label: 'Surface roughness', section: 'Relief', min: L.surfaceRoughness[0], max: L.surfaceRoughness[1], step: 1, hint: 'Small bumps in the ground: 0 smooth … 100 lumpy (50 = original)' },
+  { key: 'mountains', label: 'Mountains', section: 'Mountains', min: L.mountains[0], max: L.mountains[1], step: 1, unit: '%', hint: 'Share of converging plate seams that raise ranges (0 = none)' },
+  { key: 'mountainHeight', label: 'Mountain height', section: 'Mountains', min: L.height[0], max: L.height[1], step: 5, unit: 'm', hint: 'The highest peak (at least the highest hills)' },
+  { key: 'mountainWidth', label: 'Range width', section: 'Mountains', min: L.mountainWidth[0], max: L.mountainWidth[1], step: 50, unit: 'm', log: true },
+  { key: 'mountainRuggedness', label: 'Ruggedness', section: 'Mountains', min: L.mountainRuggedness[0], max: L.mountainRuggedness[1], step: 1, hint: '0 rounded massifs … 100 sharp ridges' },
+  { key: 'mountainDetail', label: 'Mountain detail', section: 'Mountains', min: L.mountainDetail[0], max: L.mountainDetail[1], step: 1, hint: 'Gullies, spurs and crags on mountain sides (16-256 m); fine detail, so it shows in the game more than in this preview' },
   { key: 'beaches', label: 'Beaches', section: 'Surface', min: L.beaches[0], max: L.beaches[1], step: 1, hint: 'Sand on gentle coasts: 0 none … 100 wide; steep coasts stay rocky' },
-  { key: 'rockAltitude', label: 'Rock altitude', section: 'Surface', min: L.altitude[0], max: L.altitude[1], step: 5, unit: 'm', hint: 'Bare rock from this height above the sea' },
-  { key: 'snowAltitude', label: 'Snow altitude', section: 'Surface', min: L.altitude[0], max: L.altitude[1], step: 5, unit: 'm', hint: 'Snow from this height above the sea; land that stays lower has none' },
+  { key: 'rockAltitude', label: 'Rock altitude', section: 'Surface', min: L.altitude[0], max: L.altitude[1], step: 5, unit: 'm', hint: 'Bare rock from this height above the sea (biomes off; with biomes, rock and snow follow temperature)' },
+  { key: 'snowAltitude', label: 'Snow altitude', section: 'Surface', min: L.altitude[0], max: L.altitude[1], step: 5, unit: 'm', hint: 'Snow from this height above the sea; land that stays lower has none (biomes off)' },
+  { key: 'snowFractal', label: 'Snow line fractal', section: 'Surface', min: L.snowFractal[0], max: L.snowFractal[1], step: 1, hint: 'How ragged the snow line is: 0 a contour … 100 wandering ±60 m' },
   { key: 'rockSlope', label: 'Rock slope', section: 'Surface', min: L.rockSlope[0], max: L.rockSlope[1], step: 1, unit: '°', hint: 'Ground steeper than this is bare rock, even above the snow; 90 = never' },
+  { key: 'biomes', label: 'Biomes', section: 'Climate', min: 0, max: 1, step: 1, toggle: true, hint: 'Jungle, forests, grassland, savanna, desert, tundra and ice from temperature and moisture' },
+  { key: 'northTemperature', label: 'North temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 1, unit: '°C', hint: 'At sea level on the north edge' },
+  { key: 'southTemperature', label: 'South temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 1, unit: '°C', hint: 'At sea level on the south edge' },
+  { key: 'altitudeCooling', label: 'Altitude cooling', section: 'Climate', min: L.altitudeCooling[0], max: L.altitudeCooling[1], step: 0.1, unit: '°C/100 m', hint: 'Colder with height (real air: ~0.65)' },
+  { key: 'rainfall', label: 'Rainfall', section: 'Climate', min: L.rainfall[0], max: L.rainfall[1], step: 1, hint: '0 dry … 100 soaked; wet near the sea, drier inland' },
+  { key: 'snowTemperature', label: 'Snow temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 0.5, unit: '°C', hint: 'Ground colder than this is snow; a band of bare rock lies just below it on high ground' },
+  { key: 'windFrom', label: 'Wind from', section: 'Climate', min: L.windFrom[0], max: L.windFrom[1], step: 5, unit: '°', hint: 'Compass direction rain comes from (270 = west); land behind mountains is drier' },
   { key: 'islandArcs', label: 'Island arcs', section: 'Islands', min: L.islandArcs[0], max: L.islandArcs[1], step: 1, hint: 'Chains along seams where an ocean plate meets another plate' },
   { key: 'hotspots', label: 'Hotspots', section: 'Islands', min: L.hotspots[0], max: L.hotspots[1], step: 1, hint: 'Groups in ocean plates: a main island trailing smaller ones' },
   { key: 'islandMinSize', label: 'Smallest island', section: 'Islands', min: L.islandSize[0], max: L.islandSize[1], step: 10, unit: 'm', log: true, hint: 'Across; islands count toward the land share' },
@@ -107,6 +122,10 @@ for (const f of FIELDS) {
     value.appendChild(u);
   }
   let range: HTMLInputElement | null = null;
+  if (f.toggle) {
+    number.type = 'checkbox';
+    number.addEventListener('change', () => set(f.key, number.checked ? 1 : 0));
+  }
   if (f.seed) {
     const dice = document.createElement('button');
     dice.type = 'button';
@@ -116,7 +135,7 @@ for (const f of FIELDS) {
     value.appendChild(dice);
   }
   div.append(label, value);
-  if (!f.seed) {
+  if (!f.seed && !f.toggle) {
     range = document.createElement('input');
     Object.assign(range, { type: 'range', min: String(f.log ? 0 : f.min), max: String(f.log ? 1000 : f.max), step: String(f.log ? 1 : f.step) });
     range.setAttribute('aria-label', f.label);
@@ -130,7 +149,7 @@ for (const f of FIELDS) {
     hint.textContent = f.hint ?? '';
     div.appendChild(hint);
   }
-  number.addEventListener('change', () => {
+  if (!f.toggle) number.addEventListener('change', () => {
     const v = Number(number.value);
     if (number.value.trim() !== '' && Number.isFinite(v)) set(f.key, Math.min(f.max, Math.max(f.min, v)));
     else showForm();
@@ -143,7 +162,8 @@ function showForm(): void {
   for (const f of FIELDS) {
     const { number, range, hint } = inputs.get(f.key)!;
     const v = config[f.key];
-    if (document.activeElement !== number) number.value = String(v);
+    if (f.toggle) number.checked = v === 1;
+    else if (document.activeElement !== number) number.value = String(v);
     if (range && document.activeElement !== range) range.value = String(toSlider(f, v));
     if (f.key === 'landPercent' && hint) hint.textContent = `${v}% land · ${100 - v}% sea`;
   }
@@ -154,6 +174,9 @@ function set(key: keyof PlateTerrainConfig, value: number): void {
   // Dragging one island size past the other pushes the other along.
   if (key === 'islandMinSize' && value > config.islandMaxSize) config.islandMaxSize = value;
   if (key === 'islandMaxSize' && value < config.islandMinSize) config.islandMinSize = value;
+  // Hills can't top the mountains: raising one past the other pushes the other along.
+  if (key === 'maxHeight' && value > config.mountainHeight) config.mountainHeight = value;
+  if (key === 'mountainHeight' && value < config.maxHeight) config.maxHeight = value;
   showForm();
   toHash(config);
   requestPreview();
@@ -173,6 +196,26 @@ const ctx = canvas.getContext('2d')!;
 const statsEl = document.getElementById('stats')!;
 const hoverEl = document.getElementById('hover')!;
 const viewEl = document.getElementById('view') as HTMLSelectElement;
+const legendEl = document.getElementById('legend')!;
+
+/** Map colours for the biomes view (sRGB). */
+const BIOME_COLORS: Record<BiomeId, readonly [number, number, number]> = {
+  [Biome.Ice]: [236, 241, 246],
+  [Biome.Tundra]: [150, 140, 110],
+  [Biome.Boreal]: [40, 96, 82],
+  [Biome.Temperate]: [72, 150, 60],
+  [Biome.Grassland]: [160, 196, 92],
+  [Biome.Jungle]: [18, 88, 34],
+  [Biome.Savanna]: [204, 178, 84],
+  [Biome.Desert]: [228, 152, 82],
+};
+for (const b of Object.values(Biome)) {
+  const item = document.createElement('span');
+  const sw = document.createElement('i');
+  sw.style.background = `rgb(${BIOME_COLORS[b].join(',')})`;
+  item.append(sw, BIOME_NAMES[b]);
+  legendEl.appendChild(item);
+}
 const worker = new Worker(new URL('./generator.worker.ts', import.meta.url), { type: 'module' });
 let busy = false;
 /** Settings changed while a preview was building: build again with the latest when it's done. */
@@ -215,6 +258,16 @@ worker.onmessage = (ev: MessageEvent<PreviewResponse>) => {
       `built in ${Math.round(s.ms)} ms · land ${(s.land * 100).toFixed(1)}% · ground ${Math.round(s.minHeight)}..${Math.round(s.maxHeight)} m · ` +
       `${s.majors} major + ${s.minors} minor plates` +
       (s.minors > 0 && s.majors > 0 ? ` · major:minor area ${s.sizeRatio.toFixed(1)}:1` : '') +
+      (s.ranges > 0 ? ` · ${s.ranges} mountain range${s.ranges === 1 ? '' : 's'}` : '') +
+      (s.biomes
+        ? ' · ' +
+          s.biomes
+            .map((share, b) => ({ share, b }))
+            .filter((x) => x.share >= 0.01)
+            .sort((x, y) => y.share - x.share)
+            .map((x) => `${BIOME_NAMES[x.b as BiomeId]} ${Math.round(x.share * 100)}%`)
+            .join(', ')
+        : '') +
       (s.islands.arc + s.islands.hotspot > 0
         ? ` · ${s.islands.arc + s.islands.hotspot} islands (${s.islands.arc} arc, ${s.islands.hotspot} hotspot), ${(s.islands.land * 100).toFixed(1)}% of the world`
         : '');
@@ -252,6 +305,15 @@ function draw(): void {
   canvas.height = rows;
   const mode = viewEl.value;
   const px = renderMap(map);
+  if (mode === 'biomes' && preview.biome) {
+    // Flat biome colours over land; the sea as drawn.
+    const biome = preview.biome;
+    for (let k = 0; k < cols * rows; k++) {
+      if (map.heights[k]! <= (map.seaLevel ?? -Infinity)) continue;
+      const c = BIOME_COLORS[biome[k]! as BiomeId];
+      px.set([c[0], c[1], c[2], 255], k * 4);
+    }
+  }
   if (mode === 'plates') {
     // One hue per plate (spread by the golden angle); continents light, ocean floor dark; minors hatched.
     for (let j = 0; j < rows; j++) {
@@ -264,7 +326,8 @@ function draw(): void {
       }
     }
   }
-  if (mode !== 'terrain') {
+  legendEl.hidden = mode !== 'biomes';
+  if (mode === 'borders' || mode === 'plates') {
     for (let j = 0; j < rows; j++) {
       for (let i = 0; i < cols; i++) {
         const k = i + cols * j;
@@ -290,7 +353,8 @@ canvas.addEventListener('mousemove', (e) => {
   const plate = preview.plates[p]!;
   hoverEl.textContent =
     `${((i + 0.5) * step).toFixed(2)}, ${((j + 0.5) * step).toFixed(2)} km · ${h.toFixed(1)} m (${(h - previewConfig.seaLevel).toFixed(1)} m ${h >= previewConfig.seaLevel ? 'above' : 'below'} sea) · ${materialName(preview.map.materials[k]!)}\n` +
-    `plate ${p}: ${plate.major ? 'major' : 'minor'}, ${plate.continental ? 'continental' : 'oceanic'}`;
+    `plate ${p}: ${plate.major ? 'major' : 'minor'}, ${plate.continental ? 'continental' : 'oceanic'}` +
+    (preview.biome && h > previewConfig.seaLevel ? ` · ${BIOME_NAMES[preview.biome[k]! as BiomeId]}` : '');
 });
 canvas.addEventListener('mouseleave', () => (hoverEl.textContent = ''));
 

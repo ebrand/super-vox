@@ -1,5 +1,6 @@
+import { BIOME_GROUND, classifyBiome, type BiomeId } from './biomes.js';
 import { Material } from './materials.js';
-import { fractalGrid, type Octave } from './noise.js';
+import { fractalGrid, ridgedGrid, type Octave } from './noise.js';
 import type { HeightSource } from './terrain.js';
 import type { WorldConfig } from './world.js';
 
@@ -36,18 +37,43 @@ export interface PlateTerrainConfig {
   rockAltitude: number;
   /** Snow from this height above the sea, in metres (0..2000); a world whose land stays below it has none. */
   snowAltitude: number;
+  /** How ragged the snow line is: 0 (a contour line) .. 100 (wanders up to 60 m up and down). */
+  snowFractal: number;
   /** Ground steeper than this many degrees is bare rock, snow line or not (5..90; 90 = never). */
   rockSlope: number;
   /** Size of the largest features in each plate's noise, in metres (100..16000). */
   noiseScale: number;
   /** How much fine detail each plate's noise has, 0 (smooth swells) .. 100 (rugged). */
   noiseRoughness: number;
+  /** Share of plate seams where plates collide, raising mountain ranges (0..100; 0 = no mountains). */
+  mountains: number;
+  /** Highest mountain peak, in metres (at least maxHeight, which tops the rest of the land). */
+  mountainHeight: number;
+  /** Width of a mountain range, in metres (500..8000). */
+  mountainWidth: number;
+  /** How sharp and ridged mountains are, 0 (rounded massifs) .. 100 (knife-edge ridges). */
+  mountainRuggedness: number;
+  /** Gullies, spurs and crags on mountain sides (16-256 m across), 0 (smooth flanks) .. 100. */
+  mountainDetail: number;
   /** Share of the land that is plains: broad, nearly flat lowlands (0..100, roughly exact). */
   plains: number;
   /** Flattens low ground and concentrates the climb near the peaks, 0 (off) .. 100. */
   lowlandFlatness: number;
   /** Small-scale bumpiness of the ground, 0 (smooth) .. 100; 50 is the original amount. */
   surfaceRoughness: number;
+  /** Biomes from climate: 1 on, 0 off (grass everywhere, as before biomes). */
+  biomes: number;
+  /** Sea-level temperature (degrees C) at the north and south edges of the world. */
+  northTemperature: number;
+  southTemperature: number;
+  /** How much colder it gets with height, degrees C per 100 m (0..5). */
+  altitudeCooling: number;
+  /** How wet the land is, 0 (dry) .. 100 (soaked); 50 is moderate. */
+  rainfall: number;
+  /** With biomes: ground colder than this (degrees C) is snow, with a band of bare rock just below on high ground. */
+  snowTemperature: number;
+  /** Compass direction rain comes from, degrees (0 north, 90 east, 180 south, 270 west); lands behind mountains from it are drier. */
+  windFrom: number;
   /** Density of island chains along seams where an oceanic plate meets another plate, 0 (none) .. 100. */
   islandArcs: number;
   /** Groups of islands inside oceanic plates, each a main island trailing smaller ones (0..40). */
@@ -72,12 +98,25 @@ export function defaultPlateTerrain(seed = 1): PlateTerrainConfig {
     beaches: 50,
     rockAltitude: 180,
     snowAltitude: 240,
+    snowFractal: 50,
     rockSlope: 25,
     noiseScale: 2000,
     noiseRoughness: 50,
+    mountains: 50,
+    mountainHeight: 600,
+    mountainWidth: 2500,
+    mountainRuggedness: 60,
+    mountainDetail: 50,
     plains: 0,
     lowlandFlatness: 0,
     surfaceRoughness: 50,
+    biomes: 1,
+    northTemperature: -6,
+    southTemperature: 26,
+    altitudeCooling: 1.5,
+    rainfall: 50,
+    windFrom: 270,
+    snowTemperature: -4,
     islandArcs: 0,
     hotspots: 0,
     islandMinSize: 200,
@@ -95,11 +134,20 @@ export const PLATE_LIMITS = {
   beaches: [0, 100],
   altitude: [0, 2000],
   rockSlope: [5, 90],
+  snowFractal: [0, 100],
   noiseScale: [100, 16000],
   noiseRoughness: [0, 100],
+  mountains: [0, 100],
+  mountainWidth: [500, 8000],
+  mountainRuggedness: [0, 100],
+  mountainDetail: [0, 100],
   plains: [0, 100],
   lowlandFlatness: [0, 100],
   surfaceRoughness: [0, 100],
+  temperature: [-30, 40],
+  altitudeCooling: [0, 5],
+  rainfall: [0, 100],
+  windFrom: [0, 360],
   islandArcs: [0, 100],
   hotspots: [0, 40],
   islandSize: [50, 4000],
@@ -124,7 +172,7 @@ export function parsePlateTerrain(raw: unknown): PlateTerrainConfig {
  * Plate settings saved by an older version, brought up to date so the world looks as it did:
  * `waterPercent` becomes `landPercent`; rock and snow, which started at 60% and 80% of the land's
  * height range (or `rockLine` percent), get those heights in metres; steep ground turned to rock
- * above slope 0.9 (42 degrees). Other missing settings get their defaults.
+ * above slope 0.9 (42 degrees), along a plain contour; there were no mountains and no biomes. Other missing settings get their defaults.
  */
 export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   const r = { ...((typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>) };
@@ -135,6 +183,14 @@ export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   if (r.rockAltitude === undefined) r.rockAltitude = (num(r.rockLine, 60) / 100) * range;
   if (r.snowAltitude === undefined) r.snowAltitude = 0.8 * range;
   if (r.rockSlope === undefined) r.rockSlope = 42;
+  if (r.snowFractal === undefined) r.snowFractal = 0;
+  if (r.biomes === undefined) r.biomes = 0;
+  // Worlds from before the current mountains have none. (The first plate worlds saved a
+  // `mountainHeight` that meant something else, possibly below maxHeight: replace it.)
+  if (r.mountains === undefined) {
+    r.mountains = 0;
+    r.mountainHeight = Math.max(num(r.maxHeight, d.maxHeight), d.mountainHeight);
+  }
   return parsePlateTerrain(r);
 }
 
@@ -162,11 +218,25 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   num(c.rockAltitude, L.altitude, 'rockAltitude', ' m');
   num(c.snowAltitude, L.altitude, 'snowAltitude', ' m');
   num(c.rockSlope, L.rockSlope, 'rockSlope', ' degrees');
+  num(c.snowFractal, L.snowFractal, 'snowFractal');
   num(c.noiseScale, L.noiseScale, 'noiseScale', ' m');
   num(c.noiseRoughness, L.noiseRoughness, 'noiseRoughness');
+  num(c.mountains, L.mountains, 'mountains', '%');
+  num(c.mountainHeight, L.height, 'mountainHeight', ' m');
+  if (!(c.mountainHeight >= c.maxHeight)) throw new RangeError(`mountainHeight must be at least maxHeight; got ${c.mountainHeight} and ${c.maxHeight}`);
+  num(c.mountainWidth, L.mountainWidth, 'mountainWidth', ' m');
+  num(c.mountainRuggedness, L.mountainRuggedness, 'mountainRuggedness');
+  num(c.mountainDetail, L.mountainDetail, 'mountainDetail');
   num(c.plains, L.plains, 'plains', '%');
   num(c.lowlandFlatness, L.lowlandFlatness, 'lowlandFlatness');
   num(c.surfaceRoughness, L.surfaceRoughness, 'surfaceRoughness');
+  if (c.biomes !== 0 && c.biomes !== 1) throw new RangeError(`biomes must be 0 or 1; got ${c.biomes}`);
+  num(c.northTemperature, L.temperature, 'northTemperature', ' degrees C');
+  num(c.southTemperature, L.temperature, 'southTemperature', ' degrees C');
+  num(c.altitudeCooling, L.altitudeCooling, 'altitudeCooling', ' degrees C per 100 m');
+  num(c.rainfall, L.rainfall, 'rainfall');
+  num(c.windFrom, L.windFrom, 'windFrom', ' degrees');
+  num(c.snowTemperature, L.temperature, 'snowTemperature', ' degrees C');
   num(c.islandArcs, L.islandArcs, 'islandArcs');
   int(c.hotspots, ...L.hotspots, 'hotspots');
   num(c.islandMinSize, L.islandSize, 'islandMinSize', ' m');
@@ -198,6 +268,23 @@ const INLAND = 1500 * M;
 const OFFSHORE = 1500 * M;
 /** Neighbouring plates' relief blends over this distance either side of their seam. */
 const SEAM_BLEND = 400 * M;
+/** Centre and stretch for mountain-side ridged noise (its mean, and ~1 / its spread). */
+const CRAG_MEAN = 0.59;
+const CRAG_STRETCH = 3.5;
+/** Moisture falls from the coast inland over about this distance. */
+const MOISTURE_INLAND = 2000 * M;
+/** Rain shadow: how far upwind to look for mountains, and the barrier height that dries out the lee fully. */
+const SHADOW_REACH = 3000 * M;
+const SHADOW_FULL = 250 * M;
+/** How far the snow line wanders up and down (units) at snowFractal = 100. */
+const SNOW_FRACTAL_MAX = 60 * M;
+/** With biomes: how far the snow temperature wanders (degrees C) at snowFractal = 100. */
+const SNOW_FRACTAL_DEGREES = 2;
+/** With biomes: bare rock below the snow, this many degrees warmer, on ground this high above the sea. */
+const ROCK_BAND_DEGREES = 1.5;
+const ROCK_BAND_MIN_HEIGHT = 100 * M;
+/** Strongest mountain-side detail (amplitude, units) at mountainDetail = 100, on the most mountainous ground. */
+const MOUNTAIN_DETAIL_MAX = 60 * M;
 /** Plains sit at this fraction of the smoothed land around them (lowland basins). */
 const PLAIN_LEVEL = 0.35;
 /**
@@ -252,6 +339,14 @@ export class PlateHeights implements HeightSource {
   private readonly beachHeight: number;
   /** Noise varying beaches along a coast. */
   private readonly beachNoise: Octave[];
+  /** Climate per grid cell: sea-level temperature (degrees C) and moisture (0..1); null without biomes. */
+  readonly temperature: Float32Array | null;
+  readonly moisture: Float32Array | null;
+  private readonly cooling: number;
+  private readonly snowTemp: number;
+  /** Fractal noise moving the snow line up and down, and how far (units). */
+  private readonly snowNoise: Octave[];
+  private readonly snowWander: number;
   /** Heights (units) where bare rock and snow start, and the slope (rise over run) beyond which ground is rock. */
   private readonly rockLine: number;
   private readonly snowLine: number;
@@ -264,11 +359,18 @@ export class PlateHeights implements HeightSource {
   readonly plateOf: Uint16Array;
   /** 0..1 per grid cell: how high the ground is within its range (drives roughness). */
   private readonly rough: Float32Array;
+  /** 0..1 per grid cell: how mountainous (drives mountain-side detail); 0 off the ranges. */
+  private readonly mountainness: Float32Array;
+  /** Ridged octaves for mountain-side detail, and its strength (units). */
+  private readonly crags: Octave[];
+  private readonly cragAmp: number;
   readonly plates: readonly Plate[];
   /** Islands placed by arcs and hotspots (centres and radii in units). */
   readonly islands: readonly Island[];
   /** Grid cells that are island land. */
   readonly islandCells: number;
+  /** Pairs of plates whose seam raises a range: between continents, or coastal (ocean under continent). */
+  readonly collisions: readonly { plates: readonly [number, number]; kind: 'continental' | 'coastal' }[];
   /** Per grid cell: 0 (hills) .. 1 (plain); 0 everywhere without plains. */
   readonly plainness: Float32Array;
   private readonly detail: Octave[];
@@ -283,7 +385,9 @@ export class PlateHeights implements HeightSource {
     validatePlateTerrain(config);
     const sea = (this.seaLevel = Math.round(config.seaLevel * M));
     const lo = (this.minHeight = Math.round(config.minHeight * M));
-    const hi = (this.maxHeight = Math.round(config.maxHeight * M));
+    const hi = Math.round(config.maxHeight * M);
+    // With mountains, the peaks top out at mountainHeight; the rest of the land at maxHeight.
+    const top = (this.maxHeight = config.mountains > 0 ? Math.round(config.mountainHeight * M) : hi);
     this.beachHeight = (config.beaches / 100) * BEACH_MAX;
     this.rockLine = sea + config.rockAltitude * M;
     this.snowLine = sea + config.snowAltitude * M;
@@ -291,7 +395,7 @@ export class PlateHeights implements HeightSource {
     if (world.widthUnits % PLATE_CELL || world.depthUnits % PLATE_CELL) {
       throw new RangeError(`world size must be a multiple of ${PLATE_CELL} units`);
     }
-    if (world.minYUnits >= lo || world.maxYUnits <= hi) throw new RangeError("plate terrain doesn't fit the world's Y range");
+    if (world.minYUnits >= lo || world.maxYUnits <= top) throw new RangeError("plate terrain doesn't fit the world's Y range");
     this.wrap = world.wrapX;
     const cols = (this.cols = world.widthUnits / PLATE_CELL);
     const rows = (this.rows = world.depthUnits / PLATE_CELL);
@@ -484,6 +588,89 @@ export class PlateHeights implements HeightSource {
       }
     }
     chamfer(toSeam, cols, rows, this.wrap);
+
+    // 6b. Mountains: each plate drifts; where two plates converge and at least one is continental
+    //     they raise a range (a broad one centred on the seam between continents, a coastal one
+    //     set back inland where ocean dives under a continent, with a trench offshore). `uplift`
+    //     (0..1, land) and `trench` (0..1, sea) are applied with the heights below.
+    const uplift = new Float32Array(n);
+    const trench = new Float32Array(n);
+    const collisions = new Map<string, { plates: [number, number]; kind: 'continental' | 'coastal' }>();
+    this.collisions = [];
+    if (config.mountains > 0 && plates.length > 1) {
+      const mrand = rng(config.seed ^ 0x51ed270b);
+      const drift = plates.map(() => {
+        const a = mrand() * Math.PI * 2, speed = 0.5 + 0.5 * mrand();
+        return { vx: Math.cos(a) * speed, vz: Math.sin(a) * speed };
+      });
+      // Distance to the nearest seam and the plate across it.
+      const dist = new Float32Array(n).fill(Infinity);
+      const across = new Int32Array(n).fill(-1);
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const i = c + cols * r;
+          for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+            const j = at(c + a, r + b);
+            if (j >= 0 && plateOf[j] !== plateOf[i]) {
+              dist[i] = 0.5;
+              across[i] = plateOf[j]!;
+            }
+          }
+        }
+      }
+      chamferLabel(dist, across, cols, rows, this.wrap);
+      /** How fast plates k and q close on each other across their seam (> 0 converging). */
+      const closing = (k: number, q: number) => {
+        const p = plates[k]!, o = plates[q]!;
+        const nx = dx(p.x, o.x), nz = o.z - p.z, len = Math.hypot(nx, nz) || 1;
+        return ((drift[k]!.vx - drift[q]!.vx) * nx + (drift[k]!.vz - drift[q]!.vz) * nz) / len;
+      };
+      // The colliding seams: of the converging seams with a continental side, the fastest-closing
+      // `mountains` percent (by length).
+      const seamClosing: number[] = [];
+      for (let i = 0; i < n; i++) {
+        if (dist[i] !== 0.5) continue;
+        const k = plateOf[i]!, q = across[i]!, cv = closing(k, q);
+        if (cv > 0 && (plates[k]!.continental || plates[q]!.continental)) seamClosing.push(cv);
+      }
+      const cutoff = seamClosing.length > 0 ? quantile(Float32Array.from(seamClosing), 1 - config.mountains / 100) : Infinity;
+      const W = (config.mountainWidth * M) / PLATE_CELL; // range width in cells
+      // A range's cross-section: a smooth bump exactly W wide (t = distance from its crest over
+      // half the width), so ranges stay bands along their seams rather than covering whole plates.
+      const g = (t: number) => (Math.abs(t) >= 1 ? 0 : (1 - t * t) ** 2);
+      for (let i = 0; i < n; i++) {
+        const q = across[i]!;
+        if (q < 0) continue;
+        const k = plateOf[i]!;
+        const cv = closing(k, q);
+        if (!(cv > cutoff)) continue;
+        const d = dist[i]!;
+        const here = plates[k]!.continental, there = plates[q]!.continental;
+        const pair = k < q ? `${k},${q}` : `${q},${k}`;
+        if (!collisions.has(pair)) collisions.set(pair, { plates: k < q ? [k, q] : [q, k], kind: here && there ? 'continental' : 'coastal' });
+        if (here && there) uplift[i] = g(d / (W / 2));
+        else if (here) uplift[i] = g((d - W * 0.45) / (W / 2)); // coastal range, inland of the seam
+        else if (there) trench[i] = g(d / (W / 3)); // trench on the ocean side
+      }
+      // Ranges vary in height along their length and fade out at their ends (blurred, so a range
+      // doesn't stop dead where its seam meets a quieter one).
+      const R = Math.max(1, Math.round(W / 6));
+      const smoothed = blur(blur(uplift, cols, rows, R, this.wrap), cols, rows, R, this.wrap);
+      const along = layoutNoise(23, [Math.max(4000, config.mountainWidth * M * 3), Math.max(2000, config.mountainWidth * M * 1.5)]);
+      // Ridged noise: sharp crests and V-shaped valleys.
+      const rugged = config.mountainRuggedness / 100;
+      const ridgeSpacing = Math.max(64 * M, (config.mountainWidth * M) / 2);
+      const ridgeOctaves = octaves(config.seed * 7919 + 29, [ridgeSpacing, ridgeSpacing / 2, ridgeSpacing / 4, ridgeSpacing / 8].filter((sp) => sp >= 48 * M), 0.4 + 0.3 * rugged);
+      const ridged = ridgedGrid(ridgeOctaves, PLATE_CELL / 2, PLATE_CELL / 2, cols, rows, PLATE_CELL);
+      const ridgeAmount = 0.25 + 0.65 * rugged;
+      for (let i = 0; i < n; i++) {
+        const u = smoothed[i]! * (0.65 + 0.35 * along[i]!);
+        uplift[i] = Math.max(0, u * (1 - ridgeAmount + ridgeAmount * ridged[i]!));
+      }
+      const tr = blur(trench, cols, rows, Math.max(1, Math.round(W / 8)), this.wrap);
+      trench.set(tr);
+      this.collisions = [...collisions.values()];
+    }
 
     // 7. Each plate's relief: its own noise field (seeded from terrainSeed and the plate's index),
     //    with a per-plate bias (some plates sit higher than others) and strength.
@@ -785,31 +972,120 @@ export class PlateHeights implements HeightSource {
     }
     for (let i = 0; i < n; i++) {
       if (!isLand(i)) {
-        const s = smoothstep(0, OFFSHORE / PLATE_CELL, toLand[i]!) ** 0.8 * (0.3 + 0.7 * (1 - r01(relief[i]!)));
+        let s = smoothstep(0, OFFSHORE / PLATE_CELL, toLand[i]!) ** 0.8 * (0.3 + 0.7 * (1 - r01(relief[i]!)));
+        // Trenches off coastal ranges deepen the sea floor (toward the deepest).
+        if (trench[i]! > 0) s += (1.2 - s) * trench[i]! * smoothstep(0, (300 * M) / PLATE_CELL, toLand[i]!);
         shape[i] = s;
         seaMax = Math.max(seaMax, s);
       }
     }
     const elevation = (this.elevation = new Float32Array(n));
     const rough = (this.rough = new Float32Array(n));
+    const mountainness = (this.mountainness = new Float32Array(n));
     for (let i = 0; i < n; i++) {
       if (isLand(i)) {
         const f = shape[i]! / Math.max(1e-6, landMax);
         elevation[i] = Math.max(sea + 1, sea + (hi - sea) * f);
         // Small-scale roughness grows with height, and fades on plains.
         rough[i] = f * (1 - 0.85 * plainness[i]!);
-      } else {
-        const f = shape[i]! / Math.max(1e-6, seaMax);
-        elevation[i] = Math.min(sea - 1, sea - (sea - lo) * f);
-        rough[i] = 0;
       }
+    }
+    // Mountains rise on top of the land, from ~700 m inland of any coast, scaled so the highest
+    // peak is exactly the mountain height.
+    if (top > hi) {
+      const lift: number[] = [];
+      for (let i = 0; i < n; i++) {
+        if (!isLand(i) || uplift[i]! <= 0) continue;
+        const u = uplift[i]! * smoothstep(0, (700 * M) / PLATE_CELL, toSea[i]!);
+        if (u > 1e-4) lift.push(i, u);
+      }
+      if (lift.length > 0) {
+        const peak = (k: number) => {
+          let m = -Infinity;
+          for (let j = 0; j < lift.length; j += 2) m = Math.max(m, elevation[lift[j]!]! + k * lift[j + 1]!);
+          return m;
+        };
+        let kLo = 0, kHi = 1;
+        while (peak(kHi) < top) kHi *= 2;
+        for (let it = 0; it < 50; it++) {
+          const mid = (kLo + kHi) / 2;
+          if (peak(mid) < top) kLo = mid;
+          else kHi = mid;
+        }
+        let uMax = 0;
+        for (let j = 1; j < lift.length; j += 2) uMax = Math.max(uMax, lift[j]!);
+        for (let j = 0; j < lift.length; j += 2) {
+          const i = lift[j]!, u = lift[j + 1]!;
+          elevation[i] = Math.min(top, elevation[i]! + kLo * u);
+          rough[i] = Math.max(rough[i]!, u / uMax);
+          mountainness[i] = u / uMax;
+        }
+        // Land the very top exactly on the mountain height.
+        let best = -1;
+        for (let j = 0; j < lift.length; j += 2) if (best < 0 || elevation[lift[j]!]! > elevation[best]!) best = lift[j]!;
+        elevation[best] = top;
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      if (isLand(i)) continue;
+      const f = shape[i]! / Math.max(1e-6, seaMax);
+      elevation[i] = Math.min(sea - 1, sea - (sea - lo) * f);
+      rough[i] = 0;
+    }
+
+    // 13. Climate, for biomes. Sea-level temperature runs from the north edge to the south edge,
+    //     wandering a few degrees; moisture is high by the sea, drops inland, and drops more in the
+    //     rain shadow behind mountains (seen from the wind's direction).
+    this.cooling = (config.altitudeCooling / 100) / M; // degrees C per unit of height
+    this.snowTemp = config.snowTemperature;
+    if (config.biomes === 1) {
+      const temp = (this.temperature = new Float32Array(n));
+      const wet = (this.moisture = new Float32Array(n));
+      const tNoise = layoutNoise(41, [96000, 48000, 24000]);
+      const mNoise = layoutNoise(43, [64000, 32000, 16000, 8000], 0.55);
+      for (let r = 0; r < rows; r++) {
+        const lat = (r + 0.5) / rows; // 0 north .. 1 south
+        for (let c = 0; c < cols; c++) {
+          const i = c + cols * r;
+          temp[i] = config.northTemperature + (config.southTemperature - config.northTemperature) * lat + 4 * tNoise[i]!;
+        }
+      }
+      const a = (config.windFrom * Math.PI) / 180; // compass: 0 = from north (-z), 90 = from east (+x)
+      const ux = Math.sin(a), uz = -Math.cos(a); // unit step toward where the wind comes from
+      const steps = 12, stepLen = SHADOW_REACH / steps / PLATE_CELL;
+      const rainScale = config.rainfall / 50;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const i = c + cols * r;
+          const coast = 0.1 + 0.8 * Math.exp(-(toSea[i]! * PLATE_CELL) / MOISTURE_INLAND);
+          // The highest ground upwind, above this cell, within reach.
+          let barrier = 0;
+          const here = Math.max(sea, elevation[i]!);
+          for (let k = 1; k <= steps; k++) {
+            const j = at(Math.round(c + ux * stepLen * k), Math.round(r + uz * stepLen * k));
+            if (j < 0) break;
+            barrier = Math.max(barrier, elevation[j]! - here);
+          }
+          const shadow = smoothstep(30 * M, SHADOW_FULL, barrier);
+          wet[i] = Math.min(1, Math.max(0, (coast * (1 - 0.65 * shadow) + 0.3 * mNoise[i]!) * rainScale));
+        }
+      }
+    } else {
+      this.temperature = null;
+      this.moisture = null;
     }
 
     // Small-scale roughness down to 1 m (also hides the 32 m grid's facets).
     this.detail = octaves(config.terrainSeed * 7919 + 5, [512, 256, 128, 64, 32, 16]);
     this.detailScale = config.surfaceRoughness / 50;
+    // Mountain sides: ridged noise from 256 m down to 16 m (gullies, spurs, crags).
+    this.crags = octaves(config.seed * 7919 + 31, [4096, 2048, 1024, 512, 256], 0.55);
+    this.cragAmp = (config.mountainDetail / 100) * MOUNTAIN_DETAIL_MAX;
     // Beaches come and go along a coast over a few hundred metres.
     this.beachNoise = octaves(config.terrainSeed * 7919 + 13, [8192, 4096, 2048]);
+    // The snow line wanders at every scale from ~1 km down to 16 m.
+    this.snowNoise = octaves(config.terrainSeed * 7919 + 37, [16384, 8192, 4096, 2048, 1024, 512, 256], 0.65);
+    this.snowWander = (config.snowFractal / 100) * SNOW_FRACTAL_MAX;
   }
 
   /** Fraction of grid cells above sea level (for tests and tools). */
@@ -872,13 +1148,44 @@ export class PlateHeights implements HeightSource {
     const norm = 2 / this.detail.reduce((a, o) => a + o.weight, 0);
     const elev = this.interpolate(this.elevation, x0, z0, w, d, step);
     const rough = this.interpolate(this.rough, x0, z0, w, d, step);
+    const crag = this.cragsAt(x0, z0, w, d, step);
     const out = new Int32Array(w * d);
     for (let k = 0; k < out.length; k++) {
       const e = elev[k]!;
       // Never past the configured bounds: roughness fades out at the very top and bottom.
-      const amp = Math.min((DETAIL_MIN + (DETAIL_MAX - DETAIL_MIN) * rough[k]!) * this.detailScale, this.maxHeight - e, e - this.minHeight);
-      out[k] = Math.round(e + detail[k]! * norm * Math.max(0, amp));
+      const room = Math.min(this.maxHeight - e, e - this.minHeight);
+      const amp = Math.min((DETAIL_MIN + (DETAIL_MAX - DETAIL_MIN) * rough[k]!) * this.detailScale, room);
+      let h = e + detail[k]! * norm * Math.max(0, amp);
+      if (crag) h += crag[k]! * Math.max(0, Math.min(crag.amp[k]!, room));
+      out[k] = Math.round(Math.min(this.maxHeight, Math.max(this.minHeight, h)));
     }
+    return out;
+  }
+
+  /**
+   * Mountain-side detail for a block of samples: ridged noise (about -1..1) and its amplitude
+   * per sample (units), or null where there are no mountains (the common case: skipped).
+   */
+  private cragsAt(x0: number, z0: number, w: number, d: number, step: number): (Float64Array & { amp: Float64Array }) | null {
+    if (this.cragAmp <= 0) return null;
+    // Cheap check first: any mountain grid cell under (or next to) the block?
+    const c0 = Math.floor(x0 / PLATE_CELL) - 1, c1 = Math.floor((x0 + (w - 1) * step) / PLATE_CELL) + 1;
+    const r0 = Math.max(0, Math.floor(z0 / PLATE_CELL) - 1), r1 = Math.min(this.rows - 1, Math.floor((z0 + (d - 1) * step) / PLATE_CELL) + 1);
+    let any = false;
+    for (let r = r0; r <= r1 && !any; r++) {
+      for (let c = c0; c <= c1; c++) {
+        const cc = this.wrap ? ((c % this.cols) + this.cols) % this.cols : Math.max(0, Math.min(this.cols - 1, c));
+        if (this.mountainness[cc + this.cols * r]! > 0) { any = true; break; }
+      }
+    }
+    if (!any) return null;
+    const m = this.interpolate(this.mountainness, x0, z0, w, d, step);
+    // Ridged gradient noise (0..1, crests high), centred and stretched to about -1..1: a weighted
+    // mean of octaves varies far less than one octave does.
+    const ridged = ridgedGrid(this.crags, x0, z0, w, d, step);
+    const out = ridged.map((v) => (v - CRAG_MEAN) * CRAG_STRETCH) as Float64Array & { amp: Float64Array };
+    // Square root: flanks, not just the cores of ranges, get the detail.
+    out.amp = m.map((v) => Math.sqrt(v) * this.cragAmp);
     return out;
   }
 
@@ -893,6 +1200,26 @@ export class PlateHeights implements HeightSource {
     const vary = fractalGrid(this.beachNoise, x0, z0, w, d, step);
     const norm = 2 / this.beachNoise.reduce((a, o) => a + o.weight, 0);
     const sea = this.seaLevel;
+    const climate = this.climateSamples(x0, z0, w, d, step, heights);
+    // With biomes, snow and rock follow the ground's temperature; without, fixed heights.
+    // Either way the snow line wanders (in degrees or metres), computed only where some ground
+    // is within its reach.
+    const wander = climate ? (this.snowWander / SNOW_FRACTAL_MAX) * SNOW_FRACTAL_DEGREES : this.snowWander;
+    let snowShift: Float64Array | null = null;
+    if (wander > 0) {
+      let near = false;
+      if (climate) {
+        for (const t of climate.temperature) if (Math.abs(t - this.snowTemp) <= wander + ROCK_BAND_DEGREES) { near = true; break; }
+      } else {
+        for (const h of heights) if (Math.abs(h - this.snowLine) <= wander) { near = true; break; }
+      }
+      if (near) {
+        const f = fractalGrid(this.snowNoise, x0, z0, w, d, step);
+        // Scaled by the octaves' weight so it spans about -1..1.
+        const s = (2 / this.snowNoise.reduce((a, o) => a + o.weight, 0)) * 1.8 * wander;
+        snowShift = f.map((v) => Math.max(-wander, Math.min(wander, v * s)));
+      }
+    }
     for (let k = 0; k < out.length; k++) {
       const h = heights[k]!;
       const slope = Math.hypot(east[k]! - west[k]!, south[k]! - north[k]!) / (2 * e);
@@ -901,16 +1228,49 @@ export class PlateHeights implements HeightSource {
       const rocky = slope + 0.02 * v > ROCKY && h > sea - ROCKY_BELOW && h <= sea + ROCKY_ABOVE;
       // Gentle coasts: sand up to a height that shrinks as the coast steepens.
       const beachTop = sea + this.beachHeight * (1 - smoothstep(GENTLE, STEEP, slope)) * (0.6 + 0.4 * v);
+      const shift = snowShift ? snowShift[k]! : 0;
+      let snow: boolean, bare: boolean;
+      if (climate) {
+        // Colder than the snow temperature: snow; a little warmer, on high ground: bare rock.
+        const t = climate.temperature[k]! + shift;
+        snow = t < this.snowTemp;
+        bare = t < this.snowTemp + ROCK_BAND_DEGREES && h - sea > ROCK_BAND_MIN_HEIGHT;
+      } else {
+        snow = h >= this.snowLine + shift;
+        bare = h >= this.rockLine;
+      }
       // Steep ground is bare rock even above the snow line: steep faces don't hold snow.
       out[k] =
         rocky ? Material.Stone
         : h <= sea || h <= beachTop ? Material.Sand
         : slope > this.rockSlope ? Material.Stone
-        : h >= this.snowLine ? Material.Snow
-        : h >= this.rockLine ? Material.Stone
+        : snow ? Material.Snow
+        : bare ? Material.Stone
+        : climate ? BIOME_GROUND[climate.biome[k]! as BiomeId]
         : Material.Grass;
     }
     return out;
+  }
+
+  /**
+   * Biome per sample for columns with the given heights (temperature falls with height), or null
+   * for worlds without biomes.
+   */
+  biomes(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): Uint8Array | null {
+    return this.climateSamples(x0, z0, w, d, step, heights)?.biome ?? null;
+  }
+
+  /** Ground temperature (degrees C, colder with height) and biome per sample, or null without biomes. */
+  private climateSamples(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): { temperature: Float64Array; biome: Uint8Array } | null {
+    if (!this.temperature || !this.moisture) return null;
+    const temperature = this.interpolate(this.temperature, x0, z0, w, d, step);
+    const m = this.interpolate(this.moisture, x0, z0, w, d, step);
+    const biome = new Uint8Array(w * d);
+    for (let k = 0; k < biome.length; k++) {
+      temperature[k] = temperature[k]! - this.cooling * Math.max(0, heights[k]! - this.seaLevel);
+      biome[k] = classifyBiome(temperature[k]!, m[k]!);
+    }
+    return { temperature, biome };
   }
 }
 
@@ -967,6 +1327,34 @@ function inlandLakes(wet: (i: number) => boolean, minSize: number, reach: number
     if (nearest > reach) out.push(...cells);
   }
   return out;
+}
+
+/** Like chamfer, also carrying each source cell's label to the cells nearest it. */
+function chamferLabel(dist: Float32Array, label: Int32Array, cols: number, rows: number, wrap: boolean): void {
+  const at = (c: number, r: number) => {
+    if (wrap) c = ((c % cols) + cols) % cols;
+    return c < 0 || c >= cols || r < 0 || r >= rows ? -1 : c + cols * r;
+  };
+  const relax = (i: number, j: number, w: number) => {
+    if (j >= 0 && dist[j]! + w < dist[i]!) {
+      dist[i] = dist[j]! + w;
+      label[i] = label[j]!;
+    }
+  };
+  for (let pass = 0; pass < (wrap ? 2 : 1); pass++) {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const i = c + cols * r;
+        relax(i, at(c - 1, r), 1); relax(i, at(c, r - 1), 1); relax(i, at(c - 1, r - 1), Math.SQRT2); relax(i, at(c + 1, r - 1), Math.SQRT2);
+      }
+    }
+    for (let r = rows - 1; r >= 0; r--) {
+      for (let c = cols - 1; c >= 0; c--) {
+        const i = c + cols * r;
+        relax(i, at(c + 1, r), 1); relax(i, at(c, r + 1), 1); relax(i, at(c + 1, r + 1), Math.SQRT2); relax(i, at(c - 1, r + 1), Math.SQRT2);
+      }
+    }
+  }
 }
 
 /** In-place two-pass chamfer distance transform (cells): zeros are sources, others start at Infinity. */

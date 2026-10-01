@@ -31,10 +31,19 @@ describe('buildPreview', () => {
     expect(pv.stats.land).toBeCloseTo(0.4, 2);
     expect(pv.stats.sizeRatio).toBeCloseTo(6, 0);
     expect(pv.stats.minHeight).toBeGreaterThanOrEqual(-300);
-    expect(pv.stats.maxHeight).toBeLessThanOrEqual(300);
-    expect(pv.stats.maxHeight).toBeGreaterThan(250);
+    // Mountains (on by default) rise above the 300 m hills, up to the 600 m mountain height.
+    expect(pv.stats.maxHeight).toBeLessThanOrEqual(600);
+    expect(pv.stats.maxHeight).toBeGreaterThan(350);
     expect(buildPreview({ ...config, minorPlates: 0 }, 32).stats.sizeRatio).toBeNaN();
     expect(pv.stats.islands).toEqual({ arc: 0, hotspot: 0, land: 0 });
+    expect(pv.stats.ranges).toBeGreaterThan(0);
+    // Biomes (on by default): one per sample, shares of the land adding up to 1.
+    expect(pv.biome).toHaveLength(128 * 128);
+    expect(pv.stats.biomes!.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 6);
+    const noBiomes = buildPreview({ ...config, biomes: 0 }, 32);
+    expect(noBiomes.biome).toBeNull();
+    expect(noBiomes.stats.biomes).toBeNull();
+    expect(buildPreview({ ...config, mountains: 0 }, 32).stats.ranges).toBe(0);
     const withIslands = buildPreview({ ...config, islandArcs: 80, hotspots: 10 }, 32).stats;
     expect(withIslands.islands.arc).toBeGreaterThan(0);
     expect(withIslands.islands.hotspot).toBeGreaterThan(0);
