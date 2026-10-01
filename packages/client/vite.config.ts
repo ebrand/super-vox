@@ -9,9 +9,10 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
-      // The game, and the world generator page (/generator.html).
+      // The entry page, the game (/play.html), and the world generator (/generator.html).
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        play: fileURLToPath(new URL('./play.html', import.meta.url)),
         generator: fileURLToPath(new URL('./generator.html', import.meta.url)),
       },
     },

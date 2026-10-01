@@ -2,10 +2,15 @@ import { join } from 'node:path';
 import { FLAT_WORLD_16KM, TerrainGenerator, defaultVoxelize, isValidWorldName, type HeightSource, type PlateTerrainConfig, type WorldConfig } from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
 import { World } from './world.js';
-import { createWorld, generatorFor, listWorlds, readWorld, type WorldFile } from './worldFile.js';
+import { countEdits, createWorld, deleteWorld, generatorFor, listWorlds, readWorld, updateWorld, type WorldFile } from './worldFile.js';
 
 /** What the HTTP API shows about a world. */
-export type WorldSummary = Pick<WorldFile, 'name' | 'createdAt' | 'spec'>;
+export type WorldSummary = Pick<WorldFile, 'name' | 'createdAt' | 'updatedAt' | 'spec'> & {
+  /** Saved edited chunks (discarded if the world's settings are replaced). */
+  editedChunks: number;
+};
+
+export class DefaultWorldError extends Error {}
 
 /** The worlds a server can serve. */
 export interface WorldCatalog {
@@ -16,8 +21,12 @@ export interface WorldCatalog {
    */
   get(name: string | undefined, tolerance?: number): World | null;
   list(): WorldSummary[];
-  /** Creates a plate world; absent where creating worlds isn't allowed. */
+  /** Creates a plate world; absent where changing worlds isn't allowed (as are update and delete). */
   create?: (name: string, plates: PlateTerrainConfig) => WorldSummary;
+  /** Replaces a world's settings with plate settings, discarding its edits. */
+  update?: (name: string, plates: PlateTerrainConfig) => WorldSummary;
+  /** Deletes a world (never the default one: DefaultWorldError). */
+  delete?: (name: string) => void;
 }
 
 /** A catalog of exactly one world (tests, and servers without a data directory). */
@@ -48,6 +57,8 @@ interface Opened {
 export class FileWorldCatalog implements WorldCatalog {
   private readonly open = new Map<string, Opened>();
   readonly create?: (name: string, plates: PlateTerrainConfig) => WorldSummary;
+  readonly update?: (name: string, plates: PlateTerrainConfig) => WorldSummary;
+  readonly delete?: (name: string) => void;
 
   constructor(
     private readonly dataRoot: string,
@@ -55,7 +66,20 @@ export class FileWorldCatalog implements WorldCatalog {
     private readonly opts: { dev: boolean; config?: WorldConfig },
   ) {
     if (opts.dev) {
-      this.create = (name, plates) => summary(createWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize: defaultVoxelize() }));
+      this.create = (name, plates) => this.summary(createWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize: defaultVoxelize() }));
+      this.update = (name, plates) => {
+        const old = readWorld(this.dataRoot, name);
+        // Keep its voxelization; only the terrain settings change.
+        const voxelize = old && old.spec.generator !== 'flat' ? old.spec.voxelize : defaultVoxelize();
+        const file = updateWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize });
+        this.open.delete(name); // rebuilt from the new settings on next use
+        return this.summary(file);
+      };
+      this.delete = (name) => {
+        if (name === this.defaultName) throw new DefaultWorldError(`"${name}" is the server's default world and can't be deleted`);
+        deleteWorld(this.dataRoot, name);
+        this.open.delete(name);
+      };
     }
   }
 
@@ -81,7 +105,11 @@ export class FileWorldCatalog implements WorldCatalog {
   }
 
   list(): WorldSummary[] {
-    return listWorlds(this.dataRoot).map(summary);
+    return listWorlds(this.dataRoot).map((f) => this.summary(f));
+  }
+
+  private summary(f: WorldFile): WorldSummary {
+    return { name: f.name, createdAt: f.createdAt, ...(f.updatedAt ? { updatedAt: f.updatedAt } : {}), spec: f.spec, editedChunks: countEdits(this.dataRoot, f.name) };
   }
 
   private build(file: WorldFile): Opened {
@@ -92,5 +120,3 @@ export class FileWorldCatalog implements WorldCatalog {
     return { world, file, heights, variants: new Map() };
   }
 }
-
-const summary = (f: WorldFile): WorldSummary => ({ name: f.name, createdAt: f.createdAt, spec: f.spec });

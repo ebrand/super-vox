@@ -34,6 +34,12 @@ describe('buildPreview', () => {
     expect(pv.stats.maxHeight).toBeLessThanOrEqual(300);
     expect(pv.stats.maxHeight).toBeGreaterThan(250);
     expect(buildPreview({ ...config, minorPlates: 0 }, 32).stats.sizeRatio).toBeNaN();
+    expect(pv.stats.islands).toEqual({ arc: 0, hotspot: 0, land: 0 });
+    const withIslands = buildPreview({ ...config, islandArcs: 80, hotspots: 10 }, 32).stats;
+    expect(withIslands.islands.arc).toBeGreaterThan(0);
+    expect(withIslands.islands.hotspot).toBeGreaterThan(0);
+    expect(withIslands.islands.land).toBeGreaterThan(0);
+    expect(withIslands.land).toBeCloseTo(0.4, 2);
   });
 
   it('rejects invalid settings', () => {

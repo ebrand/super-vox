@@ -40,6 +40,10 @@ function specForNewWorld(): WorldSpec {
         shoreFractal: numberEnv('WORLD_SHORE_FRACTAL', d.shoreFractal),
         noiseScale: numberEnv('WORLD_NOISE_SCALE', d.noiseScale),
         noiseRoughness: numberEnv('WORLD_NOISE_ROUGHNESS', d.noiseRoughness),
+        islandArcs: numberEnv('WORLD_ISLAND_ARCS', d.islandArcs),
+        hotspots: numberEnv('WORLD_HOTSPOTS', d.hotspots),
+        islandMinSize: numberEnv('WORLD_ISLAND_MIN_SIZE', d.islandMinSize),
+        islandMaxSize: numberEnv('WORLD_ISLAND_MAX_SIZE', d.islandMaxSize),
       },
       voxelize,
     };

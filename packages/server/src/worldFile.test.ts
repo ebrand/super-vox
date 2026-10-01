@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { defaultPlateTerrain } from '@super-vox/shared';
-import { WorldExistsError, createWorld, generatorFor, listWorlds, openWorld, readWorld, type WorldSpec } from './worldFile.js';
+import { NoSuchWorldError, WorldExistsError, countEdits, createWorld, deleteWorld, generatorFor, listWorlds, openWorld, readWorld, updateWorld, type WorldSpec } from './worldFile.js';
 
 const dirs: string[] = [];
 const tmp = () => {
@@ -75,6 +75,43 @@ describe('readWorld / createWorld / listWorlds', () => {
     expect(listWorlds(root).map((w) => w.name)).toEqual(['alpha', 'zeta']);
     expect(listWorlds(join(root, 'missing'))).toEqual([]);
     expect(readWorld(root, 'nope')).toBeNull();
+  });
+});
+
+describe('updateWorld / deleteWorld', () => {
+  it('replaces the settings, keeps the creation date, and discards the edits', () => {
+    const root = tmp();
+    const created = createWorld(root, 'w', plates());
+    mkdirSync(join(root, 'w', 'chunks'));
+    writeFileSync(join(root, 'w', 'chunks', '1_2_3.chunk'), 'x');
+    writeFileSync(join(root, 'w', 'chunks', '4_5_6.chunk'), 'x');
+    expect(countEdits(root, 'w')).toBe(2);
+    const updated = updateWorld(root, 'w', plates({ landPercent: 55 }));
+    expect(updated.createdAt).toBe(created.createdAt);
+    expect(updated.updatedAt).toBeDefined();
+    expect(readWorld(root, 'w')).toEqual(updated);
+    expect(countEdits(root, 'w')).toBe(0);
+    expect(existsSync(join(root, 'w', 'world.json.tmp'))).toBe(false);
+  });
+
+  it('refuses to update missing worlds or with invalid settings', () => {
+    const root = tmp();
+    expect(() => updateWorld(root, 'nope', plates())).toThrow(NoSuchWorldError);
+    createWorld(root, 'w', plates());
+    expect(() => updateWorld(root, 'w', plates({ landPercent: 120 }))).toThrow(/landPercent/);
+    expect(readWorld(root, 'w')!.spec).toEqual(plates());
+  });
+
+  it('deletes a world and only that world', () => {
+    const root = tmp();
+    createWorld(root, 'a', plates());
+    createWorld(root, 'b', plates());
+    deleteWorld(root, 'a');
+    expect(existsSync(join(root, 'a'))).toBe(false);
+    expect(listWorlds(root).map((w) => w.name)).toEqual(['b']);
+    expect(() => deleteWorld(root, 'a')).toThrow(NoSuchWorldError);
+    expect(() => deleteWorld(root, '../b')).toThrow(/name/);
+    expect(existsSync(join(root, 'b', 'world.json'))).toBe(true);
   });
 });
 

@@ -41,6 +41,11 @@ describe('validatePlateTerrain', () => {
     expect(() => validatePlateTerrain({ ...ok, noiseRoughness: 101 })).toThrow(/noiseRoughness/);
     expect(() => validatePlateTerrain({ ...ok, maxHeight: 1001 })).toThrow(/maxHeight/);
     expect(() => validatePlateTerrain({ ...ok, terrainSeed: 1.5 })).toThrow(/terrainSeed/);
+    expect(() => validatePlateTerrain({ ...ok, islandArcs: 101 })).toThrow(/islandArcs/);
+    expect(() => validatePlateTerrain({ ...ok, hotspots: 41 })).toThrow(/hotspots/);
+    expect(() => validatePlateTerrain({ ...ok, hotspots: 2.5 })).toThrow(/hotspots/);
+    expect(() => validatePlateTerrain({ ...ok, islandMinSize: 20 })).toThrow(/islandMinSize/);
+    expect(() => validatePlateTerrain({ ...ok, islandMinSize: 900, islandMaxSize: 800 })).toThrow(/islandMinSize/);
     // The sea must lie strictly between the lowest and highest ground.
     expect(() => validatePlateTerrain({ ...ok, seaLevel: 300 })).toThrow(/maxHeight/);
     expect(() => validatePlateTerrain({ ...ok, seaLevel: -300 })).toThrow(/minHeight/);
@@ -180,6 +185,73 @@ describe('PlateHeights', () => {
     expect(at({ noiseRoughness: 100 })).toBeGreaterThan(at({ noiseRoughness: 0 }) * 1.5);
   });
 
+  it('fills in small lakes away from the sea (they would be craters), keeping coastal ones', () => {
+    // All water sits at sea level and land rises with distance from water, so an inland pond
+    // would be a hole in a crater. Every water body under ~1 km^2 must be near open sea.
+    for (const over of [{}, { shoreFractal: 100, landPercent: 55 }, { islandArcs: 100, hotspots: 20 }, { islandArcs: 70, hotspots: 10 }, { islandArcs: 70, hotspots: 10, seed: 4 }]) {
+      const p = plates(over);
+      const n = p.elevation.length, body = new Int32Array(n).fill(-1);
+      const bodies: number[][] = [];
+      for (let s = 0; s < n; s++) {
+        if (body[s] !== -1 || p.elevation[s]! > p.seaLevel) continue;
+        const cells: number[] = [];
+        const stack = [s];
+        body[s] = bodies.length;
+        while (stack.length) {
+          const i = stack.pop()!;
+          cells.push(i);
+          const c = i % p.cols;
+          for (const j of [i - 1, i + 1, i - p.cols, i + p.cols]) {
+            if (j >= 0 && j < n && body[j] === -1 && p.elevation[j]! <= p.seaLevel && Math.abs((j % p.cols) - c) <= 1) {
+              body[j] = bodies.length;
+              stack.push(j);
+            }
+          }
+        }
+        bodies.push(cells);
+      }
+      const R = Math.ceil((700 * 16) / PLATE_CELL);
+      for (const cells of bodies) {
+        if (cells.length >= 1000) continue;
+        // Some cell of open sea within ~700 m of the lake.
+        const nearSea = cells.some((i) => {
+          const c = i % p.cols, r = (i - c) / p.cols;
+          for (let b = -R; b <= R; b++) for (let a = -R; a <= R; a++) {
+            const cc = c + a, rr = r + b;
+            if (cc < 0 || rr < 0 || cc >= p.cols || rr >= p.rows || Math.hypot(a, b) > R) continue;
+            const j = cc + p.cols * rr;
+            if (body[j]! >= 0 && bodies[body[j]!]!.length >= 1000) return true;
+          }
+          return false;
+        });
+        expect(nearSea).toBe(true);
+      }
+    }
+    // Coastal lagoons and inlets survive: a ragged coast still has small water bodies.
+    const ragged = plates({ shoreFractal: 100 });
+    let lagoons = 0;
+    const seen = new Uint8Array(ragged.elevation.length);
+    for (let s = 0; s < seen.length; s++) {
+      if (seen[s] || ragged.elevation[s]! > 0) continue;
+      let size = 0;
+      const st = [s];
+      seen[s] = 1;
+      while (st.length) {
+        const i = st.pop()!;
+        size++;
+        const c = i % ragged.cols;
+        for (const j of [i - 1, i + 1, i - ragged.cols, i + ragged.cols]) {
+          if (j >= 0 && j < seen.length && !seen[j] && ragged.elevation[j]! <= 0 && Math.abs((j % ragged.cols) - c) <= 1) {
+            seen[j] = 1;
+            st.push(j);
+          }
+        }
+      }
+      if (size < 1000) lagoons++;
+    }
+    expect(lagoons).toBeGreaterThan(10);
+  });
+
   it('is deterministic and seed-dependent', () => {
     const a = new PlateHeights(FLAT_WORLD_16KM, defaultPlateTerrain(42));
     const b = new PlateHeights(FLAT_WORLD_16KM, defaultPlateTerrain(42));
@@ -220,6 +292,71 @@ describe('PlateHeights', () => {
     const H = p.heights(0, 0, 500, 500, 512);
     const M = p.materials(0, 0, 500, 500, 512, H);
     expect([...M].filter((m, k) => m === Material.Grass && H[k]! > sea + 64 && H[k]! < sea + 100 * 16).length).toBeGreaterThan(100);
+  });
+});
+
+describe('islands', () => {
+  it('adds none by default', () => {
+    const p = plates();
+    expect(p.islands).toHaveLength(0);
+    expect(p.islandCells).toBe(0);
+  });
+
+  it('keeps land exact with islands', () => {
+    for (const over of [{ islandArcs: 60, hotspots: 8 }, { islandArcs: 100, hotspots: 40 }, { islandArcs: 100, hotspots: 40, landPercent: 10 }]) {
+      const p = plates(over);
+      expect(p.islands.length).toBeGreaterThan(0);
+      expect(p.landFraction()).toBeCloseTo((over.landPercent ?? 30) / 100, 3);
+      // Islands never take more than 90% of the land.
+      expect(p.islandCells / p.elevation.length).toBeLessThanOrEqual(0.9 * (over.landPercent ?? 30) / 100 + 1e-9);
+    }
+  });
+
+  it('makes more islands with more arcs and hotspots', () => {
+    const count = (over: Partial<PlateTerrainConfig>, kind: 'arc' | 'hotspot') => plates(over).islands.filter((i) => i.kind === kind).length;
+    expect(count({ islandArcs: 100 }, 'arc')).toBeGreaterThan(count({ islandArcs: 30 }, 'arc') * 1.5);
+    expect(count({ islandArcs: 30 }, 'hotspot')).toBe(0);
+    expect(count({ hotspots: 20 }, 'hotspot')).toBeGreaterThan(count({ hotspots: 5 }, 'hotspot') * 2);
+    expect(count({ hotspots: 20 }, 'arc')).toBe(0);
+  });
+
+  it('sizes islands within the configured range', () => {
+    for (const [islandMinSize, islandMaxSize] of [[200, 1500], [100, 300], [1000, 3000]] as const) {
+      const p = plates({ islandArcs: 100, hotspots: 20, islandMinSize, islandMaxSize });
+      expect(p.islands.length).toBeGreaterThan(0);
+      for (const il of p.islands) {
+        expect((il.radius * 2) / 16).toBeGreaterThanOrEqual(islandMinSize - 1e-6);
+        expect((il.radius * 2) / 16).toBeLessThanOrEqual(islandMaxSize + 1e-6);
+      }
+    }
+  });
+
+  it('puts hotspots in oceanic plates and arcs on seams with an oceanic side', () => {
+    const p = plates({ islandArcs: 100, hotspots: 20 });
+    for (const il of p.islands.filter((i) => i.kind === 'hotspot')) expect(p.plates[p.plateAt(il.x, il.z)]!.continental).toBe(false);
+    for (const il of p.islands.filter((i) => i.kind === 'arc')) {
+      // A different plate within 2 cells of the centre, and one of the two plates oceanic.
+      const here = p.plateAt(il.x, il.z);
+      const near = new Set<number>();
+      for (let a = -2; a <= 2; a++) for (let b = -2; b <= 2; b++) near.add(p.plateAt(il.x + a * PLATE_CELL, il.z + b * PLATE_CELL));
+      near.delete(here);
+      expect(near.size).toBeGreaterThan(0);
+      expect([here, ...near].some((k) => !p.plates[k]!.continental)).toBe(true);
+    }
+  });
+
+  it('keeps islands off the continents and apart from each other', () => {
+    const p = plates({ islandArcs: 100, hotspots: 20 });
+    // Every island centre is land, surrounded by sea within a few radii (it's an island, not a cape).
+    for (const il of p.islands) {
+      expect(p.heights(il.x, il.z, 1, 1)[0]).toBeGreaterThan(p.seaLevel);
+      let sea = 0;
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * Math.PI * 2, d = il.radius * 2.5 + 400 * 16;
+        if (p.heights(il.x + Math.cos(a) * d, Math.min(255_999, Math.max(0, il.z + Math.sin(a) * d)), 1, 1)[0]! <= p.seaLevel) sea++;
+      }
+      expect(sea).toBeGreaterThan(8);
+    }
   });
 });
 

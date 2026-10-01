@@ -5,46 +5,82 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SuperVoxel</title>
     <style>
-      html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0d10; }
-      #status {
-        position: fixed; top: 8px; left: 8px; padding: 6px 10px;
-        font: 12px/1.4 ui-monospace, monospace; color: #e6e6e6;
-        background: rgba(0, 0, 0, 0.55); border-radius: 4px; white-space: pre;
-      }
-      #mode {
-        position: fixed; left: 8px; bottom: 8px; padding: 4px 10px;
-        font: 600 12px/1.4 ui-monospace, monospace; letter-spacing: 0.08em;
-        color: #e6e6e6; background: rgba(0, 0, 0, 0.55); border-radius: 4px;
-        border-left: 4px solid #9aa4ad; pointer-events: none;
-      }
-      #mode[data-mode="dig"] { border-left-color: #ff8a20; }
-      #mode[data-mode="place"] { border-left-color: #40ff60; }
-      #mode:empty { display: none; }
-      #worldmap {
-        position: fixed; inset: 0; z-index: 20; display: none;
-        flex-direction: column; align-items: center; justify-content: center; gap: 8px;
-        background: rgba(8, 10, 14, 0.82);
-      }
-      #worldmap.open { display: flex; }
-      #worldmap .frame { position: relative; width: min(88vh, 92vw); aspect-ratio: 1; }
-      #worldmap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-      #worldmap canvas.image { image-rendering: pixelated; border: 1px solid rgba(255,255,255,0.25); }
-      #worldmap canvas.marks { cursor: crosshair; }
-      #worldmap .info { font: 12px/1.4 ui-monospace, monospace; color: #e6e6e6; min-height: 1.4em; }
-      #crosshair {
-        position: fixed; left: 50%; top: 50%; width: 14px; height: 14px;
-        margin: -7px 0 0 -7px; pointer-events: none;
-        background:
-          linear-gradient(#fff, #fff) center / 2px 14px no-repeat,
-          linear-gradient(#fff, #fff) center / 14px 2px no-repeat;
-        mix-blend-mode: difference;
-      }
+      :root { color-scheme: dark; --bg: #0b0d10; --panel: #14181d; --line: #262c34; --text: #e6e6e6; --dim: #8b949e; --accent: #1f6feb; --bad: #ff7b72; --good: #7ee787; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; background: radial-gradient(ellipse at top, #1a2430, var(--bg) 70%) fixed; color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+      body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 16px; }
+      main { width: min(420px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 24px; }
+      h1 { margin: 0 0 18px; font-size: 26px; letter-spacing: 0.02em; }
+      h1 span { color: var(--dim); font-weight: 400; font-size: 13px; margin-left: 6px; }
+      label.title { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.08em; }
+      select, input[type=number] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 6px 8px; font: inherit; }
+      #world { width: 100%; }
+      .about { color: var(--dim); font-size: 12px; min-height: 1.45em; margin: 6px 0 18px; }
+      button, a.button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: #21262d; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px; font: inherit; cursor: pointer; text-decoration: none; }
+      button:hover, a.button:hover { border-color: var(--dim); }
+      button:disabled { opacity: 0.5; cursor: default; }
+      #play { width: 100%; background: var(--accent); border-color: var(--accent); font-size: 16px; font-weight: 600; padding: 11px; }
+      .row { display: flex; gap: 8px; margin-top: 8px; }
+      .row > * { flex: 1; }
+      #summary { margin-top: 16px; font: 12px ui-monospace, monospace; color: var(--dim); }
+      #status { margin-top: 8px; font-size: 12px; min-height: 1.45em; }
+      #status.bad { color: var(--bad); } #status.good { color: var(--good); }
+      dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 20px; width: min(440px, calc(100vw - 32px)); }
+      dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+      dialog h2 { margin: 0 0 14px; font-size: 18px; }
+      .field { margin-bottom: 14px; }
+      .field .line { display: flex; gap: 8px; align-items: center; }
+      .field input[type=range] { flex: 1; accent-color: var(--accent); }
+      .field input[type=number] { width: 84px; text-align: right; }
+      .field .hint { color: var(--dim); font-size: 12px; margin-top: 3px; }
+      #s-error { color: var(--bad); font-size: 12px; min-height: 1.45em; }
+      .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+      .actions .spacer { flex: 1; }
+      .actions .primary { background: var(--accent); border-color: var(--accent); }
     </style>
   </head>
   <body>
-    <div id="status">connecting…</div>
-    <div id="crosshair"></div>
-    <div id="mode"></div>
-    <script type="module" src="/src/main.ts"></script>
+    <main>
+      <h1>SuperVoxel</h1>
+      <label class="title" for="world">World</label>
+      <select id="world" disabled><option>loading…</option></select>
+      <div class="about" id="about"></div>
+      <button id="play" disabled>Play</button>
+      <div class="row">
+        <button id="open-settings" type="button">Settings</button>
+        <a class="button" href="/generator.html">World generator</a>
+      </div>
+      <div id="summary"></div>
+      <div id="status"></div>
+    </main>
+
+    <dialog id="settings">
+      <form method="dialog" id="settings-form">
+        <h2>Settings</h2>
+        <div class="field">
+          <label class="title" for="s-detail">Detail distance</label>
+          <div class="line"><input type="range" id="s-detail-range" min="1" max="32" step="1" aria-label="Detail distance" /><input type="number" id="s-detail" min="1" max="32" step="1" /> chunks</div>
+          <div class="hint" id="s-detail-hint">Radius of full-detail voxel terrain around you (16 m per chunk). Higher costs memory and loading time.</div>
+        </div>
+        <div class="field">
+          <label class="title" for="s-view">View distance</label>
+          <div class="line"><input type="range" id="s-view-range" min="64" max="16000" step="64" aria-label="View distance" /><input type="number" id="s-view" min="64" max="16000" step="64" /> m</div>
+          <div class="hint">How far low-detail terrain reaches.</div>
+        </div>
+        <div class="field">
+          <label class="title" for="s-tolerance">Terrain tolerance</label>
+          <div class="line"><select id="s-tolerance"></select></div>
+          <div class="hint">How far generated voxels may stray from the true surface; smaller is more detailed and slower. Only development servers honour it.</div>
+        </div>
+        <div id="s-error" role="alert"></div>
+        <div class="actions">
+          <button type="button" id="s-reset">Reset to defaults</button>
+          <span class="spacer"></span>
+          <button type="button" id="s-cancel">Cancel</button>
+          <button type="submit" class="primary" value="save">Save</button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="/src/entry.ts"></script>
   </body>
 </html>

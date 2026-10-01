@@ -37,6 +37,10 @@ const FIELDS: FieldSpec[] = [
   { key: 'terrainSeed', label: 'Terrain seed', section: 'Relief', min: 0, max: MAX_SEED, step: 1, seed: true, hint: "Each plate's noise; reroll the relief, keep the plates" },
   { key: 'noiseScale', label: 'Feature size', section: 'Relief', min: L.noiseScale[0], max: L.noiseScale[1], step: 50, unit: 'm', log: true, hint: 'Size of the largest hills and basins' },
   { key: 'noiseRoughness', label: 'Roughness', section: 'Relief', min: L.noiseRoughness[0], max: L.noiseRoughness[1], step: 1, hint: '0 smooth swells … 100 rugged' },
+  { key: 'islandArcs', label: 'Island arcs', section: 'Islands', min: L.islandArcs[0], max: L.islandArcs[1], step: 1, hint: 'Chains along seams where an ocean plate meets another plate' },
+  { key: 'hotspots', label: 'Hotspots', section: 'Islands', min: L.hotspots[0], max: L.hotspots[1], step: 1, hint: 'Groups in ocean plates: a main island trailing smaller ones' },
+  { key: 'islandMinSize', label: 'Smallest island', section: 'Islands', min: L.islandSize[0], max: L.islandSize[1], step: 10, unit: 'm', log: true, hint: 'Across; islands count toward the land share' },
+  { key: 'islandMaxSize', label: 'Largest island', section: 'Islands', min: L.islandSize[0], max: L.islandSize[1], step: 10, unit: 'm', log: true },
 ];
 
 // ---- Settings, kept in the URL hash so a reload (or a shared link) keeps them.
@@ -140,6 +144,9 @@ function showForm(): void {
 
 function set(key: keyof PlateTerrainConfig, value: number): void {
   config = { ...config, [key]: value };
+  // Dragging one island size past the other pushes the other along.
+  if (key === 'islandMinSize' && value > config.islandMaxSize) config.islandMaxSize = value;
+  if (key === 'islandMaxSize' && value < config.islandMinSize) config.islandMinSize = value;
   showForm();
   toHash(config);
   requestPreview();
@@ -200,7 +207,10 @@ worker.onmessage = (ev: MessageEvent<PreviewResponse>) => {
     statsEl.textContent =
       `built in ${Math.round(s.ms)} ms · land ${(s.land * 100).toFixed(1)}% · ground ${Math.round(s.minHeight)}..${Math.round(s.maxHeight)} m · ` +
       `${s.majors} major + ${s.minors} minor plates` +
-      (s.minors > 0 && s.majors > 0 ? ` · major:minor area ${s.sizeRatio.toFixed(1)}:1` : '');
+      (s.minors > 0 && s.majors > 0 ? ` · major:minor area ${s.sizeRatio.toFixed(1)}:1` : '') +
+      (s.islands.arc + s.islands.hotspot > 0
+        ? ` · ${s.islands.arc + s.islands.hotspot} islands (${s.islands.arc} arc, ${s.islands.hotspot} hotspot), ${(s.islands.land * 100).toFixed(1)}% of the world`
+        : '');
   } else {
     statsEl.className = 'bad';
     statsEl.textContent = res.error;
@@ -277,12 +287,19 @@ canvas.addEventListener('mousemove', (e) => {
 });
 canvas.addEventListener('mouseleave', () => (hoverEl.textContent = ''));
 
-// ---- Worlds on the server, and creating one from these settings.
+// ---- Worlds on the server: create one from these settings, or load one, change it and save
+//      it back (which discards its edits), or delete one.
 
 const nameEl = document.getElementById('name') as HTMLInputElement;
 const createEl = document.getElementById('create') as HTMLButtonElement;
 const messageEl = document.getElementById('message')!;
 const worldsEl = document.getElementById('worlds')!;
+const editingEl = document.getElementById('editing')!;
+const editingNameEl = document.getElementById('editing-name')!;
+const updateEl = document.getElementById('update') as HTMLButtonElement;
+const confirmUpdateEl = document.getElementById('confirm-update')!;
+const confirmUpdateText = document.getElementById('confirm-update-text')!;
+const updateYesEl = document.getElementById('update-yes') as HTMLButtonElement;
 
 function message(text: string, kind: 'good' | 'bad' | '' = '', link?: { href: string; text: string }): void {
   messageEl.className = kind;
@@ -295,13 +312,60 @@ function message(text: string, kind: 'good' | 'bad' | '' = '', link?: { href: st
   }
 }
 
-let canCreate = true;
-const playHref = (name: string) => `/?world=${encodeURIComponent(name)}`;
+/** Whether this server lets us create, change and delete worlds (development only). */
+let canChange = true;
+/** The world whose settings were loaded into the form, to save back to. */
+let editing: { name: string; editedChunks: number } | null = null;
+const playHref = (name: string) => `/play.html?world=${encodeURIComponent(name)}`;
+
+interface WorldInfo {
+  name: string;
+  createdAt: string;
+  updatedAt?: string;
+  editedChunks: number;
+  spec: { generator: string; plates?: PlateTerrainConfig };
+}
 
 interface WorldsReply {
   default: string;
   canCreate: boolean;
-  worlds: { name: string; createdAt: string; spec: { generator: string; plates?: PlateTerrainConfig } }[];
+  worlds: WorldInfo[];
+}
+
+function showEditing(): void {
+  editingEl.hidden = editing === null || !canChange;
+  confirmUpdateEl.hidden = true;
+  if (editing) editingNameEl.textContent = editing.name;
+  for (const li of worldsEl.querySelectorAll('li')) li.classList.toggle('editing', li.dataset.name === editing?.name);
+}
+
+/** Reads a JSON error body, or describes the status. */
+async function errorOf(res: Response): Promise<string> {
+  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  return body.error ?? `Server said ${res.status}.`;
+}
+
+/** A button that needs a second click (within 4 s) to act. */
+function twoStep(button: HTMLButtonElement, armedText: string, act: () => Promise<void>): void {
+  const idle = button.textContent;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  button.addEventListener('click', async () => {
+    if (!button.classList.contains('danger')) {
+      button.classList.add('danger');
+      button.textContent = armedText;
+      timer = setTimeout(() => {
+        button.classList.remove('danger');
+        button.textContent = idle;
+      }, 4000);
+      return;
+    }
+    clearTimeout(timer);
+    button.disabled = true;
+    await act();
+    button.disabled = false;
+    button.classList.remove('danger');
+    button.textContent = idle;
+  });
 }
 
 async function loadWorlds(): Promise<void> {
@@ -318,15 +382,19 @@ async function loadWorlds(): Promise<void> {
     worldsEl.appendChild(li);
     return;
   }
-  canCreate = data.canCreate;
-  createEl.disabled = !canCreate;
-  if (!data.canCreate) message('Creating worlds is disabled on this server.', 'bad');
+  canChange = data.canCreate;
+  createEl.disabled = !canChange;
+  if (!canChange) message('Creating, changing and deleting worlds is disabled on this server.', 'bad');
+  // A world loaded for editing that has since gone (e.g. deleted elsewhere) can't be saved to.
+  const current = editing && data.worlds.find((w) => w.name === editing!.name);
+  editing = current ? { name: current.name, editedChunks: current.editedChunks } : null;
   worldsEl.innerHTML = '';
   for (const w of data.worlds) {
     const li = document.createElement('li');
+    li.dataset.name = w.name;
     const name = document.createElement('span');
     name.textContent = w.name;
-    name.title = `created ${w.createdAt}`;
+    name.title = `created ${w.createdAt}` + (w.updatedAt ? `, regenerated ${w.updatedAt}` : '') + `, ${w.editedChunks} edited chunks`;
     const kind = document.createElement('em');
     kind.textContent = w.spec.generator + (w.name === data.default ? ', default' : '');
     li.append(name, kind);
@@ -334,16 +402,33 @@ async function loadWorlds(): Promise<void> {
       const load = document.createElement('button');
       load.type = 'button';
       load.textContent = 'Load';
-      load.title = "Load this world's settings into the form";
+      load.title = "Load this world's settings into the form, to change and save back";
       const plates = w.spec.plates;
       load.addEventListener('click', () => {
         config = { ...defaultPlateTerrain(plates.seed), ...plates };
+        editing = { name: w.name, editedChunks: w.editedChunks };
         showForm();
         toHash(config);
         requestPreview();
-        message(`Loaded the settings of "${w.name}".`);
+        showEditing();
+        message(`Loaded "${w.name}". Change it and Save to it, or Create new from it.`);
       });
       li.appendChild(load);
+    }
+    if (canChange && w.name !== data.default) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.textContent = 'Delete';
+      del.title = 'Delete this world and its edits';
+      twoStep(del, 'Sure?', async () => {
+        const res = await fetch(`/api/worlds/${encodeURIComponent(w.name)}`, { method: 'DELETE' }).catch((err: Error) => err);
+        if (res instanceof Error) return message(`Couldn't reach the server: ${res.message}`, 'bad');
+        if (res.status !== 204) return message(await errorOf(res), 'bad');
+        if (editing?.name === w.name) editing = null;
+        message(`Deleted "${w.name}".`, 'good');
+        await loadWorlds();
+      });
+      li.appendChild(del);
     }
     const play = document.createElement('a');
     play.href = playHref(w.name);
@@ -352,7 +437,43 @@ async function loadWorlds(): Promise<void> {
     worldsEl.appendChild(li);
   }
   if (data.worlds.length === 0) worldsEl.innerHTML = '<li><em>none yet</em></li>';
+  showEditing();
 }
+
+updateEl.addEventListener('click', () => {
+  if (!editing) return;
+  const edits = editing.editedChunks;
+  confirmUpdateText.textContent =
+    `Replace the terrain of "${editing.name}" with these settings?` +
+    (edits > 0 ? ` Its ${edits} edited chunk${edits === 1 ? '' : 's'} will be discarded (they belong to the old terrain).` : ' It has no edits.') +
+    ' Anyone playing it is disconnected.';
+  confirmUpdateEl.hidden = false;
+});
+document.getElementById('update-no')!.addEventListener('click', () => (confirmUpdateEl.hidden = true));
+document.getElementById('stop-editing')!.addEventListener('click', () => {
+  editing = null;
+  showEditing();
+  message('');
+});
+updateYesEl.addEventListener('click', async () => {
+  if (!editing) return;
+  const name = editing.name;
+  updateYesEl.disabled = true;
+  try {
+    const res = await fetch(`/api/worlds/${encodeURIComponent(name)}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ plates: config }) });
+    if (res.status === 200) {
+      message(`Saved "${name}".`, 'good', { href: playHref(name), text: `Play ${name}` });
+      await loadWorlds();
+    } else {
+      message(await errorOf(res), 'bad');
+    }
+  } catch (err) {
+    message(`Couldn't reach the server: ${(err as Error).message}`, 'bad');
+  } finally {
+    updateYesEl.disabled = false;
+    confirmUpdateEl.hidden = true;
+  }
+});
 
 createEl.addEventListener('click', async () => {
   const name = nameEl.value.trim();
@@ -363,18 +484,18 @@ createEl.addEventListener('click', async () => {
   createEl.disabled = true;
   try {
     const res = await fetch('/api/worlds', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, plates: config }) });
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
     if (res.status === 201) {
       message(`Created "${name}".`, 'good', { href: playHref(name), text: `Play ${name}` });
       nameEl.value = '';
+      editing = { name, editedChunks: 0 };
       await loadWorlds();
     } else {
-      message(body.error ?? `Server said ${res.status}.`, 'bad');
+      message(await errorOf(res), 'bad');
     }
   } catch (err) {
     message(`Couldn't reach the server: ${(err as Error).message}`, 'bad');
   } finally {
-    createEl.disabled = !canCreate;
+    createEl.disabled = !canChange;
   }
 });
 nameEl.addEventListener('keydown', (e) => {

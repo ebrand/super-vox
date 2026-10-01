@@ -34,6 +34,13 @@ export interface PlateTerrainConfig {
   noiseScale: number;
   /** How much fine detail each plate's noise has, 0 (smooth swells) .. 100 (rugged). */
   noiseRoughness: number;
+  /** Density of island chains along seams where an oceanic plate meets another plate, 0 (none) .. 100. */
+  islandArcs: number;
+  /** Groups of islands inside oceanic plates, each a main island trailing smaller ones (0..40). */
+  hotspots: number;
+  /** Smallest and largest island (diameter, metres, 50..4000), for arcs and hotspots. */
+  islandMinSize: number;
+  islandMaxSize: number;
 }
 
 export function defaultPlateTerrain(seed = 1): PlateTerrainConfig {
@@ -50,6 +57,10 @@ export function defaultPlateTerrain(seed = 1): PlateTerrainConfig {
     shoreFractal: 50,
     noiseScale: 2000,
     noiseRoughness: 50,
+    islandArcs: 0,
+    hotspots: 0,
+    islandMinSize: 200,
+    islandMaxSize: 1500,
   };
 }
 
@@ -62,6 +73,9 @@ export const PLATE_LIMITS = {
   shoreFractal: [0, 100],
   noiseScale: [100, 16000],
   noiseRoughness: [0, 100],
+  islandArcs: [0, 100],
+  hotspots: [0, 40],
+  islandSize: [50, 4000],
 } as const;
 
 /**
@@ -102,6 +116,11 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   num(c.shoreFractal, L.shoreFractal, 'shoreFractal');
   num(c.noiseScale, L.noiseScale, 'noiseScale', ' m');
   num(c.noiseRoughness, L.noiseRoughness, 'noiseRoughness');
+  num(c.islandArcs, L.islandArcs, 'islandArcs');
+  int(c.hotspots, ...L.hotspots, 'hotspots');
+  num(c.islandMinSize, L.islandSize, 'islandMinSize', ' m');
+  num(c.islandMaxSize, L.islandSize, 'islandMaxSize', ' m');
+  if (!(c.islandMinSize <= c.islandMaxSize)) throw new RangeError(`islandMinSize must not exceed islandMaxSize; got ${c.islandMinSize} and ${c.islandMaxSize}`);
 }
 
 /** Coarse grid cell (units): 32 m. Heights between cells are interpolated. */
@@ -119,6 +138,12 @@ const INLAND = 1500 * M;
 const OFFSHORE = 1500 * M;
 /** Neighbouring plates' relief blends over this distance either side of their seam. */
 const SEAM_BLEND = 400 * M;
+/**
+ * Water bodies smaller than this many grid cells (~1 km^2) that lie more than INLAND_LAKE from
+ * open sea (bodies at least this big) are filled in as land.
+ */
+const MIN_LAKE = 1000;
+const INLAND_LAKE = 700 * M;
 /** Plate noise stops at this feature size; smaller detail is added per column. */
 const NOISE_FINEST = 64 * M;
 
@@ -129,6 +154,13 @@ export interface Plate {
   /** Power-diagram weight (units^2), tuned so plate areas match plateSizeRatio. */
   weight: number;
   continental: boolean;
+}
+
+export interface Island {
+  x: number;
+  z: number;
+  radius: number;
+  kind: 'arc' | 'hotspot';
 }
 
 /** Small deterministic PRNG. */
@@ -166,6 +198,10 @@ export class PlateHeights implements HeightSource {
   /** 0..1 per grid cell: how high the ground is within its range (drives roughness). */
   private readonly rough: Float32Array;
   readonly plates: readonly Plate[];
+  /** Islands placed by arcs and hotspots (centres and radii in units). */
+  readonly islands: readonly Island[];
+  /** Grid cells that are island land. */
+  readonly islandCells: number;
   private readonly detail: Octave[];
   private readonly wrap: boolean;
 
@@ -452,15 +488,189 @@ export class PlateHeights implements HeightSource {
     const BAND = (700 * M) / PLATE_CELL;
     for (let i = 0; i < n; i++) land[i] = land[i]! + shore[i]! * shoreAmp * 0.5 * (1 - smoothstep(0, BAND, toShore[i]!));
 
-    // 10. The waterline: the exact quantile leaving landPercent above the sea.
-    const tau = quantile(land, water);
+    // 10. Islands in open water: arcs along seams where an oceanic plate meets another, and
+    //     hotspot chains inside oceanic plates. Their own random stream, so turning them on or off
+    //     leaves everything above unchanged.
+    const islands: Island[] = [];
+    const island = new Float32Array(n); // 1 - distance/radius inside an island, else 0
+    const islandSize = new Float32Array(n); // island radius / 1 km (its peak's height scale)
+    let islandCells = 0;
+    if (config.islandArcs > 0 || config.hotspots > 0) {
+      const irand = rng(config.seed ^ 0x2c1b3c6d);
+      const tau1 = quantile(land, water);
+      // Distance (cells) from each sea cell to the coast it would have without islands.
+      const toCoast = new Float32Array(n).fill(Infinity);
+      for (let i = 0; i < n; i++) if (land[i]! > tau1) toCoast[i] = 0;
+      chamfer(toCoast, cols, rows, this.wrap);
+      const budget = 0.9 * (config.landPercent / 100) * n;
+      const minR = (config.islandMinSize / 2) * M, maxR = (config.islandMaxSize / 2) * M;
+      // Log-uniform sizes, `bias` > 1 favouring small ones.
+      const size = (bias: number) => minR * (maxR / minR) ** (irand() ** bias);
+      // Island coasts: island-scale noise (250 m down to 32 m), more ragged with shoreFractal.
+      const coastNoise = layoutNoise(11, [4000, 2000, 1000, 512], 0.7);
+      const jag = 0.3 + 0.5 * (config.shoreFractal / 100);
+      const COAST_GAP = 300 * M, ISLAND_GAP = 150 * M;
+      const cellOf = (x: number, z: number) => {
+        const c = Math.floor((((x % W) + W) % W) / PLATE_CELL), r = Math.floor(z / PLATE_CELL);
+        return c >= 0 && c < cols && r >= 0 && r < rows ? c + cols * r : -1;
+      };
+      /** Whether an island of radius R fits at (x, z): in open water, clear of coasts and other islands. */
+      const clearance = (x: number, z: number, R: number) => {
+        const i = cellOf(x, z);
+        if (i < 0 || (!this.wrap && (x < R || x > W - R)) || z < R || z > D - R) return -Infinity;
+        if (land[i]! > tau1) return -Infinity;
+        let room = toCoast[i]! * PLATE_CELL - R - COAST_GAP;
+        for (const o of islands) room = Math.min(room, distTo(o, { x, z }) - o.radius - R - ISLAND_GAP);
+        return room;
+      };
+      /**
+       * Stamps an island of about radius R (an ellipse of the same area, stretched up to 2.2x
+       * along `angle`, with up to two smaller lobes); false, and nothing stamped, if it would
+       * overrun the land budget.
+       */
+      const stamp = (x: number, z: number, R: number, kind: Island['kind'], angle = irand() * Math.PI) => {
+        const aspect = 1 + irand() * 1.2;
+        const parts = [{ x, z, a: R * Math.sqrt(aspect), b: R / Math.sqrt(aspect), angle }];
+        for (let k = Math.floor(irand() * 3); k > 0; k--) {
+          const dir = irand() * Math.PI * 2, off = R * (0.5 + 0.4 * irand()), r2 = R * (0.35 + 0.25 * irand());
+          parts.push({ x: x + Math.cos(dir) * off, z: z + Math.sin(dir) * off, a: r2, b: r2, angle: 0 });
+        }
+        const reach = Math.ceil((R * 2.2) / PLATE_CELL);
+        const c0 = Math.floor(x / PLATE_CELL), r0 = Math.floor(z / PLATE_CELL);
+        const cells: [number, number][] = [];
+        for (let r = r0 - reach; r <= r0 + reach; r++) {
+          for (let c = c0 - reach; c <= c0 + reach; c++) {
+            const i = at(c, r);
+            if (i < 0) continue;
+            const px = (c + 0.5) * PLATE_CELL, pz = (r + 0.5) * PLATE_CELL;
+            let t = Infinity;
+            for (const q of parts) {
+              const ddx = dx(q.x, px), ddz = pz - q.z;
+              const u = ddx * Math.cos(q.angle) + ddz * Math.sin(q.angle), v = -ddx * Math.sin(q.angle) + ddz * Math.cos(q.angle);
+              t = Math.min(t, Math.hypot(u / q.a, v / q.b));
+            }
+            t += coastNoise[i]! * jag;
+            if (t < 1) cells.push([i, 1 - t]);
+          }
+        }
+        const fresh = cells.filter(([i]) => island[i] === 0).length;
+        if (fresh === 0 || islandCells + fresh > budget) return false;
+        for (const [i, v] of cells) {
+          island[i] = Math.max(island[i]!, v);
+          islandSize[i] = Math.max(islandSize[i]!, R / (1000 * M));
+        }
+        islandCells += fresh;
+        islands.push({ x, z, radius: R, kind });
+        return true;
+      };
+      /** The best of several random candidates from `pick`, by room to spare; null if none fits. */
+      const bestSpot = (pick: () => number, R: number, tries: number) => {
+        let best: { x: number; z: number } | null = null, bestRoom = 0;
+        for (let t = 0; t < tries; t++) {
+          const i = pick();
+          if (i < 0) continue;
+          const c = i % cols, r = (i - c) / cols;
+          const p = { x: (c + irand()) * PLATE_CELL, z: (r + irand()) * PLATE_CELL };
+          const room = clearance(p.x, p.z, R);
+          if (room >= 0 && (best === null || room > bestRoom)) [best, bestRoom] = [p, room];
+        }
+        return best;
+      };
+
+      // Hotspots: a main island in an oceanic plate, trailing 2-5 smaller ones in the direction
+      // its plate has carried them (the same for every chain on a plate).
+      const oceanic: number[] = [];
+      for (let i = 0; i < n; i++) if (!plates[plateOf[i]!]!.continental && land[i]! <= tau1) oceanic.push(i);
+      const drift = plates.map(() => irand() * Math.PI * 2);
+      for (let h = 0; h < config.hotspots && oceanic.length > 0; h++) {
+        let R = size(1);
+        const at0 = bestSpot(() => oceanic[Math.floor(irand() * oceanic.length)]!, R, 20);
+        if (!at0) continue;
+        const a = drift[plateOf[cellOf(at0.x, at0.z)]!]!;
+        if (!stamp(at0.x, at0.z, R, 'hotspot', a)) continue;
+        let { x, z } = at0;
+        const trail = 2 + Math.floor(irand() * 4);
+        for (let k = 0; k < trail; k++) {
+          const r2 = R * (0.5 + 0.2 * irand());
+          if (r2 < minR) break;
+          const turn = a + (irand() - 0.5) * 0.5, gap = R + r2 + ISLAND_GAP + irand() * R;
+          const nx = x + Math.cos(turn) * gap, nz = z + Math.sin(turn) * gap;
+          if (clearance(nx, nz, r2) < 0 || !stamp(nx, nz, r2, 'hotspot', turn)) break;
+          [x, z, R] = [nx, nz, r2];
+        }
+      }
+
+      // Island arcs: along seams where at least one side is oceanic, ~800 m apart at 100, each
+      // stretched along its seam (perpendicular to the line between the two plates' centres).
+      const seams: number[] = [];
+      const seamAngle = new Map<number, number>();
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const i = c + cols * r;
+          if (toSeam[i]! > 1 || land[i]! > tau1) continue;
+          const j = at(c + 1, r), k = at(c, r + 1);
+          const across = [j, k].find((q) => q >= 0 && plateOf[q] !== plateOf[i]);
+          if (across === undefined) continue;
+          const p = plates[plateOf[i]!]!, q = plates[plateOf[across]!]!;
+          if (p.continental && q.continental) continue;
+          seams.push(i);
+          seamAngle.set(i, Math.atan2(q.z - p.z, dx(p.x, q.x)) + Math.PI / 2);
+        }
+      }
+      // Seam cells come in pairs (one each side), each ~1 cell of seam length.
+      const arcCount = Math.round((config.islandArcs / 100) * ((seams.length / 2) * PLATE_CELL) / (800 * M));
+      for (let k = 0; k < arcCount && seams.length > 0; k++) {
+        const R = size(1.6);
+        const spot = bestSpot(() => seams[Math.floor(irand() * seams.length)]!, R, 8);
+        if (spot) stamp(spot.x, spot.z, R, 'arc', seamAngle.get(cellOf(spot.x, spot.z)) ?? irand() * Math.PI);
+      }
+    }
+    this.islands = islands;
+    this.islandCells = islandCells;
+
+    // 11. The waterline: continents get exactly the land left after the islands (the quantile of
+    //     the other cells that leaves that many above the sea). Then small lakes away from the sea
+    //     are filled in: all water sits at sea level and land rises with distance from any water,
+    //     so an inland pond would be a hole to sea level in a crater ~1.5 km wide. (Lagoons and
+    //     inlets near the coast stay.) To keep the land share exact, as many of
+    //     the lowest coastal cells (next to real sea) go under water instead; water added next to
+    //     other water can only join bodies, never make a new pond.
+    let tau: number;
+    if (islandCells === 0) {
+      tau = quantile(land, water);
+    } else {
+      const rest = new Float32Array(n - islandCells);
+      let m = 0;
+      for (let i = 0; i < n; i++) if (island[i] === 0) rest[m++] = land[i]!;
+      tau = quantile(rest, 1 - ((config.landPercent / 100) * n - islandCells) / rest.length);
+    }
+    const state = new Uint8Array(n); // 0 by the waterline, 1 forced land, 2 forced sea
+    const byWaterline = (i: number) => island[i]! > 0 || land[i]! > tau;
+    const ponds = inlandLakes((i) => !byWaterline(i), MIN_LAKE, INLAND_LAKE / PLATE_CELL, cols, rows, this.wrap);
+    for (const i of ponds) state[i] = 1;
+    const isLand = (i: number) => state[i] === 1 || (state[i] === 0 && byWaterline(i));
+    for (let owed = ponds.length; owed > 0; ) {
+      // Continental coast cells (not islands, not filled ponds) next to sea, lowest first.
+      const coast: number[] = [];
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const i = c + cols * r;
+          if (state[i] !== 0 || island[i]! > 0 || !isLand(i)) continue;
+          if ([at(c + 1, r), at(c - 1, r), at(c, r + 1), at(c, r - 1)].some((j) => j >= 0 && !isLand(j))) coast.push(i);
+        }
+      }
+      if (coast.length === 0) break;
+      coast.sort((p, q) => land[p]! - land[q]! || p - q);
+      for (const i of coast.slice(0, owed)) state[i] = 2;
+      owed -= Math.min(owed, coast.length);
+    }
     const toSea = new Float32Array(n).fill(Infinity);
     const toLand = new Float32Array(n).fill(Infinity);
-    for (let i = 0; i < n; i++) (land[i]! <= tau ? toSea : toLand)[i] = 0;
+    for (let i = 0; i < n; i++) (isLand(i) ? toLand : toSea)[i] = 0;
     chamfer(toSea, cols, rows, this.wrap);
     chamfer(toLand, cols, rows, this.wrap);
 
-    // 11. Heights: land rises from the coast inland, following its plate's relief; the sea floor
+    // 12. Heights: land rises from the coast inland, following its plate's relief; the sea floor
     //    deepens away from land the same way. Both are stretched so the highest land is exactly
     //    maxHeight and the deepest sea floor exactly minHeight.
     // Relief as 0..1, ignoring the most extreme 0.5% at either end so a few outliers don't flatten the rest.
@@ -469,8 +679,10 @@ export class PlateHeights implements HeightSource {
     const shape = new Float32Array(n);
     let landMax = 0, seaMax = 0;
     for (let i = 0; i < n; i++) {
-      if (land[i]! > tau) {
-        const s = smoothstep(0, INLAND / PLATE_CELL, toSea[i]!) ** 0.7 * (0.15 + 0.85 * r01(relief[i]!));
+      if (isLand(i)) {
+        let s = smoothstep(0, INLAND / PLATE_CELL, toSea[i]!) ** 0.7 * (0.15 + 0.85 * r01(relief[i]!));
+        // Islands also rise to a peak in the middle (volcanic), lower for small ones.
+        if (island[i]! > 0) s = Math.max(s, 0.45 * island[i]! ** 1.3 * Math.min(1, islandSize[i]!));
         shape[i] = s;
         landMax = Math.max(landMax, s);
       } else {
@@ -482,7 +694,7 @@ export class PlateHeights implements HeightSource {
     const elevation = (this.elevation = new Float32Array(n));
     const rough = (this.rough = new Float32Array(n));
     for (let i = 0; i < n; i++) {
-      if (land[i]! > tau) {
+      if (isLand(i)) {
         const f = shape[i]! / Math.max(1e-6, landMax);
         elevation[i] = Math.max(sea + 1, sea + (hi - sea) * f);
         rough[i] = f;
@@ -596,6 +808,51 @@ function quantile(field: Float32Array, q: number): number {
   if (q >= 1) return sorted[n - 1]! + 1e-3;
   const k = Math.floor(q * n);
   return (sorted[Math.min(n - 1, k)]! + sorted[Math.max(0, k - 1)]!) / 2;
+}
+
+/**
+ * Cells of the lakes to fill: water bodies (4-connected groups of cells where `wet` is true)
+ * smaller than `minSize` cells whose nearest cell is more than `reach` cells from open sea (a
+ * body of at least `minSize` cells). X wraps if asked.
+ */
+function inlandLakes(wet: (i: number) => boolean, minSize: number, reach: number, cols: number, rows: number, wrap: boolean): number[] {
+  const n = cols * rows;
+  const body = new Int32Array(n).fill(-1);
+  const bodies: number[][] = [];
+  for (let s = 0; s < n; s++) {
+    if (body[s] !== -1 || !wet(s)) continue;
+    const cells: number[] = [];
+    const stack = [s];
+    body[s] = bodies.length;
+    while (stack.length > 0) {
+      const i = stack.pop()!;
+      cells.push(i);
+      const c = i % cols, r = (i - c) / cols;
+      for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        let cc = c + a;
+        const rr = r + b;
+        if (wrap) cc = ((cc % cols) + cols) % cols;
+        if (cc < 0 || cc >= cols || rr < 0 || rr >= rows) continue;
+        const j = cc + cols * rr;
+        if (body[j] === -1 && wet(j)) {
+          body[j] = bodies.length;
+          stack.push(j);
+        }
+      }
+    }
+    bodies.push(cells);
+  }
+  const toSea = new Float32Array(n).fill(Infinity);
+  for (const cells of bodies) if (cells.length >= minSize) for (const i of cells) toSea[i] = 0;
+  chamfer(toSea, cols, rows, wrap);
+  const out: number[] = [];
+  for (const cells of bodies) {
+    if (cells.length >= minSize) continue;
+    let nearest = Infinity;
+    for (const i of cells) nearest = Math.min(nearest, toSea[i]!);
+    if (nearest > reach) out.push(...cells);
+  }
+  return out;
 }
 
 /** In-place two-pass chamfer distance transform (cells): zeros are sources, others start at Infinity. */

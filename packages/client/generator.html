@@ -11,6 +11,7 @@
       body { display: flex; }
       #panel { width: 340px; flex: none; height: 100%; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); padding: 12px 14px 24px; }
       h1 { font-size: 15px; margin: 0 0 2px; }
+      .back { margin: 0 0 8px; font-size: 12px; } .back a { color: var(--accent); text-decoration: none; }
       h1 + p { margin: 0 0 10px; color: var(--dim); font-size: 12px; }
       h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); margin: 16px 0 6px; font-weight: 600; }
       .field { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin-bottom: 8px; align-items: center; }
@@ -33,6 +34,13 @@
       #worlds li { display: flex; gap: 6px; align-items: center; padding: 3px 0; border-bottom: 1px solid var(--line); }
       #worlds li span { flex: 1; font-family: ui-monospace, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
       #worlds li em { color: var(--dim); font-style: normal; font-size: 11px; }
+      #worlds li.editing span { color: var(--accent); }
+      button.danger { background: #da3633; border-color: #da3633; }
+      #editing { margin-bottom: 8px; }
+      .editing-label { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .confirm { margin-top: 6px; padding: 8px; border: 1px solid var(--bad); border-radius: 4px; font-size: 12px; }
+      .confirm p { margin: 0 0 6px; }
+      [hidden] { display: none !important; }
       #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
       #toolbar { display: flex; gap: 12px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
       #toolbar label { display: flex; gap: 4px; align-items: center; }
@@ -48,14 +56,26 @@
   </head>
   <body>
     <div id="panel">
+      <p class="back"><a href="/">← Menu</a></p>
       <h1>World generator</h1>
       <p>Changes redraw the preview. The preview is the exact terrain a new world gets.</p>
       <form id="form" autocomplete="off"></form>
       <div class="row" style="margin-top: 8px"><button type="button" id="reset">Reset to defaults</button></div>
-      <h2>Create</h2>
+      <h2>Save</h2>
+      <div id="editing" hidden>
+        <div class="row">
+          <span class="editing-label">Editing <b id="editing-name"></b></span>
+          <button type="button" class="primary" id="update">Save to it</button>
+          <button type="button" id="stop-editing" title="Forget which world is loaded">Done</button>
+        </div>
+        <div id="confirm-update" class="confirm" hidden>
+          <p id="confirm-update-text"></p>
+          <div class="row"><button type="button" class="danger" id="update-yes">Replace terrain</button><button type="button" id="update-no">Cancel</button></div>
+        </div>
+      </div>
       <div class="row">
-        <input id="name" placeholder="world name, e.g. archipelago" maxlength="64" />
-        <button type="button" class="primary" id="create">Create</button>
+        <input id="name" placeholder="new world name, e.g. archipelago" maxlength="64" />
+        <button type="button" class="primary" id="create">Create new</button>
       </div>
       <div id="message"></div>
       <h2>Worlds</h2>

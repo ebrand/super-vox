@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   FLAT_WORLD_16KM,
@@ -30,10 +30,13 @@ export interface WorldFile {
   version: 1;
   name: string;
   createdAt: string;
+  /** When the spec was last replaced (which discards the world's edits). */
+  updatedAt?: string;
   spec: WorldSpec;
 }
 
 export class WorldExistsError extends Error {}
+export class NoSuchWorldError extends Error {}
 
 export function validateWorldSpec(spec: WorldSpec): void {
   if (spec.generator === 'plates') {
@@ -76,6 +79,38 @@ export function createWorld(dataRoot: string, name: string, spec: WorldSpec): Wo
   const file: WorldFile = { version: 1, name, createdAt: new Date().toISOString(), spec };
   writeFileSync(join(dir, 'world.json'), JSON.stringify(file, null, 2) + '\n', { flag: 'wx' });
   return file;
+}
+
+/** Number of saved edited chunks of world `name`. */
+export function countEdits(dataRoot: string, name: string): number {
+  checkName(name);
+  const dir = join(dataRoot, name, 'chunks');
+  return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.chunk')).length : 0;
+}
+
+/**
+ * Replaces world `name`'s spec. Its saved edits are deleted: they are whole chunks of the old
+ * terrain and would sit in the new terrain as blocks of the old. Throws NoSuchWorldError.
+ */
+export function updateWorld(dataRoot: string, name: string, spec: WorldSpec): WorldFile {
+  const old = readWorld(dataRoot, name);
+  if (!old) throw new NoSuchWorldError(`no world named "${name}"`);
+  validateWorldSpec(spec);
+  const dir = join(dataRoot, name);
+  // Edits first: if this stops halfway, the world keeps its old terrain without edits, never
+  // new terrain with old edits.
+  rmSync(join(dir, 'chunks'), { recursive: true, force: true });
+  const file: WorldFile = { version: 1, name, createdAt: old.createdAt, updatedAt: new Date().toISOString(), spec };
+  const tmp = join(dir, 'world.json.tmp');
+  writeFileSync(tmp, JSON.stringify(file, null, 2) + '\n');
+  renameSync(tmp, join(dir, 'world.json'));
+  return file;
+}
+
+/** Deletes world `name` and its edits. Throws NoSuchWorldError. */
+export function deleteWorld(dataRoot: string, name: string): void {
+  if (!readWorld(dataRoot, name)) throw new NoSuchWorldError(`no world named "${name}"`);
+  rmSync(join(dataRoot, name), { recursive: true, force: true });
 }
 
 /** Every readable world under `dataRoot`, by name. Folders without a valid world.json are skipped. */

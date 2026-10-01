@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SuperVoxel</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0d10; }
+      #status {
+        position: fixed; top: 8px; left: 8px; padding: 6px 10px;
+        font: 12px/1.4 ui-monospace, monospace; color: #e6e6e6;
+        background: rgba(0, 0, 0, 0.55); border-radius: 4px; white-space: pre;
+      }
+      #menu {
+        position: fixed; top: 8px; right: 8px; padding: 4px 10px; z-index: 10;
+        font: 600 12px/1.4 ui-monospace, monospace; color: #e6e6e6; text-decoration: none;
+        background: rgba(0, 0, 0, 0.55); border-radius: 4px;
+      }
+      #menu:hover { background: rgba(0, 0, 0, 0.8); }
+      #mode {
+        position: fixed; left: 8px; bottom: 8px; padding: 4px 10px;
+        font: 600 12px/1.4 ui-monospace, monospace; letter-spacing: 0.08em;
+        color: #e6e6e6; background: rgba(0, 0, 0, 0.55); border-radius: 4px;
+        border-left: 4px solid #9aa4ad; pointer-events: none;
+      }
+      #mode[data-mode="dig"] { border-left-color: #ff8a20; }
+      #mode[data-mode="place"] { border-left-color: #40ff60; }
+      #mode:empty { display: none; }
+      #worldmap {
+        position: fixed; inset: 0; z-index: 20; display: none;
+        flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+        background: rgba(8, 10, 14, 0.82);
+      }
+      #worldmap.open { display: flex; }
+      #worldmap .frame { position: relative; width: min(88vh, 92vw); aspect-ratio: 1; }
+      #worldmap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+      #worldmap canvas.image { image-rendering: pixelated; border: 1px solid rgba(255,255,255,0.25); }
+      #worldmap canvas.marks { cursor: crosshair; }
+      #worldmap .info { font: 12px/1.4 ui-monospace, monospace; color: #e6e6e6; min-height: 1.4em; }
+      #crosshair {
+        position: fixed; left: 50%; top: 50%; width: 14px; height: 14px;
+        margin: -7px 0 0 -7px; pointer-events: none;
+        background:
+          linear-gradient(#fff, #fff) center / 2px 14px no-repeat,
+          linear-gradient(#fff, #fff) center / 14px 2px no-repeat;
+        mix-blend-mode: difference;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">connecting…</div>
+    <a id="menu" href="/" title="Back to the menu (Esc frees the mouse first)">Menu</a>
+    <div id="crosshair"></div>
+    <div id="mode"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

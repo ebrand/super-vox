@@ -13,6 +13,8 @@ export interface PreviewStats {
   minors: number;
   /** Average major plate area over average minor plate area (NaN without minors). */
   sizeRatio: number;
+  /** Islands placed by arcs and hotspots, and their share of the world (0..1). */
+  islands: { arc: number; hotspot: number; land: number };
 }
 
 export interface Preview {
@@ -62,6 +64,11 @@ export function buildPreview(config: PlateTerrainConfig, size: number, world: Wo
       majors: majorAreas.length,
       minors: minorAreas.length,
       sizeRatio: mean(majorAreas) / mean(minorAreas),
+      islands: {
+        arc: p.islands.filter((i) => i.kind === 'arc').length,
+        hotspot: p.islands.filter((i) => i.kind === 'hotspot').length,
+        land: p.islandCells / p.elevation.length,
+      },
     },
   };
 }

@@ -12,8 +12,8 @@ import {
 } from '@super-vox/shared';
 import type { WebSocket } from 'ws';
 import { encodeWorldMap, type EditResult, type World } from './world.js';
-import { WorldExistsError } from './worldFile.js';
-import { singleWorld, type WorldCatalog } from './worlds.js';
+import { NoSuchWorldError, WorldExistsError } from './worldFile.js';
+import { DefaultWorldError, singleWorld, type WorldCatalog } from './worlds.js';
 
 export type AppOptions = (
   | { catalog: WorldCatalog }
@@ -72,8 +72,61 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     }
   });
 
-  /** Connected, greeted clients and the world each is viewing. */
+  // Development only: replace a world's settings with plate settings (discarding its edits).
+  // Body: { plates }.
+  app.put<{ Params: { name: string }; Body: unknown }>('/api/worlds/:name', async (req, reply) => {
+    if (!catalog.update) return reply.code(403).send({ error: 'changing worlds is not enabled on this server' });
+    const { name } = req.params;
+    if (!isValidWorldName(name)) return reply.code(404).send({ error: 'no such world' });
+    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { plates?: unknown };
+    let plates;
+    try {
+      plates = parsePlateTerrain(body.plates);
+    } catch (err) {
+      if (err instanceof RangeError) return reply.code(400).send({ error: err.message });
+      throw err;
+    }
+    try {
+      const summary = catalog.update(name, plates);
+      evict(name, 'world_changed', `the world "${name}" was regenerated with new settings`);
+      return reply.send(summary);
+    } catch (err) {
+      if (err instanceof NoSuchWorldError) return reply.code(404).send({ error: err.message });
+      throw err;
+    }
+  });
+
+  // Development only: delete a world and its edits (not the server's default world).
+  app.delete<{ Params: { name: string } }>('/api/worlds/:name', async (req, reply) => {
+    if (!catalog.delete) return reply.code(403).send({ error: 'changing worlds is not enabled on this server' });
+    const { name } = req.params;
+    if (!isValidWorldName(name)) return reply.code(404).send({ error: 'no such world' });
+    try {
+      catalog.delete(name);
+    } catch (err) {
+      if (err instanceof NoSuchWorldError) return reply.code(404).send({ error: err.message });
+      if (err instanceof DefaultWorldError) return reply.code(409).send({ error: err.message });
+      throw err;
+    }
+    evict(name, 'world_deleted', `the world "${name}" was deleted`);
+    return reply.code(204).send();
+  });
+
+  /** Connected, greeted clients, the world each is viewing, and that world's name. */
   const clients = new Map<WebSocket, World>();
+  const clientWorld = new Map<WebSocket, string>();
+  /** Disconnects everyone in world `name`, telling them why (it was replaced or deleted). */
+  const evict = (name: string, code: 'world_changed' | 'world_deleted', message: string) => {
+    for (const [client, n] of clientWorld) {
+      if (n !== name) continue;
+      if (client.readyState === client.OPEN) {
+        client.send(encodeMessage({ type: 'error', code, message }));
+        client.close(1012, code);
+      }
+      clients.delete(client);
+      clientWorld.delete(client);
+    }
+  };
   const frame = (tag: number, bytes: Uint8Array) => {
     const f = new Uint8Array(1 + bytes.byteLength);
     f[0] = tag;
@@ -86,7 +139,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const sendBinary = (tag: number, bytes: Uint8Array) => socket.send(frame(tag, bytes));
     let greeted = false;
     let world: World;
-    socket.on('close', () => clients.delete(socket));
+    socket.on('close', () => {
+      clients.delete(socket);
+      clientWorld.delete(socket);
+    });
 
     socket.on('message', (data, isBinary) => {
       const msg = isBinary ? null : decodeClientMessage(data.toString());
@@ -116,6 +172,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           }
           greeted = true;
           clients.set(socket, world);
+          clientWorld.set(socket, msg.world ?? catalog.defaultName);
           send({
             type: 'welcome',
             protocolVersion: PROTOCOL_VERSION,

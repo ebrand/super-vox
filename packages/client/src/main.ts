@@ -8,6 +8,7 @@ import { selectLod } from './lod.js';
 import { TileManager } from './tileManager.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
 import { PLAYER, moveAabb, playerBox } from './physics.js';
+import { loadSettings } from './settings.js';
 import { MeshWorkerPool } from './workerPool.js';
 import { WorldMapOverlay } from './worldMap.js';
 import { solidAtFor } from './worldQuery.js';
@@ -20,17 +21,19 @@ function numberParam(name: string, fallback: number, min: number, max: number): 
   const n = raw === null || raw.trim() === '' ? NaN : Number(raw);
   return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
 }
+// Saved settings (see the entry page), each overridable for one visit by a URL parameter.
+const settings = loadSettings();
 /** ?detail=N: radius, in chunks, of full-detail voxel terrain around the focus. */
-const detail = Math.round(numberParam('detail', 4, 1, 32));
+const detail = Math.round(numberParam('detail', settings.detail, 1, 32));
 /** ?view=M: view distance in metres; low-detail tiles cover everything beyond `detail` out to here. */
-const view = Math.max(detail * 16 + 16, numberParam('view', 2048, 64, 16_000));
+const view = Math.max(detail * 16 + 16, numberParam('view', settings.view, 64, 16_000));
 // Development: ?tolerance=N (integer 1/16 m units, 0..16) asks the server for
 // terrain voxelized with that tolerance.
-const toleranceParam = params.get('tolerance');
+const toleranceParam = params.get('tolerance') ?? (settings.tolerance !== null ? String(settings.tolerance) : null);
 const requestedTolerance = toleranceParam === null ? undefined : Number(toleranceParam);
 const toleranceWarning =
   requestedTolerance !== undefined && !isValidTolerance(requestedTolerance)
-    ? `ignoring ?tolerance=${toleranceParam} (use an integer 0..16)`
+    ? `ignoring tolerance ${toleranceParam} (use an integer 0..16)`
     : '';
 /** ?world=name: which of the server's worlds to join (its default when omitted). */
 const worldName = params.get('world') ?? undefined;
@@ -120,7 +123,7 @@ connection = connect({
           (w.wrapX ? ', wraps east-west' : '') +
           (msg.tolerance !== null ? `\ntolerance ${msg.tolerance}/16 m` : '') +
           (requestedTolerance !== undefined && !toleranceWarning && msg.tolerance !== requestedTolerance
-            ? ` (server ignored ?tolerance=${requestedTolerance})`
+            ? ` (server ignored the requested tolerance ${requestedTolerance}: development servers only)`
             : '') +
           (toleranceWarning ? `\n${toleranceWarning}` : '') +
           `\ndetail ${detail} chunks, view ${view} m`;
@@ -223,9 +226,16 @@ connection = connect({
         break;
       case 'error':
         console.error(`[super-vox] server error ${msg.code}: ${msg.message}`);
-        // Refused at hello (e.g. no such world): the server closes the connection.
+        // Refused at hello (e.g. no such world), or the world was replaced or deleted while
+        // playing: the server closes the connection, so keep the reason on screen.
         if (!chunks && (msg.code === 'unknown_world' || msg.code === 'bad_message')) {
           joinError = `${msg.message}${worldName !== undefined ? ' (check ?world=)' : ''}`;
+        } else if (msg.code === 'world_changed') {
+          joinError = `${msg.message}: reload to play it`;
+        } else if (msg.code === 'world_deleted') {
+          joinError = `${msg.message}: back to the Menu to pick another`;
+        }
+        if (joinError) {
           worldLine = joinError;
           updateHud();
         }

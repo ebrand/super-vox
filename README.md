@@ -3,6 +3,17 @@
 Multiplayer voxel world. Voxels range from 1/16 m to 1 m in 1/16 m steps; a
 voxel can be broken into smaller voxels whose size evenly divides its own.
 
+## Pages
+
+- `/`: pick a world and play it, change settings, or open the world generator.
+- `/play.html?world=name`: the game. **Menu** (top right, after Esc frees the mouse) goes back.
+- `/generator.html`: the world generator (see below).
+
+**Settings** (the Settings dialog on `/`, kept in this browser until there are accounts):
+detail distance (full-detail radius in 16 m chunks, default 4), view distance (default 2048 m)
+and terrain tolerance (the world's own by default; development servers only). URL parameters on
+the game page override them for one visit: `?detail=N`, `?view=M`, `?tolerance=N`.
+
 ## Voxel rules
 
 - A voxel never crosses a 1 m gridline: it lies entirely inside one 1 m block.
@@ -20,14 +31,18 @@ existing edits. Delete a world's folder to regenerate it.
 The server serves every world in the data folder; `WORLD_NAME` (default `dev`) is the default
 one, created from the `WORLD_*` settings below if it doesn't exist yet (the server warns if the
 environment asks for something different from an existing world). Open another world with
-`?world=name`, e.g. http://localhost:5173/?world=archipelago.
+`?world=name`, e.g. http://localhost:5173/play.html?world=archipelago.
 
 **World generator**: http://localhost:5173/generator.html previews a plate world as you change
 its settings (the preview is exactly the terrain the world gets), shows plate borders or plate
 colours (minor plates hatched), and creates a named world from the settings. It also lists the
-server's worlds, with links to play them or load their settings. Settings are kept in the page
-URL, so a link reproduces a preview. Creating worlds (`POST /api/worlds`) is only enabled in
-development (`NODE_ENV` not `production`) until there are accounts.
+server's worlds: **Load** puts a world's settings in the form to change and **Save to it**
+(which regenerates its terrain and discards its edits: they're snapshots of chunks of the old
+terrain), **Delete** removes a world (not the server's default one), **Play** opens it. Anyone
+playing a world that is regenerated or deleted is disconnected with a message. Settings are kept
+in the page URL, so a link reproduces a preview. Creating, changing and deleting worlds
+(`POST /api/worlds`, `PUT` and `DELETE /api/worlds/:name`) is only enabled in development
+(`NODE_ENV` not `production`) until there are accounts.
 
 Settings for a new world from the environment:
 
@@ -46,6 +61,10 @@ Settings for a new world from the environment:
 | `WORLD_SHORE_FRACTAL` | 50 | Coastline raggedness, 0 (smooth) .. 100 (broken, many islands) |
 | `WORLD_NOISE_SCALE` | 2000 | Size of the largest features in each plate's noise, in metres (100..16000) |
 | `WORLD_NOISE_ROUGHNESS` | 50 | Fine detail in each plate's noise, 0 (smooth swells) .. 100 (rugged) |
+| `WORLD_ISLAND_ARCS` | 0 | Island chains along seams where an oceanic plate meets another, 0 .. 100 |
+| `WORLD_HOTSPOTS` | 0 | Hotspot island groups in oceanic plates (0..40) |
+| `WORLD_ISLAND_MIN_SIZE` | 200 | Smallest arc/hotspot island, across, in metres (50..4000) |
+| `WORLD_ISLAND_MAX_SIZE` | 1500 | Largest arc/hotspot island, across, in metres (50..4000) |
 | `WORLD_MIN_VOXEL` | 1 | Smallest generated voxel, in 1/16 m units (1, 2, 4, 8, 16) |
 | `WORLD_TOLERANCE` | 4 | Allowed surface error in 1/16 m units |
 | `WORLD_RESOLUTION` | 16 | Voxel size for the flat generator |
@@ -60,7 +79,15 @@ floor. Each plate's relief comes from its own seeded noise field, blended with i
 over ~400 m either side of their seam. Land rises from the coast inland and the sea floor
 deepens away from it, stretched so the highest land is exactly `WORLD_MAX_HEIGHT` and the
 deepest sea floor exactly `WORLD_MIN_HEIGHT`; the coastline is then chosen so exactly
-`WORLD_LAND` percent is above the sea, drawn as a translucent plane. Sand lines the shore and
+`WORLD_LAND` percent is above the sea, drawn as a translucent plane. Islands come first:
+island arcs are chains along seams where an oceanic plate meets another (each island stretched
+along its seam), and hotspots are groups in oceanic plates, a main island trailing smaller ones
+in the direction its plate drifts. Islands are irregular (ellipses with extra lobes, coasts
+roughened with the shoreline setting), rise to a peak, and count toward the land share: the
+continents get exactly what's left (islands may take at most 90% of it). Lakes under ~1 km^2
+more than 700 m from open sea are filled in: all water sits at sea level and land rises with
+distance from any water, so an inland pond would be a hole in a crater. Coastal lagoons and
+inlets stay; an equal amount of the lowest coast goes under water so the land share stays exact. Sand lines the shore and
 sea floor, grass covers lowland, bare rock shows on steep ground and above 60% of the land's
 height range, and snow caps the top 20%. The plate map is built once when a world is opened, on
 a 32 m grid (a few hundred ms); heights between grid points are interpolated with small-scale
@@ -71,9 +98,9 @@ Terrain is voxelized adaptively: a 1 m block is halved (1 -> 1/2 -> 1/4 -> 1/8
 -> 1/16 m) only where the surface passes through it and a coarser voxel would
 misplace it by more than the tolerance.
 
-In development (`NODE_ENV` not `production`) the client can override the
-tolerance per page load with `?tolerance=N` (integer 0..16); those edits stay
-in memory.
+In development (`NODE_ENV` not `production`) the client can ask for another
+tolerance (integer 0..16, the Settings dialog or `?tolerance=N`); those edits
+stay in memory.
 
 ## Controls
 
@@ -128,9 +155,9 @@ terrain) so they survive restarts.
 
 ## Distant terrain
 
-Around the camera the client renders full-detail voxel chunks within
-`?detail=N` chunks (default 4). Beyond that, out to `?view=M` metres (default
-2048), it renders low-detail tiles chosen by a quadtree: 32 m tiles next to
+Around the camera the client renders full-detail voxel chunks within the
+detail distance (default 4 chunks). Beyond that, out to the view distance
+(default 2048 m), it renders low-detail tiles chosen by a quadtree: 32 m tiles next to
 the full-detail area, doubling in size with distance up to 1 km. A tile is a
 32 x 32 grid of ground heights drawn as stepped columns, with skirts along its
 edges to hide cracks between levels. For full-detail chunk columns the server
@@ -167,7 +194,7 @@ tectonic plates) can replace it. `WORLD_GENERATOR=flat` with
 npm install
 npm run dev          # server + client together (Ctrl+C stops both)
 npm run dev:server   # http://127.0.0.1:8787 (see Terrain for settings)
-npm run dev:client   # http://localhost:5173 (?detail=4&view=2048&tolerance=4; proxies /api and /ws)
+npm run dev:client   # http://localhost:5173 (proxies /api and /ws)
 npm test
 npm run typecheck
 npm run build

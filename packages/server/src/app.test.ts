@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -403,11 +403,60 @@ describe('named worlds', () => {
     await a.close();
   });
 
+  it('updates a world, discarding its edits, and disconnects its players', async () => {
+    const { a, url, root } = await catalogApp();
+    const created = await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'isle', plates: { seed: 2 } } });
+    expect(created.statusCode).toBe(201);
+    const inIsle = await hello(url, { world: 'isle' });
+    const inOther = await hello(url, { world: 'other' });
+    expect(inIsle.reply.type).toBe('welcome');
+    // "isle" has a saved edit.
+    mkdirSync(join(root, 'isle', 'chunks'), { recursive: true });
+    writeFileSync(join(root, 'isle', 'chunks', '0_0_0.chunk'), 'x');
+    expect((await a.inject({ method: 'GET', url: '/api/worlds' })).json().worlds.find((w: { name: string }) => w.name === 'isle').editedChunks).toBe(1);
+    const told = nextMessage(inIsle.ws);
+    const res = await a.inject({ method: 'PUT', url: '/api/worlds/isle', payload: { plates: { seed: 2, landPercent: 55 } } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ name: 'isle', editedChunks: 0, spec: { plates: { landPercent: 55 } } });
+    expect(res.json().updatedAt).toBeDefined();
+    expect(await told).toMatchObject({ type: 'error', code: 'world_changed' });
+    expect(await inIsle.closed).toBe(1012);
+    // Someone in another world is untouched.
+    expect(inOther.ws.readyState).toBe(WebSocket.OPEN);
+    // Rejoining gets the new terrain's world.
+    const again = await hello(url, { world: 'isle' });
+    expect(again.reply.type).toBe('welcome');
+    for (const ws of [inOther.ws, again.ws]) ws.close();
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/nope', payload: { plates: {} } })).statusCode).toBe(404);
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/isle', payload: { plates: { hotspots: 99 } } })).statusCode).toBe(400);
+    await a.close();
+  });
+
+  it('deletes worlds (not the default one) and disconnects their players', async () => {
+    const { a, url, root } = await catalogApp();
+    const inOther = await hello(url, { world: 'other' });
+    const told = nextMessage(inOther.ws);
+    expect((await a.inject({ method: 'DELETE', url: '/api/worlds/other' })).statusCode).toBe(204);
+    expect(await told).toMatchObject({ type: 'error', code: 'world_deleted' });
+    expect(await inOther.closed).toBe(1012);
+    expect(readWorld(root, 'other')).toBeNull();
+    expect((await hello(url, { world: 'other' })).reply).toMatchObject({ type: 'error', code: 'unknown_world' });
+    expect((await a.inject({ method: 'DELETE', url: '/api/worlds/other' })).statusCode).toBe(404);
+    const home = await a.inject({ method: 'DELETE', url: '/api/worlds/home' });
+    expect(home.statusCode).toBe(409);
+    expect(readWorld(root, 'home')).not.toBeNull();
+    expect((await a.inject({ method: 'DELETE', url: '/api/worlds/..%2Fhome' })).statusCode).toBe(404);
+    await a.close();
+  });
+
   it('does not create worlds outside development', async () => {
     const { a, root } = await catalogApp(false);
     expect((await a.inject({ method: 'GET', url: '/api/worlds' })).json().canCreate).toBe(false);
     expect((await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'x', plates: {} } })).statusCode).toBe(403);
     expect(readWorld(root, 'x')).toBeNull();
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/other', payload: { plates: {} } })).statusCode).toBe(403);
+    expect((await a.inject({ method: 'DELETE', url: '/api/worlds/other' })).statusCode).toBe(403);
+    expect(readWorld(root, 'other')!.spec).toEqual({ generator: 'flat', resolution: 8 });
     await a.close();
   });
 });
