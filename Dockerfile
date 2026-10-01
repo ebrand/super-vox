@@ -24,7 +24,7 @@ COPY --from=build /app/packages/server/package.json packages/server/
 COPY --from=build /app/packages/server/dist packages/server/dist
 COPY --from=build /app/packages/client/package.json packages/client/
 COPY --from=build /app/packages/client/dist packages/client/dist
-# Worlds (settings and saved edits) live here: mount a volume.
-VOLUME /data
+# Worlds (settings and saved edits) live in /data: mount a volume there (Railway: a service
+# volume; Railway rejects the VOLUME instruction).
 EXPOSE 8787
 CMD ["node", "packages/server/dist/main.js"]
