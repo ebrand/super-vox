@@ -184,6 +184,14 @@ export function clumpedChance(clumps: Clumping, p: number, f: number): number {
   return Math.min(1, p * scale * f);
 }
 
+/**
+ * Hand-made changes to the chance of a tree (plant and clear strokes; see treeChance): the chance
+ * at a point (units), given the world's there.
+ */
+export interface TreeEdits {
+  chance(x: number, z: number, chance: number): number;
+}
+
 /** Deterministic random numbers for a cell: r(k) in [0, 1). */
 function cellRandom(seed: number, cx: number, cz: number) {
   return (k: number) => hash2(cx * 977 + k * 7919, cz * 131 + k * 104729, seed);
@@ -195,9 +203,10 @@ function cellRandom(seed: number, cx: number, cz: number) {
  * chances (50 = as listed above, 100 = double, capped at one tree per cell). Each tree takes the
  * biome of its climate nudged at random within the `ecotone`, so near a border the two biomes'
  * trees mix, and a forest thins out over the width of the ecotone instead of stopping at a line.
+ * `edits` (plant and clear strokes) change each spot's chance last.
  */
-export function treesIn(sampler: GroundSampler, seed: number, density: number, x0: number, z0: number, x1: number, z1: number, ecotone: Ecotone = SHARP, clumps: Clumping | null = null): Tree[] {
-  if (density <= 0) return [];
+export function treesIn(sampler: GroundSampler, seed: number, density: number, x0: number, z0: number, x1: number, z1: number, ecotone: Ecotone = SHARP, clumps: Clumping | null = null, edits: TreeEdits | null = null): Tree[] {
+  if (density <= 0 && !edits) return [];
   const c0 = Math.floor((x0 - TREE_REACH) / TREE_CELL), c1 = Math.floor((x1 + TREE_REACH) / TREE_CELL);
   const r0 = Math.floor((z0 - TREE_REACH) / TREE_CELL), r1 = Math.floor((z1 + TREE_REACH) / TREE_CELL);
   // Clumping, at each cell's corner (the same wherever the cell is asked for).
@@ -219,7 +228,8 @@ export function treesIn(sampler: GroundSampler, seed: number, density: number, x
     if (!FERTILE.has(mat)) return;
     const biome = g.climate ? blendedBiome(g.climate.temperature[k]!, g.climate.moisture[k]!, ecotone, t.rnd(6), t.rnd(7), t.rnd(8), t.rnd(9)) : Biome.Temperate;
     const chance = Math.min(1, DENSITY[biome] * scale);
-    if (t.rnd(2) >= (clumps && clump ? clumpedChance(clumps, chance, t.clump) : chance)) return;
+    const here = clumps && clump ? clumpedChance(clumps, chance, t.clump) : chance;
+    if (t.rnd(2) >= (edits ? edits.chance(t.x, t.z, here) : here)) return;
     const tree = shapeTree(biome, t.x, g.heights[k]!, t.z, t.rnd);
     // Only trees that reach into the box.
     if (tree.x + TREE_REACH < x0 || tree.x - TREE_REACH >= x1 || tree.z + TREE_REACH < z0 || tree.z - TREE_REACH >= z1) return;
@@ -493,7 +503,8 @@ export function crownBottom(t: Tree, px: number, pz: number): number {
  * and materials), as distant terrain shows it: crowns floating over the ground. Close together,
  * the trees' actual crowns (`trees` with any part in the sampled area); far apart, a forest of
  * the typical cover and height of the biome of each sample's climate, nudged within the `ecotone`
- * as trees are (deterministic per sample). Null without trees.
+ * as trees are (deterministic per sample), with `edits` (plant and clear strokes) changing how
+ * many there are. Null without trees.
  */
 export function canopyOver(
   x0: number, z0: number, w: number, d: number, step: number,
@@ -502,8 +513,9 @@ export function canopyOver(
   trees: () => Tree[],
   ecotone: Ecotone = SHARP,
   clumps: Clumping | null = null,
+  edits: TreeEdits | null = null,
 ): Canopy | null {
-  if (density <= 0) return null;
+  if (density <= 0 && !edits) return null;
   const top = new Int32Array(w * d).fill(NO_CANOPY), bottom = new Int32Array(w * d).fill(NO_CANOPY), material = new Uint16Array(w * d);
   if (step <= CANOPY_EXACT_STEP) {
     // Bucket trees by candidate cell, then look up the few within reach of each sample.
@@ -555,10 +567,12 @@ export function canopyOver(
         : Biome.Temperate;
       const c = CANOPY[biome];
       if (c.cover <= 0) continue;
-      // With clumping, as many more (or fewer) trees as there are here.
+      // With clumping, as many more (or fewer) trees as there are here; with edits, as many as
+      // they leave (the cover of a forest as dense as the chance of a tree, as above).
       const chance = Math.min(1, DENSITY[biome] * scale);
       const more = clumps && clump && chance > 0 ? clumpedChance(clumps, chance, clump[k]!) / chance : 1;
-      const cover = 1 - (1 - c.cover) ** (scale * more);
+      const trees = edits ? edits.chance(x0 + i * step, z0 + j * step, Math.min(1, chance * more)) / DENSITY[biome] : scale * more;
+      const cover = 1 - (1 - c.cover) ** trees;
       if (hash2(gx, gz, seed ^ step) >= cover) continue;
       const h = c.height * M * (0.75 + 0.5 * hash2(gz, gx, seed + 1));
       top[k] = Math.round(heights[k]! + h);

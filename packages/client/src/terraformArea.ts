@@ -3,6 +3,7 @@ import {
   NO_WATER,
   PlateHeights,
   PlateStageCache,
+  TREE_REACH,
   TerrainGenerator,
   type PlateTerrainConfig,
   type TerrainStroke,
@@ -112,8 +113,10 @@ export class AreaMaker {
     this.heights.setSampleStrokes(strokes);
     const { field: f, per } = this.shown, a = this.shown.req;
     const M = 16, W = this.world.widthUnits;
-    // The box in the area's own x (round worlds: its copy nearest the area).
-    let bx0 = box.x0 * M, bx1 = box.x1 * M;
+    // The box in the area's own x (round worlds: its copy nearest the area), and as far again as
+    // trees reach: the crowns of trees growing (or gone, or moved) in it spread past it.
+    let bx0 = box.x0 * M - TREE_REACH, bx1 = box.x1 * M + TREE_REACH;
+    const bz0 = box.z0 * M - TREE_REACH, bz1 = box.z1 * M + TREE_REACH;
     if (this.world.wrapX) {
       const shift = Math.round((a.x0 + a.size / 2 - (bx0 + bx1) / 2) / W) * W;
       bx0 += shift;
@@ -121,7 +124,7 @@ export class AreaMaker {
     }
     // Samples under the box, and one more each way (their walls face the changed ones).
     const i0 = Math.max(0, Math.floor((bx0 - a.x0) / a.step) - 1), i1 = Math.min(f.cols - 1, Math.ceil((bx1 - a.x0) / a.step) + 1);
-    const j0 = Math.max(0, Math.floor((box.z0 * M - a.z0) / a.step) - 1), j1 = Math.min(f.rows - 1, Math.ceil((box.z1 * M - a.z0) / a.step) + 1);
+    const j0 = Math.max(0, Math.floor((bz0 - a.z0) / a.step) - 1), j1 = Math.min(f.rows - 1, Math.ceil((bz1 - a.z0) / a.step) + 1);
     if (i1 < i0 || j1 < j0) return { parts: [], heights: f.heights.slice(), samples: 0 };
     const w = i1 - i0 + 1, d = j1 - j0 + 1, m = Math.max(w, d);
     const s = sampleField(this.generator, a.x0 + i0 * a.step, a.z0 + j0 * a.step, a.step, m);

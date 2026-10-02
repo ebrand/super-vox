@@ -6,12 +6,15 @@
  * - level: the ground toward `amount` metres above the sea (flattening a site, say);
  * - smooth: the ground toward the average of the land's shape around it (see SMOOTH_REACH), by
  *   `amount` (0..1): small-scale bumps and crags go, and so do sharp shapes made by strokes (a
- *   levelled plateau's edge, a ridge), which round off.
+ *   levelled plateau's edge, a ridge), which round off;
+ * - plant / clear: more or fewer trees, by `amount` (0..1): plant raises the chance of a tree in
+ *   each spot under it toward certain, clear lowers it toward none. Trees stay the kind the biome
+ *   grows, and only on ground trees grow on (see treeChance). The ground isn't changed.
  *
  * They're stored as these few numbers, not as edited blocks, so everything made from the ground
  * (rock and snow, trees, rivers and lakes, maps) follows them.
  */
-export type StrokeKind = 'raise' | 'lower' | 'level' | 'smooth';
+export type StrokeKind = 'raise' | 'lower' | 'level' | 'smooth' | 'plant' | 'clear';
 
 export interface TerrainStroke {
   kind: StrokeKind;
@@ -20,16 +23,19 @@ export interface TerrainStroke {
   z: number;
   /** Radius (m). */
   radius: number;
-  /** raise / lower: metres; level: target height above the sea (m); smooth: strength 0..1. */
+  /** raise / lower: metres; level: target height above the sea (m); smooth, plant, clear: strength 0..1. */
   amount: number;
   /** Share of the radius (from its rim inward) over which the stroke fades out: 0 sharp-edged, 1 fading from the centre. */
   softness: number;
 }
 
-export const STROKE_KINDS: readonly StrokeKind[] = ['raise', 'lower', 'level', 'smooth'];
+export const STROKE_KINDS: readonly StrokeKind[] = ['raise', 'lower', 'level', 'smooth', 'plant', 'clear'];
+
+/** Whether a stroke changes the trees (plant, clear) rather than the ground. */
+export const isTreeStroke = (s: Pick<TerrainStroke, 'kind'>): boolean => s.kind === 'plant' || s.kind === 'clear';
 export const STROKE_LIMITS = {
   radius: [1, 3000],
-  amount: { raise: [0, 1000], lower: [0, 1000], level: [-1000, 1000], smooth: [0, 1] },
+  amount: { raise: [0, 1000], lower: [0, 1000], level: [-1000, 1000], smooth: [0, 1], plant: [0, 1], clear: [0, 1] },
   softness: [0, 1],
   /** Most strokes a world keeps. */
   count: 20_000,
@@ -136,6 +142,27 @@ export function applyStrokes(
     }
   }
   return { ground: h, broad: e };
+}
+
+/**
+ * The chance of a tree at (x, z) (units) where the world gives it `chance` (0..1), after the plant
+ * and clear strokes, in order: plant takes it toward 1, clear toward 0, each by its amount where
+ * it's at full strength. `worldWidth` (units) wraps x when given (round worlds).
+ */
+export function treeChance(strokes: readonly TerrainStroke[], x: number, z: number, chance: number, worldWidth: number | null): number {
+  let p = chance;
+  for (const s of strokes) {
+    if (!isTreeStroke(s)) continue;
+    let dx = x / M - s.x;
+    if (worldWidth !== null) {
+      const W = worldWidth / M;
+      dx -= Math.round(dx / W) * W;
+    }
+    const w = strokeWeight(s, Math.hypot(dx, z / M - s.z)) * s.amount;
+    if (w <= 0) continue;
+    p = s.kind === 'plant' ? p + (1 - p) * w : p * (1 - w);
+  }
+  return p;
 }
 
 /**

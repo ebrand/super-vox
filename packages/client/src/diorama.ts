@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { MapControls } from 'three/examples/jsm/controls/MapControls.js';
+import { Line2 } from 'three/examples/jsm/lines/Line2.js';
+import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import { UNITS_PER_METER, decodeClimate } from '@super-vox/shared';
 import { createAtmosphere, type Atmosphere } from './atmosphere.js';
@@ -17,6 +20,10 @@ import type { DioramaPart } from './terraformArea.js';
  * Scene units are metres, at the area's true place in the world (the biome colours are looked up
  * by position). Controls as the 3D map's.
  */
+const WHITE = new THREE.Color(0xffffff);
+/** The brush ring's layer: drawn last, over the water (which is drawn over everything else). */
+const OVERLAY_LAYER = 2;
+
 export class Diorama {
   readonly canvas: HTMLCanvasElement;
   private readonly renderer: THREE.WebGLRenderer;
@@ -34,14 +41,19 @@ export class Diorama {
   /** The ground as sampled (units), to find what's under the pointer; null before anything's shown. */
   private field: { heights: Int32Array; n: number; step: number; x0: number; z0: number } | null = null;
   /** The brush: a ring on the ground under the pointer (its radius in metres), or none. */
-  private readonly brushRing: THREE.LineLoop;
+  private readonly brushRing: Line2;
+  /** Under the ring: a wider dark line, so its dashes stand out on any ground. */
+  private readonly brushShade: Line2;
   private brushRadius: number | null = null;
   private brushAt: { x: number; z: number } | null = null;
   /**
-   * Painting: a ⌘-press (Ctrl-press) and drag. The diorama doesn't move while painting; it calls
-   * this with each point (metres, and the ground's height there) as it goes.
+   * Painting: a ⌘-press (Ctrl-press) and drag; with `paintsAlt`, a ⌘-right-drag too (`alt`). The
+   * diorama doesn't move while painting; it calls this with each point (metres, and the ground's
+   * height there) as it goes.
    */
-  onPaint: ((phase: 'start' | 'move' | 'end', at: { x: number; y: number; z: number } | null) => void) | null = null;
+  onPaint: ((phase: 'start' | 'move' | 'end', at: { x: number; y: number; z: number } | null, alt: boolean) => void) | null = null;
+  /** Whether a ⌘-right-drag paints (the brush's other way: see onPaint) rather than turning the view. */
+  paintsAlt = false;
 
   constructor(climate: Uint8Array | null, wrapX: boolean, seaLevel: number | null) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
@@ -69,11 +81,17 @@ export class Diorama {
     this.controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
     this.controls.minDistance = 5;
     this.controls.maxDistance = 12_000;
-    this.brushRing = new THREE.LineLoop(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd34d, depthTest: false }));
-    this.brushRing.renderOrder = 10;
-    this.brushRing.frustumCulled = false;
-    this.brushRing.visible = false;
-    this.scene.add(this.brushRing);
+    // (Lines a few pixels wide: WebGL's own are one pixel, too faint to see on busy ground.)
+    this.brushRing = new Line2(new LineGeometry(), new LineMaterial({ color: 0xffd34d, linewidth: 3, dashed: true, depthTest: false, transparent: true }));
+    this.brushShade = new Line2(this.brushRing.geometry, new LineMaterial({ color: 0x000000, linewidth: 5, depthTest: false, transparent: true, opacity: 0.6 }));
+    // (Both transparent, so they're drawn in this order: the ring over its shade.)
+    for (const [line, order] of [[this.brushShade, 10], [this.brushRing, 11]] as const) {
+      line.layers.set(OVERLAY_LAYER);
+      line.renderOrder = order;
+      line.frustumCulled = false;
+      line.visible = false;
+      this.scene.add(line);
+    }
     this.wireInput();
     // The scene (water and all, see WaterRenderer) into the effect's buffer, then the effect.
     const water = this.water, scene = this.scene, camera = this.camera;
@@ -84,8 +102,18 @@ export class Diorama {
           super();
           this.needsSwap = false;
         }
-        override render(_r: THREE.WebGLRenderer, _write: THREE.WebGLRenderTarget, read: THREE.WebGLRenderTarget): void {
+        override render(r: THREE.WebGLRenderer, _write: THREE.WebGLRenderTarget, read: THREE.WebGLRenderTarget): void {
           water.render(scene, camera, read);
+          // The brush ring over it all.
+          const layers = camera.layers.mask, autoClear = r.autoClear, background = scene.background;
+          camera.layers.set(OVERLAY_LAYER);
+          r.autoClear = false;
+          scene.background = null;
+          r.setRenderTarget(read);
+          r.render(scene, camera);
+          scene.background = background;
+          r.autoClear = autoClear;
+          camera.layers.mask = layers;
         }
       })(),
     );
@@ -113,10 +141,10 @@ export class Diorama {
     this.placeBrush();
   }
 
-  /** The brush ring's radius (metres) and colour; null hides it. */
+  /** The brush ring's radius (metres) and colour (drawn brighter, dashed); null hides it. */
   setBrush(radius: number | null, color = 0xffd34d): void {
     this.brushRadius = radius;
-    (this.brushRing.material as THREE.LineBasicMaterial).color.setHex(color);
+    this.brushRing.material.color.setHex(color).lerp(WHITE, 0.4);
     this.placeBrush();
   }
 
@@ -165,17 +193,19 @@ export class Diorama {
   /** Hover moves the brush ring; ⌘-press (Ctrl-press) and drag paints (see onPaint). */
   private wireInput(): void {
     const c = this.canvas;
-    let painting = false;
+    /** The button painting (1 left, 2 right, as in `buttons`), or 0. */
+    let painting = 0;
     const at = (e: PointerEvent) => {
       const r = c.getBoundingClientRect();
       return this.pick(e.clientX - r.left, e.clientY - r.top);
     };
     // (Capture: before the controls see it, so they stay still while painting.)
     c.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0 || !(e.metaKey || e.ctrlKey) || !this.onPaint) return;
+      const alt = e.button === 2 && this.paintsAlt;
+      if ((e.button !== 0 && !alt) || !(e.metaKey || e.ctrlKey) || !this.onPaint) return;
       const p = at(e);
       if (!p) return;
-      painting = true;
+      painting = alt ? 2 : 1;
       this.controls.enabled = false;
       try {
         c.setPointerCapture(e.pointerId); // keep the drag even off the canvas
@@ -183,21 +213,24 @@ export class Diorama {
         // (Not a real pointer: fine.)
       }
       e.preventDefault();
-      this.onPaint('start', p);
+      this.onPaint('start', p, alt);
     }, { capture: true });
+    // (No menu for a right-drag: it turns the view, or paints.)
+    c.addEventListener('contextmenu', (e) => e.preventDefault());
     c.addEventListener('pointermove', (e) => {
       const p = at(e);
       this.brushAt = p && { x: p.x, z: p.z };
       this.placeBrush();
       // (A move with no button down ends painting if the release went missing.)
-      if (painting && (e.buttons & 1) === 0 && e.pointerType === 'mouse') return stop();
-      if (painting && p) this.onPaint?.('move', p);
+      if (painting && (e.buttons & painting) === 0 && e.pointerType === 'mouse') return stop();
+      if (painting && p) this.onPaint?.('move', p, painting === 2);
     });
     const stop = () => {
       if (!painting) return;
-      painting = false;
+      const alt = painting === 2;
+      painting = 0;
       this.controls.enabled = true;
-      this.onPaint?.('end', null);
+      this.onPaint?.('end', null, alt);
     };
     c.addEventListener('pointerup', stop);
     c.addEventListener('pointercancel', stop);
@@ -210,16 +243,21 @@ export class Diorama {
   /** The brush ring, draped over the ground around the pointer. */
   private placeBrush(): void {
     const r = this.brushRadius, a = this.brushAt;
-    this.brushRing.visible = r !== null && a !== null && this.field !== null;
+    this.brushRing.visible = this.brushShade.visible = r !== null && a !== null && this.field !== null;
     if (!this.brushRing.visible) return;
     const pts: number[] = [];
     const n = Math.max(24, Math.min(160, Math.round(r! / 2)));
-    for (let k = 0; k < n; k++) {
+    // (Closed: the first point again at the end.)
+    for (let k = 0; k <= n; k++) {
       const t = (k / n) * Math.PI * 2, x = a!.x + Math.cos(t) * r!, z = a!.z + Math.sin(t) * r!;
       pts.push(x, (this.groundAt(x, z) ?? this.groundAt(a!.x, a!.z) ?? 0) + 0.5, z);
     }
     this.brushRing.geometry.dispose();
-    this.brushRing.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    this.brushRing.geometry = this.brushShade.geometry = new LineGeometry().setPositions(pts);
+    this.brushRing.computeLineDistances();
+    // About 24 dashes round, whatever its size.
+    const m = this.brushRing.material;
+    m.dashSize = m.gapSize = (Math.PI * 2 * r!) / 48;
   }
 
   /** Lights the diorama (see DioramaLight). */

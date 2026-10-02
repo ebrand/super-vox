@@ -267,3 +267,107 @@ describe('terraforming a plate world', () => {
     expect(sample(after, W - 50, 4000) - sample(before, W - 50, 4000)).toBeCloseTo(30, 0);
   });
 });
+
+describe('plant and clear strokes', () => {
+  const world = ROUND_WORLD_16x8KM;
+  const cfg: PlateTerrainConfig = { ...defaultPlateTerrain(4, world), rivers: 0, lakes: 0 };
+  const plain = new PlateHeights(world, cfg);
+  const sea = plain.seaLevel;
+  /** Spots (metres) on low land (5..150 m up) where trees can grow, across the world's climates. */
+  const spots: [number, number][] = [];
+  for (let z = 600; z < 7600; z += 450) {
+    for (let x = 300; x < 16000; x += 1300) {
+      const h = plain.heights(x * M, z * M, 1, 1);
+      const mat = plain.materials(x * M, z * M, 1, 1, 1, h)[0]!;
+      if (h[0]! - sea > 5 * M && h[0]! - sea < 150 * M && [Material.Grass, Material.JungleFloor, Material.DryGrass, Material.Meadow, Material.TaigaFloor].includes(mat as never)) spots.push([x, z]);
+    }
+  }
+  const box = (x: number, z: number, r: number) => [(x - r) * M, (z - r) * M, (x + r) * M, (z + r) * M] as const;
+  /** Trunks within `r` metres of (x, z). */
+  const trunks = (p: PlateHeights, x: number, z: number, r: number) => p.trees(...box(x, z, r)).filter((t) => Math.hypot(t.x / M - x, t.z / M - z) <= r);
+
+  it('found spots in several climates', () => {
+    expect(spots.length).toBeGreaterThan(10);
+  });
+
+  it('plants trees of the kind the biome grows, and only where trees grow', () => {
+    const kinds = new Set<number>();
+    let matched = 0, planted = 0;
+    // Biome -> the kind of tree it grows (see trees.ts shapeTree).
+    const kindOf = (b: number) => (b === 5 ? 2 : b === 6 ? 3 : b === 1 || b === 2 ? 1 : 0);
+    for (const [x, z] of spots) {
+      const p = new PlateHeights(world, cfg, undefined, [stroke({ kind: 'plant', x, z, radius: 40, amount: 1, softness: 0 })]);
+      const before = trunks(plain, x, z, 30).length, after = trunks(p, x, z, 30);
+      // Every fertile 6 m cell has a tree now: far more than the forest's own.
+      expect(after.length).toBeGreaterThanOrEqual(before);
+      for (const t of after) {
+        const h = p.heights(t.x, t.z, 1, 1), mat = p.materials(t.x, t.z, 1, 1, 1, h)[0]!;
+        expect([Material.Grass, Material.JungleFloor, Material.DryGrass, Material.Meadow, Material.TaigaFloor, Material.Tundra]).toContain(mat);
+        const biome = p.biomes(t.x, t.z, 1, 1, 1, h)![0]!;
+        kinds.add(t.kind);
+        planted++;
+        if (t.kind === kindOf(biome)) matched++;
+      }
+    }
+    // (Near a biome's border its neighbour's trees mix in, as they do in the forest.)
+    expect(planted).toBeGreaterThan(spots.length * 40);
+    expect(matched / planted).toBeGreaterThan(0.85);
+    expect(kinds.size).toBeGreaterThanOrEqual(2);
+  });
+
+  it('clears trees from its core, thins them on its soft edge, and leaves them outside', () => {
+    // The spot with the most trees about.
+    const [x, z] = spots.reduce((a, b) => (trunks(plain, ...b, 120).length > trunks(plain, ...a, 120).length ? b : a));
+    expect(trunks(plain, x, z, 120).length).toBeGreaterThan(50);
+    const p = new PlateHeights(world, cfg, undefined, [stroke({ kind: 'clear', x, z, radius: 80, amount: 1, softness: 0.5 })]);
+    expect(trunks(p, x, z, 40)).toEqual([]);
+    const ring = (q: PlateHeights) => trunks(q, x, z, 75).filter((t) => Math.hypot(t.x / M - x, t.z / M - z) > 45).length;
+    expect(ring(p)).toBeLessThan(ring(plain));
+    const outside = (q: PlateHeights) => q.trees(...box(x, z, 140)).filter((t) => Math.hypot(t.x / M - x, t.z / M - z) > 81);
+    expect(outside(p)).toEqual(outside(plain));
+  });
+
+  it('changes the far-off canopy too', () => {
+    const cover = (q: PlateHeights, x: number, z: number) => {
+      const step = 8 * M, h = q.heights((x - 60) * M, (z - 60) * M, 16, 16, step);
+      const c = q.canopy((x - 60) * M, (z - 60) * M, 16, 16, step, h, q.materials((x - 60) * M, (z - 60) * M, 16, 16, step, h));
+      return c ? c.top.filter((v) => v !== -(2 ** 31)).length : 0;
+    };
+    // A spot with some forest, not all it can have (at most, planting can't add any).
+    const [x, z] = spots.find(([x, z]) => cover(plain, x, z) > 20 && cover(plain, x, z) < 120)!;
+    const cleared = new PlateHeights(world, cfg, undefined, [stroke({ kind: 'clear', x, z, radius: 120, amount: 1, softness: 0 })]);
+    const planted = new PlateHeights(world, cfg, undefined, [stroke({ kind: 'plant', x, z, radius: 120, amount: 1, softness: 0 })]);
+    expect(cover(cleared, x, z)).toBe(0);
+    expect(cover(planted, x, z)).toBeGreaterThan(cover(plain, x, z) * 1.3);
+  });
+
+  it("plants in a world without trees, and doesn't touch the ground, climate or rivers", () => {
+    const bare: PlateTerrainConfig = { ...cfg, trees: 0, rivers: 50, lakes: 50 };
+    const [x, z] = spots[0]!;
+    const cache = new PlateStageCache();
+    const p0 = new PlateHeights(world, bare, cache);
+    const hits = cache.hits;
+    const p = new PlateHeights(world, bare, cache, [stroke({ kind: 'plant', x, z, radius: 40, amount: 1, softness: 0 }), stroke({ kind: 'clear', x: x + 500, z, radius: 40, amount: 1 })]);
+    // Every stage reused: plant and clear don't change what they make.
+    expect(cache.hits - hits).toBe(8);
+    expect(trunks(p0, x, z, 30)).toEqual([]);
+    expect(trunks(p, x, z, 30).length).toBeGreaterThan(10);
+    expect(p.heights((x - 50) * M, (z - 50) * M, 100, 100, M)).toEqual(p0.heights((x - 50) * M, (z - 50) * M, 100, 100, M));
+    expect(p.hydrology).toEqual(p0.hydrology);
+  });
+
+  it('gives a box the planted trees reaching into it from just outside', () => {
+    const [x, z] = spots[0]!;
+    const p = new PlateHeights(world, cfg, undefined, [stroke({ kind: 'plant', x, z, radius: 12, amount: 1, softness: 0 })]);
+    // A box starting just east of the stroke: the trees in a big box that reach into it.
+    const x0 = (x + 13) * M, z0 = (z - 20) * M, x1 = (x + 60) * M, z1 = (z + 20) * M, reach = 11 * M;
+    const reaching = p.trees(...box(x, z, 200)).filter((t) => t.x + reach >= x0 && t.x - reach < x1 && t.z + reach >= z0 && t.z - reach < z1);
+    expect(reaching.some((t) => t.x < x0)).toBe(true);
+    expect(p.trees(x0, z0, x1, z1)).toEqual(reaching);
+  });
+
+  it('checks their amounts', () => {
+    expect(() => validateStrokes([stroke({ kind: 'plant', amount: 0.5 }), stroke({ kind: 'clear', amount: 1 })])).not.toThrow();
+    expect(() => validateStrokes([stroke({ kind: 'plant', amount: 1.5 })])).toThrow(/amount/);
+  });
+});

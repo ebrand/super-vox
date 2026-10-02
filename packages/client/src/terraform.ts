@@ -1,4 +1,4 @@
-import { UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, type StrokeKind, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
+import { STROKE_KINDS, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, type StrokeKind, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT, parseDioramaLight, type DioramaLight } from './dioramaLight.js';
 import type { TerraformRequest, TerraformResponse } from './terraform.worker.js';
@@ -108,20 +108,23 @@ interface Brush {
   softness: number;
 }
 const BRUSH_KEY = 'super-vox-terraform-brush';
-const DEFAULT_BRUSH: Brush = { kind: 'raise', radius: 40, strength: { raise: 0.3, lower: 0.3, level: 1, smooth: 0.6 }, softness: 0.6 };
+const DEFAULT_BRUSH: Brush = { kind: 'raise', radius: 40, strength: { raise: 0.3, lower: 0.3, level: 1, smooth: 0.6, plant: 0.3, clear: 0.6 }, softness: 0.6 };
 /** Raise and lower: metres per dab, from the strength slider (0..1), finer at the low end. */
 const BRUSH_METRES = (v: number) => Math.round((0.25 + 19.75 * v * v) * 100) / 100;
-const BRUSH_COLORS: Record<StrokeKind, number> = { raise: 0x7ee787, lower: 0xff7b72, level: 0xffd34d, smooth: 0x6cb6ff };
+const BRUSH_COLORS: Record<StrokeKind, number> = { raise: 0x7ee787, lower: 0xff7b72, level: 0xffd34d, smooth: 0x6cb6ff, plant: 0x3fb950, clear: 0xd2a8ff };
 const TOOL_ABOUT: Record<StrokeKind, string> = {
   raise: 'Raises the ground under the brush.',
   lower: 'Lowers the ground under the brush (a closed hollow becomes a lake).',
   level: 'Levels the ground to the height where the stroke starts.',
   smooth: 'Smooths out bumps and crags, keeping the land\'s broad shape.',
+  plant: '⌘-drag plants trees of the kinds the land\'s climate grows (not on sand, rock or snow); ⌘-right-drag uproots them. Strength: how much each dab changes the forest.',
+  clear: 'Uproots trees.',
 };
 let brush: Brush = DEFAULT_BRUSH;
 try {
   const b = JSON.parse(localStorage.getItem(BRUSH_KEY) ?? 'null') as Partial<Brush> | null;
-  if (b && ['raise', 'lower', 'level', 'smooth'].includes(b.kind as string)) brush = { ...DEFAULT_BRUSH, ...b, strength: { ...DEFAULT_BRUSH.strength, ...b.strength } };
+  // (Uproot is now planting's right button.)
+  if (b && STROKE_KINDS.includes(b.kind as StrokeKind)) brush = { ...DEFAULT_BRUSH, ...b, kind: b.kind === 'clear' ? 'plant' : b.kind!, strength: { ...DEFAULT_BRUSH.strength, ...b.strength } };
 } catch {
   // Not remembered: the default.
 }
@@ -135,11 +138,12 @@ function showBrush(): void {
   const v = brush.strength[brush.kind];
   amountEl.value = String(v);
   amountEl.disabled = brush.kind === 'level';
-  document.getElementById('b-amount-v')!.textContent = brush.kind === 'smooth' ? v.toFixed(2) : brush.kind === 'level' ? '—' : `${BRUSH_METRES(v)} m`;
+  document.getElementById('b-amount-v')!.textContent = brush.kind === 'level' ? '—' : brush.kind === 'raise' || brush.kind === 'lower' ? `${BRUSH_METRES(v)} m` : v.toFixed(2);
   softnessEl.value = String(brush.softness);
   document.getElementById('b-softness-v')!.textContent = brush.softness.toFixed(2);
   document.getElementById('tool-about')!.textContent = TOOL_ABOUT[brush.kind];
   diorama?.setBrush(brush.radius, BRUSH_COLORS[brush.kind]);
+  if (diorama) diorama.paintsAlt = brush.kind === 'plant';
   try {
     localStorage.setItem(BRUSH_KEY, JSON.stringify(brush));
   } catch {
@@ -199,18 +203,21 @@ window.addEventListener('keydown', (e) => {
   if (e.shiftKey ? draft.redo() : draft.undo()) draftChanged();
 });
 
-/** A stroke of the brush at (x, z) metres; `levelTo` (metres above the sea) for level. */
-function strokeAt(x: number, z: number, levelTo: number): TerrainStroke {
+/**
+ * A stroke of the brush at (x, z) metres; `levelTo` (metres above the sea) for level. `uproot`:
+ * the plant brush's other way (as strong as planting).
+ */
+function strokeAt(x: number, z: number, levelTo: number, uproot = false): TerrainStroke {
   const info = worlds.find((w) => w.name === current)!;
   const world = WORLD_SHAPES[shapeOf(info)];
   const W = world.widthUnits / UNITS_PER_METER;
-  const k = brush.kind, v = brush.strength[k];
+  const v = brush.strength[brush.kind], k: StrokeKind = uproot ? 'clear' : brush.kind;
   return {
     kind: k,
     x: world.wrapX ? ((x % W) + W) % W : x,
     z,
     radius: brush.radius,
-    amount: k === 'level' ? Math.round(levelTo * 100) / 100 : k === 'smooth' ? v : BRUSH_METRES(v),
+    amount: k === 'level' ? Math.round(levelTo * 100) / 100 : k === 'raise' || k === 'lower' ? BRUSH_METRES(v) : v,
     softness: brush.softness,
   };
 }
@@ -380,6 +387,7 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
     diorama.miniature = miniatureEl.checked;
     diorama.setLight(light);
     diorama.onPaint = paint;
+    diorama.paintsAlt = brush.kind === 'plant';
     stage.prepend(diorama.canvas);
   }
   showing = 'diorama';
@@ -399,17 +407,21 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
 }
 
 /** ⌘-dragging: a stroke where it starts, then one every third of the brush along the way. */
-let painting: { last: { x: number; z: number }; carried: number; levelTo: number } | null = null;
-function paint(phase: 'start' | 'move' | 'end', at: { x: number; y: number; z: number } | null): void {
+let painting: { last: { x: number; z: number }; carried: number; levelTo: number; uproot: boolean } | null = null;
+function paint(phase: 'start' | 'move' | 'end', at: { x: number; y: number; z: number } | null, alt: boolean): void {
   if (phase === 'end') {
     painting = null;
+    diorama?.setBrush(brush.radius, BRUSH_COLORS[brush.kind]);
     return;
   }
   if (!at) return;
   const sea = (ready?.seaLevel ?? 0) / UNITS_PER_METER;
   if (phase === 'start') {
-    painting = { last: at, carried: 0, levelTo: at.y - sea };
-    draft.begin([strokeAt(at.x, at.z, painting.levelTo)]);
+    // (A right-drag with the plant brush uproots, its ring showing so.)
+    const uproot = alt && brush.kind === 'plant';
+    painting = { last: at, carried: 0, levelTo: at.y - sea, uproot };
+    if (uproot) diorama?.setBrush(brush.radius, BRUSH_COLORS.clear);
+    draft.begin([strokeAt(at.x, at.z, painting.levelTo, uproot)]);
     draftChanged();
     return;
   }
@@ -418,7 +430,7 @@ function paint(phase: 'start' | 'move' | 'end', at: { x: number; y: number; z: n
   painting.last = at;
   painting.carried = carried;
   if (points.length === 0) return;
-  draft.extend(points.map((p) => strokeAt(p.x, p.z, painting!.levelTo)));
+  draft.extend(points.map((p) => strokeAt(p.x, p.z, painting!.levelTo, painting!.uproot)));
   draftChanged();
 }
 

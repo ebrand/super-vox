@@ -1,10 +1,10 @@
 import { BIOME_GROUND, classifyBiome, sameBiome, type BiomeId, type Ecotone } from './biomes.js';
 import type { ClimateGrid } from './climate.js';
 import { Material } from './materials.js';
-import { canopyOver, treesIn, type Canopy, type Climate, type Clumping, type Tree } from './trees.js';
+import { TREE_REACH, canopyOver, treesIn, type Canopy, type Climate, type Clumping, type Tree, type TreeEdits } from './trees.js';
 import { RiverIndex, buildHydrology, carveRivers, type Hydrology } from './rivers.js';
 import { NO_WATER } from './water.js';
-import { StrokeIndex, applyStrokes, strokesIn, smoothAverage, smoothReach, type SmoothTarget, type TerrainStroke } from './strokes.js';
+import { StrokeIndex, applyStrokes, isTreeStroke, strokesIn, treeChance, smoothAverage, smoothReach, type SmoothTarget, type TerrainStroke } from './strokes.js';
 import { fractalGrid, ridgedGrid, type Octave } from './noise.js';
 import type { HeightSource } from './terrain.js';
 import type { WorldConfig } from './world.js';
@@ -558,6 +558,15 @@ export class PlateHeights implements HeightSource {
   private strokeOrder = new Map<TerrainStroke, number>();
   private shapeIndex: StrokeIndex | null = null;
   private smoothGrids = new Map<TerrainStroke, SmoothGrid>();
+  /** The plant and clear strokes, and their changes to the trees (null without any). */
+  private treeStrokes: readonly TerrainStroke[] = [];
+  private treeEdits: TreeEdits | null = null;
+
+  /** The tree edits if any plant or clear stroke reaches the box (units), else null. */
+  private treeEditsIn(x0: number, z0: number, x1: number, z1: number): TreeEdits | null {
+    if (!this.treeEdits) return null;
+    return strokesIn(this.treeStrokes, x0, z0, x1, z1, this.wrap ? this.world.widthUnits : null).length ? this.treeEdits : null;
+  }
 
   /**
    * What smooth stroke `s` pulls (x, z) toward: the average of the land's shape around it (the
@@ -604,9 +613,16 @@ export class PlateHeights implements HeightSource {
     return m ? applyStrokes(m === all.length ? all : all.slice(0, m), x, z, base, base, this.seaLevel, this.wrap ? this.world.widthUnits : null).broad : base;
   }
 
-  /** Indexes `strokes` for sampling (see strokeIndex, strokeOrder, shapeIndex). */
-  private indexStrokes(strokes: readonly TerrainStroke[]): void {
+  /**
+   * Indexes `all` for sampling: the ground strokes (see strokeIndex, strokeOrder, shapeIndex) and
+   * apart, the plant and clear strokes (see treeEdits).
+   */
+  private indexStrokes(all: readonly TerrainStroke[]): void {
     const W = this.wrap ? this.world.widthUnits : null;
+    const strokes = all.filter((s) => !isTreeStroke(s)), trees = all.filter(isTreeStroke);
+    const treeIndex = trees.length ? new StrokeIndex(trees, W, STROKE_CELL) : null;
+    this.treeStrokes = trees;
+    this.treeEdits = treeIndex && { chance: (x, z, chance) => treeChance(treeIndex.at(x, z), x, z, chance, W) };
     // Smooth targets stay right for strokes before which nothing changed.
     const old = this.strokes ?? [];
     let same = 0;
@@ -637,10 +653,12 @@ export class PlateHeights implements HeightSource {
     readonly config: PlateTerrainConfig,
     /** Stages kept from earlier builds, to reuse (for previews, rebuilt on every change). */
     cache?: PlateStageCache,
-    /** Terraforming: hand-made changes to the ground, applied in order (see strokes.ts). */
-    strokes: readonly TerrainStroke[] = [],
+    /** Terraforming: hand-made changes to the ground and trees, applied in order (see strokes.ts). */
+    allStrokes: readonly TerrainStroke[] = [],
   ) {
     validatePlateTerrain(config);
+    // (Plant and clear change only the trees, so the stages below don't see them: see indexStrokes.)
+    const strokes = allStrokes.filter((s) => !isTreeStroke(s));
     const sea = (this.seaLevel = Math.round(config.seaLevel * M));
     const lo = (this.minHeight = Math.round(config.minHeight * M));
     const hi = Math.round(config.maxHeight * M);
@@ -1351,7 +1369,7 @@ export class PlateHeights implements HeightSource {
     // (`delta`), to be taken back out of the grid there.
     this.strokes = strokes;
     this.strokeIndex = null;
-    this.indexStrokes(strokes);
+    this.indexStrokes(allStrokes);
     const stroked = memo('strokes', [...heightKey, strokesKey], () => {
       if (strokes.length === 0) return { elevation: shaped.elevation, delta: null };
       const e = shaped.elevation.slice();
@@ -1808,7 +1826,8 @@ export class PlateHeights implements HeightSource {
 
   /** The forest canopy over samples, for distant views (see canopyOver). */
   canopy(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array, materials: Uint16Array): Canopy | null {
-    if (this.treeDensity <= 0) return null;
+    const edits = this.treeEditsIn(x0, z0, x0 + w * step, z0 + d * step);
+    if (this.treeDensity <= 0 && !edits) return null;
     const climate = this.climateSamples(x0, z0, w, d, step, heights);
     return canopyOver(
       x0, z0, w, d, step, heights, materials,
@@ -1816,6 +1835,7 @@ export class PlateHeights implements HeightSource {
       () => this.trees(x0, z0, x0 + w * step, z0 + d * step),
       this.ecotone,
       this.clumps,
+      edits,
     );
   }
 
@@ -1844,6 +1864,8 @@ export class PlateHeights implements HeightSource {
       x0, z0, x1, z1,
       this.ecotone,
       this.clumps,
+      // (Trees reach into the box from outside it.)
+      this.treeEditsIn(x0 - TREE_REACH, z0 - TREE_REACH, x1 + TREE_REACH, z1 + TREE_REACH),
     );
   }
 

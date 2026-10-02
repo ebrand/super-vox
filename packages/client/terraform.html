@@ -25,7 +25,7 @@
       .choice { display: flex; gap: 8px; align-items: center; margin-top: 8px; } .choice label { width: 44px; font-size: 12px; } .choice select { flex: 1; }
       .slider { display: grid; grid-template-columns: 74px 1fr 52px; gap: 6px; align-items: center; font-size: 12px; margin-top: 4px; }
       .slider input { width: 100%; accent-color: var(--accent); } .slider span { color: var(--dim); font: 11px ui-monospace, monospace; text-align: right; }
-      .tools { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 4px; }
+      .tools { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-top: 4px; }
       .tools button { padding: 4px 0; font-size: 12px; }
       .tools button[aria-pressed="true"] { background: #1f6feb; border-color: #1f6feb; }
       .draft { display: flex; gap: 4px; align-items: center; margin-top: 8px; font-size: 12px; }
@@ -67,6 +67,7 @@
           <button type="button" class="tool" data-kind="lower" aria-pressed="false">Lower</button>
           <button type="button" class="tool" data-kind="level" aria-pressed="false">Level</button>
           <button type="button" class="tool" data-kind="smooth" aria-pressed="false">Smooth</button>
+          <button type="button" class="tool" data-kind="plant" aria-pressed="false">Plant</button>
         </div>
         <div class="slider"><label for="b-radius">Size</label><input type="range" id="b-radius" min="5" max="400" step="5"><span id="b-radius-v"></span></div>
         <div class="slider"><label for="b-amount">Strength</label><input type="range" id="b-amount" min="0" max="1" step="0.01"><span id="b-amount-v"></span></div>

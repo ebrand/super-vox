@@ -20,9 +20,10 @@ describe('AreaMaker', () => {
     const r = maker.patch(s, { x0: where[0] - 10, z0: where[1] - 40, x1: where[0] + 50, z1: where[1] + 20 });
     expect(isPatch(r)).toBe(true);
     const p = r as PatchedArea;
-    // 64 m sections of a 256 m area: 16; a 60 m box touches 2 x 2 of them at most.
+    // 64 m sections of a 256 m area: 16; a 60 m box, and the 11 m trees reach around it, touches
+    // 3 x 3 of them at most.
     expect(p.parts.length).toBeGreaterThan(0);
-    expect(p.parts.length).toBeLessThanOrEqual(4);
+    expect(p.parts.length).toBeLessThanOrEqual(9);
     expect(p.heights).not.toEqual(before.heights);
     // The same as a fresh maker's area with the stroke.
     const fresh = new AreaMaker(FLAT_WORLD_16KM, dry, { minVoxelSize: 1, tolerance: 4 }).make(area(...where, s));
@@ -72,5 +73,28 @@ describe('AreaMaker', () => {
     const fresh = new AreaMaker(world, cfg, { minVoxelSize: 1, tolerance: 4 }).make(area(0, 4000, s));
     expect(p.parts.length).toBeGreaterThan(0);
     expect(p.heights).toEqual(fresh.heights);
+  });
+  it('plants trees in a patch (crowns spreading past the brush too), as making the area again would', () => {
+    // Open grassland (a couple of trees about).
+    const land = [13000, 3500] as const;
+    const maker = new AreaMaker(FLAT_WORLD_16KM, dry, { minVoxelSize: 1, tolerance: 4 });
+    // (Every 1 m: trees are drawn as themselves.)
+    const fine = (s: TerrainStroke[] = []): AreaRequest => ({ ...area(...land, s), size: 192 * M, x0: (land[0] - 96) * M, z0: (land[1] - 96) * M, step: M });
+    const before = maker.make(fine());
+    // Across a section's edge; the trees' crowns spread past the brush.
+    const s = [stroke({ kind: 'plant', x: land[0] - 32 - 3, z: land[1], radius: 10, amount: 1, softness: 0 })];
+    const r = maker.patch(s, { x0: land[0] - 45, z0: land[1] - 10, x1: land[0] - 25, z1: land[1] + 10 });
+    expect(isPatch(r)).toBe(true);
+    const shown = new Map(before.parts.map((q) => [q.key, q]));
+    for (const q of (r as PatchedArea).parts) shown.set(q.key, q);
+    const fresh = new AreaMaker(FLAT_WORLD_16KM, dry, { minVoxelSize: 1, tolerance: 4 }).make(fine(s));
+    let changed = 0;
+    for (const q of fresh.parts) {
+      const was = before.parts.find((b) => b.key === q.key)!;
+      if (String(was.ground?.positions) !== String(q.ground?.positions)) changed++;
+      expect(shown.get(q.key)!.ground?.positions).toEqual(q.ground?.positions);
+    }
+    // Trees came up, across two sections at least.
+    expect(changed).toBeGreaterThanOrEqual(2);
   });
 });
