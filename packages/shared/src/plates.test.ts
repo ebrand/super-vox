@@ -751,15 +751,18 @@ describe('biomes', () => {
     expect([...Mo].some((m) => m > Material.Snow)).toBe(false);
   });
 
-  it('put snow and bare rock where it is cold, not at fixed heights', () => {
-    /** Land materials over the world, with each sample's height above the sea (m). */
-    const land = (over: Partial<PlateTerrainConfig>) => {
-      const p = plates({ biomes: 1, mountains: 60, rockSlope: 90, ...over });
-      const N = 250, H = p.heights(512, 512, N, N, 1024), M = p.materials(512, 512, N, N, 1024, H);
-      const out: { m: number; mat: number }[] = [];
-      for (let k = 0; k < H.length; k++) if (H[k]! > p.seaLevel) out.push({ m: (H[k]! - p.seaLevel) / 16, mat: M[k]! });
-      return out;
-    };
+  /** Land materials over the world, with each sample's height above the sea (m). */
+  const landOf = (over: Partial<PlateTerrainConfig>) => {
+    const p = plates({ biomes: 1, mountains: 60, rockSlope: 90, ...over });
+    const N = 250, H = p.heights(512, 512, N, N, 1024), M = p.materials(512, 512, N, N, 1024, H);
+    const out: { m: number; mat: number }[] = [];
+    for (let k = 0; k < H.length; k++) if (H[k]! > p.seaLevel) out.push({ m: (H[k]! - p.seaLevel) / 16, mat: M[k]! });
+    return out;
+  };
+
+  it('put snow and bare rock where it is cold, not at fixed heights (without altitudeSnow)', () => {
+    // Temperature alone (worlds made before altitudeSnow).
+    const land = (over: Partial<PlateTerrainConfig>) => landOf({ altitudeSnow: 0, ...over });
     // A hot world: no snow even on 600 m peaks, and no rock band (ground beaches aside).
     const hot = land({ northTemperature: 26, southTemperature: 32 });
     expect(hot.some((x) => x.mat === Material.Snow)).toBe(false);
@@ -779,6 +782,23 @@ describe('biomes', () => {
     };
     expect(snowShare({ snowTemperature: 0 })).toBeGreaterThan(snowShare({ snowTemperature: -8 }) + 0.05);
     expect(snowShare({ snowAltitude: 50, rockAltitude: 20 })).toBe(snowShare({}));
+  });
+
+  it('with altitudeSnow, also put snow above the snow altitude however warm', () => {
+    // A hot world: snow on the ground above the snow altitude, none below it (the line wanders
+    // up to snowFractal's reach, 30 m at 50).
+    const hot = landOf({ northTemperature: 26, southTemperature: 32, snowAltitude: 250 });
+    const snow = hot.filter((x) => x.mat === Material.Snow);
+    expect(snow.length).toBeGreaterThan(0);
+    expect(Math.min(...snow.map((x) => x.m))).toBeGreaterThanOrEqual(250 - 31);
+    expect(hot.filter((x) => x.m > 250 + 31 && x.mat !== Material.Snow).length).toBe(0);
+    // Lower snow altitude, more snow; out of reach, the same as temperature alone.
+    const share = (over: Partial<PlateTerrainConfig>) => {
+      const l = landOf({ northTemperature: -2, southTemperature: 10, ...over });
+      return l.filter((x) => x.mat === Material.Snow).length / l.length;
+    };
+    expect(share({ snowAltitude: 150 })).toBeGreaterThan(share({ snowAltitude: 400 }) + 0.05);
+    expect(share({ snowAltitude: 2000 })).toBe(share({ altitudeSnow: 0 }));
   });
 });
 
