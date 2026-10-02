@@ -336,8 +336,9 @@ export class EditTool {
           this.send({ type: 'attack', target: mob.id, weapon });
           return;
         }
-        // A sword cuts leaves (a sweep); otherwise left-click removes.
-        if ((held === Item.WoodenSword || held === Item.StoneSword) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) this.cut(held);
+        // TNT lights; a sword cuts leaves (a sweep); otherwise left-click removes.
+        if (this.target && this.targetMaterial === Material.TNT) this.ignite();
+        else if ((held === Item.WoodenSword || held === Item.StoneSword) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) this.cut(held);
         else if (this.survival) this.miningHeld = true; // (mined as it's held: see stepMining)
         else this.remove();
       } else if (button === 2) {
@@ -409,7 +410,9 @@ export class EditTool {
       ? 'nothing in reach'
       : this.targetMaterial !== null && isObjectMaterial(this.targetMaterial)
         ? `aiming at a ${materialName(this.targetMaterial)}${usable ? ' (right-click: open / close)' : ''} (left-click: take it down)`
-        : `aiming at a ${sizeLabel(this.target.size)} voxel`;
+        : this.targetMaterial === Material.TNT
+          ? `aiming at ${sizeLabel(this.target.size)} of TNT${this.mode === 'hybrid' ? ' (click: light it, then stand back)' : ''}`
+          : `aiming at a ${sizeLabel(this.target.size)} voxel`;
     const held = this.materialOf();
     const actions =
       this.mode === 'hybrid'
@@ -547,6 +550,14 @@ export class EditTool {
     if (this.target) this.submit({ op: 'remove', x: this.target.x, y: this.target.y, z: this.target.z }, 'remove');
   }
 
+  /** Lights the TNT aimed at (the server blows it after its fuse). */
+  private ignite(): void {
+    if (!this.target) return;
+    const id = this.nextId++;
+    this.pending.set(id, 'light');
+    this.send({ type: 'ignite', id, x: this.target.x, y: this.target.y, z: this.target.z });
+  }
+
   /** A mouse button let go (0 = left): stops mining. */
   release(button: number): void {
     if (button !== 0) return;
@@ -558,6 +569,7 @@ export class EditTool {
   private aimedRemoval(): (Edit & { op: 'remove' | 'removeBox' }) | null {
     if (this.mode === 'dig' && this.dig) return { op: 'removeBox', x: this.dig.x, y: this.dig.y, z: this.dig.z, size: this.dig.size };
     if (this.mode === 'place' || !this.target) return null;
+    if (this.mode === 'hybrid' && this.targetMaterial === Material.TNT) return null; // (lit, not mined)
     const held = this.materialOf();
     if ((held === Item.WoodenSword || held === Item.StoneSword) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) return null;
     return { op: 'remove', x: this.target.x, y: this.target.y, z: this.target.z };

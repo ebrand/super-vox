@@ -10,7 +10,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 25;
+export const PROTOCOL_VERSION = 26;
 
 export type ClientMessage =
   | {
@@ -56,6 +56,8 @@ export type ClientMessage =
    * edit that removes it is accepted once it's been mined long enough (see minedLongEnough).
    */
   | { type: 'mine'; x: number; y: number; z: number }
+  /** Light the TNT with a voxel at unit (x, y, z); answered with `editResult`. */
+  | { type: 'ignite'; id: number; x: number; y: number; z: number }
   /** Use (open or close) the object with a voxel at unit (x, y, z); answered with `editResult`. */
   | { type: 'use'; id: number; x: number; y: number; z: number }
   /** Hit a mob (`target`, an entity id) with what's in hand (`weapon`: an item id, null for a bare hand). */
@@ -103,6 +105,10 @@ export type ServerMessage =
   | { type: 'health'; health: number; max: number }
   /** The player died and comes back at (x, y, z) (feet, units). */
   | { type: 'respawn'; x: number; y: number; z: number }
+  /** TNT lit: the voxel at (x, y, z) of `size` (units) blows in `ms`. */
+  | { type: 'fuse'; x: number; y: number; z: number; size: number; ms: number }
+  /** An explosion centred at (x, y, z) (units) of `radius` (units), for its flash, debris and sound (the chunks it changed come too). */
+  | { type: 'explosion'; x: number; y: number; z: number; radius: number }
   /** The world's clock was changed (time set, stopped, or a new day length). */
   | { type: 'clock'; clock: DayClock; serverTime: number }
   /**
@@ -288,6 +294,9 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   }
   if (msg.type === 'mine' && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
     return { type: 'mine', x: msg.x, y: msg.y, z: msg.z };
+  }
+  if (msg.type === 'ignite' && isId(msg.id) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
+    return { type: 'ignite', id: msg.id as number, x: msg.x, y: msg.y, z: msg.z };
   }
   if (msg.type === 'use' && isId(msg.id) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
     return { type: 'use', id: msg.id as number, x: msg.x, y: msg.y, z: msg.z };

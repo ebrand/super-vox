@@ -4,6 +4,7 @@ import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool } from './editTool.js';
 import { FlyControls } from './flyControls.js';
+import { ExplosionView } from './explosions.js';
 import { DETAIL_SPEEDS, SpeedDetail, focusLead, selectLod } from './lod.js';
 import { TileManager } from './tileManager.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
@@ -95,6 +96,7 @@ scene.add(createSky(atmosphere));
 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, view * 1.5);
 const controls = new FlyControls(camera, renderer.domElement);
+const explosions = new ExplosionView(scene, camera);
 const compassRose = createCompassRose(document.body);
 
 const material = createVoxelMaterial(atmosphere);
@@ -494,6 +496,12 @@ connection = connect({
       case 'health':
         showHealth(msg.health, msg.max);
         break;
+      case 'fuse':
+        explosions.fuse(msg.x, msg.y, msg.z, msg.size, msg.ms);
+        break;
+      case 'explosion':
+        explosions.explode(msg.x, msg.y, msg.z, msg.radius);
+        break;
       case 'respawn':
         // Died: back at the spawn point (standing on it).
         camera.position.set(unitsToMeters(msg.x), unitsToMeters(msg.y) + PLAYER.eye / UNITS_PER_METER + 0.5, unitsToMeters(msg.z));
@@ -652,8 +660,13 @@ renderer.setAnimationLoop(() => {
   applyLighting(lighting, worldHours(), atmosphere, lightingUniforms, view);
   lightingPanel.updateTime();
   atmosphere.uniforms.underwater.value = inWaterAt(camera.position.x, camera.position.y, camera.position.z) ? 1 : 0;
-  // (Not behind the 3D map, which draws itself: the last frame stays on screen.)
+  explosions.frame();
+  // (Not behind the 3D map, which draws itself: the last frame stays on screen.) A blast nearby
+  // shakes the view, for this frame only.
+  const shake = explosions.shake();
+  camera.position.add(shake);
   if (!worldMap?.showing3d) water.render(scene, camera);
+  camera.position.sub(shake);
 
   frames++;
   const now = performance.now();

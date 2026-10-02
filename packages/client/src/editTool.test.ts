@@ -197,3 +197,26 @@ describe('EditTool big boxes (creative)', () => {
     stone.blocks[blockIndex(0, 1, 0)] = null;
   });
 });
+
+describe('EditTool TNT', () => {
+  it('lights TNT with a click in hybrid (and never mines it, even in survival)', () => {
+    (globalThis as { window?: EventTarget }).window = new EventTarget();
+    const tnt = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    tnt.blocks[blockIndex(0, 0, 0)] = { kind: 'uniform', size: 16, material: Material.TNT };
+    const chunks = { chunkAt: (c: { cx: number; cy: number; cz: number }) => (c.cx === 0 && c.cy === 0 && c.cz === 0 ? tnt : emptyChunk(c)) } as unknown as ChunkManager;
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(0.5, 3, 0.5);
+    camera.lookAt(0.5, 0, 0.5);
+    camera.updateMatrixWorld();
+    const sent: { type: string; [k: string]: unknown }[] = [];
+    const tool = new EditTool(new THREE.Scene(), camera, chunks, (m) => sent.push(m as never), () => Material.Stone);
+    tool.survival = true;
+    tool.click(0, { meta: false, alt: false });
+    tool.update();
+    expect(sent).toMatchObject([{ type: 'ignite', x: 0, y: 0, z: 0 }]);
+    expect(sent.some((m) => m.type === 'mine' || m.type === 'edit')).toBe(false);
+    expect(tool.hudLines()).toContain('light it');
+    tool.dispose();
+    delete (globalThis as { window?: EventTarget }).window;
+  });
+});

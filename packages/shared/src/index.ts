@@ -26,3 +26,4 @@ export * from './physics.js';
 export * from './walking.js';
 export * from './mobs.js';
 export * from './mining.js';
+export * from './explosives.js';

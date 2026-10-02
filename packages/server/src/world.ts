@@ -47,6 +47,9 @@ import {
   FACINGS,
   FACING_STEP,
   blockFromVoxels,
+  blockVoxelContaining,
+  deltaX,
+  type BlockVoxel,
   blockVoxels,
   editMiningTime,
   fenceJoins,
@@ -702,6 +705,99 @@ export class World {
     this.stats.edits++;
     this.saveObjects();
     return result;
+  }
+
+  /** The TNT voxel covering unit (x, y, z) (its corner and size, units), or null if there's none. */
+  tntAt(x: number, y: number, z: number): { x: number; y: number; z: number; size: number } | null {
+    const n = CHUNK_SIZE, cx = Math.floor(x / n), cy = Math.floor(y / n), cz = Math.floor(z / n);
+    const resolved = resolveChunk(this.config, { cx, cy, cz });
+    if (!resolved) return null;
+    const chunk = this.current(resolved);
+    const lx = x - cx * n, ly = y - cy * n, lz = z - cz * n;
+    const block = chunk.blocks[blockIndex(Math.floor(lx / BLOCK_SIZE), Math.floor(ly / BLOCK_SIZE), Math.floor(lz / BLOCK_SIZE))] ?? null;
+    const v = blockVoxelContaining(block, lx % BLOCK_SIZE, ly % BLOCK_SIZE, lz % BLOCK_SIZE);
+    if (!v || v.material !== Material.TNT) return null;
+    const ox = x - (lx % BLOCK_SIZE), oy = y - (ly % BLOCK_SIZE), oz = z - (lz % BLOCK_SIZE);
+    return { x: ox + v.x, y: oy + v.y, z: oz + v.z, size: v.size };
+  }
+
+  /**
+   * Blows out a crater of `radius` (units) around (x, y, z): everything solid within it goes
+   * (voxels cut by its edge broken down to 1/4 m, or 1/16 m for a small blast, so it's round),
+   * placed objects in it too; water stays (and the sea flows into what's opened beside it). TNT in
+   * it stays, to be lit (returned: its voxels), except `self`, the TNT that blew. Null result if
+   * nothing changed.
+   */
+  explode(x: number, y: number, z: number, radius: number, self: { x: number; y: number; z: number; size: number } | null = null): { result: EditResult | null; tnt: { x: number; y: number; z: number; size: number }[] } {
+    const r2 = radius * radius, minPiece = radius >= 32 ? 4 : 1;
+    const results: EditResult[] = [];
+    // Objects in it: gone.
+    for (const o of [...this.objects.values()]) {
+      const ox = (o.x + 0.5) * BLOCK_SIZE, oz = (o.z + 0.5) * BLOCK_SIZE;
+      const dx = deltaX(this.config, x, ox), dy = Math.max(0, Math.max(o.y * BLOCK_SIZE - y, y - (o.y + objectHeight(o.kind)) * BLOCK_SIZE)), dz = oz - z;
+      if (dx * dx + dy * dy + dz * dz <= r2) results.push(this.removeObject(o));
+    }
+    const tnt: { x: number; y: number; z: number; size: number }[] = [];
+    const next = new Map<string, Chunk>();
+    const touched: [number, number, number][] = [];
+    const B = BLOCK_SIZE, n = BLOCKS_PER_CHUNK_AXIS;
+    for (let by = Math.floor((y - radius) / B); by <= Math.floor((y + radius) / B); by++) {
+      for (let bz = Math.floor((z - radius) / B); bz <= Math.floor((z + radius) / B); bz++) {
+        for (let bx = Math.floor((x - radius) / B); bx <= Math.floor((x + radius) / B); bx++) {
+          // (Quickly past blocks the sphere misses.)
+          const near = (c: number, lo: number) => Math.max(lo - c, 0, c - (lo + B));
+          if (near(x, bx * B) ** 2 + near(y, by * B) ** 2 + near(z, bz * B) ** 2 > r2) continue;
+          const resolved = resolveChunk(this.config, { cx: Math.floor(bx / n), cy: Math.floor(by / n), cz: Math.floor(bz / n) });
+          if (!resolved) continue;
+          const key = chunkKey(resolved);
+          const chunk = next.get(key) ?? this.current(resolved);
+          const i = blockIndex(((bx % n) + n) % n, ((by % n) + n) % n, ((bz % n) + n) % n);
+          const block = chunk.blocks[i] ?? null;
+          if (!block) continue;
+          const kept: BlockVoxel[] = [];
+          let changed = false;
+          const visit = (v: BlockVoxel) => {
+            const wx = bx * B + v.x, wy = by * B + v.y, wz = bz * B + v.z;
+            if (isWater(v.material)) return void kept.push(v);
+            const centre = (wx + v.size / 2 - x) ** 2 + (wy + v.size / 2 - y) ** 2 + (wz + v.size / 2 - z) ** 2;
+            if (v.material === Material.TNT && !(self && self.x === wx && self.y === wy && self.z === wz)) {
+              if (centre <= r2) tnt.push({ x: wx, y: wy, z: wz, size: v.size });
+              return void kept.push(v);
+            }
+            // Nearest and farthest points of the voxel from the centre.
+            let dmin = 0, dmax = 0;
+            for (const [c, lo] of [[x, wx], [y, wy], [z, wz]] as const) {
+              dmin += Math.max(lo - c, 0, c - (lo + v.size)) ** 2;
+              dmax += Math.max((c - lo) ** 2, (c - lo - v.size) ** 2);
+            }
+            if (dmin >= r2) return void kept.push(v); // untouched
+            changed = true;
+            if (dmax <= r2) return; // all inside: gone
+            if (v.size > minPiece) {
+              // Cut by the edge: in eighths, each decided again.
+              const h = v.size / 2;
+              for (let k = 0; k < 8; k++) visit({ x: v.x + (k & 1) * h, y: v.y + ((k >> 1) & 1) * h, z: v.z + ((k >> 2) & 1) * h, size: h, material: v.material });
+              return;
+            }
+            if (centre > r2) kept.push(v);
+          };
+          for (const v of blockVoxels(block)) visit(v);
+          if (!changed) continue;
+          const blocks = chunk.blocks.slice();
+          blocks[i] = blockFromVoxels(kept);
+          next.set(key, { cx: chunk.cx, cy: chunk.cy, cz: chunk.cz, blocks });
+          touched.push([bx, by, bz]);
+          this.flow.touch(bx, by, bz);
+        }
+      }
+    }
+    if (next.size) {
+      results.push(this.commit([...next.values()]));
+      const refill = this.refillFromNatural(touched);
+      if (refill) results.push(refill);
+      this.stats.edits++;
+    }
+    return { result: results.length ? results.reduce(mergeResults) : null, tnt };
   }
 
   /** Opens or closes a gate or door; throws EditError for anything else. */

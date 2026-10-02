@@ -36,6 +36,8 @@ export const Material = {
    * the sea, lakes and rivers (Water), which stay put and never run dry.
    */
   PouredWater: 32,
+  /** Explosive: lit with a click, it blows a crater after a fuse (see explosives.ts). */
+  TNT: 33,
 } as const;
 
 /** Flowing water reaches this many blocks from its source. */
@@ -85,6 +87,7 @@ const MATERIAL_NAMES: Record<number, string> = {
   [Material.FenceWood]: 'fence',
   [Material.GateWood]: 'gate',
   [Material.DoorWood]: 'door',
+  [Material.TNT]: 'TNT',
 };
 
 

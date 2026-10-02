@@ -29,6 +29,7 @@ export const RECIPES: readonly Recipe[] = [
   r('gate', [[Item.Stick, 4], [Material.Planks, 2]], [Item.Gate, 1], true),
   r('doors', [[Material.Planks, 6]], [Item.Door, 3], true),
   r('bucket', [[Material.Planks, 3]], [Item.Bucket, 1], true),
+  r('tnt', [[Material.Sand, 4], [Material.Planks, 1]], [Material.TNT, 1], true),
 ];
 
 export function recipeById(id: string): Recipe | undefined {

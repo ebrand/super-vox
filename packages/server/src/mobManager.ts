@@ -1,4 +1,5 @@
 import {
+  blastDamage,
   MOBS,
   Material,
   UNITS_PER_METER,
@@ -144,6 +145,15 @@ export class MobManager {
     const killed = hurtMob(m, damage, x, eyeZ, now);
     if (killed) this.mobs.delete(id);
     return { hit: true, killed };
+  }
+
+  /** A blast at (x, y, z) (units) of `radius`: every mob in reach hurt (see blastDamage), knocked away from it. */
+  blast(x: number, y: number, z: number, radius: number, now: number): void {
+    for (const [id, m] of this.mobs) {
+      const bx = m.x + deltaX(this.world.config, m.x, x); // (the blast's copy nearest the mob)
+      const damage = blastDamage(Math.hypot(m.x - bx, m.y - y, m.z - z), radius);
+      if (damage > 0 && hurtMob(m, damage, bx, z, now)) this.mobs.delete(id);
+    }
   }
 
   /** Mobs within `radius` (units, horizontally) of (x, z), for a player's view. */

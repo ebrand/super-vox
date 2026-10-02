@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import WebSocket from 'ws';
-import { BLOCK_VOLUME, FLAT_WORLD_16KM, FlatGenerator, HOTBAR_SLOTS, Item, Material, PROTOCOL_VERSION, defaultFlatGen, type GameMode, type ServerMessage } from '@super-vox/shared';
+import { BLOCK_VOLUME, FLAT_WORLD_16KM, FUSE_MS, FlatGenerator, HOTBAR_SLOTS, Item, Material, PROTOCOL_VERSION, defaultFlatGen, type GameMode, type ServerMessage } from '@super-vox/shared';
 import { MemoryAccountStore } from './accounts.js';
 import { buildApp } from './app.js';
 import { Auth, SESSION_COOKIE, sessionToken } from './auth.js';
@@ -29,7 +29,7 @@ async function setup(mode: GameMode, mobs?: (w: World) => MobManager, miningTime
   const url = (await app.listen({ port: 0, host: '127.0.0.1' })).replace(/^http/, 'ws') + '/ws';
   const ann = await accounts.signIn({ sub: 'g-ann', email: 'ann@x.com', name: 'Ann' });
   const cookie = `${SESSION_COOKIE}=${sessionToken(ann.id, Date.now() + 1e6, SECRET)}`;
-  return { url, cookie, inventories, ann };
+  return { url, cookie, inventories, ann, world };
 }
 
 /** A connection that says hello and collects what comes back. */
@@ -137,6 +137,38 @@ describe('big boxes (creative)', () => {
     q.ws.close();
   });
 });
+
+describe('TNT', () => {
+  it('lights with a click, blows after its fuse (everyone told), and hurts a survival player nearby', async () => {
+    const { url, cookie, world } = await setup('survival');
+    const p = await player(url, cookie);
+    await p.until(() => !!p.inventory());
+    const tnt = { x: 4000 * 16, y: 0, z: 4000 * 16, size: 16 };
+    world.applyEdit({ op: 'place', ...tnt, material: Material.TNT });
+    // Standing 3 m off (the pose is the eye, units).
+    p.ws.send(JSON.stringify({ type: 'pose', x: tnt.x + 8 + 48, y: 26, z: tnt.z + 8, yaw: 0 }));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(await act(p, { type: 'ignite', x: tnt.x + 4, y: 4, z: tnt.z + 4 })).toMatchObject({ ok: true });
+    expect(p.msgs.find((m) => m.type === 'fuse')).toMatchObject({ type: 'fuse', ...tnt, ms: FUSE_MS });
+    expect(await act(p, { type: 'ignite', x: tnt.x + 4, y: 4, z: tnt.z + 4 })).toMatchObject({ ok: false, error: "it's already lit" });
+    expect(await act(p, { type: 'ignite', x: tnt.x + 40, y: 4, z: tnt.z + 4 })).toMatchObject({ ok: false, error: 'no TNT there' });
+    await p.until(() => p.msgs.some((m) => m.type === 'explosion'), FUSE_MS + 2000);
+    expect(p.msgs.find((m) => m.type === 'explosion')).toEqual({ type: 'explosion', x: tnt.x + 8, y: 8, z: tnt.z + 8, radius: 64 });
+    await p.until(() => p.msgs.some((m) => m.type === 'health'));
+    const h = p.msgs.filter((m) => m.type === 'health').at(-1) as { health: number };
+    expect(h.health).toBeLessThan(20);
+    expect(world.tntAt(tnt.x + 4, 4, tnt.z + 4)).toBeNull();
+    p.ws.close();
+  }, 15_000);
+});
+
+/** Sends a message with an id and waits for its editResult. */
+async function act(p: Awaited<ReturnType<typeof player>>, msg: object) {
+  const id = 9000 + Math.floor(Math.random() * 1000);
+  p.ws.send(JSON.stringify({ ...msg, id }));
+  await p.until(() => p.msgs.some((m) => m.type === 'editResult' && m.id === id));
+  return p.msgs.find((m) => m.type === 'editResult' && m.id === id)!;
+}
 
 describe('inventories', () => {
   it('start a survival player with the kit, take what they place and give what they mine', async () => {

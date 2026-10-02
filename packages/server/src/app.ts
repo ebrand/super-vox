@@ -39,6 +39,7 @@ import {
   parseClockChange,
   parsePlateTerrain,
   minedLongEnough,
+  blastDamage,
   isBigEdit,
   validateStrokes,
   isGameMode,
@@ -48,6 +49,7 @@ import {
 } from '@super-vox/shared';
 import type { WebSocket } from 'ws';
 import { encodeWorldMap, type EditResult, type World } from './world.js';
+import { Explosives } from './explosives.js';
 import { RequestQueue } from './requestQueue.js';
 import { HISTORY, Metrics, percentile } from './metrics.js';
 import { NoSuchWorldError, WorldExistsError } from './worldFile.js';
@@ -480,7 +482,41 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   }, 100);
   // Monitoring: a sample every second (see /api/dashboard).
   const sampling = setInterval(() => metrics.tick(players.size), 1000);
+  // Lit TNT: what's due blows (see Explosives), twenty times a second.
+  const explosivesOf = new Map<World, Explosives>();
+  const toWorld = (world: World, msg: ServerMessage) => {
+    const bytes = encodeMessage(msg);
+    for (const [client, w] of clients) if (w === world && client.readyState === client.OPEN) out(client, bytes);
+  };
+  const blasting = setInterval(() => {
+    const now = Date.now();
+    for (const [world, explosives] of explosivesOf) {
+      if (explosives.count === 0) continue;
+      for (const b of explosives.tick(now)) {
+        if (b.result) broadcast(world, b.result);
+        toWorld(world, { type: 'explosion', x: b.x, y: b.y, z: b.z, radius: b.radius });
+        for (const { tnt, ms } of b.lit) toWorld(world, { type: 'fuse', ...tnt, ms });
+        // Hurt: players (who can be) and mobs in reach.
+        for (const [client, w] of clients) {
+          const p = players.get(client);
+          if (w !== world || !p?.pose || !p.vulnerable) continue;
+          const d = Math.hypot(deltaX(world.config, b.x, p.pose.x), p.pose.y - EYE + 0.9 * UNITS_PER_METER - b.y, p.pose.z - b.z);
+          const damage = blastDamage(d, b.radius);
+          if (damage <= 0) continue;
+          p.health -= damage;
+          p.lastHurt = now;
+          if (p.health <= 0) {
+            p.health = PLAYER_HEALTH;
+            sendTo(client, { type: 'respawn', x: world.spawn.x, y: world.spawn.y, z: world.spawn.z });
+          }
+          sendTo(client, { type: 'health', health: p.health, max: PLAYER_HEALTH });
+        }
+        mobManagers.get(world)?.blast(b.x, b.y, b.z, b.radius, now);
+      }
+    }
+  }, 50);
   app.addHook('onClose', async () => {
+    clearInterval(blasting);
     clearInterval(flowing);
     clearInterval(mobbing);
     clearInterval(sampling);
@@ -739,6 +775,21 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           send({ type: 'editResult', id: msg.id, ok: true });
           if (inventory?.apply(result.change)) send(inventory.message());
           broadcast(world, result);
+          break;
+        }
+
+        case 'ignite': {
+          if (!greeted) return;
+          const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
+          if (!canEdit()) return fail('sign in to build');
+          const tnt = world.tntAt(msg.x, msg.y, msg.z);
+          if (!tnt) return fail('no TNT there');
+          let explosives = explosivesOf.get(world);
+          if (!explosives) explosivesOf.set(world, (explosives = new Explosives(world)));
+          const ms = explosives.light(tnt, Date.now());
+          if (ms === null) return fail("it's already lit");
+          send({ type: 'editResult', id: msg.id, ok: true });
+          toWorld(world, { type: 'fuse', ...tnt, ms });
           break;
         }
 
