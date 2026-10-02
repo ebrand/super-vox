@@ -73,6 +73,11 @@ export type AppOptions = (
   mobs?: (world: World) => MobManager;
 };
 
+/** `f` of a value, at once if it's to hand, else when its promise settles (a promise of that). */
+function then<T>(v: T | Promise<T>, f: (v: T) => void): void | Promise<void> {
+  return v instanceof Promise ? v.then(f) : f(v);
+}
+
 /** A connection, as the dashboard shows it. */
 interface Player {
   id: number;
@@ -507,16 +512,17 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const queueChunk = (c: ChunkCoord, lane: 'front' | 'near' = 'near') =>
       queue.add(
         `c:${c.cx},${c.cy},${c.cz}`,
-        () => {
-          const bytes = world.getEncodedChunk(c);
-          if (!bytes) {
-            send({ type: 'chunkUnavailable', ...c });
-            return;
-          }
-          sendBinary(BinaryTag.Chunk, bytes);
-          metrics.totals.chunksOut++;
-          players.get(socket)!.chunks++;
-        },
+        () =>
+          then(world.encodedChunk(c), (bytes) => {
+            if (socket.readyState !== socket.OPEN) return;
+            if (!bytes) {
+              send({ type: 'chunkUnavailable', ...c });
+              return;
+            }
+            sendBinary(BinaryTag.Chunk, bytes);
+            metrics.totals.chunksOut++;
+            players.get(socket)!.chunks++;
+          }),
         lane,
       );
     socket.on('close', () => {
@@ -624,26 +630,28 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (msg.type === 'requestChunk') queueChunk({ cx: msg.cx, cy: msg.cy, cz: msg.cz });
           else if (msg.type === 'requestTile') {
             const t = { level: msg.level, tx: msg.tx, tz: msg.tz };
-            queue.add(`t:${t.level},${t.tx},${t.tz}`, () => {
-              const bytes = world.getEncodedTile(t);
-              if (!bytes) send({ type: 'tileUnavailable', ...t });
-              else {
-                sendBinary(BinaryTag.Tile, bytes);
-                metrics.totals.tilesOut++;
-                players.get(socket)!.tiles++;
-              }
-            }, 'far');
+            queue.add(`t:${t.level},${t.tx},${t.tz}`, () =>
+              then(world.encodedTile(t), (bytes) => {
+                if (socket.readyState !== socket.OPEN) return;
+                if (!bytes) send({ type: 'tileUnavailable', ...t });
+                else {
+                  sendBinary(BinaryTag.Tile, bytes);
+                  metrics.totals.tilesOut++;
+                  players.get(socket)!.tiles++;
+                }
+              }), 'far');
           } else {
             const { cx, cz } = msg;
-            queue.add(`k:${cx},${cz}`, () => {
-              const range = world.columnRange(cx, cz);
-              // The chunks the client renders (from above the water), and those just above and
-              // below (it meshes against them).
-              const sent = range && mergeSpans(columnSpans(range).map((s) => ({ lo: s.lo - 1, hi: s.hi + 1 })));
-              send(range ? { type: 'column', cx, cz, ...range, sent: sent! } : { type: 'column', cx, cz, minY: null, maxY: null });
-              metrics.totals.columnsOut++;
-              for (const s of sent ?? []) for (let cy = s.lo; cy <= s.hi; cy++) queueChunk({ cx, cy, cz }, 'front');
-            });
+            queue.add(`k:${cx},${cz}`, () =>
+              then(world.columnRangeOf(cx, cz), (range) => {
+                if (socket.readyState !== socket.OPEN) return;
+                // The chunks the client renders (from above the water), and those just above and
+                // below (it meshes against them).
+                const sent = range && mergeSpans(columnSpans(range).map((s) => ({ lo: s.lo - 1, hi: s.hi + 1 })));
+                send(range ? { type: 'column', cx, cz, ...range, sent: sent! } : { type: 'column', cx, cz, minY: null, maxY: null });
+                metrics.totals.columnsOut++;
+                for (const s of sent ?? []) for (let cy = s.lo; cy <= s.hi; cy++) queueChunk({ cx, cy, cz }, 'front');
+              }));
           }
           break;
 

@@ -23,6 +23,7 @@ import {
   type WorldShape,
 } from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
+import { GenPool } from './genPool.js';
 import { World } from './world.js';
 import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, readStrokes, readWorld, saveClock, saveMode, updateWorld, worldConfigOf, writeStrokes, type WorldFile } from './worldFile.js';
 
@@ -130,6 +131,8 @@ interface Opened {
   world: World;
   file: WorldFile;
   strokes: TerrainStroke[];
+  /** Its generation on the pool, to let go of when it's closed (null: generated here). */
+  remote: { forget(): void } | null;
   heights: HeightSource | null;
   /** Development: the world voxelized at other tolerances (edits stay in memory). */
   variants: Map<number, World>;
@@ -154,8 +157,11 @@ export class FileWorldCatalog implements WorldCatalog {
   constructor(
     private readonly dataRoot: string,
     readonly defaultName: string,
-    /** dayMinutes: the day length of worlds that don't have a clock yet. */
-    private readonly opts: { dev: boolean; config?: WorldConfig; dayMinutes?: number | 'real' },
+    /**
+     * dayMinutes: the day length of worlds that don't have a clock yet; generationWorkers, how
+     * many worker threads generate terrain (0 or absent: the main thread does).
+     */
+    private readonly opts: { dev: boolean; config?: WorldConfig; dayMinutes?: number | 'real'; generationWorkers?: number },
   ) {
     this.dev = opts.dev;
     // Anyone the server lets (see app.ts: development, or admins) may change a world's clock.
@@ -184,7 +190,7 @@ export class FileWorldCatalog implements WorldCatalog {
         const keep = old && old.spec.generator === 'plates' ? old.spec.shape : undefined;
         const s = shape ?? keep;
         const file = updateWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize, ...(s ? { shape: s } : {}) });
-        this.open.delete(name); // rebuilt from the new settings on next use
+        this.close(name); // rebuilt from the new settings on next use
         return this.summary(file);
       };
       this.terraform = (name, base, added) => {
@@ -199,13 +205,13 @@ export class FileWorldCatalog implements WorldCatalog {
         const over = strokesOverColumns(added, world.protectedColumns(), CHUNK_METRES, config.wrapX ? config.widthUnits / M : null);
         if (over.length) throw new StrokesOverBuildsError(over);
         writeStrokes(this.dataRoot, name, all);
-        this.open.delete(name); // remade with them on next use
+        this.close(name); // remade with them on next use
         return all.length;
       };
       this.delete = (name) => {
         if (name === this.defaultName) throw new DefaultWorldError(`"${name}" is the server's default world and can't be deleted`);
         deleteWorld(this.dataRoot, name);
-        this.open.delete(name);
+        this.close(name);
         this.clocks.delete(name);
       };
     }
@@ -295,12 +301,24 @@ export class FileWorldCatalog implements WorldCatalog {
     return this.get(name)?.protectedColumns() ?? null;
   }
 
+  private pool: GenPool | null = null;
+
+  /** Closes world `name` (reopened, rebuilt, on next use), letting go of its generation on the pool. */
+  private close(name: string): void {
+    this.open.get(name)?.remote?.forget();
+    this.open.delete(name);
+  }
+
   private build(file: WorldFile): Opened {
     const config = this.opts.config ?? worldConfigOf(file.spec);
     const strokes = readStrokes(this.dataRoot, file.name);
     const { generator, heights } = generatorFor(file.spec, config, strokes);
     const tolerance = file.spec.generator === 'flat' ? null : file.spec.voxelize.tolerance;
-    const world = new World(config, generator, { tolerance, store: new FileChunkStore(join(this.dataRoot, file.name, 'chunks')) });
-    return { world, file, strokes, heights, variants: new Map() };
+    // Terrain from settings is made on the worker threads (flat worlds cost next to nothing).
+    const workers = this.opts.generationWorkers ?? 0;
+    if (workers > 0 && file.spec.generator !== 'flat') this.pool ??= new GenPool(workers);
+    const remote = this.pool && file.spec.generator !== 'flat' ? this.pool.remote(file.name, file.spec, config, strokes) : null;
+    const world = new World(config, generator, { tolerance, store: new FileChunkStore(join(this.dataRoot, file.name, 'chunks')), ...(remote ? { remote } : {}) });
+    return { world, file, strokes, remote, heights, variants: new Map() };
   }
 }

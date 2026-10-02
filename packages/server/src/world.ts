@@ -145,6 +145,13 @@ export interface EditResult {
  * encoded chunks in an LRU cache. Nothing is persisted yet; every chunk is
  * regenerated from the config.
  */
+/** Makes a world's generated chunks, tiles and column ranges elsewhere (see GenPool): `ms`, how long they took. */
+export interface RemoteGenerator {
+  chunk(coord: ChunkCoord): Promise<{ bytes: Uint8Array; ms: number }>;
+  tile(t: TileCoord): Promise<{ bytes: Uint8Array; ms: number }>;
+  column(cx: number, cz: number): Promise<ColumnRange>;
+}
+
 export class World {
   private readonly cache = new Map<string, Uint8Array>();
   private readonly tileCache = new Map<string, Uint8Array>();
@@ -173,11 +180,17 @@ export class World {
     edits: 0, waterSteps: 0, waterChanges: 0,
   };
 
+  /** Where generated chunks, tiles and column ranges are made off the main thread (see GenPool), or null: here. */
+  private readonly remote: RemoteGenerator | null;
+  /** Requests on their way from `remote`, by key (players asking for the same thing share one). */
+  private readonly pending = new Map<string, Promise<unknown>>();
+
   constructor(
     readonly config: WorldConfig,
     private readonly generator: ChunkGenerator,
-    opts: { cacheSize?: number; tolerance?: number | null; store?: ChunkStore } = {},
+    opts: { cacheSize?: number; tolerance?: number | null; store?: ChunkStore; remote?: RemoteGenerator } = {},
   ) {
+    this.remote = opts.remote ?? null;
     this.cacheSize = opts.cacheSize ?? 4096;
     this.tolerance = opts.tolerance ?? null;
     this.store = opts.store ?? null;
@@ -212,6 +225,55 @@ export class World {
     this.stats.chunkMisses++;
     recent(this.stats.recentChunkMs, performance.now() - t0);
     return bytes;
+  }
+
+  /**
+   * As getEncodedChunk, made off the main thread where the world has a remote generator (a
+   * promise; what's to hand, cached or edited, comes at once). An edit landing meanwhile wins:
+   * the edited chunk is what's returned (and cached).
+   */
+  encodedChunk(coord: ChunkCoord): Uint8Array | null | Promise<Uint8Array | null> {
+    const resolved = resolveChunk(this.config, coord);
+    if (!resolved || !this.remote) return this.getEncodedChunk(coord);
+    const key = chunkKey(resolved);
+    if (this.cache.has(key) || this.edited.has(key)) return this.getEncodedChunk(coord);
+    return this.share(`c:${key}`, () => this.remote!.chunk(resolved).then(({ bytes, ms }) => {
+      const now = this.edited.get(key);
+      if (now) return this.getEncodedChunk(resolved);
+      lruSet(this.cache, key, bytes, this.cacheSize);
+      this.stats.chunkMisses++;
+      recent(this.stats.recentChunkMs, ms);
+      return bytes;
+    }));
+  }
+
+  /** As getEncodedTile, made off the main thread where the world has a remote generator (as encodedChunk). */
+  encodedTile(t: TileCoord): Uint8Array | null | Promise<Uint8Array | null> {
+    if (!tileInWorld(this.config, t) || !this.remote) return this.getEncodedTile(t);
+    const key = tileKey(t);
+    if (this.tileCache.has(key)) return this.getEncodedTile(t);
+    return this.share(`t:${key}`, () => this.remote!.tile(t).then(({ bytes, ms }) => {
+      lruSet(this.tileCache, key, bytes, this.cacheSize);
+      this.stats.tileMisses++;
+      recent(this.stats.recentTileMs, ms);
+      return bytes;
+    }));
+  }
+
+  /** As columnRange, worked out off the main thread where the world has a remote generator (a promise). */
+  columnRangeOf(cx: number, cz: number): ColumnRange | null | Promise<ColumnRange | null> {
+    const resolved = resolveChunk(this.config, { cx, cy: 0, cz });
+    if (!resolved || !this.remote) return this.columnRange(cx, cz);
+    return this.share(`k:${resolved.cx},${resolved.cz}`, () => this.remote!.column(resolved.cx, resolved.cz)).then((range) => this.withEdits(resolved.cx, resolved.cz, range as ColumnRange));
+  }
+
+  /** One request at a time for each thing (later askers wait for the first). */
+  private share<T>(key: string, make: () => Promise<T>): Promise<T> {
+    const on = this.pending.get(key) as Promise<T> | undefined;
+    if (on) return on;
+    const p = make().finally(() => this.pending.delete(key));
+    this.pending.set(key, p);
+    return p;
   }
 
   /**
@@ -476,38 +538,7 @@ export class World {
       return hit;
     }
     const t0 = performance.now();
-    const size = tileSizeUnits(t.level);
-    const step = tileStep(t.level);
-    // Sample each cell at its centre column.
-    const x0 = t.tx * size + Math.floor(step / 2);
-    const z0 = t.tz * size + Math.floor(step / 2);
-    const s = this.generator.surfaceSamples(x0, z0, step, TILE_SAMPLES);
-    const heights = new Int16Array(TILE_SAMPLES * TILE_SAMPLES);
-    for (let j = 0; j < TILE_SAMPLES; j++) {
-      for (let i = 0; i < TILE_SAMPLES; i++) {
-        const x = x0 + i * step, z = z0 + j * step;
-        const outside = (!this.config.wrapX && (x < 0 || x >= this.config.widthUnits)) || z < 0 || z >= this.config.depthUnits;
-        heights[i + TILE_SAMPLES * j] = outside ? NO_GROUND : Math.max(-32767, Math.min(32767, s.heights[i + TILE_SAMPLES * j]!));
-      }
-    }
-    // Forest canopy, if any, floats above the ground.
-    let canopy: Pick<Tile, 'canopyTop' | 'canopyBottom' | 'canopyMaterials'> = {};
-    if (s.canopy) {
-      const top = new Int16Array(TILE_SAMPLES * TILE_SAMPLES).fill(NO_GROUND), bottom = new Int16Array(TILE_SAMPLES * TILE_SAMPLES).fill(NO_GROUND);
-      for (let k = 0; k < top.length; k++) {
-        if (s.canopy.top[k] === NO_CANOPY || heights[k] === NO_GROUND) continue;
-        top[k] = Math.max(-32767, Math.min(32767, s.canopy.top[k]!));
-        bottom[k] = Math.max(-32767, Math.min(32767, s.canopy.bottom[k]!));
-      }
-      canopy = { canopyTop: top, canopyBottom: bottom, canopyMaterials: s.canopy.material };
-    }
-    // Rivers and lakes, over the ground.
-    let water: Int16Array | undefined;
-    if (s.water) {
-      water = new Int16Array(TILE_SAMPLES * TILE_SAMPLES).fill(NO_GROUND);
-      for (let k = 0; k < water.length; k++) if (s.water[k]! > s.heights[k]! && heights[k] !== NO_GROUND) water[k] = Math.max(-32767, Math.min(32767, s.water[k]!));
-    }
-    const bytes = encodeTile({ ...t, heights, materials: s.materials, ...canopy, ...(water ? { water } : {}) });
+    const bytes = tileBytes(this.generator, this.config, t);
     lruSet(this.tileCache, key, bytes, this.cacheSize);
     this.stats.tileMisses++;
     recent(this.stats.recentTileMs, performance.now() - t0);
@@ -717,8 +748,12 @@ export class World {
   columnRange(cx: number, cz: number): ColumnRange | null {
     const resolved = resolveChunk(this.config, { cx, cy: 0, cz });
     if (!resolved) return null;
-    const range = this.generator.columnRange(resolved.cx, resolved.cz);
-    const span = this.editSpans.get(`${resolved.cx},${resolved.cz}`);
+    return this.withEdits(resolved.cx, resolved.cz, this.generator.columnRange(resolved.cx, resolved.cz));
+  }
+
+  /** A generated column's range, widened over its edited chunks. */
+  private withEdits(cx: number, cz: number, range: ColumnRange): ColumnRange {
+    const span = this.editSpans.get(`${cx},${cz}`);
     if (!span) return range;
     // Edited layers count as solid: whatever was built (or flowed) there is drawn.
     const out: ColumnRange = { minY: Math.min(range.minY, span.minY), maxY: Math.max(range.maxY, span.maxY) };
@@ -823,6 +858,42 @@ export function findSpawn(config: WorldConfig, generator: ChunkGenerator): { x: 
     if (isLand(y) && y > best.y) best = { x, y, z };
   }
   return best;
+}
+
+/** A low-detail tile's bytes (see encodeTile), made by `generator`. */
+export function tileBytes(generator: ChunkGenerator, config: WorldConfig, t: TileCoord): Uint8Array {
+  const size = tileSizeUnits(t.level);
+  const step = tileStep(t.level);
+  // Sample each cell at its centre column.
+  const x0 = t.tx * size + Math.floor(step / 2);
+  const z0 = t.tz * size + Math.floor(step / 2);
+  const s = generator.surfaceSamples(x0, z0, step, TILE_SAMPLES);
+  const heights = new Int16Array(TILE_SAMPLES * TILE_SAMPLES);
+  for (let j = 0; j < TILE_SAMPLES; j++) {
+    for (let i = 0; i < TILE_SAMPLES; i++) {
+      const x = x0 + i * step, z = z0 + j * step;
+      const outside = (!config.wrapX && (x < 0 || x >= config.widthUnits)) || z < 0 || z >= config.depthUnits;
+      heights[i + TILE_SAMPLES * j] = outside ? NO_GROUND : Math.max(-32767, Math.min(32767, s.heights[i + TILE_SAMPLES * j]!));
+    }
+  }
+  // Forest canopy, if any, floats above the ground.
+  let canopy: Pick<Tile, 'canopyTop' | 'canopyBottom' | 'canopyMaterials'> = {};
+  if (s.canopy) {
+    const top = new Int16Array(TILE_SAMPLES * TILE_SAMPLES).fill(NO_GROUND), bottom = new Int16Array(TILE_SAMPLES * TILE_SAMPLES).fill(NO_GROUND);
+    for (let k = 0; k < top.length; k++) {
+      if (s.canopy.top[k] === NO_CANOPY || heights[k] === NO_GROUND) continue;
+      top[k] = Math.max(-32767, Math.min(32767, s.canopy.top[k]!));
+      bottom[k] = Math.max(-32767, Math.min(32767, s.canopy.bottom[k]!));
+    }
+    canopy = { canopyTop: top, canopyBottom: bottom, canopyMaterials: s.canopy.material };
+  }
+  // Rivers and lakes, over the ground.
+  let water: Int16Array | undefined;
+  if (s.water) {
+    water = new Int16Array(TILE_SAMPLES * TILE_SAMPLES).fill(NO_GROUND);
+    for (let k = 0; k < water.length; k++) if (s.water[k]! > s.heights[k]! && heights[k] !== NO_GROUND) water[k] = Math.max(-32767, Math.min(32767, s.water[k]!));
+  }
+  return encodeTile({ ...t, heights, materials: s.materials, ...canopy, ...(water ? { water } : {}) });
 }
 
 function lruGet<V>(map: Map<string, V>, key: string): V | undefined {

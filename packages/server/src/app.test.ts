@@ -21,12 +21,13 @@ import {
   defaultPlateTerrain,
   voxelAt,
   type ServerMessage,
+  type TerrainStroke,
 } from '@super-vox/shared';
 import { buildApp } from './app.js';
 import { MemoryAccountStore } from './accounts.js';
 import { Auth, SESSION_COOKIE, sessionToken } from './auth.js';
 import { World } from './world.js';
-import { createWorld, readWorld } from './worldFile.js';
+import { createWorld, generatorFor, readWorld, worldConfigOf } from './worldFile.js';
 import { FileWorldCatalog } from './worlds.js';
 
 let app: FastifyInstance;
@@ -751,6 +752,49 @@ describe('named worlds', () => {
     expect((await a.inject({ method: 'PUT', url: '/api/worlds/make/mode', payload: { mode: 'hard' } })).statusCode).toBe(400);
     expect((await a.inject({ method: 'PUT', url: '/api/worlds/nope/mode', payload: { mode: 'creative' } })).statusCode).toBe(404);
     again.ws.close();
+    await a.close();
+  });
+
+  it('serves terrain made on generation workers, as made here, and remade when terraformed', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'super-vox-app-'));
+    roots.push(root);
+    createWorld(root, 'home', { generator: 'flat', resolution: 4 });
+    const catalog = new FileWorldCatalog(root, 'home', { dev: true, generationWorkers: 2 });
+    const a = await buildApp({ catalog });
+    const url = (await a.listen({ port: 0, host: '127.0.0.1' })).replace(/^http/, 'ws') + '/ws';
+    expect((await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'isle', plates: { seed: 9 }, shape: 'round-16x8' } })).statusCode).toBe(201);
+    const file = readWorld(root, 'isle')!;
+    /** A column's message and its chunks' bytes, as the server sends them. */
+    const fetchColumn = async (cx: number, cz: number) => {
+      const { ws } = await hello(url, { world: 'isle' });
+      const texts: ServerMessage[] = [], chunks = new Map<number, Uint8Array>();
+      ws.on('message', (data, isBinary) => {
+        if (!isBinary) texts.push(JSON.parse(String(data)) as ServerMessage);
+        else {
+          const bytes = new Uint8Array(data as Buffer).subarray(1);
+          chunks.set(decodeChunk(bytes).cy, bytes);
+        }
+      });
+      ws.send(JSON.stringify({ type: 'requestColumn', cx, cz }));
+      await until(() => {
+        const col = texts.find((m) => m.type === 'column');
+        return !!col && col.type === 'column' && chunks.size === (col.sent ?? []).reduce((n, sp) => n + sp.hi - sp.lo + 1, 0);
+      });
+      ws.close();
+      return { column: texts.find((m) => m.type === 'column')!, chunks };
+    };
+    const check = async (strokes: TerrainStroke[]) => {
+      const here = generatorFor(file.spec, worldConfigOf(file.spec), strokes).generator;
+      const got = await fetchColumn(438, 187);
+      expect(got.column).toMatchObject(here.columnRange(438, 187));
+      for (const [cy, bytes] of got.chunks) expect(bytes).toEqual(encodeChunk(here.generateChunk({ cx: 438, cy, cz: 187 })));
+      return got;
+    };
+    const before = await check([]);
+    const raise: TerrainStroke = { kind: 'raise', x: 7015, z: 3000, radius: 40, amount: 25, softness: 0.5 };
+    expect((await a.inject({ method: 'POST', url: '/api/worlds/isle/strokes', payload: { base: 0, strokes: [raise] } })).statusCode).toBe(200);
+    const after = await check([raise]);
+    expect(after.column).not.toEqual(before.column);
     await a.close();
   });
 
