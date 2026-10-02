@@ -35,6 +35,8 @@ interface WorldInfo {
   cache?: { chunks: number; tiles: number; capacity: number; chunkHitRate: number | null; tileHitRate: number | null };
   generation?: { chunks: number; tiles: number; chunkMs: Percentiles; tileMs: Percentiles };
   water?: { pending: number; steps: number; changes: number };
+  /** The disk cache of generated terrain: read hits and misses, writes, errors (null: none). */
+  disk?: { hits: number; misses: number; writes: number; errors: number } | null;
 }
 interface PlayerInfo {
   id: number;
@@ -262,7 +264,7 @@ function render(d: Dashboard): void {
   const ms = (p?: Percentiles) => (p && p.p50 !== null ? `${p.p50.toFixed(1)} / ${p.p95!.toFixed(1)} ms` : '–');
   $('worlds').innerHTML =
     '<tr><th>World</th><th>Mode</th><th class="num">Players</th><th>Time</th><th class="num">Edited chunks</th><th class="num">On disk</th><th class="num">Edits</th>' +
-    '<th class="num">Cached chunks / tiles</th><th class="num">Hit rate (chunks / tiles)</th><th class="num">Chunk p50 / p95</th><th class="num">Tile p50 / p95</th><th class="num">Water pending</th><th class="num">Water changes</th></tr>' +
+    '<th class="num">Cached chunks / tiles</th><th class="num">Hit rate (chunks / tiles)</th><th class="num">Chunk p50 / p95</th><th class="num">Tile p50 / p95</th><th class="num">Water pending</th><th class="num">Water changes</th><th class="num">Disk cache (hits / writes)</th></tr>' +
     d.worlds
       .map((w) => {
         const clock = w.clock ? `${formatHours(w.clock.hours)} <span class="badge">${w.clock.dayMinutes === 'real' ? 'real time' : `${w.clock.dayMinutes} min day`}${w.clock.frozen ? ', stopped' : ''}</span>` : '–';
@@ -273,7 +275,8 @@ function render(d: Dashboard): void {
           `<td class="num">${w.cache ? `${w.cache.chunks} / ${w.cache.tiles} of ${w.cache.capacity}` : '–'}</td>` +
           `<td class="num">${w.cache ? `${pct(w.cache.chunkHitRate)} / ${pct(w.cache.tileHitRate)}` : '–'}</td>` +
           `<td class="num">${ms(w.generation?.chunkMs)}</td><td class="num">${ms(w.generation?.tileMs)}</td>` +
-          `<td class="num">${w.water ? w.water.pending : '–'}</td><td class="num">${w.water ? w.water.changes : '–'}</td></tr>`
+          `<td class="num">${w.water ? w.water.pending : '–'}</td><td class="num">${w.water ? w.water.changes : '–'}</td>` +
+          `<td class="num">${w.disk ? `${pct(w.disk.hits + w.disk.misses ? w.disk.hits / (w.disk.hits + w.disk.misses) : null)} / ${w.disk.writes}${w.disk.errors ? ` (${w.disk.errors} failed)` : ''}` : '–'}</td></tr>`
         );
       })
       .join('');

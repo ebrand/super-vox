@@ -121,7 +121,9 @@ if (dayMinutes !== 'real' && !(dayMinutes >= DAY_MINUTES_LIMITS[0] && dayMinutes
 // Worker threads generating terrain (GEN_WORKERS, default 8; 0: the main thread does it).
 const generationWorkers = Number(process.env.GEN_WORKERS ?? 8);
 if (!Number.isInteger(generationWorkers) || generationWorkers < 0 || generationWorkers > 64) throw new RangeError(`GEN_WORKERS must be 0..64; got "${process.env.GEN_WORKERS}"`);
-const catalog = new FileWorldCatalog(dataRoot, name, { dev: process.env.NODE_ENV !== 'production', dayMinutes, generationWorkers });
+// Generated terrain kept on disk, under each world's cache/ (DISK_CACHE=0: not).
+const diskCache = process.env.DISK_CACHE !== '0';
+const catalog = new FileWorldCatalog(dataRoot, name, { dev: process.env.NODE_ENV !== 'production', dayMinutes, generationWorkers, diskCache });
 const world = catalog.get(name)!;
 // The built client, served at / (CLIENT_DIR, or in production packages/client/dist if built).
 const clientDir = process.env.CLIENT_DIR || (process.env.NODE_ENV === 'production' ? fileURLToPath(new URL('../../client/dist', import.meta.url)) : '');

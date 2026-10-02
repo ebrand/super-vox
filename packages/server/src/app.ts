@@ -205,6 +205,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           tileMs: { p50: percentile(st.recentTileMs, 50), p95: percentile(st.recentTileMs, 95) },
         },
         water: { pending: w.waterPending, steps: st.waterSteps, changes: st.waterChanges },
+        disk: w.disk ? { ...w.disk.stats } : null,
       };
     });
     return {

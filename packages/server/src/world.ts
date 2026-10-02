@@ -59,6 +59,7 @@ import {
   type Tile,
 } from '@super-vox/shared';
 import type { ChunkStore } from './chunkStore.js';
+import type { DiskCache } from './diskCache.js';
 
 /** Running totals for monitoring a world. */
 export interface WorldStats {
@@ -182,15 +183,18 @@ export class World {
 
   /** Where generated chunks, tiles and column ranges are made off the main thread (see GenPool), or null: here. */
   private readonly remote: RemoteGenerator | null;
+  /** Generated terrain kept on disk (see DiskCache), or null. */
+  readonly disk: DiskCache | null;
   /** Requests on their way from `remote`, by key (players asking for the same thing share one). */
   private readonly pending = new Map<string, Promise<unknown>>();
 
   constructor(
     readonly config: WorldConfig,
     private readonly generator: ChunkGenerator,
-    opts: { cacheSize?: number; tolerance?: number | null; store?: ChunkStore; remote?: RemoteGenerator } = {},
+    opts: { cacheSize?: number; tolerance?: number | null; store?: ChunkStore; remote?: RemoteGenerator; disk?: DiskCache } = {},
   ) {
     this.remote = opts.remote ?? null;
+    this.disk = opts.disk ?? null;
     this.cacheSize = opts.cacheSize ?? 4096;
     this.tolerance = opts.tolerance ?? null;
     this.store = opts.store ?? null;
@@ -228,43 +232,67 @@ export class World {
   }
 
   /**
-   * As getEncodedChunk, made off the main thread where the world has a remote generator (a
-   * promise; what's to hand, cached or edited, comes at once). An edit landing meanwhile wins:
-   * the edited chunk is what's returned (and cached).
+   * As getEncodedChunk, but from the disk cache if it's there, else made off the main thread
+   * where the world has a remote generator (a promise; what's to hand, cached in memory or edited,
+   * comes at once). An edit landing meanwhile wins: the edited chunk is what's returned (and cached).
    */
   encodedChunk(coord: ChunkCoord): Uint8Array | null | Promise<Uint8Array | null> {
     const resolved = resolveChunk(this.config, coord);
-    if (!resolved || !this.remote) return this.getEncodedChunk(coord);
+    if (!resolved || (!this.remote && !this.disk)) return this.getEncodedChunk(coord);
     const key = chunkKey(resolved);
     if (this.cache.has(key) || this.edited.has(key)) return this.getEncodedChunk(coord);
-    return this.share(`c:${key}`, () => this.remote!.chunk(resolved).then(({ bytes, ms }) => {
-      const now = this.edited.get(key);
-      if (now) return this.getEncodedChunk(resolved);
+    const { cx, cy, cz } = resolved;
+    return this.share(`c:${key}`, async () => {
+      const t0 = performance.now();
+      let bytes = this.disk ? await this.disk.chunk(cx, cy, cz) : null;
+      let ms = performance.now() - t0;
+      if (!bytes) {
+        if (this.remote) ({ bytes, ms } = await this.remote.chunk(resolved));
+        else bytes = encodeChunk(this.generator.generateChunk(resolved));
+        this.disk?.putChunk(cx, cy, cz, bytes);
+      }
+      if (this.edited.has(key)) return this.getEncodedChunk(resolved);
       lruSet(this.cache, key, bytes, this.cacheSize);
       this.stats.chunkMisses++;
       recent(this.stats.recentChunkMs, ms);
       return bytes;
-    }));
+    });
   }
 
-  /** As getEncodedTile, made off the main thread where the world has a remote generator (as encodedChunk). */
+  /** As getEncodedTile, from the disk cache or made off the main thread (as encodedChunk). */
   encodedTile(t: TileCoord): Uint8Array | null | Promise<Uint8Array | null> {
-    if (!tileInWorld(this.config, t) || !this.remote) return this.getEncodedTile(t);
+    if (!tileInWorld(this.config, t) || (!this.remote && !this.disk)) return this.getEncodedTile(t);
     const key = tileKey(t);
     if (this.tileCache.has(key)) return this.getEncodedTile(t);
-    return this.share(`t:${key}`, () => this.remote!.tile(t).then(({ bytes, ms }) => {
+    return this.share(`t:${key}`, async () => {
+      const t0 = performance.now();
+      let bytes = this.disk ? await this.disk.tile(t.level, t.tx, t.tz) : null;
+      let ms = performance.now() - t0;
+      if (!bytes) {
+        if (this.remote) ({ bytes, ms } = await this.remote.tile(t));
+        else bytes = tileBytes(this.generator, this.config, t);
+        this.disk?.putTile(t.level, t.tx, t.tz, bytes);
+      }
       lruSet(this.tileCache, key, bytes, this.cacheSize);
       this.stats.tileMisses++;
       recent(this.stats.recentTileMs, ms);
       return bytes;
-    }));
+    });
   }
 
-  /** As columnRange, worked out off the main thread where the world has a remote generator (a promise). */
+  /** As columnRange, from the disk cache or worked out off the main thread (a promise). */
   columnRangeOf(cx: number, cz: number): ColumnRange | null | Promise<ColumnRange | null> {
     const resolved = resolveChunk(this.config, { cx, cy: 0, cz });
-    if (!resolved || !this.remote) return this.columnRange(cx, cz);
-    return this.share(`k:${resolved.cx},${resolved.cz}`, () => this.remote!.column(resolved.cx, resolved.cz)).then((range) => this.withEdits(resolved.cx, resolved.cz, range as ColumnRange));
+    if (!resolved || (!this.remote && !this.disk)) return this.columnRange(cx, cz);
+    const { cx: x, cz: z } = resolved;
+    return this.share(`k:${x},${z}`, async () => {
+      let range = this.disk ? await this.disk.column<ColumnRange>(x, z) : null;
+      if (!range) {
+        range = this.remote ? await this.remote.column(x, z) : this.generator.columnRange(x, z);
+        this.disk?.putColumn(x, z, range);
+      }
+      return range;
+    }).then((range) => this.withEdits(x, z, range));
   }
 
   /** One request at a time for each thing (later askers wait for the first). */

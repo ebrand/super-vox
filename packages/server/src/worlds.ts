@@ -3,6 +3,9 @@ import { join } from 'node:path';
 import {
   CHUNK_SIZE,
   DEFAULT_DAY_MINUTES,
+  encodeChunk,
+  surfaceMap,
+  type ChunkGenerator,
   DEFAULT_GAME_MODE,
   DEFAULT_WORLD_SHAPE,
   TerrainGenerator,
@@ -23,9 +26,12 @@ import {
   type WorldShape,
 } from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
+import { createHash } from 'node:crypto';
+import { rm, readdir } from 'node:fs/promises';
+import { DiskCache } from './diskCache.js';
 import { GenPool } from './genPool.js';
-import { World } from './world.js';
-import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, readStrokes, readWorld, saveClock, saveMode, updateWorld, worldConfigOf, writeStrokes, type WorldFile } from './worldFile.js';
+import { World, tileBytes } from './world.js';
+import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, readStrokes, readWorld, saveClock, saveMode, updateWorld, worldConfigOf, writeStrokes, type WorldFile, type WorldSpec } from './worldFile.js';
 
 /** What the HTTP API shows about a world. */
 export type WorldSummary = Pick<WorldFile, 'name' | 'createdAt' | 'updatedAt' | 'spec'> & {
@@ -87,6 +93,30 @@ export interface WorldCatalog {
    * Throws NoSuchWorldError. Absent where not allowed.
    */
   terraform?: (name: string, base: number, added: readonly TerrainStroke[]) => number;
+}
+
+/** Bumped when what the disk cache holds changes form. */
+const CACHE_FORMAT = 1;
+
+/**
+ * Which version of a world's terrain a disk cache holds: its settings and terraforming, and (so
+ * a change to the generator's code starts a new cache) a sample of what the generator makes now:
+ * the whole world from far above, a distant-terrain tile, and the chunks of two columns.
+ */
+export function terrainVersion(spec: WorldSpec, strokes: readonly TerrainStroke[], generator: ChunkGenerator, config: WorldConfig): string {
+  const h = createHash('sha256');
+  h.update(JSON.stringify({ format: CACHE_FORMAT, spec, strokes }));
+  const map = surfaceMap(generator, 0, 0, config.widthUnits / 64, 64, 32);
+  h.update(map.heights);
+  h.update(map.materials);
+  h.update(tileBytes(generator, config, { level: 4, tx: Math.floor(config.widthUnits / (CHUNK_SIZE * 16) / 3), tz: Math.floor(config.depthUnits / (CHUNK_SIZE * 16) / 2) }));
+  for (const [fx, fz] of [[0.5, 0.5], [0.27, 0.61]] as const) {
+    const cx = Math.floor((config.widthUnits / CHUNK_SIZE) * fx), cz = Math.floor((config.depthUnits / CHUNK_SIZE) * fz);
+    const range = generator.columnRange(cx, cz);
+    h.update(JSON.stringify(range));
+    for (let cy = Math.floor(range.minY / CHUNK_SIZE) - 1; cy <= Math.floor(range.maxY / CHUNK_SIZE); cy++) h.update(encodeChunk(generator.generateChunk({ cx, cy, cz })));
+  }
+  return h.digest('hex').slice(0, 16);
 }
 
 /** A chunk column's width (metres). */
@@ -159,9 +189,10 @@ export class FileWorldCatalog implements WorldCatalog {
     readonly defaultName: string,
     /**
      * dayMinutes: the day length of worlds that don't have a clock yet; generationWorkers, how
-     * many worker threads generate terrain (0 or absent: the main thread does).
+     * many worker threads generate terrain (0 or absent: the main thread does); diskCache, whether
+     * generated terrain is kept on disk (see DiskCache).
      */
-    private readonly opts: { dev: boolean; config?: WorldConfig; dayMinutes?: number | 'real'; generationWorkers?: number },
+    private readonly opts: { dev: boolean; config?: WorldConfig; dayMinutes?: number | 'real'; generationWorkers?: number; diskCache?: boolean },
   ) {
     this.dev = opts.dev;
     // Anyone the server lets (see app.ts: development, or admins) may change a world's clock.
@@ -303,6 +334,17 @@ export class FileWorldCatalog implements WorldCatalog {
 
   private pool: GenPool | null = null;
 
+  /** World `file`'s disk cache for its terrain as `generator` makes it now; other versions' are deleted. */
+  private diskCache(file: WorldFile, generator: ChunkGenerator, config: WorldConfig, strokes: readonly TerrainStroke[]): DiskCache {
+    const version = terrainVersion(file.spec, strokes, generator, config);
+    const root = join(this.dataRoot, file.name, 'cache');
+    void readdir(root).then(
+      (dirs) => Promise.all(dirs.filter((d) => d !== version).map((d) => rm(join(root, d), { recursive: true, force: true }))),
+      () => undefined,
+    );
+    return new DiskCache(join(root, version));
+  }
+
   /** Closes world `name` (reopened, rebuilt, on next use), letting go of its generation on the pool. */
   private close(name: string): void {
     this.open.get(name)?.remote?.forget();
@@ -318,7 +360,9 @@ export class FileWorldCatalog implements WorldCatalog {
     const workers = this.opts.generationWorkers ?? 0;
     if (workers > 0 && file.spec.generator !== 'flat') this.pool ??= new GenPool(workers);
     const remote = this.pool && file.spec.generator !== 'flat' ? this.pool.remote(file.name, file.spec, config, strokes) : null;
-    const world = new World(config, generator, { tolerance, store: new FileChunkStore(join(this.dataRoot, file.name, 'chunks')), ...(remote ? { remote } : {}) });
+    // Generated terrain kept on disk, for this version of it (older versions' go).
+    const disk = this.opts.diskCache && file.spec.generator !== 'flat' ? this.diskCache(file, generator, config, strokes) : null;
+    const world = new World(config, generator, { tolerance, store: new FileChunkStore(join(this.dataRoot, file.name, 'chunks')), ...(remote ? { remote } : {}), ...(disk ? { disk } : {}) });
     return { world, file, strokes, remote, heights, variants: new Map() };
   }
 }
