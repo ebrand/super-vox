@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { HorizontalTiltShiftShader } from 'three/examples/jsm/shaders/HorizontalTiltShiftShader.js';
 import { VerticalTiltShiftShader } from 'three/examples/jsm/shaders/VerticalTiltShiftShader.js';
-import { FOCUS_BAND, TILT_H_LINE, TILT_V_LINE, focusBlur, miniatureAmount, withFocusBand } from './worldRelief.js';
+import { FOCUS_BAND, TILT_H_LINE, TILT_V_LINE, focusBlur, miniatureAmount, withFocusBand } from './miniature.js';
 
 describe('miniatureAmount', () => {
   it('is none with the whole world in view, all of it close up, and grows as you zoom in', () => {

@@ -222,7 +222,8 @@ export class WaterRenderer {
     this.target.setSize(size.x, size.y);
   }
 
-  render(scene: THREE.Scene, camera: THREE.PerspectiveCamera): void {
+  /** Draws the scene, water last, onto the screen (or into `output`). */
+  render(scene: THREE.Scene, camera: THREE.PerspectiveCamera, output: THREE.WebGLRenderTarget | null = null): void {
     const r = this.renderer, u = this.uniforms;
     const size = r.getDrawingBufferSize(new THREE.Vector2());
     if (size.x !== this.target.width || size.y !== this.target.height) this.target.setSize(size.x, size.y);
@@ -236,8 +237,8 @@ export class WaterRenderer {
     r.setRenderTarget(this.target);
     r.clear();
     r.render(scene, camera);
-    // 2. Onto the screen, depth and all.
-    r.setRenderTarget(null);
+    // 2. Onto the screen (or the output), depth and all.
+    r.setRenderTarget(output);
     r.clear();
     r.render(this.copyScene, this.copyCamera);
     // 3. Water over it.

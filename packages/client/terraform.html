@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SuperVoxel terraformer</title>
+    <style>
+      :root { color-scheme: dark; --bg: #0b0d10; --panel: #14181d; --line: #262c34; --text: #e6e6e6; --dim: #8b949e; --accent: #6cb6ff; --bad: #ff7b72; --frame: #ffd34d; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, sans-serif; }
+      body { display: flex; }
+      [hidden] { display: none !important; }
+      #panel { width: 280px; flex: none; height: 100%; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); padding: 12px 14px 24px; display: flex; flex-direction: column; gap: 10px; }
+      h1 { font-size: 15px; margin: 0; }
+      .back { margin: 0; font-size: 12px; } .back a { color: var(--accent); text-decoration: none; }
+      p { margin: 0; color: var(--dim); font-size: 12px; }
+      h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); margin: 6px 0 0; font-weight: 600; }
+      select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 3px; padding: 3px 4px; font: inherit; width: 100%; }
+      button { background: #21262d; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 5px 10px; font: inherit; cursor: pointer; }
+      button:hover { border-color: var(--dim); }
+      button.primary { background: #1f6feb; border-color: #1f6feb; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      #status { font-size: 12px; color: var(--dim); min-height: 1.4em; }
+      #status.bad { color: var(--bad); }
+      .choice { display: flex; gap: 8px; align-items: center; margin-top: 8px; } .choice label { width: 44px; font-size: 12px; } .choice select { flex: 1; }
+      .slider { display: grid; grid-template-columns: 74px 1fr 52px; gap: 6px; align-items: center; font-size: 12px; margin-top: 4px; }
+      .slider input { width: 100%; accent-color: var(--accent); } .slider span { color: var(--dim); font: 11px ui-monospace, monospace; text-align: right; }
+      .check { display: flex; gap: 6px; align-items: center; margin-top: 8px; font-size: 12px; }
+      .key { display: inline-block; width: 12px; height: 2px; background: var(--frame); vertical-align: middle; margin-right: 6px; }
+      #stage { flex: 1; min-width: 0; position: relative; }
+      #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+      #stage canvas.relief { cursor: grab; } #stage canvas.diorama { cursor: grab; }
+      #stage canvas:active { cursor: grabbing; }
+      #hint { position: absolute; left: 12px; bottom: 10px; font: 12px ui-monospace, monospace; color: #e6e6e6; background: rgba(0,0,0,0.45); padding: 3px 8px; border-radius: 4px; pointer-events: none; }
+      @media (max-width: 760px) { body { flex-direction: column; } #panel { width: 100%; height: auto; } #stage { min-height: 70vh; } }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <p class="back"><a href="/">← Menu</a></p>
+      <h1>Terraformer</h1>
+      <p>Frame an area of a world, then open it up close to shape it.</p>
+      <h2>World</h2>
+      <select id="world" disabled><option>loading…</option></select>
+      <div id="overview-controls">
+        <h2>Area</h2>
+        <p><span class="key"></span>The yellow square follows the middle of the view: move and zoom to frame the area.</p>
+        <div class="choice"><label for="size">Size</label><select id="size"><option value="512">512 m</option><option value="1024">1 km</option><option value="2048">2 km</option><option value="4096">4 km</option></select></div>
+        <div class="choice"><label for="detail">Detail</label><select id="detail"><option value="512">standard</option><option value="1024">fine (slower)</option></select></div>
+        <p id="detail-about"></p>
+        <p style="margin-top: 8px"><button type="button" class="primary" id="enter" disabled>Terraform this area</button></p>
+      </div>
+      <div id="diorama-controls" hidden>
+        <h2>Area</h2>
+        <p id="area-about"></p>
+        <label class="check"><input type="checkbox" id="miniature" checked> miniature</label>
+        <h2>Light</h2>
+        <div class="slider"><label for="l-height">Sun height</label><input type="range" id="l-height" min="3" max="90" step="1"><span id="l-height-v"></span></div>
+        <div class="slider"><label for="l-from">Sun from</label><input type="range" id="l-from" min="0" max="360" step="5"><span id="l-from-v"></span></div>
+        <div class="slider"><label for="l-warmth">Warmth</label><input type="range" id="l-warmth" min="0" max="1" step="0.05"><span id="l-warmth-v"></span></div>
+        <div class="slider"><label for="l-shade">Shade</label><input type="range" id="l-shade" min="0" max="1" step="0.05"><span id="l-shade-v"></span></div>
+        <p><button type="button" id="l-reset">Default light</button></p>
+        <p style="margin-top: 8px"><button type="button" id="leave">Back to the world</button></p>
+      </div>
+      <div id="status"></div>
+      <p>Viewing only for now: shaping comes next.</p>
+    </div>
+    <div id="stage"><div id="hint"></div></div>
+    <script type="module" src="/src/terraform.ts"></script>
+  </body>
+</html>

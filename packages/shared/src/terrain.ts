@@ -54,7 +54,7 @@ export interface HeightSource {
 }
 
 /** What lies beneath a surface material, down to DIRT_DEPTH. */
-function subsurface(top: MaterialId): MaterialId {
+export function subsurface(top: MaterialId): MaterialId {
   switch (top) {
     case Material.Grass:
     case Material.JungleFloor:
@@ -119,7 +119,7 @@ export function defaultNoiseTerrain(seed = 1): NoiseTerrainConfig {
 const HILL_OCTAVES = 3;
 const DETAIL_OCTAVES = 4;
 /** Depth below the surface (units) where dirt turns to stone. */
-const DIRT_DEPTH = 3 * 16;
+export const DIRT_DEPTH = 3 * 16;
 
 function octaves(world: WorldConfig, seed: number, scale: number, count: number): Octave[] {
   const out: Octave[] = [];

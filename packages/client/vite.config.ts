@@ -10,13 +10,15 @@ export default defineConfig({
   build: {
     rollupOptions: {
       // The entry page, the game (/play.html), the world generator (/generator.html), the
-      // dashboard (/dashboard.html) and the castle site finder (/sites.html).
+      // dashboard (/dashboard.html), the castle site finder (/sites.html) and the terraformer
+      // (/terraform.html).
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         play: fileURLToPath(new URL('./play.html', import.meta.url)),
         generator: fileURLToPath(new URL('./generator.html', import.meta.url)),
         dashboard: fileURLToPath(new URL('./dashboard.html', import.meta.url)),
         sites: fileURLToPath(new URL('./sites.html', import.meta.url)),
+        terraform: fileURLToPath(new URL('./terraform.html', import.meta.url)),
       },
     },
   },

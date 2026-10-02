@@ -1,14 +1,9 @@
 import * as THREE from 'three';
 import { MapControls } from 'three/examples/jsm/controls/MapControls.js';
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
-import { HorizontalTiltShiftShader } from 'three/examples/jsm/shaders/HorizontalTiltShiftShader.js';
-import { HueSaturationShader } from 'three/examples/jsm/shaders/HueSaturationShader.js';
-import { VerticalTiltShiftShader } from 'three/examples/jsm/shaders/VerticalTiltShiftShader.js';
 import { UNITS_PER_METER } from '@super-vox/shared';
 import { materialColor } from './materials.js';
+import { MiniatureEffect, miniatureAmount } from './miniature.js';
 import type { MapData, MapMarker } from './worldMap.js';
 
 /** What's under a point of the relief: world position (units), surface height (units) and material. */
@@ -32,46 +27,6 @@ const SEA_SHALLOW = [0.06, 0.24, 0.36] as const;
 const SEA_FLOOR_DEEP = [0.01, 0.05, 0.14] as const;
 const SEA_DEEP = 250;
 /**
- * Miniature (tilt-shift): the top and bottom of the view blurred, sharp across the middle, colours
- * a little richer; none with the whole world in view, all of it from MINIATURE_FULL metres away.
- * Blur at the frame's edges (pixels, at full strength) and the extra saturation.
- */
-const MINIATURE_FULL = 2500;
-const MINIATURE_BLUR = 22;
-const MINIATURE_SATURATION = 0.18;
-/** The band across the middle that stays sharp: this far either side of the middle (fraction of the height). */
-export const FOCUS_BAND = 0.15;
-
-/**
- * How blurred a row is, `dy` (0..0.5) from the middle of the view: 0 within the sharp band,
- * growing to 0.5 at the top and bottom edges (as three.js's tilt-shift blurs at the edges).
- * The shaders below compute the same.
- */
-export function focusBlur(dy: number, band = FOCUS_BAND): number {
-  return (0.5 * Math.max(0, Math.abs(dy) - band)) / (0.5 - band);
-}
-
-/** The line in each of three.js's tilt-shift shaders that sets how far apart its samples are. */
-export const TILT_H_LINE = /float (hh) = (h) \* abs\( r - vUv\.y \);/;
-export const TILT_V_LINE = /float (vv) = (v) \* abs\( r - vUv\.y \);/;
-
-/** One of three.js's tilt-shift passes, with a sharp band across the middle (see focusBlur). */
-export function withFocusBand(shader: { uniforms: Record<string, { value: unknown }>; vertexShader: string; fragmentShader: string }, line: RegExp): typeof shader {
-  const fragmentShader = shader.fragmentShader
-    .replace('uniform float r;', 'uniform float r;\nuniform float band;')
-    .replace(line, (m, name: string, scale: string) => `float ${name} = ${scale} * 0.5 * max( 0.0, abs( r - vUv.y ) - band ) / ( 0.5 - band );`);
-  if (!fragmentShader.includes('uniform float band;') || !fragmentShader.includes('- band ) / ( 0.5 - band )')) throw new Error('tilt-shift shader changed: update withFocusBand');
-  return { ...shader, uniforms: { ...THREE.UniformsUtils.clone(shader.uniforms), band: { value: FOCUS_BAND } }, fragmentShader };
-}
-
-/** How much miniature effect at a camera `distance` (m) on a world `size` m across its narrower side: 0..1. */
-export function miniatureAmount(distance: number, size: number): number {
-  const far = Math.max(MINIATURE_FULL * 1.5, size * 0.35);
-  const t = Math.max(0, Math.min(1, (far - distance) / (far - MINIATURE_FULL)));
-  return t * t * (3 - 2 * t);
-}
-
-/**
  * The whole world in 3D, in miniature: the world map's samples as a lit surface (heights
  * exaggerated), with the sea, the player and the spawn point. Drag to pan, right-drag to rotate
  * and tilt, wheel to zoom about the cursor; round worlds wrap east-west. Scene units are metres.
@@ -93,10 +48,11 @@ export class WorldRelief {
   /** Grid columns drawn (one more than the map's on round worlds, closing the seam). */
   private readonly gridCols: number;
   private exaggeration = DEFAULT_EXAGGERATION;
-  private readonly composer: EffectComposer;
-  private readonly tiltH: ShaderPass;
-  private readonly tiltV: ShaderPass;
-  private readonly saturate: ShaderPass;
+  /** A square drawn on the ground around the middle of the view (see setFrame), its size (m) and where it was last drawn. */
+  private readonly frameLine: THREE.LineLoop;
+  private frameSize: number | null = null;
+  private frameAt = '';
+  private readonly miniatureFx: MiniatureEffect;
   /** Each map sample's colour, a texel apiece (sRGB). */
   private readonly colors: THREE.DataTexture;
   private miniatureOn = true;
@@ -106,6 +62,8 @@ export class WorldRelief {
     private readonly world: { width: number; depth: number; wrapX: boolean },
     private readonly playerAt: () => MapMarker,
     private readonly spawn: MapMarker,
+    /** Show the player and spawn markers (false: playerAt is only where the view starts). */
+    markers = true,
   ) {
     this.width = world.width / UNITS_PER_METER;
     this.depth = world.depth / UNITS_PER_METER;
@@ -174,6 +132,12 @@ export class WorldRelief {
     this.player = new THREE.Mesh(new THREE.ConeGeometry(0.35, 1, 12).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xff3b30 }));
     this.spawnMark = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.12, 8, 24).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff }));
     this.scene.add(this.player, this.spawnMark);
+    this.player.visible = this.spawnMark.visible = markers;
+    this.frameLine = new THREE.LineLoop(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd34d, depthTest: false }));
+    this.frameLine.renderOrder = 10;
+    this.frameLine.frustumCulled = false;
+    this.frameLine.visible = false;
+    this.scene.add(this.frameLine);
 
     this.camera = new THREE.PerspectiveCamera(45, 1, 10, Math.max(this.width, this.depth) * 8);
     this.controls = new MapControls(this.camera, this.canvas);
@@ -186,18 +150,8 @@ export class WorldRelief {
     this.controls.maxDistance = Math.max(this.width, this.depth) * 1.6;
     this.controls.addEventListener('change', () => this.keepInWorld());
 
-    // Drawn through passes: the scene (multisampled), the tilt-shift blur (across, then up and
-    // down), a little more saturation, then out to the screen's colours.
-    this.composer = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(1, 1, { samples: 4, type: THREE.HalfFloatType }));
-    this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.tiltH = new ShaderPass(withFocusBand(HorizontalTiltShiftShader, TILT_H_LINE));
-    this.tiltV = new ShaderPass(withFocusBand(VerticalTiltShiftShader, TILT_V_LINE));
-    for (const t of [this.tiltH, this.tiltV]) t.uniforms['r']!.value = 0.5;
-    this.saturate = new ShaderPass(HueSaturationShader);
-    this.composer.addPass(this.tiltH);
-    this.composer.addPass(this.tiltV);
-    this.composer.addPass(this.saturate);
-    this.composer.addPass(new OutputPass());
+    // Drawn through the miniature effect (the tilt-shift blur as you zoom in).
+    this.miniatureFx = new MiniatureEffect(this.renderer, new RenderPass(this.scene, this.camera));
     this.reset();
   }
 
@@ -210,6 +164,20 @@ export class WorldRelief {
     this.controls.target.set(x, y, z);
     this.camera.position.set(x, y + dist * 0.75, z + dist * 0.66);
     this.controls.update();
+  }
+
+  /** Draws a square `size` metres across on the ground around the middle of the view (null: none). */
+  setFrame(size: number | null): void {
+    this.frameSize = size;
+    this.frameLine.visible = size !== null;
+    this.frameAt = '';
+  }
+
+  /** The point in the middle of the view (units; x within the world). */
+  focus(): { x: number; z: number } {
+    const t = this.controls.target;
+    const x = t.x * UNITS_PER_METER;
+    return { x: this.world.wrapX ? mod(x, this.world.width) : x, z: t.z * UNITS_PER_METER };
   }
 
   /** Heights drawn `factor` times taller. */
@@ -250,21 +218,15 @@ export class WorldRelief {
     const size = this.renderer.getSize(new THREE.Vector2());
     if (size.x !== w || size.y !== h) {
       this.renderer.setSize(w, h, false);
-      this.composer.setSize(w, h);
+      this.miniatureFx.setSize(w, h);
       this.camera.aspect = w / h;
       this.camera.updateProjectionMatrix();
     }
     this.controls.update();
     this.placeMarkers();
-    // The miniature effect, by how close the camera is. (The blur's step is per pass and per
-    // unit of distance from the sharp line, which runs across the middle.)
-    const amount = this.miniatureOn ? miniatureAmount(this.camera.position.distanceTo(this.controls.target), Math.min(this.width, this.depth)) : 0;
-    const blur = (MINIATURE_BLUR / 2) * amount;
-    this.tiltH.enabled = this.tiltV.enabled = this.saturate.enabled = amount > 0.01;
-    this.tiltH.uniforms['h']!.value = blur / w;
-    this.tiltV.uniforms['v']!.value = blur / h;
-    this.saturate.uniforms['saturation']!.value = MINIATURE_SATURATION * amount;
-    this.composer.render();
+    this.placeFrame();
+    // The miniature effect, by how close the camera is.
+    this.miniatureFx.render(this.miniatureOn ? miniatureAmount(this.camera.position.distanceTo(this.controls.target), Math.min(this.width, this.depth)) : 0);
   }
 
   /** What's under a point of the canvas (CSS pixels from its top left), or null for sky. */
@@ -311,7 +273,7 @@ export class WorldRelief {
 
   dispose(): void {
     this.controls.dispose();
-    this.composer.dispose();
+    this.miniatureFx.dispose();
     this.colors.dispose();
     this.geometry.dispose();
     this.renderer.dispose();
@@ -380,6 +342,27 @@ export class WorldRelief {
     const sx = near(this.spawn.x / UNITS_PER_METER), sz = this.spawn.z / UNITS_PER_METER;
     this.spawnMark.scale.setScalar(s);
     this.spawnMark.position.set(sx, Math.max(this.surfaceY(this.spawn.x, this.spawn.z), 0) + s * 0.2, sz);
+  }
+
+  /** The frame square, draped over the ground around the middle of the view (redrawn when that moves). */
+  private placeFrame(): void {
+    if (this.frameSize === null) return;
+    const t = this.controls.target, half = this.frameSize / 2;
+    const key = `${t.x.toFixed(1)},${t.z.toFixed(1)},${this.exaggeration}`;
+    if (key === this.frameAt) return;
+    this.frameAt = key;
+    const per = Math.max(2, Math.round(this.frameSize / 8));
+    const pts: number[] = [];
+    const corners = [[-half, -half], [half, -half], [half, half], [-half, half]] as const;
+    for (let k = 0; k < 4; k++) {
+      const [ax, az] = corners[k]!, [bx, bz] = corners[(k + 1) % 4]!;
+      for (let i = 0; i < per; i++) {
+        const x = t.x + ax + ((bx - ax) * i) / per, z = t.z + az + ((bz - az) * i) / per;
+        pts.push(x, Math.max(this.surfaceY(x * UNITS_PER_METER, z * UNITS_PER_METER), 0) + 1, z);
+      }
+    }
+    this.frameLine.geometry.dispose();
+    this.frameLine.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
   }
 
   /** Keeps the view over the world: round worlds wrap the target back into it, flat ones stop at its edges. */
