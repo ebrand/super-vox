@@ -1,4 +1,5 @@
 import {
+  surfaceMap,
   CHUNK_SIZE,
   EditError,
   NO_CANOPY,
@@ -745,20 +746,7 @@ export class World {
    * each sampled at its centre: a closer look at part of the world. Round worlds wrap in x.
    */
   mapArea(x0: number, z0: number, step: number, cols: number, rows: number): WorldMap {
-    const n = Math.max(cols, rows);
-    const s = this.generator.surfaceSamples(x0 + Math.floor(step / 2), z0 + Math.floor(step / 2), step, n);
-    const heights = new Int16Array(cols * rows);
-    const materials = new Uint8Array(cols * rows);
-    for (let j = 0; j < rows; j++) {
-      for (let i = 0; i < cols; i++) {
-        // The map shows forests from above (their canopy), and rivers and lakes as water.
-        const k = i + n * j, tree = s.canopy && s.canopy.top[k] !== NO_CANOPY;
-        const wet = s.water && s.water[k]! > s.heights[k]!;
-        heights[i + cols * j] = Math.max(-32767, Math.min(32767, wet ? s.water![k]! : tree ? s.canopy!.top[k]! : s.heights[k]!));
-        materials[i + cols * j] = Math.min(255, wet ? Material.Water : tree ? s.canopy!.material[k]! : s.materials[k]!);
-      }
-    }
-    return { cols, rows, step, seaLevel: this.seaLevel, heights, materials };
+    return surfaceMap(this.generator, x0, z0, step, cols, rows);
   }
 
   get cachedChunkCount(): number {

@@ -1,7 +1,8 @@
-import { UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
+import { UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, type StrokeKind, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT, parseDioramaLight, type DioramaLight } from './dioramaLight.js';
 import type { TerraformRequest, TerraformResponse } from './terraform.worker.js';
+import { TerraformDraft, dabsAlong } from './terraformDraft.js';
 import { climateTintColors } from './tintColors.js';
 import { decodeWorldMap } from './worldMap.js';
 import { WorldRelief } from './worldRelief.js';
@@ -10,7 +11,9 @@ import { WorldRelief } from './worldRelief.js';
  * The Terraformer: a world in 3D (as the in-game 3D map shows it), where a square follows the
  * middle of the view; "Terraform this area" opens that square at full voxel detail as a diorama
  * (made in this browser from the world's settings, see terraform.worker.ts), and "Back to the
- * world" returns. Viewing only for now.
+ * world" returns. In the diorama, ⌘-drag (Ctrl-drag) shapes the ground with the chosen brush:
+ * the strokes are a draft (kept in this browser, per world, with undo and redo) that the diorama
+ * and the overview show; the world itself doesn't change.
  */
 
 interface WorldInfo {
@@ -93,7 +96,118 @@ sizeEl.addEventListener('change', showChoice);
 detailEl.addEventListener('change', showChoice);
 
 const HINT_OVERVIEW = 'drag: move · right-drag: turn and tilt · wheel: zoom';
-const HINT_DIORAMA = 'drag: move · right-drag: turn and tilt · wheel: zoom';
+const HINT_DIORAMA = '⌘-drag: shape · drag: move · right-drag: turn and tilt · wheel: zoom · ⌘Z: undo';
+
+// ---- The brush (remembered in this browser).
+interface Brush {
+  kind: StrokeKind;
+  radius: number;
+  /** Strength per kind, 0..1 on the slider: raise and lower, metres per dab (see BRUSH_METRES); smooth, its strength. */
+  strength: Record<StrokeKind, number>;
+  softness: number;
+}
+const BRUSH_KEY = 'super-vox-terraform-brush';
+const DEFAULT_BRUSH: Brush = { kind: 'raise', radius: 40, strength: { raise: 0.3, lower: 0.3, level: 1, smooth: 0.6 }, softness: 0.6 };
+/** Raise and lower: metres per dab, from the strength slider (0..1), finer at the low end. */
+const BRUSH_METRES = (v: number) => Math.round((0.25 + 19.75 * v * v) * 100) / 100;
+const BRUSH_COLORS: Record<StrokeKind, number> = { raise: 0x7ee787, lower: 0xff7b72, level: 0xffd34d, smooth: 0x6cb6ff };
+const TOOL_ABOUT: Record<StrokeKind, string> = {
+  raise: 'Raises the ground under the brush.',
+  lower: 'Lowers the ground under the brush (a closed hollow becomes a lake).',
+  level: 'Levels the ground to the height where the stroke starts.',
+  smooth: 'Smooths out bumps and crags, keeping the land\'s broad shape.',
+};
+let brush: Brush = DEFAULT_BRUSH;
+try {
+  const b = JSON.parse(localStorage.getItem(BRUSH_KEY) ?? 'null') as Partial<Brush> | null;
+  if (b && ['raise', 'lower', 'level', 'smooth'].includes(b.kind as string)) brush = { ...DEFAULT_BRUSH, ...b, strength: { ...DEFAULT_BRUSH.strength, ...b.strength } };
+} catch {
+  // Not remembered: the default.
+}
+const radiusEl = document.getElementById('b-radius') as HTMLInputElement;
+const amountEl = document.getElementById('b-amount') as HTMLInputElement;
+const softnessEl = document.getElementById('b-softness') as HTMLInputElement;
+function showBrush(): void {
+  for (const b of document.querySelectorAll<HTMLButtonElement>('.tool')) b.setAttribute('aria-pressed', String(b.dataset.kind === brush.kind));
+  radiusEl.value = String(brush.radius);
+  document.getElementById('b-radius-v')!.textContent = `${brush.radius} m`;
+  const v = brush.strength[brush.kind];
+  amountEl.value = String(v);
+  amountEl.disabled = brush.kind === 'level';
+  document.getElementById('b-amount-v')!.textContent = brush.kind === 'smooth' ? v.toFixed(2) : brush.kind === 'level' ? '—' : `${BRUSH_METRES(v)} m`;
+  softnessEl.value = String(brush.softness);
+  document.getElementById('b-softness-v')!.textContent = brush.softness.toFixed(2);
+  document.getElementById('tool-about')!.textContent = TOOL_ABOUT[brush.kind];
+  diorama?.setBrush(brush.radius, BRUSH_COLORS[brush.kind]);
+  try {
+    localStorage.setItem(BRUSH_KEY, JSON.stringify(brush));
+  } catch {
+    // Can't remember it: fine.
+  }
+}
+for (const b of document.querySelectorAll<HTMLButtonElement>('.tool')) b.addEventListener('click', () => ((brush = { ...brush, kind: b.dataset.kind as StrokeKind }), showBrush()));
+radiusEl.addEventListener('input', () => ((brush = { ...brush, radius: Number(radiusEl.value) }), showBrush()));
+amountEl.addEventListener('input', () => ((brush = { ...brush, strength: { ...brush.strength, [brush.kind]: Number(amountEl.value) } }), showBrush()));
+softnessEl.addEventListener('input', () => ((brush = { ...brush, softness: Number(softnessEl.value) }), showBrush()));
+
+// ---- The draft (per world, kept in this browser).
+const draftKey = (world: string) => `super-vox-terraform-draft:${world}`;
+let draft = new TerraformDraft();
+/** Whether the draft changed since the overview was last drawn. */
+let overviewStale = false;
+function loadDraft(world: string): void {
+  try {
+    draft = TerraformDraft.parse(JSON.parse(localStorage.getItem(draftKey(world)) ?? '[]'));
+  } catch {
+    draft = new TerraformDraft();
+  }
+  overviewStale = draft.count > 0;
+  showDraft();
+}
+function saveDraft(): void {
+  try {
+    localStorage.setItem(draftKey(current), JSON.stringify(draft));
+  } catch {
+    status('The draft is too big to keep in this browser: it lasts until you leave the page.', true);
+  }
+}
+function showDraft(): void {
+  document.getElementById('draft-count')!.textContent = draft.count === 0 ? 'no strokes' : `${draft.count} stroke${draft.count === 1 ? '' : 's'}`;
+  (document.getElementById('undo') as HTMLButtonElement).disabled = !draft.canUndo;
+  (document.getElementById('redo') as HTMLButtonElement).disabled = !draft.canRedo;
+  (document.getElementById('clear') as HTMLButtonElement).disabled = draft.count === 0;
+}
+/** The draft changed: keep it, show it, redraw the area with it. */
+function draftChanged(): void {
+  overviewStale = true;
+  saveDraft();
+  showDraft();
+  refreshArea();
+}
+document.getElementById('undo')!.addEventListener('click', () => draft.undo() && draftChanged());
+document.getElementById('redo')!.addEventListener('click', () => draft.redo() && draftChanged());
+document.getElementById('clear')!.addEventListener('click', () => (draft.clear(), draftChanged()));
+window.addEventListener('keydown', (e) => {
+  if (showing !== 'diorama' || !(e.metaKey || e.ctrlKey) || e.code !== 'KeyZ') return;
+  e.preventDefault();
+  if (e.shiftKey ? draft.redo() : draft.undo()) draftChanged();
+});
+
+/** A stroke of the brush at (x, z) metres; `levelTo` (metres above the sea) for level. */
+function strokeAt(x: number, z: number, levelTo: number): TerrainStroke {
+  const info = worlds.find((w) => w.name === current)!;
+  const world = WORLD_SHAPES[shapeOf(info)];
+  const W = world.widthUnits / UNITS_PER_METER;
+  const k = brush.kind, v = brush.strength[k];
+  return {
+    kind: k,
+    x: world.wrapX ? ((x % W) + W) % W : x,
+    z,
+    radius: brush.radius,
+    amount: k === 'level' ? Math.round(levelTo * 100) / 100 : k === 'smooth' ? v : BRUSH_METRES(v),
+    softness: brush.softness,
+  };
+}
 
 let worlds: WorldInfo[] = [];
 let relief: WorldRelief | null = null;
@@ -103,6 +217,11 @@ let showing: 'overview' | 'diorama' = 'overview';
 let current = '';
 let ready: { climate: Uint8Array | null; seaLevel: number | null } | null = null;
 let areaId = 0;
+/** The area showing (as last asked of the worker); whether a redraw is on its way, and whether the draft changed since it was asked for. */
+let area: Omit<Extract<TerraformRequest, { type: 'area' }>, 'id' | 'strokes' | 'type'> | null = null;
+let redrawing = false;
+let redrawAgain = false;
+let mapId = 0;
 
 function status(text: string, bad = false): void {
   statusEl.textContent = text;
@@ -128,6 +247,8 @@ async function openWorld(name: string): Promise<void> {
   diorama?.dispose();
   diorama = null;
   history.replaceState(null, '', `#world=${encodeURIComponent(name)}`);
+  area = null;
+  loadDraft(name);
   const shape = shapeOf(info);
   const world = WORLD_SHAPES[shape];
   status(`loading ${name}…`);
@@ -144,6 +265,8 @@ async function openWorld(name: string): Promise<void> {
     relief = new WorldRelief(map, { width: world.widthUnits, depth: world.depthUnits, wrapX: world.wrapX }, () => middle, middle, false);
     showChoice();
     stage.prepend(relief.canvas);
+    // A draft from before: shown once the worker has the world.
+    if (overviewStale && ready) refreshOverview();
     status(ready ? '' : `building ${name} for full detail…`);
   } catch (err) {
     status(`Couldn't load ${name}: ${(err as Error).message}`, true);
@@ -157,10 +280,18 @@ worker.onmessage = (ev: MessageEvent<TerraformResponse>) => {
     ready = { climate: res.climate, seaLevel: res.seaLevel };
     enterEl.disabled = false;
     if (showing === 'overview') status('');
+    if (overviewStale && relief) refreshOverview();
   } else if (res.type === 'area') {
     if (res.id !== areaId) return;
     showArea(res);
+  } else if (res.type === 'map') {
+    if (res.id !== mapId || !relief) return;
+    const map = { cols: res.cols, rows: res.rows, step: res.step, seaLevel: res.seaLevel, heights: res.heights, materials: res.materials } as Parameters<WorldRelief['setMap']>[0];
+    if (res.climate) map.colors = climateTintColors(map, decodeClimate(res.climate));
+    relief.setMap(map);
+    if (showing === 'overview') status(`world redrawn with the draft in ${(res.ms / 1000).toFixed(1)} s`);
   } else {
+    redrawing = false;
     status(res.error, true);
     enterEl.disabled = !ready;
   }
@@ -182,15 +313,38 @@ function enter(): void {
   enterEl.disabled = true;
   status('making the area…');
   areaAbout.textContent = `${sizeM} x ${sizeM} m around x ${Math.round((x0 + size / 2) / UNITS_PER_METER)}, z ${Math.round((z0 + size / 2) / UNITS_PER_METER)} m, a sample every ${stepM} m`;
-  send({ type: 'area', id: ++areaId, x0, z0, size, step, depth: BASE_DEPTH });
+  area = { x0, z0, size, step, depth: BASE_DEPTH };
+  redrawing = true;
+  send({ type: 'area', id: ++areaId, ...area, strokes: draft.strokes });
 }
 
-function showArea(area: Extract<TerraformResponse, { type: 'area' }>): void {
+/** Redraws the area with the draft (one redraw at a time: changes meanwhile wait for the next). */
+function refreshArea(): void {
+  if (!area || showing !== 'diorama') return;
+  if (redrawing) {
+    redrawAgain = true;
+    return;
+  }
+  redrawing = true;
+  status('reshaping…');
+  send({ type: 'area', id: ++areaId, ...area, strokes: draft.strokes });
+}
+
+/** Redraws the overview with the draft. */
+function refreshOverview(): void {
+  if (!ready) return;
+  overviewStale = false;
+  status('redrawing the world with the draft…');
+  send({ type: 'map', id: ++mapId, width: 1024, strokes: draft.strokes });
+}
+
+function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
   const info = worlds.find((w) => w.name === current)!;
   if (!diorama) {
     diorama = new Diorama(ready!.climate, WORLD_SHAPES[shapeOf(info)].wrapX, ready!.seaLevel);
     diorama.miniature = miniatureEl.checked;
     diorama.setLight(light);
+    diorama.onPaint = paint;
     stage.prepend(diorama.canvas);
   }
   showing = 'diorama';
@@ -200,12 +354,46 @@ function showArea(area: Extract<TerraformResponse, { type: 'area' }>): void {
   dioramaControls.hidden = false;
   hintEl.textContent = HINT_DIORAMA;
   const t0 = performance.now();
-  diorama.show(area.parts, area);
-  status(`made in ${(area.ms / 1000).toFixed(1)} s (${Math.round(area.quads / 1000)}k faces), shown in ${Math.round(performance.now() - t0)} ms`);
+  const again = diorama.canvas.dataset.area === `${made.x0},${made.z0},${made.size},${made.step}`;
+  diorama.show(made.parts, made, again);
+  diorama.canvas.dataset.area = `${made.x0},${made.z0},${made.size},${made.step}`;
+  diorama.setField(made.heights, made.n, made.step, made.x0, made.z0);
+  diorama.setBrush(brush.radius, BRUSH_COLORS[brush.kind]);
+  status(`made in ${(made.ms / 1000).toFixed(1)} s (${Math.round(made.quads / 1000)}k faces), shown in ${Math.round(performance.now() - t0)} ms`);
   enterEl.disabled = false;
+  redrawing = false;
+  if (redrawAgain) {
+    redrawAgain = false;
+    refreshArea();
+  }
+}
+
+/** ⌘-dragging: a stroke where it starts, then one every third of the brush along the way. */
+let painting: { last: { x: number; z: number }; carried: number; levelTo: number } | null = null;
+function paint(phase: 'start' | 'move' | 'end', at: { x: number; y: number; z: number } | null): void {
+  if (phase === 'end') {
+    painting = null;
+    return;
+  }
+  if (!at) return;
+  const sea = (ready?.seaLevel ?? 0) / UNITS_PER_METER;
+  if (phase === 'start') {
+    painting = { last: at, carried: 0, levelTo: at.y - sea };
+    draft.begin([strokeAt(at.x, at.z, painting.levelTo)]);
+    draftChanged();
+    return;
+  }
+  if (!painting) return;
+  const { points, carried } = dabsAlong(painting.last, at, Math.max(1, brush.radius / 3), painting.carried);
+  painting.last = at;
+  painting.carried = carried;
+  if (points.length === 0) return;
+  draft.extend(points.map((p) => strokeAt(p.x, p.z, painting!.levelTo)));
+  draftChanged();
 }
 
 function showOverview(): void {
+  if (showing === 'diorama' && overviewStale) refreshOverview();
   showing = 'overview';
   if (relief) relief.canvas.hidden = false;
   if (diorama) diorama.canvas.hidden = true;
@@ -247,4 +435,5 @@ async function start(): Promise<void> {
   }
 }
 showLight();
+showBrush();
 void start();

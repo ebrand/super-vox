@@ -488,3 +488,26 @@ export class TerrainGenerator implements ChunkGenerator {
     return children;
   }
 }
+
+/**
+ * Surface samples for a map: `cols` x `rows` cells of `step` units from (x0, z0) (units), each
+ * sampled at its centre, as seen from above: forests as their canopy, rivers and lakes as water
+ * (the sea is left to the reader, from `seaLevel`). Heights are units (clamped to 16 bits).
+ */
+export function surfaceMap(
+  generator: Pick<ChunkGenerator, 'surfaceSamples'> & { readonly seaLevel?: number | null }, x0: number, z0: number, step: number, cols: number, rows: number,
+): { cols: number; rows: number; step: number; seaLevel: number | null; heights: Int16Array; materials: Uint8Array } {
+  const n = Math.max(cols, rows);
+  const s = generator.surfaceSamples(x0 + Math.floor(step / 2), z0 + Math.floor(step / 2), step, n);
+  const heights = new Int16Array(cols * rows);
+  const materials = new Uint8Array(cols * rows);
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const k = i + n * j, tree = s.canopy && s.canopy.top[k] !== NO_CANOPY;
+      const wet = s.water && s.water[k]! > s.heights[k]!;
+      heights[i + cols * j] = Math.max(-32767, Math.min(32767, wet ? s.water![k]! : tree ? s.canopy!.top[k]! : s.heights[k]!));
+      materials[i + cols * j] = Math.min(255, wet ? Material.Water : tree ? s.canopy!.material[k]! : s.materials[k]!);
+    }
+  }
+  return { cols, rows, step, seaLevel: generator.seaLevel ?? null, heights, materials };
+}

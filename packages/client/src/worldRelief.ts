@@ -58,7 +58,7 @@ export class WorldRelief {
   private miniatureOn = true;
 
   constructor(
-    private readonly map: MapData,
+    private map: MapData,
     private readonly world: { width: number; depth: number; wrapX: boolean },
     private readonly playerAt: () => MapMarker,
     private readonly spawn: MapMarker,
@@ -204,6 +204,15 @@ export class WorldRelief {
 
   set miniature(on: boolean) {
     this.miniatureOn = on;
+  }
+
+  /** A new map of the same world (the same samples across, e.g. with terraforming): redraws it. */
+  setMap(map: MapData): void {
+    if (map.cols !== this.map.cols || map.rows !== this.map.rows) throw new RangeError('setMap: a map of a different size');
+    this.map = map;
+    this.setColors();
+    this.placeVertices();
+    this.frameAt = '';
   }
 
   /** The map's colours changed (biome tints arrived): repaint. */
