@@ -92,12 +92,12 @@ describe('previewSteps', () => {
     // A change to the snow line only: every plate stage reused, same as a fresh build.
     const hits = cache.hits;
     const snow = run({ ...config, snowAltitude: 100 });
-    expect(cache.hits - hits).toBe(7);
+    expect(cache.hits - hits).toBe(8);
     expect(strip(snow.preview)).toEqual(strip(buildPreview({ ...config, snowAltitude: 100 }, 64)));
     // Pausing after each new plate stage: one more pause per stage made, and the same preview.
     cache.pauseAfterEach = true;
     const paused = run({ ...config, landPercent: 45 });
-    expect(paused.pauses - first.pauses).toBe(5); // all but the layout and relief stages redone
+    expect(paused.pauses - first.pauses).toBe(6); // all but the layout and relief stages redone
     expect(strip(paused.preview)).toEqual(strip(buildPreview({ ...config, landPercent: 45 }, 64)));
   });
 });

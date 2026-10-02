@@ -1051,12 +1051,12 @@ describe('PlateStageCache', () => {
   it('builds exactly what a build without it does, redoing only the stages a change affects', () => {
     const cache = new PlateStageCache();
     new PlateHeights(ROUND_WORLD_16x8KM, base, cache);
-    // Each change, and how many of the 7 stages it leaves as they were.
+    // Each change, and how many of the 8 stages it leaves as they were.
     const changes: [Partial<PlateTerrainConfig>, number][] = [
-      [{ snowAltitude: 150, trees: 80, biomeBlend: 10 }, 7],
-      [{ lakes: 10 }, 6],
-      [{ rainfall: 90 }, 5],
-      [{ biomes: 0 }, 5],
+      [{ snowAltitude: 150, trees: 80, biomeBlend: 10 }, 8],
+      [{ lakes: 10 }, 7],
+      [{ rainfall: 90 }, 6],
+      [{ biomes: 0 }, 6],
       [{ maxHeight: 350 }, 4],
       [{ mountainWidth: 3000 }, 3],
       [{ shoreFractal: 80 }, 3],

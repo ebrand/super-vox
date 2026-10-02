@@ -4,6 +4,7 @@ import { Material } from './materials.js';
 import { canopyOver, treesIn, type Canopy, type Climate, type Clumping, type Tree } from './trees.js';
 import { RiverIndex, buildHydrology, carveRivers, type Hydrology } from './rivers.js';
 import { NO_WATER } from './water.js';
+import { StrokeIndex, applyStrokes, strokesIn, type TerrainStroke } from './strokes.js';
 import { fractalGrid, ridgedGrid, type Octave } from './noise.js';
 import type { HeightSource } from './terrain.js';
 import type { WorldConfig } from './world.js';
@@ -434,7 +435,7 @@ export class PlateStagePause extends Error {
 
 /**
  * The stages of the last PlateHeights build (plate layout, mountains, relief, coasts, heights,
- * climate, rivers), each with the settings it was made from: a build given the cache reuses every
+ * terraforming strokes, climate, rivers), each with the settings it was made from: a build given the cache reuses every
  * stage whose settings haven't changed. For the generator's preview, rebuilt on every change;
  * results are shared between builds, so nothing may change them.
  */
@@ -531,6 +532,13 @@ export class PlateHeights implements HeightSource {
   /** The last block of ground and water sampled (heights, materials and water ask for the same ones). */
   private lastSurface: { key: string; heights: Int32Array; water: Int32Array | null } | null = null;
   private readonly detail: Octave[];
+  /** Terraforming strokes (see strokes.ts), and the grid samples start from: without the strokes, which samples apply exactly. */
+  private readonly strokes: readonly TerrainStroke[];
+  private readonly strokeIndex: StrokeIndex | null;
+  private readonly sampleBase: Float32Array;
+  /** How low and high strokes may take the ground (units): inside the world, with room for trees. */
+  private readonly lowest: number;
+  private readonly highest: number;
   /** Multiplier on small-scale roughness (surfaceRoughness / 50). */
   private readonly detailScale: number;
   private readonly wrap: boolean;
@@ -540,6 +548,8 @@ export class PlateHeights implements HeightSource {
     readonly config: PlateTerrainConfig,
     /** Stages kept from earlier builds, to reuse (for previews, rebuilt on every change). */
     cache?: PlateStageCache,
+    /** Terraforming: hand-made changes to the ground, applied in order (see strokes.ts). */
+    strokes: readonly TerrainStroke[] = [],
   ) {
     validatePlateTerrain(config);
     const sea = (this.seaLevel = Math.round(config.seaLevel * M));
@@ -558,6 +568,8 @@ export class PlateHeights implements HeightSource {
     }
     if (world.minYUnits >= lo || world.maxYUnits <= top) throw new RangeError("plate terrain doesn't fit the world's Y range");
     this.wrap = world.wrapX;
+    this.lowest = world.minYUnits + 16 * M;
+    this.highest = world.maxYUnits - 64 * M;
     const cols = (this.cols = world.widthUnits / PLATE_CELL);
     const rows = (this.rows = world.depthUnits / PLATE_CELL);
     const n = cols * rows;
@@ -571,8 +583,10 @@ export class PlateHeights implements HeightSource {
     const reliefKey = [...layoutKey, cf.terrainSeed, cf.noiseScale, cf.noiseRoughness];
     const coastKey = [...reliefKey, cf.landPercent, cf.shoreFractal, cf.islandArcs, cf.hotspots, cf.islandMinSize, cf.islandMaxSize];
     const heightKey = [...coastKey, ...mountainKey, cf.lowlandFlatness, cf.plains, cf.seaLevel, cf.minHeight, cf.maxHeight, cf.mountainHeight];
-    const climateKey = [...heightKey, cf.biomes, cf.northTemperature, cf.southTemperature, cf.equator, cf.equatorTemperature, cf.windFrom, cf.rainfall];
-    const hydrologyKey = [...(cf.biomes === 1 ? climateKey : heightKey), cf.biomes, cf.rivers, cf.lakes];
+    // Strokes change the ground under the climate and the rivers.
+    const strokesKey = JSON.stringify(strokes);
+    const climateKey = [...heightKey, strokesKey, cf.biomes, cf.northTemperature, cf.southTemperature, cf.equator, cf.equatorTemperature, cf.windFrom, cf.rainfall];
+    const hydrologyKey = [...(cf.biomes === 1 ? climateKey : heightKey), strokesKey, cf.biomes, cf.rivers, cf.lakes];
     // On a wrapping world each octave's lattice must tile the width exactly.
     const fit = (spacing: number) => (this.wrap ? W / Math.max(1, Math.round(W / spacing)) : spacing);
     const octaves = (seed: number, spacings: number[], persistence = 0.5): Octave[] =>
@@ -1243,7 +1257,33 @@ export class PlateHeights implements HeightSource {
       }
       return { elevation, rough, mountainness, plainness };
     });
-    const elevation = shaped.elevation;
+    // Terraforming, on the grid: what the climate and rivers see (each stroke at each cell's
+    // centre). Samples get the strokes exactly (see groundHeights), so they're also kept apart
+    // (`delta`), to be taken back out of the grid there.
+    this.strokes = strokes;
+    this.strokeIndex = strokes.length ? new StrokeIndex(strokes, this.wrap ? W : null) : null;
+    const stroked = memo('strokes', [...heightKey, strokesKey], () => {
+      if (strokes.length === 0) return { elevation: shaped.elevation, delta: null };
+      const e = shaped.elevation.slice();
+      const W0 = this.wrap ? W : null;
+      for (const s of strokes) {
+        const r = s.radius * M;
+        const c0 = Math.floor((s.x * M - r) / PLATE_CELL), c1 = Math.ceil((s.x * M + r) / PLATE_CELL);
+        const r0 = Math.max(0, Math.floor((s.z * M - r) / PLATE_CELL)), r1 = Math.min(rows - 1, Math.ceil((s.z * M + r) / PLATE_CELL));
+        for (let rr = r0; rr <= r1; rr++) {
+          for (let cc = this.wrap ? c0 : Math.max(0, c0); cc <= (this.wrap ? c1 : Math.min(cols - 1, c1)); cc++) {
+            const i = at(cc, rr);
+            if (i < 0) continue;
+            const v = applyStrokes([s], (cc + 0.5) * PLATE_CELL, (rr + 0.5) * PLATE_CELL, e[i]!, e[i]!, sea, W0).ground;
+            e[i] = Math.max(this.lowest, Math.min(this.highest, v));
+          }
+        }
+      }
+      const delta = new Float32Array(n);
+      for (let i = 0; i < n; i++) delta[i] = e[i]! - shaped.elevation[i]!;
+      return { elevation: e, delta };
+    });
+    const elevation = stroked.elevation;
     this.rough = shaped.rough;
     this.mountainness = shaped.mountainness;
     this.plainness = shaped.plainness;
@@ -1334,6 +1374,11 @@ export class PlateHeights implements HeightSource {
       return { elevation: filled, hydrology, rivers: hydrology.segments.length ? new RiverIndex(hydrology.segments, W, this.wrap) : null };
     });
     this.elevation = water.elevation;
+    if (stroked.delta) {
+      const base = new Float32Array(n);
+      for (let i = 0; i < n; i++) base[i] = water.elevation[i]! - stroked.delta[i]!;
+      this.sampleBase = base;
+    } else this.sampleBase = water.elevation;
     this.hydrology = water.hydrology;
     this.rivers = water.rivers;
   }
@@ -1489,7 +1534,8 @@ export class PlateHeights implements HeightSource {
   private groundHeights(x0: number, z0: number, w: number, d: number, step = 1): Int32Array {
     const detail = fractalGrid(this.detail, x0, z0, w, d, step);
     const norm = 2 / this.detail.reduce((a, o) => a + o.weight, 0);
-    const elev = this.interpolate(this.elevation, x0, z0, w, d, step);
+    const elev = this.interpolate(this.sampleBase, x0, z0, w, d, step);
+    const strokes = this.strokes.length ? strokesIn(this.strokes, x0, z0, x0 + (w - 1) * step, z0 + (d - 1) * step, this.wrap ? this.world.widthUnits : null) : [];
     const rough = this.interpolate(this.rough, x0, z0, w, d, step);
     const crag = this.cragsAt(x0, z0, w, d, step);
     const out = new Int32Array(w * d);
@@ -1500,7 +1546,15 @@ export class PlateHeights implements HeightSource {
       const amp = Math.min((DETAIL_MIN + (DETAIL_MAX - DETAIL_MIN) * rough[k]!) * this.detailScale, room);
       let h = e + detail[k]! * norm * Math.max(0, amp);
       if (crag) h += crag[k]! * Math.max(0, Math.min(crag.amp[k]!, room));
-      out[k] = Math.round(Math.min(this.maxHeight, Math.max(this.minHeight, h)));
+      h = Math.min(this.maxHeight, Math.max(this.minHeight, h));
+      if (strokes.length) {
+        // Terraforming, exactly here (within the world's own height range, which may pass the
+        // generator's). With many strokes about, only those reaching this spot's square.
+        const x = x0 + (k % w) * step, z = z0 + Math.floor(k / w) * step;
+        const here = strokes.length > 8 ? this.strokeIndex!.at(x, z) : strokes;
+        h = Math.max(this.lowest, Math.min(this.highest, applyStrokes(here, x, z, h, e, this.seaLevel, this.wrap ? this.world.widthUnits : null).ground));
+      }
+      out[k] = Math.round(h);
     }
     return out;
   }
