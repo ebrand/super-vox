@@ -592,7 +592,7 @@ describe('named worlds', () => {
     expect((await a.inject({ method: 'PUT', url: '/api/worlds/home/clock', payload: { hours: 3 } })).statusCode).toBe(403);
   });
 
-  it('lets admins, and only admins, see the dashboard and change the clock on production servers', async () => {
+  it('lets admins, and only admins, see the dashboard, change the clock and manage worlds on production servers', async () => {
     const secret = 'q'.repeat(40);
     const accounts = new MemoryAccountStore();
     const auth = new Auth({ googleClientId: 'c', googleClientSecret: 's', sessionSecret: secret, adminEmails: ['boss@x.com'], secureCookies: false }, accounts);
@@ -611,8 +611,15 @@ describe('named worlds', () => {
       expect((await dash(who)).json()).toEqual({ error: 'the dashboard is only for admins (sign in on the menu page)' });
       expect((await clock(who)).statusCode).toBe(403);
     }
-    // Still no creating or deleting worlds, admin or not.
-    expect((await a.inject({ method: 'DELETE', url: '/api/worlds/other', headers: { cookie: boss } })).statusCode).toBe(403);
+    // Creating and deleting worlds: admins only.
+    const create = (cookie?: string) => a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'made', plates: { seed: 3 }, shape: 'round-16x8' }, ...(cookie ? { headers: { cookie } } : {}) });
+    expect((await create(ann)).statusCode).toBe(403);
+    expect((await create()).statusCode).toBe(403);
+    expect((await a.inject({ method: 'GET', url: '/api/worlds', headers: { cookie: ann } })).json().canCreate).toBe(false);
+    expect((await a.inject({ method: 'GET', url: '/api/worlds', headers: { cookie: boss } })).json().canCreate).toBe(true);
+    expect((await create(boss)).statusCode).toBe(201);
+    expect((await a.inject({ method: 'DELETE', url: '/api/worlds/made', headers: { cookie: ann } })).statusCode).toBe(403);
+    expect((await a.inject({ method: 'DELETE', url: '/api/worlds/made', headers: { cookie: boss } })).statusCode).toBe(204);
   });
 
   it('serves the climate of worlds whose biomes blend, and nothing for the rest', async () => {

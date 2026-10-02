@@ -157,7 +157,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
    * development servers, anyone; elsewhere, signed-in admins (ADMIN_EMAILS).
    */
   const operator = async (req: FastifyRequest): Promise<boolean> => {
-    if (catalog.create) return true;
+    if (catalog.dev) return true;
     return !!(opts.auth && (await opts.auth.signedIn(req.cookies))?.admin);
   };
   const notOperator = (what: string) => ({ error: `${what} is only for ${opts.auth ? 'admins (sign in on the menu page)' : 'development servers'}` });
@@ -211,11 +211,12 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   });
 
   // The worlds on this server and how each was generated.
-  app.get('/api/worlds', async () => ({ default: catalog.defaultName, canCreate: catalog.create !== undefined, worlds: catalog.list() }));
+  app.get('/api/worlds', async (req) => ({ default: catalog.defaultName, canCreate: catalog.create !== undefined && (await operator(req)), worlds: catalog.list() }));
 
   // Development only (no accounts yet): create a plate world. Body: { name, plates }.
   app.post<{ Body: unknown }>('/api/worlds', async (req, reply) => {
     if (!catalog.create) return reply.code(403).send({ error: 'creating worlds is not enabled on this server' });
+    if (!(await operator(req))) return reply.code(403).send(notOperator('creating worlds'));
     const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { name?: unknown; plates?: unknown; shape?: unknown };
     if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: 'shape must be "round-64x32", "round-16x8" or "flat-16x16"' });
     if (!isValidWorldName(body.name)) {
@@ -240,6 +241,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   // Body: { plates }.
   app.put<{ Params: { name: string }; Body: unknown }>('/api/worlds/:name', async (req, reply) => {
     if (!catalog.update) return reply.code(403).send({ error: 'changing worlds is not enabled on this server' });
+    if (!(await operator(req))) return reply.code(403).send(notOperator('changing worlds'));
     const { name } = req.params;
     if (!isValidWorldName(name)) return reply.code(404).send({ error: 'no such world' });
     const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { plates?: unknown; shape?: unknown };
@@ -290,6 +292,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   // Development only: delete a world and its edits (not the server's default world).
   app.delete<{ Params: { name: string } }>('/api/worlds/:name', async (req, reply) => {
     if (!catalog.delete) return reply.code(403).send({ error: 'changing worlds is not enabled on this server' });
+    if (!(await operator(req))) return reply.code(403).send(notOperator('deleting worlds'));
     const { name } = req.params;
     if (!isValidWorldName(name)) return reply.code(404).send({ error: 'no such world' });
     try {

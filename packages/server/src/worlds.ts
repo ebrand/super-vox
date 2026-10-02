@@ -32,6 +32,8 @@ export class DefaultWorldError extends Error {}
 /** The worlds a server can serve. */
 export interface WorldCatalog {
   readonly defaultName: string;
+  /** A development server: anyone may use the operator's tools (else admins only; see app.ts). */
+  readonly dev: boolean;
   /**
    * World `name` (the default when undefined), voxelized with `tolerance` if
    * given and allowed; null if there is no such world.
@@ -71,6 +73,7 @@ export function singleWorld(
 ): WorldCatalog {
   let clock = defaultClock(Date.now(), dayMinutes, localUtcOffsetMinutes());
   return {
+    dev: false,
     play: (n) => (n === undefined || n === name ? { mode, inventoryKey: `${name}@single` } : null),
     clock: (n) => (n === undefined || n === name ? clock : null),
     openWorlds: () => [{ name, world }],
@@ -107,6 +110,7 @@ export class FileWorldCatalog implements WorldCatalog {
   readonly update?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape) => WorldSummary;
   readonly delete?: (name: string) => void;
   readonly setClock?: (name: string, change: ClockChange) => DayClock;
+  readonly dev: boolean;
   private readonly clocks = new Map<string, DayClock>();
 
   constructor(
@@ -115,6 +119,7 @@ export class FileWorldCatalog implements WorldCatalog {
     /** dayMinutes: the day length of worlds that don't have a clock yet. */
     private readonly opts: { dev: boolean; config?: WorldConfig; dayMinutes?: number | 'real' },
   ) {
+    this.dev = opts.dev;
     // Anyone the server lets (see app.ts: development, or admins) may change a world's clock.
     this.setClock = (name, change) => {
       const now = this.clock(name);
@@ -124,7 +129,8 @@ export class FileWorldCatalog implements WorldCatalog {
       this.clocks.set(name, next);
       return next;
     };
-    if (opts.dev) {
+    // Creating, changing and deleting worlds: for whoever the server lets (see app.ts: development, or admins).
+    {
       this.create = (name, plates, shape = DEFAULT_WORLD_SHAPE) =>
         this.summary(createWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize: defaultVoxelize(), shape }));
       this.update = (name, plates, shape) => {

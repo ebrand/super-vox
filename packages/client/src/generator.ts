@@ -497,7 +497,7 @@ async function loadWorlds(): Promise<void> {
   }
   canChange = data.canCreate;
   createEl.disabled = !canChange;
-  if (!canChange) message('Creating, changing and deleting worlds is disabled on this server.', 'bad');
+  if (!canChange) message('Creating, changing and deleting worlds is for admins: sign in on the menu page (/).', 'bad');
   // A world loaded for editing that has since gone (e.g. deleted elsewhere) can't be saved to.
   const current = editing && data.worlds.find((w) => w.name === editing!.name);
   editing = current ? { name: current.name, editedChunks: current.editedChunks } : null;
