@@ -761,8 +761,8 @@ describe('biomes', () => {
   };
 
   it('put snow and bare rock where it is cold, not at fixed heights (without altitudeSnow)', () => {
-    // Temperature alone (worlds made before altitudeSnow).
-    const land = (over: Partial<PlateTerrainConfig>) => landOf({ altitudeSnow: 0, ...over });
+    // Temperature alone (worlds made before altitudeSnow and altitudeRock).
+    const land = (over: Partial<PlateTerrainConfig>) => landOf({ altitudeSnow: 0, altitudeRock: 0, ...over });
     // A hot world: no snow even on 600 m peaks, and no rock band (ground beaches aside).
     const hot = land({ northTemperature: 26, southTemperature: 32 });
     expect(hot.some((x) => x.mat === Material.Snow)).toBe(false);
@@ -799,6 +799,21 @@ describe('biomes', () => {
     };
     expect(share({ snowAltitude: 150 })).toBeGreaterThan(share({ snowAltitude: 400 }) + 0.05);
     expect(share({ snowAltitude: 2000 })).toBe(share({ altitudeSnow: 0 }));
+  });
+
+  it('with altitudeRock, also put bare rock above the rock altitude however warm', () => {
+    // A hot world without snow: rock on all the ground above the rock altitude, none on the
+    // land between the beaches and it.
+    const hot = landOf({ northTemperature: 26, southTemperature: 32, snowAltitude: 2000, rockAltitude: 150 });
+    expect(hot.filter((x) => x.m >= 150).length).toBeGreaterThan(0);
+    expect(hot.filter((x) => x.m >= 150 && x.mat !== Material.Stone).length).toBe(0);
+    expect(hot.filter((x) => x.m > 10 && x.m < 150 && x.mat === Material.Stone).length).toBe(0);
+    // Snow above it stays snow; out of reach, the same as temperature alone.
+    const both = landOf({ northTemperature: 26, southTemperature: 32, snowAltitude: 250, rockAltitude: 150 });
+    expect(both.filter((x) => x.m > 250 + 31 && x.mat !== Material.Snow).length).toBe(0);
+    const mats = (over: Partial<PlateTerrainConfig>) => landOf({ northTemperature: -2, southTemperature: 10, ...over }).map((x) => x.mat);
+    expect(mats({ rockAltitude: 2000 })).toEqual(mats({ altitudeRock: 0 }));
+    expect(mats({ rockAltitude: 100 })).not.toEqual(mats({ altitudeRock: 0 }));
   });
 });
 

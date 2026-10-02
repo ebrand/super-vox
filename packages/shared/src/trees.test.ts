@@ -4,7 +4,7 @@ import { rasterizeVoxels, voxelAt, type Chunk } from './chunk.js';
 import { Material } from './materials.js';
 import { PlateHeights, defaultPlateTerrain, migratePlateTerrain, type PlateTerrainConfig } from './plates.js';
 import { TerrainGenerator, type HeightSource } from './terrain.js';
-import { CANOPY_EXACT_STEP, NO_CANOPY, TREE_REACH, TreeKind, crownTop, plantTrees, type Tree } from './trees.js';
+import { CANOPY_EXACT_STEP, NO_CANOPY, TREE_REACH, TreeKind, clumpFactors, clumpedChance, crownTop, plantTrees, type Clumping, type Tree } from './trees.js';
 import { CHUNK_SIZE, FLAT_WORLD_16KM } from './world.js';
 
 const cache = new Map<string, PlateHeights>();
@@ -247,4 +247,62 @@ describe('forest canopy (distant terrain)', () => {
     expect(s.surface.materials).toEqual(s.groundMat);
   });
 });
+});
+
+describe('tree clumping', () => {
+  /** A 1.2 km square of forest (boreal and temperate) in seed 9. */
+  const AREA = [3000 * 16, 6000 * 16, 4200 * 16, 7200 * 16] as const;
+  /** Trees per 48 m block over AREA. */
+  const blocks = (trees: Tree[]) => {
+    const n = Math.round((AREA[2] - AREA[0]) / (48 * 16));
+    const out = new Array<number>(n * n).fill(0);
+    for (const t of trees) {
+      const i = Math.floor((t.x - AREA[0]) / (48 * 16)), j = Math.floor((t.z - AREA[1]) / (48 * 16));
+      if (i >= 0 && i < n && j >= 0 && j < n) out[i + n * j]!++;
+    }
+    return out;
+  };
+  const sd = (xs: number[]) => {
+    const m = xs.reduce((a, b) => a + b, 0) / xs.length;
+    return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length);
+  };
+
+  it('at 0, leaves the trees as they were (older worlds)', () => {
+    expect(world({ treeClumping: 0 }).trees(...AREA)).toEqual(world(migratePlateTerrain({ ...defaultPlateTerrain(9), mountains: 0, rivers: 0, lakes: 0, equator: 0, northTemperature: -6, southTemperature: 26, treeClumping: undefined })).trees(...AREA));
+  });
+
+  it('groups trees into groves and glades, more with more clumping, keeping about as many', () => {
+    const even = blocks(world({ treeClumping: 0 }).trees(...AREA));
+    const some = blocks(world({ treeClumping: 50 }).trees(...AREA));
+    const lots = blocks(world({ treeClumping: 100 }).trees(...AREA));
+    const total = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+    expect(total(even)).toBeGreaterThan(5000);
+    // (About as many: how a world's groves happen to fall moves its count a few percent, more in
+    // a small area like this one; the mean chance itself is checked below.)
+    for (const xs of [some, lots]) expect(Math.abs(total(xs) / total(even) - 1)).toBeLessThan(0.2);
+    // Blocks vary far more, and glades (blocks with few trees) appear where there were none.
+    expect(sd(some)).toBeGreaterThan(sd(even) * 2);
+    expect(sd(lots)).toBeGreaterThan(sd(some) * 1.1);
+    const glades = (xs: number[]) => xs.filter((n) => n < 8).length;
+    expect(glades(lots)).toBeGreaterThan(glades(even) + even.length * 0.05);
+  });
+
+  it('keeps the mean chance of a tree, even where groves would be fuller than full', () => {
+    for (const amount of [30, 60, 100]) {
+      const clumps = { ...(world({ treeClumping: amount }) as unknown as { clumps: Clumping }).clumps };
+      // Over a 16 km square, every 48 m.
+      const f = clumpFactors(clumps, 0, 0, 333, 333, 48 * 16)!;
+      for (const p of [0.04, 0.45, 0.6, 0.9]) {
+        let sum = 0, most = 0;
+        for (const v of f) {
+          const c = clumpedChance(clumps, p, v);
+          sum += c;
+          most = Math.max(most, c);
+        }
+        expect(sum / f.length, `amount ${amount}, p ${p}`).toBeGreaterThan(p * 0.95);
+        expect(sum / f.length, `amount ${amount}, p ${p}`).toBeLessThan(p * 1.05);
+        expect(most).toBeLessThanOrEqual(1);
+      }
+    }
+  });
 });

@@ -1,7 +1,7 @@
 import { BIOME_GROUND, classifyBiome, sameBiome, type BiomeId, type Ecotone } from './biomes.js';
 import type { ClimateGrid } from './climate.js';
 import { Material } from './materials.js';
-import { canopyOver, treesIn, type Canopy, type Climate, type Tree } from './trees.js';
+import { canopyOver, treesIn, type Canopy, type Climate, type Clumping, type Tree } from './trees.js';
 import { RiverIndex, buildHydrology, carveRivers, type Hydrology } from './rivers.js';
 import { NO_WATER } from './water.js';
 import { fractalGrid, ridgedGrid, type Octave } from './noise.js';
@@ -88,6 +88,11 @@ export interface PlateTerrainConfig {
    */
   altitudeSnow: number;
   /**
+   * With biomes, 1: ground above rockAltitude is bare rock too (below any snow), however warm;
+   * 0: temperature alone decides (worlds made before this setting).
+   */
+  altitudeRock: number;
+  /**
    * How gradually biomes give way to each other, 0 (sharp borders) .. 100: borders become ragged,
    * trees of neighbouring biomes mix across a band (and forests thin out across it), and ground
    * colours blend.
@@ -97,6 +102,8 @@ export interface PlateTerrainConfig {
   windFrom: number;
   /** How many trees, 0 (none) .. 100 (twice the natural density for each biome); 50 is natural. */
   trees: number;
+  /** How much trees grow in clumps (groves and glades a few hundred metres across), 0 (evenly) .. 100. */
+  treeClumping: number;
   /** Rivers: 0 (none) .. 100 (many small streams); 50 is a network of streams joining into rivers. */
   rivers: number;
   /** Lakes in land basins: 0 (basins are filled in) .. 100 (even small basins hold lakes). */
@@ -157,8 +164,10 @@ export function defaultPlateTerrain(seed = 1, world?: WorldConfig): PlateTerrain
     windFrom: 270,
     snowTemperature: -4,
     altitudeSnow: 1,
+    altitudeRock: 1,
     biomeBlend: 50,
     trees: 50,
+    treeClumping: 60,
     rivers: 50,
     lakes: 50,
     islandArcs: 0,
@@ -194,6 +203,7 @@ export const PLATE_LIMITS = {
   windFrom: [0, 360],
   biomeBlend: [0, 100],
   trees: [0, 100],
+  treeClumping: [0, 100],
   rivers: [0, 100],
   lakes: [0, 100],
   islandArcs: [0, 100],
@@ -220,9 +230,9 @@ export function parsePlateTerrain(raw: unknown): PlateTerrainConfig {
  * Plate settings saved by an older version, brought up to date so the world looks as it did:
  * `waterPercent` becomes `landPercent`; rock and snow, which started at 60% and 80% of the land's
  * height range (or `rockLine` percent), get those heights in metres; steep ground turned to rock
- * above slope 0.9 (42 degrees), along a plain contour; there were no mountains, biomes or trees,
- * biome borders were sharp, there were no rivers or lakes, and with biomes the snow altitude didn't
- * count. Other missing settings get their defaults.
+ * above slope 0.9 (42 degrees), along a plain contour; there were no mountains, biomes or trees
+ * (and trees, once there were, were spread evenly), biome borders were sharp, there were no rivers
+ * or lakes, and with biomes the snow and rock altitudes didn't count. Other missing settings get their defaults.
  */
 export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   const r = { ...((typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>) };
@@ -236,6 +246,8 @@ export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   if (r.snowFractal === undefined) r.snowFractal = 0;
   if (r.biomes === undefined) r.biomes = 0;
   if (r.trees === undefined) r.trees = 0;
+  // Trees were spread evenly.
+  if (r.treeClumping === undefined) r.treeClumping = 0;
   if (r.biomeBlend === undefined) r.biomeBlend = 0;
   if (r.rivers === undefined) r.rivers = 0;
   // Before equators, temperature ran from the north edge to the south edge (then -6 and 26 C).
@@ -245,8 +257,9 @@ export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
     if (r.southTemperature === undefined) r.southTemperature = 26;
   }
   if (r.lakes === undefined) r.lakes = 0;
-  // With biomes, the snow altitude didn't count (snow came from temperature alone).
+  // With biomes, the snow and rock altitudes didn't count (temperature alone decided).
   if (r.altitudeSnow === undefined) r.altitudeSnow = 0;
+  if (r.altitudeRock === undefined) r.altitudeRock = 0;
   // Worlds from before the current mountains have none. (The first plate worlds saved a
   // `mountainHeight` that meant something else, possibly below maxHeight: replace it.)
   if (r.mountains === undefined) {
@@ -302,8 +315,10 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   num(c.windFrom, L.windFrom, 'windFrom', ' degrees');
   num(c.snowTemperature, L.temperature, 'snowTemperature', ' degrees C');
   if (c.altitudeSnow !== 0 && c.altitudeSnow !== 1) throw new RangeError(`altitudeSnow must be 0 or 1; got ${c.altitudeSnow}`);
+  if (c.altitudeRock !== 0 && c.altitudeRock !== 1) throw new RangeError(`altitudeRock must be 0 or 1; got ${c.altitudeRock}`);
   num(c.biomeBlend, L.biomeBlend, 'biomeBlend');
   num(c.trees, L.trees, 'trees');
+  num(c.treeClumping, L.treeClumping, 'treeClumping');
   num(c.rivers, L.rivers, 'rivers');
   num(c.lakes, L.lakes, 'lakes');
   num(c.islandArcs, L.islandArcs, 'islandArcs');
@@ -469,6 +484,8 @@ export class PlateHeights implements HeightSource {
   private readonly snowTemp: number;
   private readonly treeDensity: number;
   private readonly treeSeed: number;
+  /** Groves and glades (see Clumping). */
+  private readonly clumps: Clumping;
   /** Fractal noise moving the snow line up and down, and how far (units). */
   private readonly snowNoise: Octave[];
   private readonly snowWander: number;
@@ -481,6 +498,8 @@ export class PlateHeights implements HeightSource {
   private readonly snowLine: number;
   /** With biomes: whether ground above the snow line is snow too (see altitudeSnow). */
   private readonly altitudeSnow: boolean;
+  /** With biomes: whether ground above the rock line is bare rock too (see altitudeRock). */
+  private readonly altitudeRock: boolean;
   private readonly rockSlope: number;
   readonly cols: number;
   readonly rows: number;
@@ -532,6 +551,7 @@ export class PlateHeights implements HeightSource {
     this.rockLine = sea + config.rockAltitude * M;
     this.snowLine = sea + config.snowAltitude * M;
     this.altitudeSnow = config.altitudeSnow === 1;
+    this.altitudeRock = config.altitudeRock === 1;
     this.rockSlope = Math.tan((config.rockSlope * Math.PI) / 180);
     if (world.widthUnits % PLATE_CELL || world.depthUnits % PLATE_CELL) {
       throw new RangeError(`world size must be a multiple of ${PLATE_CELL} units`);
@@ -1234,6 +1254,8 @@ export class PlateHeights implements HeightSource {
     this.cooling = (config.altitudeCooling / 100) / M; // degrees C per unit of height
     this.snowTemp = config.snowTemperature;
     this.treeDensity = config.trees;
+    // Groves and glades from ~400 m down to ~100 m across.
+    this.clumps = { octaves: octaves(config.terrainSeed * 7919 + 83, [6144, 3072, 1536], 0.6), amount: config.treeClumping };
     this.treeSeed = config.terrainSeed * 7919 + 47;
     const climate = memo('climate', climateKey, () => {
       if (config.biomes !== 1) return { temp: null, wet: null };
@@ -1525,8 +1547,8 @@ export class PlateHeights implements HeightSource {
     const vary = fractalGrid(this.beachNoise, x0, z0, w, d, step);
     const norm = 2 / this.beachNoise.reduce((a, o) => a + o.weight, 0);
     const sea = this.seaLevel;
-    // With biomes, snow and rock follow the ground's temperature (and with altitudeSnow, snow
-    // also lies above the snow altitude); without, fixed heights. Either way the snow line
+    // With biomes, snow and rock follow the ground's temperature (and with altitudeSnow and
+    // altitudeRock, also lie above their altitudes); without, fixed heights. Either way the snow line
     // wanders (in degrees or metres), computed only where some ground is within its reach.
     const byHeight = !climate || this.altitudeSnow;
     const shiftNear = (wander: number, near: () => boolean) => {
@@ -1562,10 +1584,10 @@ export class PlateHeights implements HeightSource {
       let snow: boolean, bare: boolean;
       if (climate) {
         // Colder than the snow temperature: snow; a little warmer, on high ground: bare rock.
-        // (And above the snow altitude, with altitudeSnow.)
+        // (And above the snow and rock altitudes, with altitudeSnow and altitudeRock.)
         const t = climate.temperature[k]! + (tempShift ? tempShift[k]! : 0);
         snow = t < this.snowTemp || high;
-        bare = t < this.snowTemp + ROCK_BAND_DEGREES && h - sea > ROCK_BAND_MIN_HEIGHT;
+        bare = (t < this.snowTemp + ROCK_BAND_DEGREES && h - sea > ROCK_BAND_MIN_HEIGHT) || (this.altitudeRock && h >= this.rockLine);
       } else {
         snow = high;
         bare = h >= this.rockLine;
@@ -1592,6 +1614,7 @@ export class PlateHeights implements HeightSource {
       climate && { temperature: climate.biomeTemperature, moisture: climate.biomeMoisture }, this.treeDensity, this.treeSeed,
       () => this.trees(x0, z0, x0 + w * step, z0 + d * step),
       this.ecotone,
+      this.clumps,
     );
   }
 
@@ -1619,6 +1642,7 @@ export class PlateHeights implements HeightSource {
       this.treeDensity,
       x0, z0, x1, z1,
       this.ecotone,
+      this.clumps,
     );
   }
 

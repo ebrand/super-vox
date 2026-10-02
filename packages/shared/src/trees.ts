@@ -10,7 +10,7 @@ import {
   type Chunk,
 } from './chunk.js';
 import { Material, type MaterialId } from './materials.js';
-import { hash2 } from './noise.js';
+import { fractalGrid, hash2, type Octave } from './noise.js';
 import type { VoxelSize } from './units.js';
 import { CHUNK_SIZE } from './world.js';
 
@@ -105,6 +105,82 @@ export interface GroundSampler {
   ground(xs: number[], zs: number[]): { heights: Int32Array; materials: Uint16Array; climate: Climate | null };
 }
 
+/**
+ * Trees grow in clumps: a smooth noise field (`octaves`, a few hundred metres across) makes trees
+ * likelier in some places (groves) and rarer in others (glades); `amount` 0 leaves the chances as
+ * they are, 100 is the strongest. The average chance stays the same (see clumpedChance).
+ */
+export interface Clumping {
+  octaves: readonly Octave[];
+  /** 0 (none) .. 100. */
+  amount: number;
+}
+/** Doublings of the tree chance across 0.4 of the normalized clump noise (~1.3 deviations), at amount 100. */
+const CLUMP_RANGE = 3;
+
+interface ClumpState {
+  /** Exponent on the normalized noise. */
+  k: number;
+  norm: number;
+  /** The noise's values over a wide area (its distribution, for keeping the mean chance). */
+  samples: Float64Array;
+  /** Per base chance: the multiplier that keeps the mean chance (see clumpedChance). */
+  scales: Map<number, number>;
+}
+const clumpStates = new WeakMap<Clumping, ClumpState>();
+function clumpState(c: Clumping): ClumpState {
+  let st = clumpStates.get(c);
+  if (!st) {
+    const norm = 2 / c.octaves.reduce((a, o) => a + o.weight, 0);
+    // 128 x 128 samples, spaced out of step with every octave's lattice (at lattice points the
+    // noise spreads wider than between them): the noise's distribution, not just its typical value.
+    const samples = fractalGrid(c.octaves, 0, 0, 128, 128, c.octaves[0]!.spacing * 0.7853981).map((v) => v * norm);
+    st = { k: (CLUMP_RANGE / 0.4) * (c.amount / 100) * Math.LN2, norm, samples, scales: new Map() };
+    clumpStates.set(c, st);
+  }
+  return st;
+}
+
+/**
+ * How much likelier trees are at samples (w x d from (x0, z0), `step` apart), before keeping the
+ * mean (see clumpedChance); null without clumping.
+ */
+export function clumpFactors(clumps: Clumping | null, x0: number, z0: number, w: number, d: number, step: number): Float64Array | null {
+  if (!clumps || clumps.amount <= 0) return null;
+  const st = clumpState(clumps);
+  return fractalGrid(clumps.octaves, x0, z0, w, d, step).map((v) => Math.exp(st.k * v * st.norm));
+}
+
+/**
+ * The chance of a tree where the base chance is `p` (0..1) and the clump factor `f`: p times f,
+ * scaled so that averaged over the whole noise field it's still p, and at most 1. (Where groves
+ * would be fuller than full, glades are emptier instead.)
+ */
+export function clumpedChance(clumps: Clumping, p: number, f: number): number {
+  if (p <= 0 || p >= 1) return p;
+  const st = clumpState(clumps);
+  let scale = st.scales.get(p);
+  if (scale === undefined) {
+    const factors = st.samples.map((n) => Math.exp(st.k * n));
+    const mean = (s: number) => {
+      let sum = 0;
+      for (const v of factors) sum += Math.min(1, p * s * v);
+      return sum / factors.length;
+    };
+    // The mean grows with the scale; find where it's p.
+    let lo = 0, hi = 1;
+    while (mean(hi) < p && hi < 1e6) hi *= 2;
+    for (let it = 0; it < 50; it++) {
+      const mid = (lo + hi) / 2;
+      if (mean(mid) < p) lo = mid;
+      else hi = mid;
+    }
+    scale = (lo + hi) / 2;
+    st.scales.set(p, scale);
+  }
+  return Math.min(1, p * scale * f);
+}
+
 /** Deterministic random numbers for a cell: r(k) in [0, 1). */
 function cellRandom(seed: number, cx: number, cz: number) {
   return (k: number) => hash2(cx * 977 + k * 7919, cz * 131 + k * 104729, seed);
@@ -117,16 +193,18 @@ function cellRandom(seed: number, cx: number, cz: number) {
  * biome of its climate nudged at random within the `ecotone`, so near a border the two biomes'
  * trees mix, and a forest thins out over the width of the ecotone instead of stopping at a line.
  */
-export function treesIn(sampler: GroundSampler, seed: number, density: number, x0: number, z0: number, x1: number, z1: number, ecotone: Ecotone = SHARP): Tree[] {
+export function treesIn(sampler: GroundSampler, seed: number, density: number, x0: number, z0: number, x1: number, z1: number, ecotone: Ecotone = SHARP, clumps: Clumping | null = null): Tree[] {
   if (density <= 0) return [];
   const c0 = Math.floor((x0 - TREE_REACH) / TREE_CELL), c1 = Math.floor((x1 + TREE_REACH) / TREE_CELL);
   const r0 = Math.floor((z0 - TREE_REACH) / TREE_CELL), r1 = Math.floor((z1 + TREE_REACH) / TREE_CELL);
-  const cand: { x: number; z: number; rnd: (k: number) => number }[] = [];
+  // Clumping, at each cell's corner (the same wherever the cell is asked for).
+  const clump = clumpFactors(clumps, c0 * TREE_CELL, r0 * TREE_CELL, c1 - c0 + 1, r1 - r0 + 1, TREE_CELL);
+  const cand: { x: number; z: number; rnd: (k: number) => number; clump: number }[] = [];
   for (let r = r0; r <= r1; r++) {
     for (let c = c0; c <= c1; c++) {
       const rnd = cellRandom(seed, c, r);
       // Jittered within the cell, keeping trunks at least ~1 m from the cell's edge.
-      cand.push({ x: Math.floor((c + 0.15 + 0.7 * rnd(0)) * TREE_CELL), z: Math.floor((r + 0.15 + 0.7 * rnd(1)) * TREE_CELL), rnd });
+      cand.push({ x: Math.floor((c + 0.15 + 0.7 * rnd(0)) * TREE_CELL), z: Math.floor((r + 0.15 + 0.7 * rnd(1)) * TREE_CELL), rnd, clump: clump ? clump[c - c0 + (c1 - c0 + 1) * (r - r0)]! : 1 });
     }
   }
   if (cand.length === 0) return [];
@@ -137,7 +215,8 @@ export function treesIn(sampler: GroundSampler, seed: number, density: number, x
     const mat = g.materials[k]!;
     if (!FERTILE.has(mat)) return;
     const biome = g.climate ? blendedBiome(g.climate.temperature[k]!, g.climate.moisture[k]!, ecotone, t.rnd(6), t.rnd(7), t.rnd(8), t.rnd(9)) : Biome.Temperate;
-    if (t.rnd(2) >= Math.min(1, DENSITY[biome] * scale)) return;
+    const chance = Math.min(1, DENSITY[biome] * scale);
+    if (t.rnd(2) >= (clumps && clump ? clumpedChance(clumps, chance, t.clump) : chance)) return;
     const tree = shapeTree(biome, t.x, g.heights[k]!, t.z, t.rnd);
     // Only trees that reach into the box.
     if (tree.x + TREE_REACH < x0 || tree.x - TREE_REACH >= x1 || tree.z + TREE_REACH < z0 || tree.z - TREE_REACH >= z1) return;
@@ -419,6 +498,7 @@ export function canopyOver(
   climate: Climate | null, density: number, seed: number,
   trees: () => Tree[],
   ecotone: Ecotone = SHARP,
+  clumps: Clumping | null = null,
 ): Canopy | null {
   if (density <= 0) return null;
   const top = new Int32Array(w * d).fill(NO_CANOPY), bottom = new Int32Array(w * d).fill(NO_CANOPY), material = new Uint16Array(w * d);
@@ -457,8 +537,10 @@ export function canopyOver(
     }
     return top.some((v) => v !== NO_CANOPY) ? { top, bottom, material } : null;
   }
-  // Statistical canopy: cover scales like independent trees (more trees overlap more).
+  // Statistical canopy: cover scales like independent trees (more trees overlap more), and
+  // with clumping, as the trees there do.
   const scale = density / 50;
+  const clump = clumpFactors(clumps, x0, z0, w, d, step);
   let any = false;
   for (let j = 0; j < d; j++) {
     for (let i = 0; i < w; i++) {
@@ -470,7 +552,10 @@ export function canopyOver(
         : Biome.Temperate;
       const c = CANOPY[biome];
       if (c.cover <= 0) continue;
-      const cover = 1 - (1 - c.cover) ** scale;
+      // With clumping, as many more (or fewer) trees as there are here.
+      const chance = Math.min(1, DENSITY[biome] * scale);
+      const more = clumps && clump && chance > 0 ? clumpedChance(clumps, chance, clump[k]!) / chance : 1;
+      const cover = 1 - (1 - c.cover) ** (scale * more);
       if (hash2(gx, gz, seed ^ step) >= cover) continue;
       const h = c.height * M * (0.75 + 0.5 * hash2(gz, gx, seed + 1));
       top[k] = Math.round(heights[k]! + h);
