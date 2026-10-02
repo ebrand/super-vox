@@ -61,7 +61,7 @@ async function player(url: string, cookie?: string) {
       return result;
     },
     /** Survival: starts mining an edit's spot, waits `ms` (as the player holds the button), then makes it. */
-    async mine(e: { op: string; x: number; y: number; z: number }, ms = 60) {
+    async mine(e: { op: string; x: number; y: number; z: number; size?: number }, ms = 60) {
       ws.send(JSON.stringify({ type: 'mine', x: e.x, y: e.y, z: e.z }));
       await new Promise((r) => setTimeout(r, ms));
       return this.edit(e);
@@ -108,6 +108,33 @@ describe('mining', () => {
     expect(top).toBeGreaterThan(0.7);
     expect(top).toBeLessThan(3);
     expect(world.miningTime({ op: 'removeBox', x: 2000, y: -160, z: 2000, size: 16 })).toBeCloseTo(3, 6);
+  });
+});
+
+describe('big boxes (creative)', () => {
+  it('digs and fills boxes up to 16 m in creative, across chunks; not in survival', async () => {
+    const { url, cookie } = await setup('creative');
+    const p = await player(url, cookie);
+    await p.until(() => !!p.inventory());
+    const chunksBefore = p.msgs.length;
+    // A 4 m dig box crossing a chunk border (x 3200 + 192 .. + 256: chunks 12 and 13).
+    expect(await p.edit({ op: 'removeBox', x: 3200 + 192, y: -64, z: 3200, size: 64 })).toMatchObject({ ok: true });
+    // A 4 m fill across the same border, of planks.
+    expect(await p.edit({ op: 'fillBox', x: 3200 + 192, y: 0, z: 3200, size: 64, material: Material.Planks })).toMatchObject({ ok: true });
+    expect(p.msgs.length).toBeGreaterThan(chunksBefore);
+    // Not fences, not off the grid, not water.
+    expect(await p.edit({ op: 'fillBox', x: 3200, y: 0, z: 3200, size: 32, material: Material.FenceWood })).toMatchObject({ ok: false });
+    expect(await p.edit({ op: 'fillBox', x: 3208, y: 0, z: 3200, size: 32, material: Material.Stone })).toMatchObject({ ok: false, error: 'a fill box lies on the 1 m grid' });
+    expect(await p.edit({ op: 'fillBox', x: 3200, y: 0, z: 3200, size: 32, material: Material.Water })).toMatchObject({ ok: false });
+    p.ws.close();
+    await app.close();
+    // Survival: no.
+    const s = await setup('survival');
+    const q = await player(s.url, s.cookie);
+    await q.until(() => !!q.inventory());
+    expect(await q.mine({ op: 'removeBox', x: 3200, y: -64, z: 3200, size: 64 })).toMatchObject({ ok: false, error: 'boxes over 1 m are for creative worlds' });
+    expect(await q.edit({ op: 'fillBox', x: 3200, y: 0, z: 3200, size: 32, material: Material.Dirt })).toMatchObject({ ok: false, error: 'boxes over 1 m are for creative worlds' });
+    q.ws.close();
   });
 });
 

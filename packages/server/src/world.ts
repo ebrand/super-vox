@@ -22,6 +22,9 @@ import {
   editChunk,
   removeBoxChunks,
   removeBoxFromChunk,
+  fillBoxInChunk,
+  isObjectMaterial,
+  validateFillBox,
   splitPlacement,
   validateRemoveBox,
   normalizeX,
@@ -130,7 +133,7 @@ function mergeResults(a: EditResult, b: EditResult): EditResult {
 
 /** The unit box an edit touches. */
 function editBounds(edit: Edit): { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } {
-  const size = edit.op === 'place' || edit.op === 'removeBox' ? edit.size : 1;
+  const size = edit.op === 'place' || edit.op === 'removeBox' || edit.op === 'fillBox' ? edit.size : 1;
   return { x0: edit.x, y0: edit.y, z0: edit.z, x1: edit.x + size, y1: edit.y + size, z1: edit.z + size };
 }
 
@@ -318,7 +321,7 @@ export class World {
     const result = this.applyEditOnly(edit);
     this.stats.edits++;
     // Water around whatever changed may flow, and the sea fills what was opened beside it.
-    const size = edit.op === 'place' || edit.op === 'removeBox' ? edit.size : 1;
+    const size = edit.op === 'place' || edit.op === 'removeBox' || edit.op === 'fillBox' ? edit.size : 1;
     const touched: [number, number, number][] = [];
     for (let by = edit.y >> 4; by <= (edit.y + size - 1) >> 4; by++)
       for (let bz = edit.z >> 4; bz <= (edit.z + size - 1) >> 4; bz++)
@@ -438,6 +441,20 @@ export class World {
         if (next) changed.push(next);
       }
       if (changed.length === 0) throw new EditError('nothing to remove there');
+      return this.commit(changed);
+    }
+    if (edit.op === 'fillBox') {
+      validateFillBox(edit);
+      if (isObjectMaterial(edit.material)) throw new EditError("fences, gates and doors aren't filled in boxes");
+      const changed: Chunk[] = [];
+      for (const c of removeBoxChunks(edit)) {
+        const resolved = resolveChunk(this.config, c);
+        if (!resolved) continue;
+        const shift = (resolved.cx - c.cx) * CHUNK_SIZE;
+        const next = fillBoxInChunk(this.current(resolved), { ...edit, x: edit.x + shift });
+        if (next) changed.push(next);
+      }
+      if (changed.length === 0) throw new EditError('outside the world');
       return this.commit(changed);
     }
     if (edit.op === 'place') {

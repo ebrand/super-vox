@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { blockIndex, emptyChunk, voxelAt, type Chunk } from './chunk.js';
 import { decodeChunk, encodeChunk } from './chunkcodec.js';
-import { EditError, applyEdit, blockVoxels, editChunk, removeBoxChunks, removeBoxFromChunk, splitPlacement, type Edit } from './edit.js';
+import { EditError, applyEdit, blockVoxels, editChunk, fillBoxInChunk, isBigEdit, removeBoxChunks, removeBoxFromChunk, splitPlacement, validateRemoveBox, type Edit } from './edit.js';
 import { voxelFitsInBlock } from './voxel.js';
 import { FlatGenerator, defaultFlatGen } from './flatgen.js';
 import { Material } from './materials.js';
@@ -263,5 +263,45 @@ describe('splitPlacement', () => {
     const pieces = splitPlacement({ x: 8, y: 0, z: 0, size: 16 });
     expect(pieces).toHaveLength(8);
     expect(pieces.every((p) => p.size === 8)).toBe(true);
+  });
+});
+
+describe('fill boxes and big dig boxes (creative)', () => {
+  it('fills the box\'s 1 m blocks in a chunk, replacing what was there, and leaves the rest', () => {
+    const chunk = new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4)).generateChunk({ cx: 10, cy: -1, cz: 10 });
+    const box = { op: 'fillBox' as const, x: 10 * 256 + 32, y: -256 + 192, z: 10 * 256 + 64, size: 64, material: Material.Planks };
+    const next = fillBoxInChunk(chunk, box)!;
+    for (let by = 12; by < 16; by++) for (let bz = 4; bz < 8; bz++) for (let bx = 2; bx < 6; bx++) {
+      expect(next.blocks[blockIndex(bx, by, bz)]).toEqual({ kind: 'uniform', size: 16, material: Material.Planks });
+    }
+    expect(next.blocks[blockIndex(1, 12, 4)]).toBe(chunk.blocks[blockIndex(1, 12, 4)]);
+    expect(next.blocks[blockIndex(6, 15, 7)]).toBe(chunk.blocks[blockIndex(6, 15, 7)]);
+    // A box elsewhere: not in this chunk.
+    expect(fillBoxInChunk(chunk, { ...box, x: 0 })).toBeNull();
+  });
+
+  it('refuses fill boxes off the 1 m grid, of the wrong size, or of water', () => {
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    const box = { op: 'fillBox' as const, x: 0, y: 0, z: 0, size: 32, material: Material.Stone };
+    expect(() => fillBoxInChunk(chunk, { ...box, x: 8 })).toThrow(/grid/);
+    expect(() => fillBoxInChunk(chunk, { ...box, size: 24 })).toThrow(/1 to 16 m/);
+    expect(() => fillBoxInChunk(chunk, { ...box, size: 17 * 16 })).toThrow(/1 to 16 m/);
+    expect(() => fillBoxInChunk(chunk, { ...box, material: Material.Water })).toThrow(/water/);
+  });
+
+  it('allows dig boxes of 2, 4, 8 and 16 m, and knows which edits are big', () => {
+    for (const m of [2, 4, 8, 16]) expect(() => validateRemoveBox({ op: 'removeBox', x: 0, y: 0, z: 0, size: m * 16 })).not.toThrow();
+    expect(() => validateRemoveBox({ op: 'removeBox', x: 0, y: 0, z: 0, size: 48 })).toThrow();
+    expect(() => validateRemoveBox({ op: 'removeBox', x: 0, y: 0, z: 0, size: 32 * 16 })).toThrow();
+    expect(isBigEdit({ op: 'removeBox', x: 0, y: 0, z: 0, size: 16 })).toBe(false);
+    expect(isBigEdit({ op: 'removeBox', x: 0, y: 0, z: 0, size: 64 })).toBe(true);
+    expect(isBigEdit({ op: 'fillBox', x: 0, y: 0, z: 0, size: 16, material: 1 })).toBe(false);
+    expect(isBigEdit({ op: 'fillBox', x: 0, y: 0, z: 0, size: 32, material: 1 })).toBe(true);
+    // A big dig box takes everything in it, across blocks.
+    const chunk = new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4)).generateChunk({ cx: 10, cy: -1, cz: 10 });
+    const dug = removeBoxFromChunk(chunk, { op: 'removeBox', x: 10 * 256, y: -128, z: 10 * 256, size: 128 })!;
+    expect(dug.blocks[blockIndex(0, 15, 0)]).toBeNull();
+    expect(dug.blocks[blockIndex(7, 8, 7)]).toBeNull();
+    expect(dug.blocks[blockIndex(8, 15, 8)]).toBe(chunk.blocks[blockIndex(8, 15, 8)]);
   });
 });

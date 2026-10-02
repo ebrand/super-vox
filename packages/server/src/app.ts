@@ -39,6 +39,7 @@ import {
   parseClockChange,
   parsePlateTerrain,
   minedLongEnough,
+  isBigEdit,
   validateStrokes,
   isGameMode,
   type GameMode,
@@ -686,6 +687,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           }
           if (opts.inventories && who && !inventory) {
             send({ type: 'editResult', id: msg.id, ok: false, error: inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded" });
+            return;
+          }
+          // Boxes over 1 m (digging or filling): creative worlds only.
+          if (isBigEdit(msg.edit) && catalog.play(clientWorld.get(socket))?.mode !== 'creative') {
+            send({ type: 'editResult', id: msg.id, ok: false, error: 'boxes over 1 m are for creative worlds' });
             return;
           }
           // Survival: digging takes time (see mining.ts), counted from the `mine` message for this spot.

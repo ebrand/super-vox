@@ -41,7 +41,7 @@ export class PlayerInventory {
 
   /** Why `edit` isn't allowed (null if it is): placing what this mode doesn't allow, or more than you have. */
   refuse(edit: Edit): string | null {
-    if (edit.op !== 'place') return null;
+    if (edit.op !== 'place' && edit.op !== 'fillBox') return null;
     if (!isBlock(edit.material)) return `a ${itemName(edit.material)} can't be placed yet`;
     if (!canPlace(edit.material, this.mode)) return `${itemName(edit.material)} can't be placed${this.mode === 'survival' ? ' in survival' : ''}`;
     if (this.mode === 'creative') return null;

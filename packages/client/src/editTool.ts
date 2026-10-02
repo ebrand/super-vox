@@ -9,6 +9,7 @@ import {
   blockVoxelContaining,
   breakSizesFor,
   editMiningTime,
+  BIG_BOX_SIZES,
   facingOfYaw,
   ATTACK_REACH,
   Item,
@@ -50,7 +51,7 @@ export type Mode = (typeof MODES)[number];
 
 /** "1 m", "1/2 m", ... "1/16 m" for a size in units. */
 export function sizeLabel(size: number): string {
-  return size === BLOCK_SIZE ? '1 m' : BLOCK_SIZE % size === 0 ? `1/${BLOCK_SIZE / size} m` : `${size}/16 m`;
+  return size >= BLOCK_SIZE && size % BLOCK_SIZE === 0 ? `${size / BLOCK_SIZE} m` : BLOCK_SIZE % size === 0 ? `1/${BLOCK_SIZE / size} m` : `${size}/16 m`;
 }
 
 /** Modifier keys held at the time of an action. */
@@ -198,15 +199,28 @@ export class EditTool {
     window.addEventListener('blur', this.onBlur);
   }
 
-  /** Selected size in units; always one of TOOL_SIZES. Setting snaps to the nearest. */
+  /**
+   * Creative: dig and place modes also have boxes over 1 m (BIG_BOX_SIZES): dig boxes, and fill
+   * boxes in place mode (whole 1 m blocks of the material, replacing what's there).
+   */
+  bigBoxes = false;
+
+  /** The sizes to choose from in this mode. */
+  private sizes(): readonly number[] {
+    return this.bigBoxes && this.mode !== 'hybrid' ? [...TOOL_SIZES, ...BIG_BOX_SIZES] : TOOL_SIZES;
+  }
+
+  /** Selected size in units; always one of the sizes on offer (see sizes). Setting snaps to the nearest. */
   get size(): number {
-    return TOOL_SIZES[this.sizeIndex]!;
+    const sizes = this.sizes();
+    return sizes[Math.min(this.sizeIndex, sizes.length - 1)]!;
   }
 
   set size(units: number) {
+    const sizes = this.sizes();
     let best = 0;
-    TOOL_SIZES.forEach((s, i) => {
-      if (Math.abs(s - units) < Math.abs(TOOL_SIZES[best]! - units)) best = i;
+    sizes.forEach((s, i) => {
+      if (Math.abs(s - units) < Math.abs(sizes[best]! - units)) best = i;
     });
     this.sizeIndex = best;
   }
@@ -230,11 +244,11 @@ export class EditTool {
    * placement, starting from the size it would otherwise have.
    */
   stepSize(dir: 1 | -1, wrap: boolean): void {
-    const n = TOOL_SIZES.length;
+    const n = this.sizes().length;
     const from =
       this.mode === 'hybrid'
         ? TOOL_SIZES.indexOf(this.hybridSize ?? (this.target ? nearestToolSize(this.target.size) : this.size))
-        : this.sizeIndex;
+        : Math.min(this.sizeIndex, n - 1);
     const next = from + dir;
     const index = wrap ? (next + n) % n : Math.max(0, Math.min(n - 1, next));
     if (this.mode === 'hybrid') this.hybridSize = TOOL_SIZES[index]!;
@@ -270,7 +284,17 @@ export class EditTool {
         this.targetMaterial = aimed.material;
         // Hybrid keeps things simple: always snapped to the size.
         const fine = this.mode !== 'hybrid' && this.modifiers.alt;
-        if (this.mode === 'place' || this.mode === 'hybrid') {
+        if (this.mode === 'place' && this.size > BLOCK_SIZE) {
+          // A fill box: on the 1 m grid, against the aimed face; it replaces what's there (so only
+          // the player standing in it stops it).
+          const p = placementBox(hit, aimed, this.size, false);
+          const axis = hit.normal[0] !== 0 ? 0 : hit.normal[1] !== 0 ? 1 : 2;
+          const corner = [p.x, p.y, p.z];
+          corner[axis] = hit.normal[axis]! > 0 ? Math.ceil(corner[axis]! / BLOCK_SIZE) * BLOCK_SIZE : Math.floor((corner[axis]! + this.size) / BLOCK_SIZE) * BLOCK_SIZE - this.size;
+          const box = { x: corner[0]!, y: corner[1]!, z: corner[2]!, size: this.size };
+          const reason = this.inBody(box) ? "you're standing there" : '';
+          this.placement = { ...box, valid: !reason, reason };
+        } else if (this.mode === 'place' || this.mode === 'hybrid') {
           const p = placementBox(hit, aimed, this.placeSize(aimed), fine);
           // Crossing 1 m gridlines is fine: the server places it as block-sized pieces.
           const reason = this.occupied(p);
@@ -395,8 +419,10 @@ export class EditTool {
             ? `click: cut leaves (${held === Item.StoneSword ? '3 x 3 x 3 m' : '1 m'}), or remove · right-click: place`
             : 'click: remove · right-click: place (⌘+wheel: pick size, ⌘ shows it)'
         : this.mode === 'dig'
-          ? 'click: remove · ⌘+click: remove everything in the box (⌘ shows it) · ⌥: 1/16 m steps'
-          : 'click: place · ⌥: 1/16 m steps';
+          ? `click: remove · ⌘+click: remove everything in the box (⌘ shows it) · ⌥: 1/16 m steps${this.bigBoxes ? ' · boxes up to 16 m' : ''}`
+          : this.size > BLOCK_SIZE
+            ? 'click: fill the box (whole 1 m blocks, replacing what\'s there)'
+            : `click: place · ⌥: 1/16 m steps${this.bigBoxes ? ' · bigger sizes: fill boxes up to 16 m' : ''}`;
     return (
       `mode: ${this.mode} (Tab: hybrid / dig / place) · ${size} ${this.material?.name ?? 'nothing (E: inventory)'} · ${target}\n` +
       `${actions} · middle-click: break smaller · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-9: hotbar · E: inventory` +
@@ -467,7 +493,8 @@ export class EditTool {
       this.say(`a ${material.name} can't be placed${this.mode === 'hybrid' ? '' : ' in this mode (Tab: hybrid)'}`);
       return;
     }
-    this.submit({ op: 'place', x, y, z, size, material: material.id }, 'place');
+    if (size > BLOCK_SIZE) this.submit({ op: 'fillBox', x, y, z, size, material: material.id }, 'fill');
+    else this.submit({ op: 'place', x, y, z, size, material: material.id }, 'place');
   }
 
   /** Fills the bucket at the water aimed at, or pours it into the block beside the face aimed at. */
@@ -588,13 +615,18 @@ export class EditTool {
     return { x: x - mod(x, BLOCK_SIZE) + v.x, y: y - mod(y, BLOCK_SIZE) + v.y, z: z - mod(z, BLOCK_SIZE) + v.z, size: v.size, material: v.material };
   }
 
-  /** '' if every cell of the box is loaded and empty and clear of the player, else why not. */
-  private occupied(b: Box): string {
+  /** Whether the box overlaps the player. */
+  private inBody(b: Box): boolean {
     const body = this.body();
-    if (body && [0, 1, 2].every((a) => {
+    return !!body && [0, 1, 2].every((a) => {
       const lo = [b.x, b.y, b.z][a]!;
       return lo < body.max[a]! && body.min[a]! < lo + b.size;
-    })) return "you're standing there";
+    });
+  }
+
+  /** '' if every cell of the box is loaded and empty and clear of the player, else why not. */
+  private occupied(b: Box): string {
+    if (this.inBody(b)) return "you're standing there";
     for (let y = b.y; y < b.y + b.size; y++) {
       for (let z = b.z; z < b.z + b.size; z++) {
         for (let x = b.x; x < b.x + b.size; x++) {

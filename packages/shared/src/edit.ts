@@ -27,7 +27,26 @@ export type Edit =
   | { op: 'remove'; x: number; y: number; z: number }
   | { op: 'break'; x: number; y: number; z: number; pieceSize: number }
   | { op: 'place'; x: number; y: number; z: number; size: number; material: MaterialId }
-  | RemoveBoxEdit;
+  | RemoveBoxEdit
+  | FillBoxEdit;
+
+/** The biggest dig or fill box (units): 16 m. Boxes over 1 m are for creative worlds. */
+export const MAX_BOX_SIZE = 16 * BLOCK_SIZE;
+/** Box sizes over 1 m (units): 2, 4, 8 and 16 m. */
+export const BIG_BOX_SIZES: readonly number[] = [2, 4, 8, 16].map((m) => m * BLOCK_SIZE);
+
+/**
+ * Creative: fills the cube [x, x+size)^3 (world units, on the 1 m grid, a whole number of 1 m
+ * blocks across, at most MAX_BOX_SIZE) with `material`, replacing whatever was there.
+ */
+export interface FillBoxEdit {
+  op: 'fillBox';
+  x: number;
+  y: number;
+  z: number;
+  size: number;
+  material: MaterialId;
+}
 
 /**
  * Removes every voxel with any part inside the cube [x, x+size)^3 (world
@@ -128,6 +147,11 @@ export function applyEdit(chunk: Chunk, edit: Edit): Chunk {
   if (edit.op === 'removeBox') {
     const next = removeBoxFromChunk(chunk, edit);
     if (!next) throw new EditError('nothing to remove there');
+    return next;
+  }
+  if (edit.op === 'fillBox') {
+    const next = fillBoxInChunk(chunk, edit);
+    if (!next) throw new EditError('the box is not in this chunk');
     return next;
   }
 
@@ -236,13 +260,46 @@ export function splitPlacement(cube: Cube): Cube[] {
   return out;
 }
 
-/** Throws EditError unless `box` is a valid removeBox cube. */
+/** Throws EditError unless `box` is a valid removeBox cube: a voxel's size, or 2, 4, 8 or 16 m. */
 export function validateRemoveBox(box: RemoveBoxEdit): void {
-  if (!isValidVoxelSize(box.size)) throw new EditError(`invalid box size ${box.size}`);
+  if (!isValidVoxelSize(box.size) && !BIG_BOX_SIZES.includes(box.size)) throw new EditError(`invalid box size ${box.size}`);
 }
 
-/** Chunks overlapped by a removeBox cube. */
-export function removeBoxChunks(box: RemoveBoxEdit): { cx: number; cy: number; cz: number }[] {
+/** Throws EditError unless `box` is a valid fillBox cube (see FillBoxEdit). */
+export function validateFillBox(box: FillBoxEdit): void {
+  if (box.size < BLOCK_SIZE || box.size > MAX_BOX_SIZE || box.size % BLOCK_SIZE !== 0) throw new EditError(`a fill box is 1 to 16 m across; got ${box.size / BLOCK_SIZE} m`);
+  if ([box.x, box.y, box.z].some((v) => v % BLOCK_SIZE !== 0)) throw new EditError('a fill box lies on the 1 m grid');
+  if (!Number.isInteger(box.material) || box.material < 1 || box.material > 0xffff) throw new EditError(`invalid material ${box.material}`);
+  if (isWater(box.material)) throw new EditError("water isn't filled in boxes");
+}
+
+/** Whether an edit is a box over 1 m (creative only). */
+export function isBigEdit(edit: Edit): boolean {
+  return edit.op === 'fillBox' ? edit.size > BLOCK_SIZE : edit.op === 'removeBox' && edit.size > BLOCK_SIZE;
+}
+
+/**
+ * Fills a fill box's 1 m blocks in one chunk with its material (each a single uniform block,
+ * replacing what was there). Returns the new chunk, or null if the box isn't in it.
+ */
+export function fillBoxInChunk(chunk: Chunk, box: FillBoxEdit): Chunk | null {
+  validateFillBox(box);
+  const x0 = chunk.cx * CHUNK_SIZE, y0 = chunk.cy * CHUNK_SIZE, z0 = chunk.cz * CHUNK_SIZE;
+  const lo = [box.x - x0, box.y - y0, box.z - z0].map((v) => Math.max(0, v));
+  const hi = [box.x - x0, box.y - y0, box.z - z0].map((v) => Math.min(CHUNK_SIZE, v + box.size));
+  if (lo.some((v, a) => v >= hi[a]!)) return null;
+  const blocks = chunk.blocks.slice();
+  const block: Block = { kind: 'uniform', size: BLOCK_SIZE, material: box.material };
+  for (let by = lo[1]! / BLOCK_SIZE; by < hi[1]! / BLOCK_SIZE; by++) {
+    for (let bz = lo[2]! / BLOCK_SIZE; bz < hi[2]! / BLOCK_SIZE; bz++) {
+      for (let bx = lo[0]! / BLOCK_SIZE; bx < hi[0]! / BLOCK_SIZE; bx++) blocks[blockIndex(bx, by, bz)] = block;
+    }
+  }
+  return { cx: chunk.cx, cy: chunk.cy, cz: chunk.cz, blocks };
+}
+
+/** Chunks overlapped by a removeBox (or fillBox) cube. */
+export function removeBoxChunks(box: { op?: string; x: number; y: number; z: number; size: number }): { cx: number; cy: number; cz: number }[] {
   const lo = [box.x, box.y, box.z].map((v) => Math.floor(v / CHUNK_SIZE));
   const hi = [box.x, box.y, box.z].map((v) => Math.floor((v + box.size - 1) / CHUNK_SIZE));
   const out: { cx: number; cy: number; cz: number }[] = [];

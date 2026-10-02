@@ -434,6 +434,8 @@ connection = connect({
           editTool = new EditTool(scene, camera, chunks, send, () => inventoryUi.material, () => (controls.collide ? playerBox(eyeUnits()) : null));
           // Survival: removing is mining, held for as long as the material takes (a ring shows how far along).
           editTool.survival = survivalMovement;
+          // Creative: dig and fill boxes up to 16 m (dig and place modes).
+          editTool.bigBoxes = msg.mode === 'creative';
           const miningRing = document.getElementById('mining')!;
           editTool.onMiningProgress = (f) => {
             miningRing.hidden = f === null;

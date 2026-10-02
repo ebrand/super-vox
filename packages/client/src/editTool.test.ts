@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
-import { Material, blockIndex, emptyChunk } from '@super-vox/shared';
-import { EditTool } from './editTool.js';
+import { Material, blockFromVoxels, blockIndex, emptyChunk } from '@super-vox/shared';
+import { EditTool, sizeLabel } from './editTool.js';
 import type { ChunkManager } from './chunkManager.js';
 
 /** Key events as the tool reads them (node has no KeyboardEvent). */
@@ -130,5 +130,70 @@ describe('EditTool mining (survival)', () => {
     tool.click(0, { meta: false, alt: false });
     expect(edits()).toMatchObject([{ edit: { op: 'remove', x: 0, y: 0, z: 0 } }]);
     expect(sent.some((m) => m.type === 'mine')).toBe(false);
+  });
+});
+
+describe('EditTool big boxes (creative)', () => {
+  let tool: EditTool;
+  let sent: { type: string; [k: string]: unknown }[];
+  const stone = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+  stone.blocks[blockIndex(0, 0, 0)] = { kind: 'uniform', size: 16, material: Material.Stone };
+
+  beforeEach(() => {
+    (globalThis as { window?: EventTarget }).window = new EventTarget();
+    const chunks = { chunkAt: (c: { cx: number; cy: number; cz: number }) => (c.cx === 0 && c.cy === 0 && c.cz === 0 ? stone : emptyChunk(c)) } as unknown as ChunkManager;
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(0.5, 3, 0.5);
+    camera.lookAt(0.5, 0, 0.5);
+    camera.updateMatrixWorld();
+    sent = [];
+    tool = new EditTool(new THREE.Scene(), camera, chunks, (m) => sent.push(m as never), () => Material.Planks);
+  });
+  afterEach(() => {
+    tool.dispose();
+    delete (globalThis as { window?: EventTarget }).window;
+  });
+
+  it('offers sizes up to 16 m in dig and place modes in creative only, and labels them in metres', () => {
+    tool.mode = 'place';
+    for (let i = 0; i < 20; i++) tool.stepSize(1, false);
+    expect(tool.size).toBe(16);
+    tool.bigBoxes = true;
+    for (let i = 0; i < 20; i++) tool.stepSize(1, false);
+    expect(tool.size).toBe(256);
+    expect(sizeLabel(256)).toBe('16 m');
+    expect(sizeLabel(32)).toBe('2 m');
+    expect(sizeLabel(16)).toBe('1 m');
+    expect(sizeLabel(4)).toBe('1/4 m');
+    // Hybrid never: back to at most 1 m.
+    tool.mode = 'hybrid';
+    expect(tool.size).toBeLessThanOrEqual(16);
+  });
+
+  it('fills a box on the 1 m grid against the face aimed at', () => {
+    tool.bigBoxes = true;
+    tool.mode = 'place';
+    tool.size = 64;
+    tool.click(0, { meta: false, alt: false });
+    // On top of the 1 m stone block at the origin (its top at y = 16), the 4 m cell around the aim.
+    expect(sent.filter((m) => m.type === 'edit')).toMatchObject([{ edit: { op: 'fillBox', x: 0, y: 16, z: 0, size: 64, material: Material.Planks } }]);
+  });
+
+  it("rounds a fill box out to the 1 m grid when the face aimed at isn't on it", () => {
+    // A 1/4 m voxel on top of the block (its top at y = 20), aimed at from above.
+    stone.blocks[blockIndex(0, 1, 0)] = blockFromVoxels([{ x: 0, y: 0, z: 0, size: 4, material: Material.Stone }]);
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(0.1, 3, 0.1);
+    camera.lookAt(0.1, 0, 0.1);
+    camera.updateMatrixWorld();
+    const chunks = { chunkAt: (c: { cx: number; cy: number; cz: number }) => (c.cx === 0 && c.cy === 0 && c.cz === 0 ? stone : emptyChunk(c)) } as unknown as ChunkManager;
+    const t = new EditTool(new THREE.Scene(), camera, chunks, (m) => sent.push(m as never), () => Material.Planks);
+    t.bigBoxes = true;
+    t.mode = 'place';
+    t.size = 32;
+    t.click(0, { meta: false, alt: false });
+    expect(sent.filter((m) => m.type === 'edit')).toMatchObject([{ edit: { op: 'fillBox', x: 0, y: 32, z: 0, size: 32 } }]);
+    t.dispose();
+    stone.blocks[blockIndex(0, 1, 0)] = null;
   });
 });
