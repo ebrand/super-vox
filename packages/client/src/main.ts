@@ -13,7 +13,7 @@ import { createTint } from './tint.js';
 import { applyLighting, loadLighting, saveLighting } from './lighting.js';
 import { LightingPanel } from './lightingPanel.js';
 import { PLAYER, moveAabb, playerBox } from './physics.js';
-import { loadSettings, workersFor } from './settings.js';
+import { farDetailFor, loadSettings, workersFor } from './settings.js';
 import { MeshWorkerPool } from './workerPool.js';
 import { WorldMapOverlay, decodeWorldMap } from './worldMap.js';
 import { rememberReturn, startFromParams, takeReturn } from './startAt.js';
@@ -73,6 +73,8 @@ const toleranceWarning =
   requestedTolerance !== undefined && !isValidTolerance(requestedTolerance)
     ? `ignoring tolerance ${toleranceParam} (use an integer 0..16)`
     : '';
+/** How fine distant terrain is: ?farDetail=N (1..16) for one visit, else the Performance setting's (see selectLod). */
+const farDetail = Math.round(numberParam('farDetail', farDetailFor(settings.performance), 1, 16));
 /** Mesh workers: ?workers=N (1..64) for one visit, else the Performance setting's. */
 const workers = Math.round(numberParam('workers', workersFor(settings.performance, navigator.hardwareConcurrency || 0), 1, 64));
 /** ?world=name: which of the server's worlds to join (its default when omitted). */
@@ -267,7 +269,7 @@ function updateLod(force = false): void {
   const column = `${Math.floor(fx / CHUNK_SIZE)},${Math.floor(fz / CHUNK_SIZE)},${chunkRadius}`;
   if (!force && column === lodColumn) return;
   lodColumn = column;
-  const sel = selectLod(world, fx, fz, detail, view * UNITS_PER_METER, chunkRadius);
+  const sel = selectLod(world, fx, fz, detail, view * UNITS_PER_METER, chunkRadius, farDetail);
   // Everything within `chunkRadius` chunks (Chebyshev) of the focus is voxel chunks; one chunk in
   // from that, they were loaded from the last position too.
   seaMaterial?.setNear(fx / UNITS_PER_METER, fz / UNITS_PER_METER, (Math.max(0, chunkRadius - 1) * CHUNK_SIZE) / UNITS_PER_METER);

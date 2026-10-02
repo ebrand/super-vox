@@ -59,6 +59,46 @@ describe('selectLod', () => {
   });
 });
 
+describe('distant detail apart from the full-detail radius', () => {
+  const fx = 9440 * 16, fz = 7968 * 16;
+  const coveredOnce = (sel: ReturnType<typeof selectLod>) => {
+    const rand = rng(2);
+    for (let k = 0; k < 3000; k++) {
+      const x = fx + (rand() * 2 - 1) * FAR * 0.99, z = fz + (rand() * 2 - 1) * FAR * 0.99;
+      let n = 0;
+      for (const c of sel.columns) if (x >= c.cx * CHUNK_SIZE && x < (c.cx + 1) * CHUNK_SIZE && z >= c.cz * CHUNK_SIZE && z < (c.cz + 1) * CHUNK_SIZE) n++;
+      for (const t of sel.tiles) {
+        const s = tileSizeUnits(t.level);
+        if (x >= t.tx * s && x < (t.tx + 1) * s && z >= t.tz * s && z < (t.tz + 1) * s) n++;
+      }
+      expect(n).toBe(1);
+    }
+  };
+
+  it('draws far rings as a smaller radius would, keeping the full-detail area, everything covered once', () => {
+    const fine = selectLod(FLAT_WORLD_16KM, fx, fz, 8, FAR);
+    const lean = selectLod(FLAT_WORLD_16KM, fx, fz, 8, FAR, 8, 4);
+    coveredOnce(lean);
+    expect(lean.columns).toEqual(fine.columns);
+    // Far fewer distant samples (32 x 32 a tile): about a quarter.
+    expect(lean.tiles.length / fine.tiles.length).toBeLessThan(0.35);
+    // Like the default radius's rings beyond the full-detail area.
+    const four = selectLod(FLAT_WORLD_16KM, fx, fz, 4, FAR);
+    const beyond = (sel: ReturnType<typeof selectLod>) => sel.tiles.filter((t) => t.level >= 3).map((t) => `${t.level},${t.tx},${t.tz}`).sort();
+    expect(beyond(lean)).toEqual(beyond(four));
+  });
+
+  it('is the same as before when the distant detail is the radius', () => {
+    expect(selectLod(FLAT_WORLD_16KM, fx, fz, 6, FAR, 6, 6)).toEqual(selectLod(FLAT_WORLD_16KM, fx, fz, 6, FAR));
+    expect(selectLod(FLAT_WORLD_16KM, fx, fz, 4, FAR, 4, 4)).toEqual(selectLod(FLAT_WORLD_16KM, fx, fz, 4, FAR));
+  });
+
+  it('covers everything once with finer distant detail too', () => {
+    coveredOnce(selectLod(FLAT_WORLD_16KM, fx, fz, 4, FAR, 4, 6));
+    coveredOnce(selectLod(FLAT_WORLD_16KM, fx, fz, 8, FAR, -1, 3));
+  });
+});
+
 describe('focusLead', () => {
   it('leads one second of travel, at most radius - 1 chunks', () => {
     expect(focusLead(0, 0, 4)).toEqual({ dx: 0, dz: 0 });

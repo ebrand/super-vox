@@ -22,10 +22,12 @@ export interface LodSelection {
  * `radius` is the full-detail radius in chunks; each coarser ring is twice as
  * wide as the previous one. `chunkRadius` (default `radius`) can shrink the part drawn as voxel
  * chunks, the rest of the full-detail area being 32 m tiles (1 m samples); below 0, no chunks.
+ * `farRadius` (default `radius`) sets how fine the rings beyond the full-detail area are, as if
+ * the full-detail radius were that: a bigger full-detail area needn't make far hills finer too.
  */
-export function selectLod(world: WorldConfig, focusX: number, focusZ: number, radius: number, far: number, chunkRadius = radius): LodSelection {
+export function selectLod(world: WorldConfig, focusX: number, focusZ: number, radius: number, far: number, chunkRadius = radius, farRadius = radius): LodSelection {
   const out: LodSelection = { columns: [], tiles: [] };
-  const splitDistance = (level: number) => radius * CHUNK_SIZE * 2 ** (level - 1);
+  const splitDistance = (level: number) => Math.max(radius * CHUNK_SIZE, farRadius * CHUNK_SIZE * 2 ** (level - 1));
   const distance = (x0: number, z0: number, size: number) =>
     Math.max(Math.max(x0 - focusX, 0, focusX - (x0 + size)), Math.max(z0 - focusZ, 0, focusZ - (z0 + size)));
 

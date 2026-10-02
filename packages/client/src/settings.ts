@@ -25,6 +25,14 @@ const isPerformance = (v: unknown): v is Performance => PERFORMANCES.includes(v 
  * Mesh workers for a Performance setting on a computer with `cores` processor cores (as the
  * browser reports them; 0 if it doesn't): normal, 2; medium, half the cores; max, all of them.
  */
+/**
+ * How fine distant terrain is for a Performance setting (see selectLod's farRadius): normal a
+ * little coarser, medium as the default full-detail radius draws it, max finer.
+ */
+export function farDetailFor(p: Performance): number {
+  return p === 'normal' ? 3 : p === 'medium' ? 4 : 6;
+}
+
 export function workersFor(p: Performance, cores: number): number {
   const n = cores > 0 ? cores : 4;
   return Math.max(1, p === 'normal' ? Math.min(2, n) : p === 'medium' ? Math.floor(n / 2) : n);

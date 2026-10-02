@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultSettings, loadSettings, parseSettings, saveSettings, workersFor } from './settings.js';
+import { defaultSettings, farDetailFor, loadSettings, parseSettings, saveSettings, workersFor } from './settings.js';
 
 /** In-memory stand-in for localStorage. */
 function memoryStorage() {
@@ -37,6 +37,10 @@ describe('settings', () => {
     // At least one; and a guess of 4 cores when the browser won't say.
     expect([workersFor('normal', 1), workersFor('medium', 1), workersFor('max', 1)]).toEqual([1, 1, 1]);
     expect([workersFor('normal', 0), workersFor('medium', 0), workersFor('max', 0)]).toEqual([2, 2, 4]);
+  });
+
+  it('draws distant terrain coarser at normal, as the default at medium, finer at max', () => {
+    expect([farDetailFor('normal'), farDetailFor('medium'), farDetailFor('max')]).toEqual([3, 4, 6]);
   });
 
   it('reports when the browser refuses to store them', () => {
