@@ -100,7 +100,7 @@ const MAX_FETCHES = 4;
  * and spawn. The wheel zooms (about the cursor), dragging pans (round worlds wrap east-west), 0
  * shows the whole world again; zoomed in, sharper pictures of what's in view are fetched. Hovering
  * shows the position, height and surface under the cursor; ⌘-clicking (Ctrl-clicking; without
- * dragging) asks to teleport there.
+ * dragging) asks to teleport there, where travel is allowed (see canTravel).
  */
 export class WorldMapOverlay {
   private readonly root: HTMLDivElement;
@@ -128,6 +128,8 @@ export class WorldMapOverlay {
   private in3d = false;
   private loop = 0;
   isOpen = false;
+  /** Whether ⌘-clicking goes there (not in survival, where you walk). */
+  canTravel = true;
 
   constructor(
     worldSize: { width: number; depth: number; wrapX?: boolean },
@@ -175,7 +177,7 @@ export class WorldMapOverlay {
     window.addEventListener('mouseup', (e) => {
       const d = this.drag;
       this.drag = null;
-      if (!d || d.moved || e.button !== 0 || !this.isOpen || !travelClick(e)) return;
+      if (!d || d.moved || e.button !== 0 || !this.isOpen || !this.canTravel || !travelClick(e)) return;
       const p = this.at(e);
       if (p) {
         this.teleport(p.x, p.z, p.height);
@@ -234,7 +236,7 @@ export class WorldMapOverlay {
       this.wire3d(relief);
     }
     if (this.relief) this.relief.canvas.hidden = !on;
-    this.info.textContent = on ? HINT_3D : HINT;
+    this.info.textContent = this.hint(on);
     this.run3d();
   }
 
@@ -261,7 +263,7 @@ export class WorldMapOverlay {
     c.addEventListener('pointerup', (e) => {
       const d = down;
       down = null;
-      if (!d || e.button !== 0 || !travelClick(e) || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return;
+      if (!d || e.button !== 0 || !this.canTravel || !travelClick(e) || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return;
       const r = c.getBoundingClientRect();
       const p = relief.pick(e.clientX - r.left, e.clientY - r.top);
       if (p) {
@@ -274,12 +276,12 @@ export class WorldMapOverlay {
       const r = c.getBoundingClientRect();
       // At most one look-up a frame.
       if (!hover) requestAnimationFrame(() => {
-        if (hover) this.showInfo(relief.pick(hover.x, hover.y), HINT_3D);
+        if (hover) this.showInfo(relief.pick(hover.x, hover.y), this.hint(true));
         hover = null;
       });
       hover = { x: e.clientX - r.left, y: e.clientY - r.top };
     });
-    c.addEventListener('pointerleave', () => this.showInfo(null, HINT_3D));
+    c.addEventListener('pointerleave', () => this.showInfo(null, this.hint(true)));
     c.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
@@ -416,7 +418,7 @@ export class WorldMapOverlay {
       const map = decodeWorldMap(await res.arrayBuffer());
       this.map = map;
       this.paint(map, this.base);
-      this.info.textContent = `map ${map.cols} x ${map.rows} (${(map.step / UNITS_PER_METER).toFixed(1)} m per pixel), ${Math.round(performance.now() - t0)} ms · ${HINT}`;
+      this.info.textContent = `map ${map.cols} x ${map.rows} (${(map.step / UNITS_PER_METER).toFixed(1)} m per pixel), ${Math.round(performance.now() - t0)} ms · ${this.hint(false)}`;
       this.update();
     })().catch((err) => {
       this.info.textContent = String(err);
@@ -492,7 +494,13 @@ export class WorldMapOverlay {
     return { x: (i + 0.5) * m.step, z: (j + 0.5) * m.step, height: m.heights[k]!, material: m.materials[k]! };
   }
 
-  private showInfo(p: { x: number; z: number; height: number; material: number } | null, hint = HINT): void {
+  /** The help line (for the 3D view or the flat one). */
+  private hint(in3d: boolean): string {
+    const h = in3d ? HINT_3D : HINT;
+    return this.canTravel ? h : h.replace(', ⌘-click to go there', '');
+  }
+
+  private showInfo(p: { x: number; z: number; height: number; material: number } | null, hint = this.hint(false)): void {
     if (!this.map) return;
     if (!p) {
       this.info.textContent = hint;
@@ -501,7 +509,7 @@ export class WorldMapOverlay {
     const m = (u: number) => (u / UNITS_PER_METER).toFixed(0);
     const sea = this.map.seaLevel;
     const under = sea !== null && p.height < sea ? ` · ${m(sea - p.height)} m under the sea` : '';
-    this.info.textContent = `x ${m(p.x)} m, z ${m(p.z)} m · ground ${m(p.height)} m · ${materialName(p.material)}${under} · ⌘-click to go there`;
+    this.info.textContent = `x ${m(p.x)} m, z ${m(p.z)} m · ground ${m(p.height)} m · ${materialName(p.material)}${under}${this.canTravel ? ' · ⌘-click to go there' : ''}`;
   }
 }
 

@@ -16,7 +16,7 @@ import { PLAYER, moveAabb, playerBox } from './physics.js';
 import { loadSettings, workersFor } from './settings.js';
 import { MeshWorkerPool } from './workerPool.js';
 import { WorldMapOverlay, decodeWorldMap } from './worldMap.js';
-import { startFromParams } from './startAt.js';
+import { rememberReturn, startFromParams, takeReturn } from './startAt.js';
 import { InventoryUi } from './inventory.js';
 import { EntityView } from './entities.js';
 import type { Footprint } from './coverage.js';
@@ -170,6 +170,19 @@ let chunks: ChunkManager | null = null;
 let tiles: TileManager | null = null;
 let editTool: EditTool | null = null;
 let worldMap: WorldMapOverlay | null = null;
+/**
+ * Playing survival (signed in, or anyone where the server has no accounts): no flying, no-clip
+ * or travel by map or link; you walk. Visitors who can't build look around as they like.
+ */
+let survivalMovement = false;
+const sessionStore = (): Storage | null => {
+  try {
+    return sessionStorage;
+  } catch {
+    return null;
+  }
+};
+
 /** Mobs and other players (see EntityView). */
 let entities: EntityView | null = null;
 
@@ -354,9 +367,15 @@ connection = connect({
             `/api/world/map?width=1024${worldParam}`,
             (a) => `/api/world/map/area?x0=${a.x0}&z0=${a.z0}&step=${a.step}&cols=${a.cols}&rows=${a.rows}${worldParam}`,
           );
-          // ?x=…&z=… (metres): start there instead of at the spawn point, on the surface as the
-          // world map shows it (looked up the same way), or at &y= if given.
-          const start = startFromParams(params, w);
+          // Survival: you walk (see survivalMovement); the map can't take you anywhere.
+          survivalMovement = msg.mode === 'survival' && msg.canEdit;
+          worldMap.canTravel = !survivalMovement;
+          // Back where we were before a reload the server asked for; else ?x=…&z=… (metres), not in
+          // survival: start there instead of at the spawn point, on the surface as the world map
+          // shows it (looked up the same way), or at &y= if given.
+          const back = takeReturn(sessionStore(), worldName);
+          const start = back ? startFromParams(new URLSearchParams({ x: String(back.x), z: String(back.z) }), w) : survivalMovement ? null : startFromParams(params, w);
+          if (!back && survivalMovement && params.has('x')) setTimeout(() => editTool?.say(`survival: links can't move you; walk to x ${params.get('x')}, z ${params.get('z')} m`), 2000);
           if (start) {
             if (start.y !== null) landAt(start.x, start.z, start.y);
             else {
@@ -396,6 +415,10 @@ connection = connect({
             if (e.code === 'KeyL') {
               if (!lightingPanel.isOpen && controls.pointerLocked) document.exitPointerLock();
               lightingPanel.toggle();
+              return;
+            }
+            if ((e.code === 'KeyN' || e.code === 'KeyF') && survivalMovement) {
+              editTool?.say("survival: you can't fly or pass through the ground");
               return;
             }
             if (e.code === 'KeyN') {
@@ -500,11 +523,8 @@ connection = connect({
         } else if (msg.code === 'world_terraformed' || msg.code === 'world_mode_changed') {
           // The land was reshaped (builds kept), or the world's mode changed: load it again, here.
           joinError = `${msg.message}: reloading`;
-          const url = new URL(location.href);
-          url.searchParams.set('x', camera.position.x.toFixed(1));
-          url.searchParams.set('z', camera.position.z.toFixed(1));
-          url.searchParams.delete('y');
-          setTimeout(() => location.replace(url), 1500);
+          rememberReturn(sessionStore(), worldName, camera.position.x, camera.position.z);
+          setTimeout(() => location.reload(), 1500);
         } else if (msg.code === 'world_deleted') {
           joinError = `${msg.message}: back to the Menu to pick another`;
         }
@@ -560,7 +580,8 @@ function updateHud(): void {
       : ' · flying: WASD move · Space: up · Q/C: down') +
     (controls.walking ? ' · Shift: sprint' : ' · Shift: 5x · ⌥+wheel: speed') +
     ' · wheel: hotbar (⌘+wheel: voxel size)' +
-    ` · F: ${controls.walking ? 'fly' : 'walk'} · N: no-clip (${controls.collide ? 'off' : 'on'}) · M: map · L: lighting · I: hide info\n` +
+    (survivalMovement ? '' : ` · F: ${controls.walking ? 'fly' : 'walk'} · N: no-clip (${controls.collide ? 'off' : 'on'})`) +
+    ` · M: map · L: lighting · I: hide info\n` +
     (editTool ? `${editTool.hudLines()}\n` : '') +
     (c && t
       ? (chunkRadius < detail ? `moving fast: ${chunkRadius < 0 ? 'no voxel chunks, 1 m tiles only' : `voxel chunks within ${chunkRadius} of ${detail}`}\n` : '') +

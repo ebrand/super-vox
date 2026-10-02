@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { startFromParams } from './startAt.js';
+import { rememberReturn, startFromParams, takeReturn } from './startAt.js';
 
 const round = { widthUnits: 64000 * 16, depthUnits: 32000 * 16, wrapX: true };
 const flat = { widthUnits: 16000 * 16, depthUnits: 16000 * 16, wrapX: false };
@@ -22,5 +22,31 @@ describe('startFromParams', () => {
     expect(at('x=-1000&z=100')!.x).toBe(63000 * 16);
     expect(at('x=-5&z=-5', flat)).toEqual({ x: 0, z: 0, y: null });
     expect(at('x=99999&z=99999', flat)).toEqual({ x: 16000 * 16 - 1, z: 16000 * 16 - 1, y: null });
+  });
+});
+
+describe('rememberReturn / takeReturn', () => {
+  const store = () => {
+    const m = new Map<string, string>();
+    return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v), removeItem: (k: string) => void m.delete(k) };
+  };
+  it('comes back to the same world, once, within a minute', () => {
+    const s = store();
+    rememberReturn(s, 'isle', 1200.5, -30, 1000);
+    expect(takeReturn(s, 'isle', 30_000)).toEqual({ x: 1200.5, z: -30 });
+    expect(takeReturn(s, 'isle', 30_000)).toBeNull();
+    rememberReturn(s, undefined, 5, 6, 1000);
+    expect(takeReturn(s, undefined, 2000)).toEqual({ x: 5, z: 6 });
+  });
+  it('ignores another world, a stale or broken note, and missing storage', () => {
+    const s = store();
+    rememberReturn(s, 'isle', 1, 2, 1000);
+    expect(takeReturn(s, 'other', 2000)).toBeNull();
+    rememberReturn(s, 'isle', 1, 2, 1000);
+    expect(takeReturn(s, 'isle', 62_000)).toBeNull();
+    s.setItem('super-vox.return', '{not json');
+    expect(takeReturn(s, 'isle')).toBeNull();
+    expect(takeReturn(null, 'isle')).toBeNull();
+    expect(() => rememberReturn(null, 'isle', 1, 2)).not.toThrow();
   });
 });
