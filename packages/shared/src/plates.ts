@@ -533,8 +533,8 @@ export class PlateHeights implements HeightSource {
   private lastSurface: { key: string; heights: Int32Array; water: Int32Array | null } | null = null;
   private readonly detail: Octave[];
   /** Terraforming strokes (see strokes.ts), and the grid samples start from: without the strokes, which samples apply exactly. */
-  private readonly strokes: readonly TerrainStroke[];
-  private readonly strokeIndex: StrokeIndex | null;
+  private strokes: readonly TerrainStroke[];
+  private strokeIndex: StrokeIndex | null;
   private readonly sampleBase: Float32Array;
   /** How low and high strokes may take the ground (units): inside the world, with room for trees. */
   private readonly lowest: number;
@@ -1383,6 +1383,18 @@ export class PlateHeights implements HeightSource {
     this.rivers = water.rivers;
   }
 
+  /**
+   * For previews while shaping: samples apply these strokes instead of the ones the world was
+   * built with, exactly as built ones would be (any list: the ground comes out as a world built
+   * with them would have it, away from rivers and lakes), but the grid under the climate, rivers
+   * and lakes stays as built: those only follow the new strokes once the world is built with them.
+   */
+  setSampleStrokes(strokes: readonly TerrainStroke[]): void {
+    this.strokes = strokes;
+    this.strokeIndex = strokes.length ? new StrokeIndex(strokes, this.wrap ? this.world.widthUnits : null) : null;
+    this.lastSurface = null;
+  }
+
   /** Fraction of grid cells above sea level (for tests and tools). */
   landFraction(): number {
     let land = 0;
@@ -1586,6 +1598,24 @@ export class PlateHeights implements HeightSource {
     return out;
   }
 
+  /**
+   * The land's broad shape (the 32 m grid, without small-scale bumps) at samples, for slopes:
+   * where terraforming strokes reach, with them applied exactly (as samples apply them; so
+   * strokes set while shaping, see setSampleStrokes, make steep ground rock straight away).
+   */
+  private broadGround(x0: number, z0: number, w: number, d: number, step: number): Float64Array {
+    const strokes = this.strokes.length ? strokesIn(this.strokes, x0, z0, x0 + (w - 1) * step, z0 + (d - 1) * step, this.wrap ? this.world.widthUnits : null) : [];
+    if (strokes.length === 0) return this.interpolate(this.elevation, x0, z0, w, d, step);
+    const out = this.interpolate(this.sampleBase, x0, z0, w, d, step);
+    const W = this.wrap ? this.world.widthUnits : null;
+    for (let k = 0; k < out.length; k++) {
+      const x = x0 + (k % w) * step, z = z0 + Math.floor(k / w) * step;
+      const here = strokes.length > 8 ? this.strokeIndex!.at(x, z) : strokes;
+      out[k] = applyStrokes(here, x, z, out[k]!, out[k]!, this.seaLevel, W).broad;
+    }
+    return out;
+  }
+
   materials(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): Uint16Array {
     return this.materialsWith(x0, z0, w, d, step, heights, this.climateSamples(x0, z0, w, d, step, heights, true));
   }
@@ -1594,10 +1624,10 @@ export class PlateHeights implements HeightSource {
     const out = new Uint16Array(w * d);
     // Coarse slope (rise over run) from the 32 m grid, via central differences one cell apart.
     const e = PLATE_CELL;
-    const east = this.interpolate(this.elevation, x0 + e, z0, w, d, step);
-    const west = this.interpolate(this.elevation, x0 - e, z0, w, d, step);
-    const south = this.interpolate(this.elevation, x0, z0 + e, w, d, step);
-    const north = this.interpolate(this.elevation, x0, z0 - e, w, d, step);
+    const east = this.broadGround(x0 + e, z0, w, d, step);
+    const west = this.broadGround(x0 - e, z0, w, d, step);
+    const south = this.broadGround(x0, z0 + e, w, d, step);
+    const north = this.broadGround(x0, z0 - e, w, d, step);
     const vary = fractalGrid(this.beachNoise, x0, z0, w, d, step);
     const norm = 2 / this.beachNoise.reduce((a, o) => a + o.weight, 0);
     const sea = this.seaLevel;

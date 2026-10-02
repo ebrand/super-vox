@@ -2,7 +2,7 @@ import { UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, type Stroke
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT, parseDioramaLight, type DioramaLight } from './dioramaLight.js';
 import type { TerraformRequest, TerraformResponse } from './terraform.worker.js';
-import { TerraformDraft, dabsAlong } from './terraformDraft.js';
+import { TerraformDraft, changedBox, dabsAlong, unionBox, type Box } from './terraformDraft.js';
 import { climateTintColors } from './tintColors.js';
 import { decodeWorldMap } from './worldMap.js';
 import { WorldRelief } from './worldRelief.js';
@@ -96,7 +96,29 @@ sizeEl.addEventListener('change', showChoice);
 detailEl.addEventListener('change', showChoice);
 
 const HINT_OVERVIEW = 'drag: move · right-drag: turn and tilt · wheel: zoom';
-const HINT_DIORAMA = '⌘-drag: shape · drag: move · right-drag: turn and tilt · wheel: zoom · ⌘Z: undo';
+const HINT_SHAPE = 'drag: shape · middle-drag or space-drag: move · right-drag: turn and tilt · wheel: zoom · ⌘Z: undo';
+const HINT_MOVE = 'drag or middle-drag: move · ⌘-drag: shape · right-drag: turn and tilt · wheel: zoom · ⌘Z: undo';
+
+// ---- Shape or move: what a plain left-button drag does in the diorama (holding space: move).
+let mode: 'shape' | 'move' = 'shape';
+let spaceHeld = false;
+function applyMode(): void {
+  const shaping = mode === 'shape' && !spaceHeld;
+  for (const b of document.querySelectorAll<HTMLButtonElement>('.mode')) b.setAttribute('aria-pressed', String(b.dataset.mode === mode));
+  if (diorama) diorama.shaping = shaping;
+  if (showing === 'diorama') hintEl.textContent = mode === 'shape' ? HINT_SHAPE : HINT_MOVE;
+}
+for (const b of document.querySelectorAll<HTMLButtonElement>('.mode')) b.addEventListener('click', () => ((mode = b.dataset.mode as typeof mode), applyMode()));
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space' || showing !== 'diorama' || (e.target as HTMLElement).closest?.('input, select')) return;
+  // (Not pressing a focused button either: space is for moving here.)
+  e.preventDefault();
+  if (!spaceHeld) ((spaceHeld = true), applyMode());
+});
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'Space' && spaceHeld) ((spaceHeld = false), applyMode());
+});
+window.addEventListener('blur', () => spaceHeld && ((spaceHeld = false), applyMode()));
 
 // ---- The brush (remembered in this browser).
 interface Brush {
@@ -145,7 +167,8 @@ function showBrush(): void {
     // Can't remember it: fine.
   }
 }
-for (const b of document.querySelectorAll<HTMLButtonElement>('.tool')) b.addEventListener('click', () => ((brush = { ...brush, kind: b.dataset.kind as StrokeKind }), showBrush()));
+// (Picking a brush means shaping.)
+for (const b of document.querySelectorAll<HTMLButtonElement>('.tool')) b.addEventListener('click', () => ((brush = { ...brush, kind: b.dataset.kind as StrokeKind }), (mode = 'shape'), applyMode(), showBrush()));
 radiusEl.addEventListener('input', () => ((brush = { ...brush, radius: Number(radiusEl.value) }), showBrush()));
 amountEl.addEventListener('input', () => ((brush = { ...brush, strength: { ...brush.strength, [brush.kind]: Number(amountEl.value) } }), showBrush()));
 softnessEl.addEventListener('input', () => ((brush = { ...brush, softness: Number(softnessEl.value) }), showBrush()));
@@ -177,12 +200,17 @@ function showDraft(): void {
   (document.getElementById('redo') as HTMLButtonElement).disabled = !draft.canRedo;
   (document.getElementById('clear') as HTMLButtonElement).disabled = draft.count === 0;
 }
-/** The draft changed: keep it, show it, redraw the area with it. */
+/** The draft's strokes as last shown, to work out where each change is. */
+let shownStrokes: TerrainStroke[] = [];
+/** The draft changed: keep it, show it, reshape the area where it changed (quickly). */
 function draftChanged(): void {
   overviewStale = true;
   saveDraft();
   showDraft();
-  refreshArea();
+  const now = draft.strokes;
+  const box = changedBox(shownStrokes, now);
+  shownStrokes = now;
+  if (box) patchArea(box);
 }
 document.getElementById('undo')!.addEventListener('click', () => draft.undo() && draftChanged());
 document.getElementById('redo')!.addEventListener('click', () => draft.redo() && draftChanged());
@@ -219,8 +247,8 @@ let ready: { climate: Uint8Array | null; seaLevel: number | null } | null = null
 let areaId = 0;
 /** The area showing (as last asked of the worker); whether a redraw is on its way, and whether the draft changed since it was asked for. */
 let area: Omit<Extract<TerraformRequest, { type: 'area' }>, 'id' | 'strokes' | 'type'> | null = null;
-let redrawing = false;
-let redrawAgain = false;
+/** The latest whole-area request: older whole-area replies are out of date. */
+let lastAreaId = 0;
 let mapId = 0;
 
 function status(text: string, bad = false): void {
@@ -282,8 +310,19 @@ worker.onmessage = (ev: MessageEvent<TerraformResponse>) => {
     if (showing === 'overview') status('');
     if (overviewStale && relief) refreshOverview();
   } else if (res.type === 'area') {
-    if (res.id !== areaId) return;
+    if (res.id < lastAreaId) return;
+    // (A patch can come back as a whole area: it dug below the base.)
+    if (res.id !== lastAreaId) patching = false;
     showArea(res);
+    if (res.id !== lastAreaId && patchBox) patchArea(patchBox);
+  } else if (res.type === 'patch') {
+    patching = false;
+    if (diorama && area) {
+      diorama.update(res.parts);
+      diorama.setField(res.heights, Math.round(area.size / area.step), area.step, area.x0, area.z0);
+      status(`reshaped in ${Math.round(res.ms)} ms (${res.parts.length} section${res.parts.length === 1 ? '' : 's'})`);
+    }
+    if (patchBox) patchArea(patchBox);
   } else if (res.type === 'map') {
     if (res.id !== mapId || !relief) return;
     const map = { cols: res.cols, rows: res.rows, step: res.step, seaLevel: res.seaLevel, heights: res.heights, materials: res.materials } as Parameters<WorldRelief['setMap']>[0];
@@ -291,7 +330,7 @@ worker.onmessage = (ev: MessageEvent<TerraformResponse>) => {
     relief.setMap(map);
     if (showing === 'overview') status(`world redrawn with the draft in ${(res.ms / 1000).toFixed(1)} s`);
   } else {
-    redrawing = false;
+    patching = false;
     status(res.error, true);
     enterEl.disabled = !ready;
   }
@@ -314,21 +353,39 @@ function enter(): void {
   status('making the area…');
   areaAbout.textContent = `${sizeM} x ${sizeM} m around x ${Math.round((x0 + size / 2) / UNITS_PER_METER)}, z ${Math.round((z0 + size / 2) / UNITS_PER_METER)} m, a sample every ${stepM} m`;
   area = { x0, z0, size, step, depth: BASE_DEPTH };
-  redrawing = true;
-  send({ type: 'area', id: ++areaId, ...area, strokes: draft.strokes });
+  shownStrokes = draft.strokes;
+  lastAreaId = ++areaId;
+  send({ type: 'area', id: lastAreaId, ...area, strokes: draft.strokes });
 }
 
-/** Redraws the area with the draft (one redraw at a time: changes meanwhile wait for the next). */
-function refreshArea(): void {
+/**
+ * Quick reshaping where the draft changed (the worker resamples and re-meshes just there, with
+ * the strokes applied to the ground; rivers and lakes wait: see updateRivers). One at a time:
+ * changes meanwhile are gathered into the next.
+ */
+let patching = false;
+let patchBox: Box | null = null;
+function patchArea(box: Box): void {
   if (!area || showing !== 'diorama') return;
-  if (redrawing) {
-    redrawAgain = true;
-    return;
-  }
-  redrawing = true;
-  status('reshaping…');
-  send({ type: 'area', id: ++areaId, ...area, strokes: draft.strokes });
+  patchBox = unionBox(patchBox, box);
+  if (patching) return;
+  patching = true;
+  send({ type: 'patch', id: ++areaId, strokes: draft.strokes, box: patchBox! });
+  patchBox = null;
 }
+
+/**
+ * The whole area again, with the world rebuilt with the draft, so rivers, lakes and climate follow
+ * it (while shaping, quick patches leave them as they were). Asked for with the button; leaving
+ * the diorama does the same for the overview, in the background.
+ */
+function updateRivers(): void {
+  if (!area || showing !== 'diorama') return;
+  status('rivers and lakes following the draft…');
+  lastAreaId = ++areaId;
+  send({ type: 'area', id: lastAreaId, ...area, strokes: draft.strokes });
+}
+document.getElementById('rivers')!.addEventListener('click', updateRivers);
 
 /** Redraws the overview with the draft. */
 function refreshOverview(): void {
@@ -345,6 +402,7 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
     diorama.miniature = miniatureEl.checked;
     diorama.setLight(light);
     diorama.onPaint = paint;
+    diorama.shaping = mode === 'shape';
     stage.prepend(diorama.canvas);
   }
   showing = 'diorama';
@@ -352,20 +410,15 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
   diorama.canvas.hidden = false;
   overviewControls.hidden = true;
   dioramaControls.hidden = false;
-  hintEl.textContent = HINT_DIORAMA;
+  applyMode();
   const t0 = performance.now();
   const again = diorama.canvas.dataset.area === `${made.x0},${made.z0},${made.size},${made.step}`;
   diorama.show(made.parts, made, again);
   diorama.canvas.dataset.area = `${made.x0},${made.z0},${made.size},${made.step}`;
   diorama.setField(made.heights, made.n, made.step, made.x0, made.z0);
   diorama.setBrush(brush.radius, BRUSH_COLORS[brush.kind]);
-  status(`made in ${(made.ms / 1000).toFixed(1)} s (${Math.round(made.quads / 1000)}k faces), shown in ${Math.round(performance.now() - t0)} ms`);
+  status(again ? `rivers and lakes updated in ${(made.ms / 1000).toFixed(1)} s` : `made in ${(made.ms / 1000).toFixed(1)} s (${Math.round(made.quads / 1000)}k faces), shown in ${Math.round(performance.now() - t0)} ms`);
   enterEl.disabled = false;
-  redrawing = false;
-  if (redrawAgain) {
-    redrawAgain = false;
-    refreshArea();
-  }
 }
 
 /** ⌘-dragging: a stroke where it starts, then one every third of the brush along the way. */

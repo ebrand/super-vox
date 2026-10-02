@@ -101,3 +101,30 @@ export function dabsAlong(from: { x: number; z: number }, to: { x: number; z: nu
   for (; d <= len; d += spacing) points.push({ x: from.x + (dx * d) / len, z: from.z + (dz * d) / len });
   return { points, carried: len - (d - spacing) };
 }
+
+/** A box (metres): x0..x1 by z0..z1. */
+export interface Box {
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+}
+
+/**
+ * Where the ground can have changed going from strokes `before` to `after` (a draft's strokes
+ * before and after drawing, undo, redo or clear): the box around every stroke not in both (strokes
+ * after the first difference, with their reach), or null if nothing changed.
+ */
+export function changedBox(before: readonly TerrainStroke[], after: readonly TerrainStroke[]): Box | null {
+  let k = 0;
+  while (k < before.length && k < after.length && before[k] === after[k]) k++;
+  let box: Box | null = null;
+  for (const s of [...before.slice(k), ...after.slice(k)]) box = unionBox(box, { x0: s.x - s.radius, z0: s.z - s.radius, x1: s.x + s.radius, z1: s.z + s.radius });
+  return box;
+}
+
+export function unionBox(a: Box | null, b: Box | null): Box | null {
+  if (!a) return b;
+  if (!b) return a;
+  return { x0: Math.min(a.x0, b.x0), z0: Math.min(a.z0, b.z0), x1: Math.max(a.x1, b.x1), z1: Math.max(a.z1, b.z1) };
+}

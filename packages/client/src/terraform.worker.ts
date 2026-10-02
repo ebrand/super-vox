@@ -1,42 +1,25 @@
 /// <reference lib="webworker" />
-import {
-  NO_WATER,
-  PlateHeights,
-  PlateStageCache,
-  TerrainGenerator,
-  WORLD_SHAPES,
-  encodeClimate,
-  migratePlateTerrain,
-  surfaceMap,
-  type PlateTerrainConfig,
-  type TerrainStroke,
-  type VoxelizeConfig,
-  type WorldConfig,
-  type WorldShape,
-} from '@super-vox/shared';
-import { meshDioramaSection, type DioramaField } from './dioramaMesher.js';
-import { packQuads, type MeshBuffers } from './mesher.js';
+import { WORLD_SHAPES, encodeClimate, migratePlateTerrain, surfaceMap, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
+import { AreaMaker, buffersOf, type AreaRequest, type DioramaPart, type MadeArea } from './terraformArea.js';
+
+export type { DioramaPart } from './terraformArea.js';
 
 /**
- * The Terraformer's worker: rebuilds a world from its settings (as the server builds it), and
- * makes a diorama of an area: its surface sampled every `step` (ground, materials, forest canopy,
- * the sea, rivers and lakes, as the game's distant terrain is), meshed in sections as flat-topped
- * columns with cut-off edges (see meshDioramaSection).
+ * The Terraformer's worker: rebuilds a world from its settings (as the server builds it) and
+ * makes dioramas of its areas (see AreaMaker), and the whole world's map, with the draft.
  */
 export type TerraformRequest =
   | { type: 'world'; key: string; shape: WorldShape; plates: unknown; voxelize: VoxelizeConfig }
+  | ({ type: 'area'; id: number } & AreaRequest)
   | {
-      type: 'area';
+      /**
+       * Quick: the draft (`strokes`) changed within `box` (metres, x within the world): the area
+       * showing is resampled and re-meshed there only (see AreaMaker.patch).
+       */
+      type: 'patch';
       id: number;
-      /** The area's north-west corner and size (units; x0 may lie past a round world's seam). */
-      x0: number;
-      z0: number;
-      size: number;
-      /** Between samples (units), and how far below the area's lowest ground its base goes. */
-      step: number;
-      depth: number;
-      /** The draft terraforming to show (see TerraformDraft). */
       strokes: TerrainStroke[];
+      box: { x0: number; z0: number; x1: number; z1: number };
     }
   | {
       /** The whole world from above, `width` samples across, with the draft (for the 3D overview). */
@@ -46,121 +29,52 @@ export type TerraformRequest =
       strokes: TerrainStroke[];
     };
 
-export interface DioramaPart {
-  /** Where the part's local origin is (units). */
-  x: number;
-  y: number;
-  z: number;
-  ground: MeshBuffers | null;
-  water: MeshBuffers | null;
-}
-
 export type TerraformResponse =
   | { type: 'ready'; key: string; climate: Uint8Array | null; seaLevel: number | null; ms: number }
-  | {
-      type: 'area'; id: number; x0: number; z0: number; size: number; base: number; top: number; parts: DioramaPart[]; quads: number; ms: number;
-      /** The ground samples (units; n x n, `step` apart from the corner), to find what's under the pointer. */
-      heights: Int32Array; n: number; step: number;
-    }
+  | ({ type: 'area'; id: number; ms: number } & MadeArea)
+  | { type: 'patch'; id: number; parts: DioramaPart[]; heights: Int32Array; samples: number; ms: number }
   | {
       type: 'map'; id: number; cols: number; rows: number; step: number; seaLevel: number | null;
       heights: Int16Array; materials: Uint8Array; climate: Uint8Array | null; ms: number;
     }
   | { type: 'error'; id?: number; error: string };
 
-/** Section size (m): the diorama is meshed (and culled) in squares this big. */
-const SECTION_M = 64;
-
-/**
- * The world (as last asked for), built with the strokes last asked for: a new set of strokes
- * rebuilds it, reusing every stage up to the heights (see PlateStageCache).
- */
-let built: {
-  key: string; world: WorldConfig; config: PlateTerrainConfig; voxelize: VoxelizeConfig; cache: PlateStageCache;
-  strokes: string; heights: PlateHeights; generator: TerrainGenerator;
-} | null = null;
-
-/** The world built with `strokes` (rebuilt if they've changed). */
-function withStrokes(strokes: TerrainStroke[]): NonNullable<typeof built> {
-  const b = built!;
-  const key = JSON.stringify(strokes);
-  if (key !== b.strokes) {
-    b.heights = new PlateHeights(b.world, b.config, b.cache, strokes);
-    b.generator = new TerrainGenerator(b.world, b.voxelize, b.heights);
-    b.strokes = key;
-  }
-  return b;
-}
+let maker: { key: string; maker: AreaMaker } | null = null;
 
 const post = (res: TerraformResponse, transfer: Transferable[] = []) => self.postMessage(res, transfer);
+const postArea = (id: number, a: MadeArea, ms: number) => post({ type: 'area', id, ms, ...a }, [...buffersOf(a.parts), a.heights.buffer]);
 
 self.onmessage = (ev: MessageEvent<TerraformRequest>) => {
   const req = ev.data;
   try {
+    const t0 = performance.now();
     if (req.type === 'world') {
-      const t0 = performance.now();
-      const world = WORLD_SHAPES[req.shape];
-      const config = migratePlateTerrain(req.plates);
-      const cache = new PlateStageCache();
-      const heights = new PlateHeights(world, config, cache);
-      built = { key: req.key, world, config, voxelize: req.voxelize, cache, strokes: '[]', heights, generator: new TerrainGenerator(world, req.voxelize, heights) };
-      const climate = heights.climate();
-      post({ type: 'ready', key: req.key, climate: climate ? encodeClimate(climate) : null, seaLevel: heights.seaLevel, ms: performance.now() - t0 });
+      const m = new AreaMaker(WORLD_SHAPES[req.shape], migratePlateTerrain(req.plates), req.voxelize);
+      maker = { key: req.key, maker: m };
+      const climate = m.heights.climate();
+      post({ type: 'ready', key: req.key, climate: climate ? encodeClimate(climate) : null, seaLevel: m.heights.seaLevel, ms: performance.now() - t0 });
       return;
     }
-    if (!built) throw new Error('no world loaded');
-    const t0 = performance.now();
+    if (!maker) throw new Error('no world loaded');
+    const m = maker.maker;
     if (req.type === 'map') {
-      const b = withStrokes(req.strokes);
+      const b = m.withStrokes(req.strokes);
       const step = Math.ceil(b.world.widthUnits / req.width);
-      const m = surfaceMap(b.generator, 0, 0, step, Math.ceil(b.world.widthUnits / step), Math.ceil(b.world.depthUnits / step));
+      const map = surfaceMap(b.generator, 0, 0, step, Math.ceil(b.world.widthUnits / step), Math.ceil(b.world.depthUnits / step));
       const c = b.heights.climate();
       const climate = c ? encodeClimate(c) : null;
-      post({ type: 'map', id: req.id, ...m, climate, ms: performance.now() - t0 }, [m.heights.buffer, m.materials.buffer, ...(climate ? [climate.buffer] : [])]);
+      post({ type: 'map', id: req.id, ...map, climate, ms: performance.now() - t0 }, [map.heights.buffer, map.materials.buffer, ...(climate ? [climate.buffer] : [])]);
       return;
     }
-    const g = withStrokes(req.strokes).generator;
-    const n = Math.round(req.size / req.step);
-    // Each sample at the middle of its cell.
-    const s = g.surfaceSamples(req.x0 + Math.floor(req.step / 2), req.z0 + Math.floor(req.step / 2), req.step, n);
-    // Water over the ground: rivers and lakes, and the sea.
-    const sea = g.seaLevel;
-    let water = s.water;
-    if (sea !== null) {
-      water ??= new Int32Array(n * n).fill(NO_WATER);
-      for (let k = 0; k < n * n; k++) if (s.heights[k]! < sea && water[k]! < sea) water[k] = sea;
+    if (req.type === 'patch') {
+      const r = m.patch(req.strokes, req.box);
+      if (!r) return;
+      if ('base' in r) return postArea(req.id, r, performance.now() - t0);
+      post({ type: 'patch', id: req.id, ...r, ms: performance.now() - t0 }, [...buffersOf(r.parts), r.heights.buffer]);
+      return;
     }
-    let lowest = Infinity, top = -Infinity;
-    for (let k = 0; k < n * n; k++) {
-      lowest = Math.min(lowest, s.heights[k]!);
-      top = Math.max(top, s.heights[k]!, s.canopy?.top[k] ?? -Infinity, water?.[k] ?? -Infinity);
-    }
-    const field: DioramaField = {
-      cols: n, rows: n, step: req.step, heights: s.heights, materials: s.materials,
-      canopy: s.canopy ? { top: s.canopy.top, bottom: s.canopy.bottom, material: s.canopy.material } : null,
-      water, base: lowest - req.depth,
-    };
-    const per = Math.max(1, Math.round((SECTION_M * 16) / req.step));
-    const parts: DioramaPart[] = [];
-    let quads = 0;
-    for (let j0 = 0; j0 < n; j0 += per) {
-      for (let i0 = 0; i0 < n; i0 += per) {
-        const w = Math.min(per, n - i0), d = Math.min(per, n - j0);
-        const m = meshDioramaSection(field, i0, j0, w, d);
-        quads += m.ground.length + m.water.length;
-        parts.push({
-          x: req.x0 + i0 * req.step, y: field.base, z: req.z0 + j0 * req.step,
-          ground: m.ground.length ? packQuads(m.ground) : null,
-          water: m.water.length ? packQuads(m.water) : null,
-        });
-      }
-    }
-    const transfer = parts.flatMap((p) => [p.ground, p.water].flatMap((b) => (b ? [b.positions.buffer, b.faces.buffer] : [])));
-    post(
-      { type: 'area', id: req.id, x0: req.x0, z0: req.z0, size: req.size, base: field.base, top, parts, quads, ms: performance.now() - t0, heights: s.heights, n, step: req.step },
-      [...transfer, s.heights.buffer],
-    );
+    postArea(req.id, m.make(req), performance.now() - t0);
   } catch (err) {
-    post({ type: 'error', ...(req.type === 'area' ? { id: req.id } : {}), error: err instanceof Error ? err.message : String(err) });
+    post({ type: 'error', ...('id' in req ? { id: req.id } : {}), error: err instanceof Error ? err.message : String(err) });
   }
 };

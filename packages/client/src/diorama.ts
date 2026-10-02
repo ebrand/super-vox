@@ -9,7 +9,7 @@ import { MiniatureEffect } from './miniature.js';
 import { createTint } from './tint.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
 import { WATER_LAYER, WaterRenderer, createVoxelWaterMaterial } from './water.js';
-import type { DioramaPart } from './terraform.worker.js';
+import type { DioramaPart } from './terraformArea.js';
 
 /**
  * An area of a world up close, cut out like a diorama (see meshDioramaSection), drawn as the game
@@ -37,9 +37,11 @@ export class Diorama {
   private readonly brushRing: THREE.LineLoop;
   private brushRadius: number | null = null;
   private brushAt: { x: number; z: number } | null = null;
+  private shapeMode = false;
   /**
-   * Painting: ⌘-press (Ctrl-press) and drag with the left button. The diorama doesn't move while
-   * painting; it calls this with each point (metres, and the ground's height there) as it goes.
+   * Painting: in shape mode (see `shaping`) a left-button drag, in either mode a ⌘-press
+   * (Ctrl-press) and drag. The diorama doesn't move while painting; it calls this with each point
+   * (metres, and the ground's height there) as it goes.
    */
   onPaint: ((phase: 'start' | 'move' | 'end', at: { x: number; y: number; z: number } | null) => void) | null = null;
 
@@ -65,6 +67,8 @@ export class Diorama {
     this.controls.dampingFactor = 0.12;
     this.controls.zoomToCursor = true;
     this.controls.screenSpacePanning = false;
+    // The middle button moves too (handy in shape mode, where the left one paints); the wheel zooms.
+    this.controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
     this.controls.minDistance = 5;
     this.controls.maxDistance = 12_000;
     this.brushRing = new THREE.LineLoop(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd34d, depthTest: false }));
@@ -95,15 +99,7 @@ export class Diorama {
    */
   show(parts: readonly DioramaPart[], area: { x0: number; z0: number; size: number; base: number; top: number }, keepView = false): void {
     this.clear();
-    for (const p of parts) {
-      const origin = { x: p.x, y: p.y, z: p.z };
-      if (p.ground) this.meshes.add(createPackedMesh(p.ground, origin, this.material, 'diorama ground'));
-      if (p.water) {
-        const w = createPackedMesh(p.water, origin, this.waterMaterial, 'diorama water');
-        w.layers.set(WATER_LAYER);
-        this.meshes.add(w);
-      }
-    }
+    this.update(parts);
     if (keepView) return;
     // Look at the middle of the area from the south and above, all of it in view.
     const m = UNITS_PER_METER, size = area.size / m;
@@ -111,6 +107,19 @@ export class Diorama {
     this.controls.target.copy(mid);
     this.camera.position.set(mid.x, mid.y + size * 0.8, mid.z + size * 1.25);
     this.controls.update();
+  }
+
+  /**
+   * Shape mode: the left button paints (the view still turns with the right button and zooms with
+   * the wheel); otherwise it moves the view, as on the 3D map.
+   */
+  get shaping(): boolean {
+    return this.shapeMode;
+  }
+
+  set shaping(on: boolean) {
+    this.shapeMode = on;
+    this.controls.mouseButtons.LEFT = on ? null : THREE.MOUSE.PAN;
   }
 
   /** The ground as sampled (see the worker's area reply), to find what's under the pointer. */
@@ -178,7 +187,7 @@ export class Diorama {
     };
     // (Capture: before the controls see it, so they stay still while painting.)
     c.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0 || !(e.metaKey || e.ctrlKey) || !this.onPaint) return;
+      if (e.button !== 0 || !(this.shapeMode || e.metaKey || e.ctrlKey) || !this.onPaint) return;
       const p = at(e);
       if (!p) return;
       painting = true;
@@ -195,6 +204,15 @@ export class Diorama {
       const p = at(e);
       this.brushAt = p && { x: p.x, z: p.z };
       this.placeBrush();
+      // (In shape mode, a move with the left button down starts painting even if the press itself
+      // went missing, and one with no button down ends it if the release did.)
+      if (painting && (e.buttons & 1) === 0 && e.pointerType === 'mouse') return stop();
+      if (!painting && this.shapeMode && (e.buttons & 1) && p && this.onPaint) {
+        painting = true;
+        this.controls.enabled = false;
+        this.onPaint('start', p);
+        return;
+      }
       if (painting && p) this.onPaint?.('move', p);
     });
     const stop = () => {
@@ -253,7 +271,26 @@ export class Diorama {
       this.camera.updateProjectionMatrix();
     }
     this.controls.update();
+    this.water.uniforms.waveScale.value = waveScaleAt(this.camera.position.distanceTo(this.controls.target));
     this.miniatureFx.render(this.miniature ? 1 : 0);
+  }
+
+  /** Replaces the parts with these keys (sections re-made by a patch), adding any new ones. */
+  update(parts: readonly DioramaPart[]): void {
+    for (const p of parts) {
+      for (const o of [...this.meshes.children]) if (o.userData.part === p.key) disposePackedMesh(o);
+      const origin = { x: p.x, y: p.y, z: p.z };
+      const add = (mesh: THREE.Mesh) => {
+        mesh.userData.part = p.key;
+        this.meshes.add(mesh);
+      };
+      if (p.ground) add(createPackedMesh(p.ground, origin, this.material, 'diorama ground'));
+      if (p.water) {
+        const w = createPackedMesh(p.water, origin, this.waterMaterial, 'diorama water');
+        w.layers.set(WATER_LAYER);
+        add(w);
+      }
+    }
   }
 
   private clear(): void {
@@ -266,4 +303,13 @@ export class Diorama {
     this.miniatureFx.dispose();
     this.renderer.dispose();
   }
+}
+
+/**
+ * How much bigger the water's ripples and foam are drawn from `distance` metres away: as in the
+ * game up close (1), swelling as the camera pulls back so they stay a few dozen pixels across and
+ * the water visibly moves.
+ */
+export function waveScaleAt(distance: number): number {
+  return Math.max(1, Math.min(40, distance / 60));
 }

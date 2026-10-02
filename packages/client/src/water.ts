@@ -18,6 +18,8 @@ export const WATER_GLSL = /* glsl */ `
   uniform float farLog;
   uniform float time;
   uniform vec3 cameraForward;
+  // Ripples and foam this many times bigger (1 in the game; a diorama, seen from far off, swells them).
+  uniform float waveScale;
 
   // Distance along the view axis to the opaque scene at a screen position (log depth, see three's
   // logdepthbuf: depth = log2(1 + w) / log2(far + 1)).
@@ -41,10 +43,10 @@ export const WATER_GLSL = /* glsl */ `
   }
 
   // Ripples: the slope of two layers of noise drifting in different directions, octaves from
-  // 16 m down to 0.5 m, each fading out before it shrinks to a few pixels (no moire).
+  // 16 m down to 0.5 m (times waveScale), each fading out before it shrinks to a few pixels (no moire).
   vec2 waveSlope(vec2 p, float pixel) {
     vec2 s = vec2(0.0);
-    float len = 16.0, amp = 0.05;
+    float len = 16.0 * waveScale, amp = 0.05;
     mat2 turn = mat2(0.8, 0.6, -0.6, 0.8);
     for (int i = 0; i < 6; i++) {
       float fade = 1.0 - smoothstep(0.04, 0.2, pixel / len);
@@ -103,8 +105,9 @@ export const WATER_GLSL = /* glsl */ `
     // Foam where it's very shallow: broken up by the ripples, drifting with them.
     // (Thin flowing water over the ground stays mostly clear: foam is a light lace, strongest
     // right at the waterline.)
-    float shallow = 1.0 - smoothstep(0.0, 0.12, depth);
-    float froth = smoothstep(0.4, 0.8, sin(worldPos.x * 2.3 + slope.x * 6.0 + time * 0.7) * sin(worldPos.z * 2.1 - slope.y * 6.0 - time * 0.5) + shallow * 0.6);
+    float shallow = 1.0 - smoothstep(0.0, 0.12 * waveScale, depth);
+    vec2 fp = worldPos.xz / waveScale;
+    float froth = smoothstep(0.4, 0.8, sin(fp.x * 2.3 + slope.x * 6.0 + time * 0.7) * sin(fp.y * 2.1 - slope.y * 6.0 - time * 0.5) + shallow * 0.6);
     rgb = mix(rgb, vec3(0.9, 0.93, 0.95) * (skyAmbient * 1.4 + sunColor * max(sunDir.y, 0.2)), shallow * froth * 0.45 * (fromBelow ? 0.0 : 1.0));
     return rgb;
   }
@@ -120,6 +123,7 @@ export function waterUniforms(atmosphere: Atmosphere) {
     farLog: { value: 1 },
     time: { value: 0 },
     cameraForward: { value: new THREE.Vector3(0, 0, -1) },
+    waveScale: { value: 1 },
   };
 }
 

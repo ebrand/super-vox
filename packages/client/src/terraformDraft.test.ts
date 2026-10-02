@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TerrainStroke } from '@super-vox/shared';
-import { TerraformDraft, dabsAlong } from './terraformDraft.js';
+import { TerraformDraft, changedBox, dabsAlong } from './terraformDraft.js';
 
 const s = (x: number): TerrainStroke => ({ kind: 'raise', x, z: 0, radius: 10, amount: 2, softness: 0.5 });
 
@@ -66,5 +66,15 @@ describe('dabsAlong', () => {
     expect(b.points[0]!.z).toBeCloseTo(2, 9);
     expect(b.points.length).toBe(3);
     expect(dabsAlong({ x: 0, z: 0 }, { x: 1, z: 0 }, 4).points).toEqual([]);
+  });
+});
+
+describe('changedBox', () => {
+  it('boxes the strokes added or taken away, with their reach', () => {
+    const a = s(1), b = s(2), c = { ...s(50), z: 30, radius: 5 };
+    expect(changedBox([a, b], [a, b])).toBeNull();
+    expect(changedBox([a], [a, b])).toEqual({ x0: -8, z0: -10, x1: 12, z1: 10 });
+    expect(changedBox([a, b], [a])).toEqual({ x0: -8, z0: -10, x1: 12, z1: 10 });
+    expect(changedBox([a, b], [a, c])).toEqual({ x0: -8, z0: -10, x1: 55, z1: 35 });
   });
 });
