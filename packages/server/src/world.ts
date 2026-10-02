@@ -34,6 +34,7 @@ import {
   tileSizeUnits,
   tileStep,
   type Block,
+  materialAt,
   type Chunk,
   type ColumnRange,
   type Facing,
@@ -160,6 +161,8 @@ export class World {
   readonly seaLevel: number | null;
   /** Poured water moving after edits and pours (see stepWater). */
   private readonly flow = new PouredWater();
+  /** Decoded chunks recently looked at by solidAt (mobs walking about), oldest first. */
+  private readonly decoded = new Map<string, Chunk>();
   /** Placed objects (fences, gates, doors) by their bottom block, "bx,by,bz" (block X in the world's range). */
   private readonly objects = new Map<string, PlacedObject>();
   /** Running totals since the world was opened, for monitoring (see WorldStats). */
@@ -368,7 +371,46 @@ export class World {
   }
 
   /** Stores, caches, and saves edited chunks; reports widened column ranges. */
+  /** The last chunk materialAtUnit looked at (most lookups land in the same one as the last). */
+  private last: { cx: number; cy: number; cz: number; chunk: Chunk | null } | null = null;
+
+  /** The material of the unit cell (world units), from recently looked-at chunks (mobs walking about); undefined outside the world. */
+  materialAtUnit(x: number, y: number, z: number): number | undefined {
+    const n = CHUNK_SIZE;
+    const cx = Math.floor(x / n), cy = Math.floor(y / n), cz = Math.floor(z / n);
+    const last = this.last;
+    let chunk: Chunk | null;
+    if (last && last.cx === cx && last.cy === cy && last.cz === cz) chunk = last.chunk;
+    else {
+      const resolved = resolveChunk(this.config, { cx, cy, cz });
+      if (!resolved) chunk = null;
+      else {
+        const key = chunkKey(resolved);
+        const hit = this.decoded.get(key);
+        if (hit) {
+          this.decoded.delete(key);
+          chunk = hit;
+        } else {
+          chunk = this.current(resolved);
+          if (this.decoded.size >= 256) this.decoded.delete(this.decoded.keys().next().value!);
+        }
+        this.decoded.set(key, chunk);
+      }
+      this.last = { cx, cy, cz, chunk };
+    }
+    if (!chunk) return undefined;
+    return materialAt(chunk, x - cx * n, y - cy * n, z - cz * n);
+  }
+
+  /** Whether the unit cell (world units) is solid (not air, not water); outside the world counts as solid. */
+  readonly solidAt = (x: number, y: number, z: number): boolean => {
+    const m = this.materialAtUnit(Math.floor(x), Math.floor(y), Math.floor(z));
+    return m === undefined || (m !== 0 && !isWater(m));
+  };
+
   private commit(chunks: Chunk[]): EditResult {
+    for (const c of chunks) this.decoded.delete(chunkKey(c));
+    this.last = null;
     const columns = new Map<string, { cx: number; cz: number; before: ColumnRange | null }>();
     for (const c of chunks) {
       const k = `${c.cx},${c.cz}`;

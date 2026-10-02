@@ -20,3 +20,6 @@ export * from './protocol.js';
 export * from './items.js';
 export * from './recipes.js';
 export * from './objects.js';
+export * from './physics.js';
+export * from './walking.js';
+export * from './mobs.js';

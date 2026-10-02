@@ -5,11 +5,12 @@ import type { ColumnRange } from './chunk.js';
 import { HOTBAR_SLOTS, type GameMode } from './items.js';
 import { MAX_MATERIAL_ID } from './materials.js';
 import { isFacing, type Facing } from './objects.js';
+import type { EntityKind } from './mobs.js';
 import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 23;
+export const PROTOCOL_VERSION = 24;
 
 export type ClientMessage =
   | {
@@ -52,6 +53,8 @@ export type ClientMessage =
   | { type: 'cut'; id: number; sword: number; x: number; y: number; z: number }
   /** Use (open or close) the object with a voxel at unit (x, y, z); answered with `editResult`. */
   | { type: 'use'; id: number; x: number; y: number; z: number }
+  /** Hit a mob (`target`, an entity id) with what's in hand (`weapon`: an item id, null for a bare hand). */
+  | { type: 'attack'; target: number; weapon: number | null }
   /** Make something (a recipe id, see RECIPES); answered with the new inventory, or an error. */
   | { type: 'craft'; recipe: string }
   /** The player's hotbar arrangement (HOTBAR_SLOTS item ids, null for empty), kept with their inventory. */
@@ -84,6 +87,15 @@ export type ServerMessage =
    * items counted); and their hotbar. Not sent to players who aren't signed in.
    */
   | { type: 'inventory'; mode: GameMode; items: [number, number][]; hotbar: (number | null)[] }
+  /**
+   * Everything moving near the player (mobs and other players, see EntitySnapshot), as it is now;
+   * sent a few times a second. Anything not listed has gone (out of range, or gone for good).
+   */
+  | { type: 'entities'; entities: EntitySnapshot[] }
+  /** The player's health (after it changes); at 0 they've died and come back (see `respawn`). */
+  | { type: 'health'; health: number; max: number }
+  /** The player died and comes back at (x, y, z) (feet, units). */
+  | { type: 'respawn'; x: number; y: number; z: number }
   /** The world's clock was changed (time set, stopped, or a new day length). */
   | { type: 'clock'; clock: DayClock; serverTime: number }
   /**
@@ -109,6 +121,23 @@ export type ServerMessage =
   | { type: 'editResult'; id: number; ok: true }
   | { type: 'editResult'; id: number; ok: false; error: string }
   | { type: 'error'; code: string; message: string };
+
+/** Something moving that a player sees: where its feet are (units), which way it faces, how hurt. */
+export interface EntitySnapshot {
+  id: number;
+  kind: EntityKind;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  /** Health left and the most it can have (mobs). */
+  health?: number;
+  max?: number;
+  /** Hurt just now (for a flash). */
+  hurt?: boolean;
+  /** Players: their name. */
+  name?: string;
+}
 
 /**
  * Binary server frames start with a one-byte tag. The rest of the frame is
@@ -252,6 +281,9 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   }
   if (msg.type === 'use' && isId(msg.id) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
     return { type: 'use', id: msg.id as number, x: msg.x, y: msg.y, z: msg.z };
+  }
+  if (msg.type === 'attack' && isId(msg.target) && (msg.weapon === null || isInt32(msg.weapon))) {
+    return { type: 'attack', target: msg.target as number, weapon: msg.weapon as number | null };
   }
   if (msg.type === 'craft' && typeof msg.recipe === 'string' && /^[a-z0-9-]{1,64}$/.test(msg.recipe)) {
     return { type: 'craft', recipe: msg.recipe };

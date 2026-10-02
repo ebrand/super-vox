@@ -5,10 +5,18 @@ import fastifyCookie from '@fastify/cookie';
 import type { Auth, SignedIn } from './auth.js';
 import { starterInventory, type InventoryStore } from './inventories.js';
 import { PlayerInventory } from './playerInventory.js';
+import { MobManager } from './mobManager.js';
 import {
   BinaryTag,
   EditError,
   columnSpans,
+  ATTACK_REACH,
+  PLAYER_HEALTH,
+  REGEN_AFTER_MS,
+  REGEN_MS,
+  UNITS_PER_METER,
+  attackDamage,
+  deltaX,
   BLOCK_VOLUME,
   Item,
   OBJECT_ITEM,
@@ -57,6 +65,8 @@ export type AppOptions = (
   auth?: Auth;
   /** Signed-in players' inventories (see PlayerInventory); without, editing is unlimited. */
   inventories?: InventoryStore;
+  /** Makes a world's mob manager (tests: to place mobs themselves). */
+  mobs?: (world: World) => MobManager;
 };
 
 /** A connection, as the dashboard shows it. */
@@ -73,6 +83,12 @@ interface Player {
   tiles: number;
   edits: number;
   bytesOut: number;
+  /** Combat: health, whether mobs can hurt them (signed in, survival), when last hurt and healed, and last attacked (ms). */
+  health: number;
+  vulnerable: boolean;
+  lastHurt: number;
+  lastRegen: number;
+  lastAttack: number;
 }
 
 /** Time between water flow steps. */
@@ -329,10 +345,58 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       if (result) broadcast(world, result);
     }
   }, WATER_STEP_MS);
+  // Mobs: ten steps a second in worlds someone is in; each player sees what's within VIEW.
+  const mobManagers = new Map<World, MobManager>();
+  const VIEW = 96 * UNITS_PER_METER;
+  const EYE = 1.62 * UNITS_PER_METER;
+  const sendTo = (client: WebSocket, msg: ServerMessage) => {
+    if (client.readyState === client.OPEN) out(client, encodeMessage(msg));
+  };
+  const mobbing = setInterval(() => {
+    const now = Date.now();
+    const byWorld = new Map<World, WebSocket[]>();
+    for (const [client, w] of clients) byWorld.set(w, [...(byWorld.get(w) ?? []), client]);
+    for (const [world, sockets] of byWorld) {
+      let mobs = mobManagers.get(world);
+      if (!mobs) mobManagers.set(world, (mobs = opts.mobs ? opts.mobs(world) : new MobManager(world)));
+      const here = sockets.map((s) => ({ s, p: players.get(s)! })).filter(({ p }) => p?.pose);
+      const hours = clockHours(catalog.clock(here[0]?.p.world) ?? catalog.clock(undefined)!, now);
+      const night = hours < 6 || hours >= 19.5;
+      const targets = here.map(({ p }) => ({ id: p.id, x: p.pose!.x, y: p.pose!.y - EYE, z: p.pose!.z, vulnerable: p.vulnerable }));
+      for (const hit of mobs.step(0.1, now, targets, night)) {
+        const e = here.find(({ p }) => p.id === hit.player);
+        if (!e || !e.p.vulnerable) continue;
+        e.p.health -= hit.damage;
+        e.p.lastHurt = now;
+        if (e.p.health <= 0) {
+          // Back at the spawn point, whole again, everything kept.
+          e.p.health = PLAYER_HEALTH;
+          sendTo(e.s, { type: 'respawn', x: world.spawn.x, y: world.spawn.y, z: world.spawn.z });
+        }
+        sendTo(e.s, { type: 'health', health: e.p.health, max: PLAYER_HEALTH });
+      }
+      for (const { s, p } of here) {
+        // Healing: a point every REGEN_MS once unhurt for REGEN_AFTER_MS.
+        if (p.vulnerable && p.health < PLAYER_HEALTH && now - p.lastHurt >= REGEN_AFTER_MS && now - p.lastRegen >= REGEN_MS) {
+          p.health++;
+          p.lastRegen = now;
+          sendTo(s, { type: 'health', health: p.health, max: PLAYER_HEALTH });
+        }
+        // What this player sees: mobs, and other players.
+        const entities = mobs.near(p.pose!.x, p.pose!.z, VIEW, now);
+        for (const o of here) {
+          if (o.p === p || Math.hypot(deltaX(world.config, p.pose!.x, o.p.pose!.x), o.p.pose!.z - p.pose!.z) > VIEW) continue;
+          entities.push({ id: o.p.id, kind: 'player', x: Math.round(o.p.pose!.x), y: Math.round(o.p.pose!.y - EYE), z: Math.round(o.p.pose!.z), yaw: o.p.pose!.yaw, name: o.p.name ?? 'guest' });
+        }
+        sendTo(s, { type: 'entities', entities });
+      }
+    }
+  }, 100);
   // Monitoring: a sample every second (see /api/dashboard).
   const sampling = setInterval(() => metrics.tick(players.size), 1000);
   app.addHook('onClose', async () => {
     clearInterval(flowing);
+    clearInterval(mobbing);
     clearInterval(sampling);
     metrics.stop();
   });
@@ -431,6 +495,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             players.set(socket, {
               id: nextPlayer++, world: msg.world ?? catalog.defaultName, connectedAt: Date.now(), tolerance: world.tolerance,
               name: who?.account.name ?? null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
+              health: PLAYER_HEALTH, vulnerable: false, lastHurt: 0, lastRegen: 0, lastAttack: 0,
             });
             send({
               type: 'welcome',
@@ -460,6 +525,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
                   }),
                 );
                 send(inventory.message());
+                const p = players.get(socket);
+                if (p && play.mode === 'survival') {
+                  p.vulnerable = true;
+                  send({ type: 'health', health: p.health, max: PLAYER_HEALTH });
+                }
               })
               .catch((err: unknown) => {
                 metrics.error('inventory', err instanceof Error ? err.message : String(err), clientWorld.get(socket));
@@ -620,6 +690,21 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           send({ type: 'editResult', id: msg.id, ok: true });
           if ((msg.type === 'placeObject' || msg.type === 'bucket') && inventory?.mode === 'survival') send(inventory.message());
           broadcast(world, result);
+          break;
+        }
+
+        case 'attack': {
+          const p = players.get(socket);
+          if (!greeted || !p?.pose || !canEdit()) return;
+          const now = Date.now();
+          if (now - p.lastAttack < 400) return; // a swing at a time
+          // A sword only if they have one; otherwise a bare hand.
+          const weapon = msg.weapon === Item.StoneSword && (inventory?.count(Item.StoneSword) ?? 1) >= 1
+            ? 'stone-sword'
+            : msg.weapon === Item.WoodenSword && (inventory?.count(Item.WoodenSword) ?? 1) >= 1 ? 'wooden-sword' : 'hand';
+          p.lastAttack = now;
+          // (A little reach to spare: the pose is up to a tenth of a second old.)
+          mobManagers.get(world)?.attack(msg.target, p.pose.x, p.pose.y, p.pose.z, attackDamage(weapon), ATTACK_REACH + 1, now);
           break;
         }
 

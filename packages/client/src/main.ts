@@ -17,6 +17,7 @@ import { loadSettings } from './settings.js';
 import { MeshWorkerPool } from './workerPool.js';
 import { WorldMapOverlay } from './worldMap.js';
 import { InventoryUi } from './inventory.js';
+import { EntityView } from './entities.js';
 import type { Footprint } from './coverage.js';
 import { createCompassRose } from './compassRose.js';
 import { solidAtFor, waterAtFor } from './worldQuery.js';
@@ -168,6 +169,29 @@ let chunks: ChunkManager | null = null;
 let tiles: TileManager | null = null;
 let editTool: EditTool | null = null;
 let worldMap: WorldMapOverlay | null = null;
+/** Mobs and other players (see EntityView). */
+let entities: EntityView | null = null;
+
+/** Health (survival): hearts above the hotbar, a red flash when hurt. */
+const healthEl = document.createElement('div');
+healthEl.id = 'health';
+healthEl.hidden = true;
+const hurtEl = document.createElement('div');
+hurtEl.id = 'hurt';
+document.body.append(healthEl, hurtEl);
+let health: number | null = null;
+function showHealth(h: number, max: number): void {
+  if (health !== null && h < health) {
+    hurtEl.classList.remove('flash');
+    void hurtEl.offsetWidth; // restart the animation
+    hurtEl.classList.add('flash');
+  }
+  health = h;
+  healthEl.hidden = false;
+  const hearts = max / 2;
+  healthEl.textContent = Array.from({ length: hearts }, (_, i) => (h >= (i + 1) * 2 ? '♥' : h >= i * 2 + 1 ? '❥' : '♡')).join('');
+  healthEl.title = `${h} / ${max}`;
+}
 let connection: ReturnType<typeof connect> | null = null;
 /** Reconnection attempts since the last welcome (for backing off). */
 let reconnects = 0;
@@ -371,6 +395,8 @@ connection = connect({
             updateHud();
           });
           editTool = new EditTool(scene, camera, chunks, send, () => inventoryUi.material, () => (controls.collide ? playerBox(eyeUnits()) : null));
+          entities = new EntityView(scene, w, () => camera.position.x * UNITS_PER_METER);
+          editTool.pickEntity = (origin, dir, maxDist) => entities!.pick(origin, dir, maxDist);
           const modeTag = document.getElementById('mode')!;
           editTool.onModeChange = (mode) => {
             modeTag.textContent = mode.toUpperCase();
@@ -387,7 +413,7 @@ connection = connect({
             if (error) editTool?.say(error);
             updateHud();
           };
-          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool, water, compassRose, inventoryUi };
+          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool, water, compassRose, inventoryUi, entities };
           // Start loading now rather than on the first frame (frames pause in hidden tabs).
           updateLod(true);
         } else {
@@ -411,6 +437,18 @@ connection = connect({
         break;
       case 'tileUnavailable':
         tiles?.onTileUnavailable(msg);
+        break;
+      case 'entities':
+        entities?.update(msg.entities);
+        break;
+      case 'health':
+        showHealth(msg.health, msg.max);
+        break;
+      case 'respawn':
+        // Died: back at the spawn point (standing on it).
+        camera.position.set(unitsToMeters(msg.x), unitsToMeters(msg.y) + PLAYER.eye / UNITS_PER_METER + 0.5, unitsToMeters(msg.z));
+        updateLod(true);
+        editTool?.say('you died: back at the spawn point');
         break;
       case 'inventory':
         inventoryUi.update(msg);
@@ -517,8 +555,8 @@ function updateHud(): void {
 
 let lastFrame = performance.now();
 
-// Tell the server where we are (for its dashboard), twice a second when we've moved. A timer, not
-// the render loop: frames stop in background tabs.
+// Tell the server where we are (mobs chase it, the dashboard shows it), ten times a second when
+// we've moved. A timer, not the render loop: frames stop in background tabs.
 let lastPose = '';
 setInterval(() => {
   if (!world) return;
@@ -528,7 +566,7 @@ setInterval(() => {
   if (key === lastPose) return;
   connection?.send(pose);
   lastPose = key;
-}, 500);
+}, 100);
 
 // While moving, loading never finishes all at once (see onProgress), so a replaced mesh is
 // dropped as soon as what replaced it is drawn (chunks and tiles both covering its ground), or
@@ -552,6 +590,7 @@ renderer.setAnimationLoop(() => {
   updateLod();
   if (!paused) editTool?.update();
   compassRose.update(controls.yaw);
+  entities?.frame();
   worldMap?.update();
   if (sea) sea.position.set(camera.position.x, sea.position.y, camera.position.z);
   applyLighting(lighting, worldHours(), atmosphere, lightingUniforms, view);

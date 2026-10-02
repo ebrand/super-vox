@@ -71,6 +71,10 @@
       #inventory .recipe.cant { opacity: 0.45; }
       #inventory .recipe .swatch { width: 30px; height: 30px; flex: none; }
       #inventory .recipe .swatch b { font-size: 15px; }
+      #health { position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); color: #ff4d5a; font: 20px/1 system-ui, sans-serif; letter-spacing: 2px; text-shadow: 0 1px 2px #000; z-index: 5; pointer-events: none; }
+      #hurt { position: fixed; inset: 0; pointer-events: none; z-index: 4; background: radial-gradient(ellipse at center, transparent 55%, rgba(220, 0, 0, 0.55)); opacity: 0; }
+      #hurt.flash { animation: hurt 0.6s ease-out; }
+      @keyframes hurt { from { opacity: 1; } to { opacity: 0; } }
     </style>
   </head>
   <body>

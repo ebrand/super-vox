@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { moveAabb, playerBox } from './physics.js';
-import type { SolidAt } from './picking.js';
+import type { SolidAt } from './physics.js';
 import { GRAVITY, JUMP_SPEED, SINK_SPEED, SWIM_SPEED, walkStep, type Mover, type WalkState } from './walking.js';
 
 /** Flat ground at y < 0 (units), plus extra solid boxes in units. */

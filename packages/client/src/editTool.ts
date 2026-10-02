@@ -9,6 +9,7 @@ import {
   blockVoxelContaining,
   breakSizesFor,
   facingOfYaw,
+  ATTACK_REACH,
   Item,
   isBlock,
   isWater,
@@ -100,7 +101,9 @@ export class EditTool {
   private target: Box | null = null;
   /** The aimed voxel's material, and the unit cell and face the aim hit (for objects). */
   private targetMaterial: MaterialId | null = null;
-  private hit: { cell: [number, number, number]; normal: [number, number, number] } | null = null;
+  private hit: { cell: [number, number, number]; normal: [number, number, number]; distance: number } | null = null;
+  /** Finds a mob along a ray (units), for hitting it (set by the game; see EntityView.pick). */
+  pickEntity: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { id: number; dist: number } | null) | null = null;
   private placement: (Box & { valid: boolean; reason: string }) | null = null;
   private dig: Box | null = null;
   /** Outward normal of the face the dig box starts at (the surface aimed at). */
@@ -288,6 +291,15 @@ export class EditTool {
     if (this.mode === 'hybrid') {
       const held = this.materialOf();
       if (button === 0) {
+        // A mob in reach, nearer than the voxel aimed at: hit it (with the sword in hand, if any).
+        const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
+        const dir = this.camera.getWorldDirection(new THREE.Vector3());
+        const mob = this.pickEntity?.([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], ATTACK_REACH * UNITS_PER_METER);
+        if (mob && (!this.hit || mob.dist < this.hit.distance)) {
+          const weapon = held === Item.WoodenSword || held === Item.StoneSword ? held : null;
+          this.send({ type: 'attack', target: mob.id, weapon });
+          return;
+        }
         // A sword cuts leaves (a sweep); otherwise left-click removes.
         if ((held === Item.WoodenSword || held === Item.StoneSword) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) this.cut(held);
         else this.remove();

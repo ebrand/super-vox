@@ -122,6 +122,13 @@ describe('protocol', () => {
     expect(decodeClientMessage('{"type":"cut","id":2,"x":2,"y":3,"z":4}')).toBeNull();
   });
 
+  it('validates attacks', () => {
+    expect(decodeClientMessage('{"type":"attack","target":12,"weapon":1001}')).toEqual({ type: 'attack', target: 12, weapon: 1001 });
+    expect(decodeClientMessage('{"type":"attack","target":12,"weapon":null}')).toEqual({ type: 'attack', target: 12, weapon: null });
+    expect(decodeClientMessage('{"type":"attack","target":-1,"weapon":null}')).toBeNull();
+    expect(decodeClientMessage('{"type":"attack","target":3}')).toBeNull();
+  });
+
   it('validates craft requests', () => {
     expect(decodeClientMessage('{"type":"craft","recipe":"wooden-sword"}')).toEqual({ type: 'craft', recipe: 'wooden-sword' });
     for (const raw of ['{"type":"craft"}', '{"type":"craft","recipe":5}', '{"type":"craft","recipe":"Bad Id"}', `{"type":"craft","recipe":"${'a'.repeat(65)}"}`]) {

@@ -201,6 +201,16 @@ part of one to take it down (it goes back in your inventory). Other edits can't 
 They're voxels of their own materials, and the server keeps a register of them (objects.json
 beside each world's edited chunks).
 
+**Mobs and fighting** (placeholder boxes for now): pigs wander by day on grass and run when hit;
+zombies come out at night (19:30 to 06:00), chase players within 24 m and hit for 3, and burn
+away in daylight. They appear 24..48 m from players (a few around each) and go when nobody is
+within 96 m. Left-click a mob within 4.5 m to hit it: a bare hand does 1, a wooden sword 4, a
+stone sword 5, with knockback (pigs have 10 health, zombies 20). Signed-in survival players
+have 20 health (hearts above the hotbar), healing a point every 4 s once unhurt for 6 s; at 0
+they come back at the spawn point with everything they had. Creative players and visitors who
+aren't signed in can't be hurt. Other players show as figures with their names (no fighting
+each other). The server moves mobs ten times a second and tells each player what's near.
+
 The hotbar (bottom of the screen) holds what you place: 1-9 or the mouse wheel pick a slot
 (Option+wheel sets the flying speed). E opens the inventory
 (survival: what you have; creative: everything); click a material to put it in the selected

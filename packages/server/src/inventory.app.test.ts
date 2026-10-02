@@ -6,6 +6,7 @@ import { MemoryAccountStore } from './accounts.js';
 import { buildApp } from './app.js';
 import { Auth, SESSION_COOKIE, sessionToken } from './auth.js';
 import { MemoryInventoryStore } from './inventories.js';
+import { MobManager } from './mobManager.js';
 import { World } from './world.js';
 import { singleWorld } from './worlds.js';
 
@@ -19,12 +20,12 @@ afterEach(async () => {
 });
 
 /** A flat world (grass over dirt over stone, 1/4 m voxels) in `mode`, with sign-in and inventories. */
-async function setup(mode: GameMode) {
+async function setup(mode: GameMode, mobs?: (w: World) => MobManager) {
   const accounts = new MemoryAccountStore();
   const inventories = new MemoryInventoryStore();
   const world = new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4)));
   const auth = new Auth({ googleClientId: 'c', googleClientSecret: 's', sessionSecret: SECRET, adminEmails: [], secureCookies: false }, accounts);
-  app = await buildApp({ catalog: singleWorld(world, undefined, 'default', 24, mode), auth, inventories });
+  app = await buildApp({ catalog: singleWorld(world, undefined, 'default', 24, mode), auth, inventories, ...(mobs ? { mobs } : {}) });
   const url = (await app.listen({ port: 0, host: '127.0.0.1' })).replace(/^http/, 'ws') + '/ws';
   const ann = await accounts.signIn({ sub: 'g-ann', email: 'ann@x.com', name: 'Ann' });
   const cookie = `${SESSION_COOKIE}=${sessionToken(ann.id, Date.now() + 1e6, SECRET)}`;
@@ -38,9 +39,9 @@ async function player(url: string, cookie?: string) {
   ws.on('message', (d, bin) => !bin && msgs.push(JSON.parse(String(d)) as ServerMessage));
   await new Promise((r) => ws.once('open', r));
   ws.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION }));
-  const until = async (f: () => boolean) => {
-    for (let i = 0; i < 300 && !f(); i++) await new Promise((r) => setTimeout(r, 10));
-    if (!f()) throw new Error('timed out');
+  const until = async (f: () => boolean, ms = 3000) => {
+    for (let i = 0; i < ms / 10 && !f(); i++) await new Promise((r) => setTimeout(r, 10));
+    if (!f()) throw new Error(`timed out: ${f.toString().slice(0, 120)}`);
   };
   let nextId = 1;
   const inventories = () => msgs.filter((m): m is Inv => m.type === 'inventory');
@@ -238,6 +239,43 @@ describe('inventories', () => {
     expect(await act({ type: 'cut', sword: Item.StoneSword, x: 80, y: 0, z: 80 })).toMatchObject({ ok: false, error: 'you have no stone sword' });
     p.ws.close();
   });
+
+  it('fight: players see mobs, hit them, get hurt, and come back at the spawn when they die', async () => {
+    let manager: MobManager | null = null;
+    // Mobs only where the test puts them (none appear by themselves: nobody's within reach of a spawn).
+    const { url, cookie } = await setup('survival', (w) => (manager = new MobManager(w, () => 0.999)));
+    const p = await player(url, cookie);
+    await p.until(() => !!p.inventory());
+    const eye = 1.62 * 16;
+    const at = { x: 8000 * 16, z: 8000 * 16 };
+    p.ws.send(JSON.stringify({ type: 'pose', x: at.x, y: eye, z: at.z, yaw: 0 }));
+    await p.until(() => manager !== null);
+    // A pig right in front: in the view, then hit (a bare hand: 1).
+    const pig = manager!.add('pig', at.x, 0, at.z - 2 * 16, Date.now());
+    const seen = () => p.msgs.filter((m): m is Extract<ServerMessage, { type: 'entities' }> => m.type === 'entities').at(-1)?.entities ?? [];
+    await p.until(() => seen().some((e) => e.id === pig.id));
+    expect(seen().find((e) => e.id === pig.id)).toMatchObject({ kind: 'pig', health: 10, max: 10 });
+    p.ws.send(JSON.stringify({ type: 'attack', target: pig.id, weapon: null }));
+    await p.until(() => (seen().find((e) => e.id === pig.id)?.health ?? 10) < 10);
+    expect(seen().find((e) => e.id === pig.id)!.health).toBe(9);
+    // Too far: no hit.
+    const far = manager!.add('pig', at.x + 30 * 16, 0, at.z, Date.now());
+    await new Promise((r) => setTimeout(r, 450)); // past the swing cooldown
+    p.ws.send(JSON.stringify({ type: 'attack', target: far.id, weapon: null }));
+    await new Promise((r) => setTimeout(r, 250));
+    expect(manager!.get(far.id)!.health).toBe(10);
+    // A zombie at your side, and health it can take: hurt, then dead and back at the spawn, whole.
+    const healths = () => p.msgs.filter((m): m is Extract<ServerMessage, { type: 'health' }> => m.type === 'health').map((m) => m.health);
+    expect(healths()[0]).toBe(20);
+    const z = manager!.add('zombie', at.x + 16, 0, at.z, Date.now());
+    z.nextAttack = 0;
+    await p.until(() => healths().some((h) => h < 20), 4000);
+    expect(healths().find((h) => h < 20)).toBe(17);
+    // Seven hits kill (20 / 3): once a second each; the respawn comes before the full health.
+    await p.until(() => p.msgs.some((m) => m.type === 'respawn'), 12_000);
+    expect(healths().at(-1)).toBe(20);
+    p.ws.close();
+  }, 30_000);
 
   it("don't exist for players who aren't signed in", async () => {
     const { url } = await setup('survival');

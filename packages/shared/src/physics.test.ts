@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PLAYER, intersectsSolid, moveAabb, playerBox, sweepAxis, type Aabb } from './physics.js';
-import type { SolidAt } from './picking.js';
+import type { SolidAt } from './physics.js';
 
 /** Flat ground: every cell with y < 0 is solid. Plus extra solid boxes. */
 function world(...boxes: [number, number, number, number, number, number][]): SolidAt {
