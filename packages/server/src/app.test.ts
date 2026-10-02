@@ -83,6 +83,21 @@ async function greeted(): Promise<WebSocket> {
 }
 
 describe('HTTP', () => {
+  it('serves a closer look at part of the map, matching the whole map where they meet', async () => {
+    const whole = await app.inject({ method: 'GET', url: '/api/world/map?width=64' });
+    const w = new DataView(whole.rawPayload.buffer, whole.rawPayload.byteOffset);
+    const cols = w.getUint16(0, true), step = w.getUint32(4, true);
+    // The first 8 x 4 cells at the same step: the same samples.
+    const part = await app.inject({ method: 'GET', url: `/api/world/map/area?x0=0&z0=0&step=${step}&cols=8&rows=4` });
+    expect(part.statusCode).toBe(200);
+    const p = new DataView(part.rawPayload.buffer, part.rawPayload.byteOffset);
+    expect([p.getUint16(0, true), p.getUint16(2, true), p.getUint32(4, true)]).toEqual([8, 4, step]);
+    for (let j = 0; j < 4; j++) for (let i = 0; i < 8; i++) expect(p.getInt16(12 + (i + 8 * j) * 2, true)).toBe(w.getInt16(12 + (i + cols * j) * 2, true));
+    for (const bad of ['step=8&cols=4&rows=4', 'step=16&cols=513&rows=4', 'step=16&cols=4&rows=0', 'step=16.5&cols=4&rows=4']) {
+      expect((await app.inject({ method: 'GET', url: `/api/world/map/area?x0=0&z0=0&${bad}` })).statusCode).toBe(400);
+    }
+  });
+
   it('serves the built client, when given one, beside the API', async () => {
     await app.close();
     const dir = mkdtempSync(join(tmpdir(), 'super-vox-client-'));

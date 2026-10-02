@@ -109,6 +109,21 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     return reply.type('application/octet-stream').send(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
   });
 
+  // A closer look at part of a world's map (the zoomed-in map): cols x rows cells of `step` units
+  // from (x0, z0) (units), encoded as /api/world/map. At most 512 x 512 cells, at least 1 m each.
+  app.get<{ Querystring: Record<string, string | undefined> }>('/api/world/map/area', async (req, reply) => {
+    const q = req.query;
+    const [x0, z0, step, cols, rows] = ['x0', 'z0', 'step', 'cols', 'rows'].map((k) => Number(q[k]));
+    if (![x0, z0, step, cols, rows].every(Number.isInteger) || step! < 16 || step! > 65_536 || cols! < 1 || cols! > 512 || rows! < 1 || rows! > 512) {
+      return reply.code(400).send({ error: 'x0, z0, step (16..65536), cols and rows (1..512) must be integers' });
+    }
+    if (Math.abs(x0!) > 2 ** 30 || Math.abs(z0!) > 2 ** 30) return reply.code(400).send({ error: 'out of range' });
+    const world = catalog.get(q.world);
+    if (!world) return reply.code(404).send({ error: 'no such world' });
+    const bytes = encodeWorldMap(world.mapArea(x0!, z0!, step!, cols!, rows!));
+    return reply.type('application/octet-stream').send(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  });
+
   // A world's climate for blending biome colours (see encodeClimate); 204 where biomes don't
   // blend. ?world=name (the default world when omitted).
   app.get<{ Querystring: { world?: string } }>('/api/world/climate', async (req, reply) => {

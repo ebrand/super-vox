@@ -74,7 +74,7 @@ const ready = new Promise<void>((resolve) => {
 
 let fx = 0, fz = 0, lodColumn = '';
 // The game's speed rule (main.ts), unless SPEED_DETAIL=off.
-const speedDetail = process.env.SPEED_DETAIL === 'off' ? null : new lod.SpeedDetail(DETAIL);
+const speedDetail = process.env.SPEED_DETAIL === 'off' ? null : new lod.SpeedDetail(DETAIL, lod.DETAIL_SPEEDS, Number(process.env.GROW_MS ?? lod.DETAIL_GROW_MS));
 let chunkRadius = DETAIL;
 function updateLod(x: number, z: number, vx: number) {
   chunkRadius = speedDetail ? speedDetail.update(Math.abs(vx) / UNITS_PER_METER, performance.now()) : DETAIL;
@@ -146,10 +146,11 @@ async function settle(x: number, z: number, limit = 60_000): Promise<number> {
 }
 
 await ready;
-// As the game does (main.ts): drop replaced meshes once everything is in, or after STALE_MS.
+// As the game does (main.ts): drop replaced meshes once everything is in, or once covered again.
 setInterval(() => {
   if (chunks.idle && tiles.idle) { chunks.retireStale(); tiles.retireStale(); }
-  chunks.retireStale(3000); tiles.retireStale(3000);
+  const covered = (f: { x0: number; z0: number; x1: number; z1: number }) => chunks.covers(f) && tiles.covers(f);
+  chunks.retireCovered(covered, 30_000); tiles.retireCovered(covered, 30_000);
 }, 500).unref();
 for (const [speed, row] of runs) {
   // Starting 1 km west of the seam (use a different row each run: nothing cached).
@@ -159,11 +160,16 @@ for (const [speed, row] of runs) {
   sent = { chunk: 0, tile: 0, column: 0, cancel: 0 }; got = { chunk: 0, tile: 0 };
   const p0 = pools.stats();
   const near: number[] = [], region: number[] = [], ground: number[] = [], load: number[][] = [];
-  const FLY_S = 8, DT = 50;
+  // ROUTE=outback: out east for FLY_S, then back west along the same way (requests on the way back reported).
+  const outback = process.env.ROUTE === 'outback';
+  const FLY_S = Number(process.env.FLY_S ?? 8), DT = 50;
   const t0 = performance.now();
-  for (let t = 0; t < FLY_S * 1000; t += DT) {
-    x += speed * UNITS_PER_METER * DT / 1000;
-    updateLod(x, z, speed * UNITS_PER_METER);
+  let back: { chunk: number; column: number } | null = null;
+  for (let t = 0; t < FLY_S * 1000 * (outback ? 2 : 1); t += DT) {
+    const dir = outback && t >= FLY_S * 1000 ? -1 : 1;
+    if (dir < 0 && !back) back = { chunk: sent.chunk, column: sent.column };
+    x += dir * speed * UNITS_PER_METER * DT / 1000;
+    updateLod(x, z, dir * speed * UNITS_PER_METER);
     await sleep(DT);
     near.push(readiness(x, z, 1)); region.push(readiness(x, z, DETAIL - 1)); ground.push(covered(x, z, 2));
     const c = chunks.stats, tl = tiles.stats;
@@ -171,6 +177,7 @@ for (const [speed, row] of runs) {
     load.push([c.inFlight, c.queued, tl.inFlight, tl.queued, chunks.staleCount + tiles.staleCount, tl.triangles, cm.columnRequested.size, cm.columnQueue.length, cm.queue.length, cm.requested.size]);
   }
   const wall = performance.now() - t0;
+  if (back) console.log(`  on the way back: ${sent.column - back.column} column and ${sent.chunk - back.chunk} chunk requests (out: ${back.column} and ${back.chunk})`);
   const endRadius = chunkRadius;
   const settleMs = await settle(x, z);
   const p1 = pools.stats();

@@ -88,22 +88,24 @@ describe('voxel chunks while moving fast', () => {
     for (const c of some.columns) expect(Math.max(Math.abs((c.cx + 0.5) * CHUNK_SIZE - at[0]), Math.abs((c.cz + 0.5) * CHUNK_SIZE - at[1]))).toBeLessThan(3 * CHUNK_SIZE);
   });
 
-  it('shrinks the chunk radius with speed at once, and grows it back only after a while', () => {
-    const sd = new SpeedDetail(8, { full: 10, none: 40 });
+  it('shrinks the chunk radius in steps with speed at once, and grows it back only after a while', () => {
+    const sd = new SpeedDetail(8, { full: 25, none: 60 });
     expect(sd.target(5)).toBe(8);
-    expect(sd.target(10)).toBe(8);
-    expect(sd.target(25)).toBe(3);
-    expect(sd.target(39)).toBe(-1);
+    expect(sd.target(25)).toBe(8); // ordinary flying keeps full detail
+    expect(sd.target(26)).toBe(4);
+    expect(sd.target(59)).toBe(4);
+    expect(sd.target(60)).toBe(-1);
     expect(sd.target(400)).toBe(-1);
+    expect(new SpeedDetail(5).target(40)).toBe(3);
     expect(sd.update(5, 0)).toBe(8);
-    expect(sd.update(50, 100)).toBe(-1); // at once
+    expect(sd.update(80, 100)).toBe(-1); // at once
     expect(sd.update(5, 200)).toBe(-1); // slowed down: not yet
     expect(sd.update(5, 200 + DETAIL_GROW_MS - 1)).toBe(-1);
     expect(sd.update(5, 200 + DETAIL_GROW_MS)).toBe(8);
     // A wobble back up resets the wait.
-    sd.update(50, 5000);
+    sd.update(80, 5000);
     sd.update(5, 5100);
-    sd.update(50, 5200);
+    sd.update(80, 5200);
     expect(sd.update(5, 5300 + DETAIL_GROW_MS - 1)).toBe(-1);
   });
 });

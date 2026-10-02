@@ -26,8 +26,9 @@ describe('chunks across the seam of a round world', () => {
     const last = ROUND_WORLD_16x8KM.widthUnits / CHUNK_SIZE - 1; // 999: chunk column -1 is this one
     // Standing at the seam: columns -1 (the world's last) and 0.
     cm.setRegion([{ cx: -1, cz: 5 }, { cx: 0, cz: 5 }], 0, 5 * CHUNK_SIZE);
-    const asked = sent.filter((m) => m.type === 'requestColumn').map((m) => (m as { cx: number }).cx).sort((a, b) => a - b);
-    expect(asked).toEqual([-1, 0]);
+    // The region first (then the ring around it, see 'streaming').
+    const asked = sent.filter((m) => m.type === 'requestColumn').map((m) => (m as { cx: number }).cx);
+    expect(asked.slice(0, 2).sort((a, b) => a - b)).toEqual([-1, 0]);
     // The server answers for column -1 under its own name, as it does for edits it broadcasts.
     cm.onColumn({ cx: last, cz: 5, minY: 0, maxY: 10 });
     cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 10 });
@@ -37,7 +38,7 @@ describe('chunks across the seam of a round world', () => {
     // Both sides of the seam have their data, under the client's own coordinates.
     expect(cm.chunkAt({ cx: -1, cy: 0, cz: 5 })?.blocks[0]).toMatchObject({ material: Material.Stone });
     expect(cm.chunkAt({ cx: 0, cy: 0, cz: 5 })?.blocks[0]).toMatchObject({ material: Material.Stone });
-    expect(cm.stats.inFlight).toBe(0);
+    expect(cm.stats.inFlight).toBe(asked.length - 2); // only the ring's columns, unanswered here
     // An edit's chunk, broadcast under the world's name, replaces the copy here.
     const edited = emptyChunk({ cx: last, cy: 0, cz: 5 });
     edited.blocks[0] = { kind: 'uniform', size: 16, material: Material.Dirt };
@@ -92,9 +93,10 @@ describe('streaming', () => {
     // Ground between 0 and 1 m: layers -1..0 rendered, -2..1 sent.
     cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 16, sent: [{ lo: -2, hi: 1 }] });
     expect(sent.filter((m) => m.type === 'requestChunk')).toEqual([]);
-    expect(cm.stats.inFlight).toBe(4);
+    // Its four chunks, and the 8 ring columns still being asked about.
+    expect(cm.stats.inFlight).toBe(4 + 8);
     for (const cy of [-2, -1, 0, 1]) cm.onChunkBytes(chunkBytes(0, cy, 5));
-    expect(cm.stats.inFlight).toBe(0);
+    expect(cm.stats.inFlight).toBe(8);
     expect(cm.chunkAt({ cx: 0, cy: 0, cz: 5 })).toBeDefined();
   });
 
@@ -144,12 +146,14 @@ describe('streaming', () => {
     const cancels = sent.filter((m) => m.type === 'cancel') as Extract<ClientMessage, { type: 'cancel' }>[];
     expect(cancels).toHaveLength(1);
     expect(new Set(cancels[0]!.chunks!.map((c) => c.join(',')))).toEqual(new Set(['0,-2,5', '0,-1,5', '0,0,5', '0,1,5']));
-    expect(cancels[0]!.columns).toEqual([[1, 5]]);
-    expect(cm.stats.inFlight).toBe(1); // column 7
+    // Column 1, and the old ring's columns (all within one of the old region).
+    expect(cancels[0]!.columns).toContainEqual([1, 5]);
+    expect(cancels[0]!.columns!.every(([cx, cz]) => cx >= -1 && cx <= 2 && cz >= 4 && cz <= 6)).toBe(true);
+    expect(cm.stats.inFlight).toBe(Math.min(16, 1 + 8)); // column 7 and its ring
     // Late answers to cancelled requests are dropped without upsetting the count.
     cm.onChunkBytes(chunkBytes(0, 0, 5));
     cm.onColumn({ cx: 1, cz: 5, minY: 0, maxY: 16, sent: [{ lo: -2, hi: 1 }] });
-    expect(cm.stats.inFlight).toBe(1);
+    expect(cm.stats.inFlight).toBe(9);
     expect(cm.chunkAt({ cx: 0, cy: 0, cz: 5 })).toBeUndefined();
   });
 
@@ -180,6 +184,77 @@ describe('streaming', () => {
     await finishAll();
     expect(counts()).toMatchObject({ ran: 0 });
     expect(counts().skipped).toBeGreaterThan(0);
+  });
+
+  it('loads the ring around the region without drawing it', () => {
+    const { cm, sent } = streaming();
+    cm.setRegion([{ cx: 0, cz: 5 }], 0, 5 * CHUNK_SIZE);
+    const asked = sent.filter((m) => m.type === 'requestColumn').map((m) => { const c = m as { cx: number; cz: number }; return `${c.cx},${c.cz}`; });
+    expect(asked[0]).toBe('0,5'); // the region first
+    expect(new Set(asked.slice(1))).toEqual(new Set(['-1,4', '0,4', '1,4', '-1,5', '1,5', '-1,6', '0,6', '1,6']));
+    // A ring column's chunks are kept (the server sends them with it), not drawn.
+    cm.onColumn({ cx: 1, cz: 5, minY: 0, maxY: 16, sent: [{ lo: -2, hi: 1 }] });
+    for (const cy of [-2, -1, 0, 1]) cm.onChunkBytes(chunkBytes(1, cy, 5));
+    expect(cm.chunkAt({ cx: 1, cy: 0, cz: 5 })).toBeDefined();
+    expect([...(cm as unknown as { render: Set<string> }).render].some((k) => k.startsWith('1,'))).toBe(false);
+    expect(sent.some((m) => m.type === 'cancel')).toBe(false); // not mistaken for unwanted
+  });
+
+  it('keeps chunks that leave, and brings them back without asking the server', () => {
+    const { cm, sent } = streaming();
+    const visit = (cx: number) => {
+      cm.setRegion([{ cx, cz: 5 }], cx * CHUNK_SIZE, 5 * CHUNK_SIZE);
+      for (const m of sent.splice(0)) {
+        if (m.type === 'requestColumn') cm.onColumn({ cx: m.cx, cz: m.cz, minY: 0, maxY: 16, sent: [{ lo: -2, hi: 1 }] });
+      }
+      // The server sends each answered column's chunks.
+      for (const k of [...(cm as unknown as { requested: Set<string> }).requested]) {
+        const [x, y, z] = k.split(',').map(Number) as [number, number, number];
+        cm.onChunkBytes(chunkBytes(x, y, z));
+      }
+    };
+    visit(0);
+    visit(40); // far away: column 0 and its ring are now only cached
+    expect(cm.chunkAt({ cx: 0, cy: 0, cz: 5 })).toBeUndefined();
+    sent.splice(0);
+    cm.setRegion([{ cx: 0, cz: 5 }], 0, 5 * CHUNK_SIZE);
+    // Back: everything from the cache, nothing asked.
+    expect(sent.filter((m) => m.type === 'requestColumn' || m.type === 'requestChunk')).toEqual([]);
+    expect(cm.chunkAt({ cx: 0, cy: 0, cz: 5 })?.blocks[0]).toMatchObject({ material: Material.Stone });
+  });
+
+  it('keeps cached chunks current with edits, and forgets them after a reconnect', () => {
+    const { cm, sent } = streaming();
+    cm.setRegion([{ cx: 0, cz: 5 }], 0, 5 * CHUNK_SIZE);
+    cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 16, sent: [{ lo: -2, hi: 1 }] });
+    for (const cy of [-2, -1, 0, 1]) cm.onChunkBytes(chunkBytes(0, cy, 5));
+    cm.setRegion([{ cx: 40, cz: 5 }], 40 * CHUNK_SIZE, 5 * CHUNK_SIZE);
+    // Someone edits it while we're away: the server sends it to everyone.
+    const edited = emptyChunk({ cx: 0, cy: 0, cz: 5 });
+    edited.blocks[0] = { kind: 'uniform', size: 16, material: Material.Dirt };
+    cm.onChunkBytes(encodeChunk(edited));
+    cm.setRegion([{ cx: 0, cz: 5 }], 0, 5 * CHUNK_SIZE);
+    expect(cm.chunkAt({ cx: 0, cy: 0, cz: 5 })?.blocks[0]).toMatchObject({ material: Material.Dirt });
+    // After a reconnect nothing cached is trusted.
+    cm.setRegion([{ cx: 40, cz: 5 }], 40 * CHUNK_SIZE, 5 * CHUNK_SIZE);
+    cm.resetRequests();
+    sent.splice(0);
+    cm.setRegion([{ cx: 0, cz: 5 }], 0, 5 * CHUNK_SIZE);
+    expect(sent.filter((m) => m.type === 'requestColumn')).toContainEqual({ type: 'requestColumn', cx: 0, cz: 5 });
+  });
+
+  it('says an area is covered only once its region columns are all meshed', async () => {
+    const { cm, finishAll } = streaming();
+    cm.setRegion([{ cx: 0, cz: 5 }], 0, 5 * CHUNK_SIZE);
+    const column = { x0: 0, z0: 5 * CHUNK_SIZE, x1: CHUNK_SIZE, z1: 6 * CHUNK_SIZE };
+    const elsewhere = { x0: 10 * CHUNK_SIZE, z0: 0, x1: 11 * CHUNK_SIZE, z1: CHUNK_SIZE };
+    expect(cm.covers(column)).toBe(false); // not even its height range yet
+    expect(cm.covers(elsewhere)).toBe(true); // nothing of ours there
+    cm.onColumn({ cx: 0, cz: 5, minY: 0, maxY: 16, sent: [{ lo: -2, hi: 1 }] });
+    for (const cy of [-2, -1, 0, 1]) cm.onChunkBytes(chunkBytes(0, cy, 5));
+    expect(cm.covers(column)).toBe(false); // loaded, meshing
+    await finishAll();
+    expect(cm.covers(column)).toBe(true);
   });
 });
 

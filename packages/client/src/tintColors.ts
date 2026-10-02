@@ -51,7 +51,7 @@ function bilinear(field: ArrayLike<number>, cols: number, rows: number, fx: numb
  * tinted), as the game's shader colours them (see voxelMaterial).
  */
 export function climateTintColors(
-  map: { cols: number; rows: number; step: number; heights: ArrayLike<number>; materials: ArrayLike<number> },
+  map: { cols: number; rows: number; step: number; heights: ArrayLike<number>; materials: ArrayLike<number>; x0?: number; z0?: number },
   climate: ClimateGrid,
   lut: Float32Array = biomeTintLut(climate.ecotone),
 ): Float32Array {
@@ -60,7 +60,7 @@ export function climateTintColors(
     for (let i = 0; i < map.cols; i++) {
       const k = i + map.cols * j;
       if (!TINTED.has(map.materials[k]!)) continue;
-      const fx = ((i + 0.5) * map.step) / climate.cell - 0.5, fy = ((j + 0.5) * map.step) / climate.cell - 0.5;
+      const fx = ((map.x0 ?? 0) + (i + 0.5) * map.step) / climate.cell - 0.5, fy = ((map.z0 ?? 0) + (j + 0.5) * map.step) / climate.cell - 0.5;
       const t = bilinear(climate.temperature, climate.cols, climate.rows, fx, fy) - climate.cooling * Math.max(0, map.heights[k]! - climate.seaLevel);
       const m = bilinear(climate.moisture, climate.cols, climate.rows, fx, fy);
       const lx = (Math.max(0, Math.min(1, (t - LUT_T_MIN) / (LUT_T_MAX - LUT_T_MIN)))) * (LUT_W - 1);

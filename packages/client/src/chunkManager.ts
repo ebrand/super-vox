@@ -16,6 +16,7 @@ import {
   type WorldConfig,
 } from '@super-vox/shared';
 import type { ColumnCoord } from './lod.js';
+import { overlaps, staleToRetire, type Footprint } from './coverage.js';
 import { createPackedMesh, disposePackedMesh, meshGpuBytes, meshQuads } from './meshFactory.js';
 import { WATER_LAYER } from './water.js';
 import { DIRS } from './mesher.js';
@@ -43,6 +44,10 @@ const HORIZONTAL = [
 
 const colKey = (cx: number, cz: number) => `${cx},${cz}`;
 
+/** Most chunk data (bytes) and columns kept after they leave the region (see ChunkManager.recent). */
+const MAX_RECENT_BYTES = 32 * 1024 * 1024;
+const MAX_RECENT_COLUMNS = 8192;
+
 /**
  * Column requests outstanding at once, by default (see pump). Enough to cover the round trip to
  * a distant server for a wide detail area (detail 8 brings 17 new columns per 16 m flown).
@@ -66,6 +71,15 @@ function sameBytes(a: Uint8Array | null, b: Uint8Array | null): boolean {
  */
 export class ChunkManager {
   private region = new Set<string>();
+  /** Columns just outside the region: their chunks are loaded (not drawn) so walking on finds them ready. */
+  private ring = new Set<string>();
+  /**
+   * Recently used chunks and columns that left the region, kept (oldest first) so coming back
+   * needs no server round trip. Kept current by the edits the server sends; cleared on reconnect.
+   */
+  private readonly recent = new Map<string, { coord: ChunkCoord; bytes: Uint8Array }>();
+  private recentBytes = 0;
+  private readonly recentRanges = new Map<string, ColumnRange | null>();
   /** Chunk-layer range per column; null for columns outside the world. */
   private readonly ranges = new Map<string, ColumnRange | null>();
   /** Height of the viewer (units), which decides how much is drawn under water (see columnSpans). */
@@ -84,6 +98,8 @@ export class ChunkManager {
   private inFlight = 0;
 
   private render = new Set<string>();
+  /** The rendered chunks of each column (for covers). */
+  private renderByColumn = new Map<string, string[]>();
   private wanted = new Set<string>();
   /** Current mesh per rendered chunk (null = no visible faces) and the open-side mask it was built with. */
   /** Per chunk: its terrain and water meshes (a group), or null for nothing to draw. */
@@ -150,12 +166,62 @@ export class ChunkManager {
     this.focusX = focusX;
     this.focusZ = focusZ;
     this.region = new Set(columns.map((c) => colKey(c.cx, c.cz)));
-    for (const key of [...this.ranges.keys()]) if (!this.region.has(key)) this.ranges.delete(key);
+    // The ring: columns next to the region (8 neighbours) but not in it.
+    const ring: ColumnCoord[] = [];
+    this.ring = new Set();
+    for (const c of columns) {
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const k = colKey(c.cx + dx, c.cz + dz);
+          if (this.region.has(k) || this.ring.has(k)) continue;
+          this.ring.add(k);
+          ring.push({ cx: c.cx + dx, cz: c.cz + dz });
+        }
+      }
+    }
+    for (const [key, range] of [...this.ranges]) {
+      if (this.knows(key)) continue;
+      this.ranges.delete(key);
+      this.remember(this.recentRanges, key, range, MAX_RECENT_COLUMNS);
+    }
+    // Columns seen recently need no asking.
+    for (const key of [...this.region, ...this.ring]) {
+      if (this.ranges.has(key) || !this.recentRanges.has(key)) continue;
+      this.ranges.set(key, this.recentRanges.get(key)!);
+      this.recentRanges.delete(key);
+    }
     const d = (c: ColumnCoord) => Math.hypot((c.cx + 0.5) * CHUNK_SIZE - focusX, (c.cz + 0.5) * CHUNK_SIZE - focusZ);
-    this.columnQueue = columns
-      .filter((c) => !this.ranges.has(colKey(c.cx, c.cz)) && !this.columnRequested.has(colKey(c.cx, c.cz)))
-      .sort((a, b) => d(a) - d(b));
+    const missing = (c: ColumnCoord) => !this.ranges.has(colKey(c.cx, c.cz)) && !this.columnRequested.has(colKey(c.cx, c.cz));
+    // The region nearest first, then the ring.
+    this.columnQueue = [...columns.filter(missing).sort((a, b) => d(a) - d(b)), ...ring.filter(missing).sort((a, b) => d(a) - d(b))];
     this.recompute();
+  }
+
+  /** Whether a column's chunks are wanted (in the region or its ring). */
+  private knows(key: string): boolean {
+    return this.region.has(key) || this.ring.has(key);
+  }
+
+  /** Keeps `value` under `key` as the newest entry, dropping the oldest past `max`. */
+  private remember<V>(map: Map<string, V>, key: string, value: V, max: number): void {
+    map.delete(key);
+    map.set(key, value);
+    while (map.size > max) map.delete(map.keys().next().value!);
+  }
+
+  private rememberChunk(key: string, coord: ChunkCoord, bytes: Uint8Array): void {
+    const old = this.recent.get(key);
+    if (old) {
+      this.recentBytes -= old.bytes.byteLength;
+      this.recent.delete(key);
+    }
+    this.recent.set(key, { coord, bytes });
+    this.recentBytes += bytes.byteLength;
+    while (this.recentBytes > MAX_RECENT_BYTES) {
+      const [k, oldest] = this.recent.entries().next().value!;
+      this.recent.delete(k);
+      this.recentBytes -= oldest.bytes.byteLength;
+    }
   }
 
   /**
@@ -204,11 +270,12 @@ export class ChunkManager {
           }
         }
       }
-      if (this.region.has(key)) {
-        const { minY, maxY, solidTop, water } = msg;
-        this.ranges.set(key, minY === null || maxY === null ? null : { minY, maxY, ...(solidTop !== undefined && water ? { solidTop, water } : {}) });
+      const { minY, maxY, solidTop, water } = msg;
+      const range = minY === null || maxY === null ? null : { minY, maxY, ...(solidTop !== undefined && water ? { solidTop, water } : {}) };
+      if (this.knows(key)) {
+        this.ranges.set(key, range);
         changed = true;
-      }
+      } else if (this.recentRanges.has(key)) this.recentRanges.set(key, range); // an edit while we're away
     }
     if (changed) this.recompute();
     else this.pump();
@@ -221,6 +288,7 @@ export class ChunkManager {
       const c = { ...coord, cx }, key = chunkKey(c);
       if (this.requested.delete(key)) this.inFlight--;
       if (this.wanted.has(key)) this.store(key, c, bytes);
+      else if (this.recent.has(key)) this.rememberChunk(key, c, bytes); // an edit while we're away
     }
     this.pump();
     this.onChange();
@@ -241,6 +309,10 @@ export class ChunkManager {
     this.requested.clear();
     this.columnRequested.clear();
     this.inFlight = 0;
+    // While disconnected, edits may have been missed: what isn't in use is asked for afresh.
+    this.recent.clear();
+    this.recentBytes = 0;
+    this.recentRanges.clear();
   }
 
   /**
@@ -254,6 +326,33 @@ export class ChunkManager {
       this.stale.delete(key);
       this.staleAt.delete(key);
     }
+  }
+
+  /**
+   * Drops replaced meshes whose ground `covered` (by chunks and tiles) says is drawn again, and
+   * any older than `maxAgeMs`.
+   */
+  retireCovered(covered: (f: Footprint) => boolean, maxAgeMs: number, now = performance.now()): void {
+    const footprint = (key: string): Footprint => {
+      const [cx, , cz] = key.split(',').map(Number) as [number, number, number];
+      return { x0: cx * CHUNK_SIZE, z0: cz * CHUNK_SIZE, x1: (cx + 1) * CHUNK_SIZE, z1: (cz + 1) * CHUNK_SIZE };
+    };
+    for (const key of staleToRetire(this.stale.keys(), (k) => this.staleAt.get(k)!, footprint, covered, maxAgeMs, now)) {
+      disposePackedMesh(this.stale.get(key)!);
+      this.stale.delete(key);
+      this.staleAt.delete(key);
+    }
+  }
+
+  /** Whether every region column on this ground is drawn (its chunks all meshed). */
+  covers(f: Footprint): boolean {
+    for (const key of this.region) {
+      const [cx, cz] = key.split(',').map(Number) as [number, number];
+      if (!overlaps(f, { x0: cx * CHUNK_SIZE, z0: cz * CHUNK_SIZE, x1: (cx + 1) * CHUNK_SIZE, z1: (cz + 1) * CHUNK_SIZE })) continue;
+      if (!this.ranges.has(key)) return false;
+      for (const chunk of this.renderByColumn.get(key) ?? []) if (!this.meshes.has(chunk)) return false;
+    }
+    return true;
   }
 
   dispose(): void {
@@ -294,7 +393,22 @@ export class ChunkManager {
         }
       }
     }
+    // The ring: what the server sends with each column (its drawn layers and one either side), not drawn.
+    for (const key of this.ring) {
+      const range = this.ranges.get(key);
+      if (!range) continue;
+      const [cx, cz] = key.split(',').map(Number) as [number, number];
+      for (const span of columnSpans(range, this.viewY)) for (let cy = span.lo - 1; cy <= span.hi + 1; cy++) want({ cx, cy, cz });
+    }
     this.render = render;
+    this.renderByColumn = new Map();
+    for (const k of render) {
+      const [cx, , cz] = k.split(',');
+      const col = `${cx},${cz}`;
+      const list = this.renderByColumn.get(col);
+      if (list) list.push(k);
+      else this.renderByColumn.set(col, [k]);
+    }
     this.wanted = wanted;
 
     // Requests nobody wants any more (we moved on): tell the server not to bother.
@@ -306,7 +420,7 @@ export class ChunkManager {
       chunks.push(key.split(',').map(Number) as [number, number, number]);
     }
     for (const key of this.columnRequested) {
-      if (this.region.has(key)) continue;
+      if (this.knows(key)) continue;
       this.columnRequested.delete(key);
       this.inFlight--;
       columns.push(key.split(',').map(Number) as [number, number]);
@@ -317,6 +431,8 @@ export class ChunkManager {
 
     for (const key of [...this.data.keys()]) {
       if (!wanted.has(key)) {
+        const bytes = this.data.get(key);
+        if (bytes) this.rememberChunk(key, this.coords.get(key)!, bytes);
         this.data.delete(key);
         this.kinds.delete(key);
         this.coords.delete(key);
@@ -334,6 +450,14 @@ export class ChunkManager {
     for (const key of wanted) {
       if (this.data.has(key) || this.requested.has(key)) continue;
       const c = coords.get(key)!;
+      const cached = this.recent.get(key);
+      if (cached) {
+        // Seen recently: back from the cache, no request.
+        this.recent.delete(key);
+        this.recentBytes -= cached.bytes.byteLength;
+        this.store(key, c, cached.bytes, false);
+        continue;
+      }
       if (!resolveChunk(this.world, c)) {
         this.store(key, c, null, false);
         continue;
@@ -361,7 +485,7 @@ export class ChunkManager {
     while (this.inFlight < this.maxInFlight && this.columnRequested.size < this.maxColumnsInFlight && this.columnQueue.length > 0) {
       const c = this.columnQueue.shift()!;
       const key = colKey(c.cx, c.cz);
-      if (!this.region.has(key) || this.ranges.has(key) || this.columnRequested.has(key)) continue;
+      if (!this.knows(key) || this.ranges.has(key) || this.columnRequested.has(key)) continue;
       this.columnRequested.add(key);
       this.inFlight++;
       this.send({ type: 'requestColumn', cx: c.cx, cz: c.cz });

@@ -17,6 +17,7 @@ import { loadSettings } from './settings.js';
 import { MeshWorkerPool } from './workerPool.js';
 import { WorldMapOverlay } from './worldMap.js';
 import { InventoryUi } from './inventory.js';
+import type { Footprint } from './coverage.js';
 import { createCompassRose } from './compassRose.js';
 import { solidAtFor, waterAtFor } from './worldQuery.js';
 
@@ -309,8 +310,9 @@ connection = connect({
             const at = (uy: number) => chunks!.chunkAt({ cx: Math.floor(x / CHUNK_SIZE), cy: Math.floor(uy / CHUNK_SIZE), cz: Math.floor(z / CHUNK_SIZE) });
             return at(feet) !== undefined && at(feet - CHUNK_SIZE) !== undefined;
           };
+          const worldParam = worldName !== undefined ? `&world=${encodeURIComponent(worldName)}` : '';
           worldMap = new WorldMapOverlay(
-            { width: w.widthUnits, depth: w.depthUnits },
+            { width: w.widthUnits, depth: w.depthUnits, wrapX: w.wrapX },
             // (On a round world, where you are in it: past the seam counts from the other side.)
             () => ({ x: normalizeX(w, camera.position.x * UNITS_PER_METER), z: camera.position.z * UNITS_PER_METER, yaw: controls.yaw }),
             { x: msg.spawn.x, z: msg.spawn.z },
@@ -323,7 +325,8 @@ connection = connect({
               camera.position.set(vx / UNITS_PER_METER, ground / UNITS_PER_METER + PLAYER.eye / UNITS_PER_METER + 2, z / UNITS_PER_METER);
               updateLod();
             },
-            `/api/world/map?width=1024${worldName !== undefined ? `&world=${encodeURIComponent(worldName)}` : ''}`,
+            `/api/world/map?width=1024${worldParam}`,
+            (a) => `/api/world/map/area?x0=${a.x0}&z0=${a.z0}&step=${a.step}&cols=${a.cols}&rows=${a.rows}${worldParam}`,
           );
           window.addEventListener('keydown', (e) => {
             if (e.repeat || e.metaKey || e.ctrlKey) return;
@@ -527,12 +530,15 @@ setInterval(() => {
   lastPose = key;
 }, 500);
 
-// While moving, loading never finishes all at once (see onProgress), so meshes that were replaced
-// are dropped a few seconds on instead; otherwise they pile up for as long as you fly.
-const STALE_MS = 3000;
+// While moving, loading never finishes all at once (see onProgress), so a replaced mesh is
+// dropped as soon as what replaced it is drawn (chunks and tiles both covering its ground), or
+// after STALE_MAX_MS whatever happens (so they can't pile up).
+const STALE_MAX_MS = 30_000;
 setInterval(() => {
-  chunks?.retireStale(STALE_MS);
-  tiles?.retireStale(STALE_MS);
+  if (!chunks || !tiles) return;
+  const covered = (f: Footprint) => chunks!.covers(f) && tiles!.covers(f);
+  chunks.retireCovered(covered, STALE_MAX_MS);
+  tiles.retireCovered(covered, STALE_MAX_MS);
 }, 500);
 
 renderer.setAnimationLoop(() => {

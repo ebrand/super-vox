@@ -16,7 +16,8 @@ the game page override them for one visit: `?detail=N`, `?view=M`, `?tolerance=N
 `?workers=N` sets the number of mesh workers (default: up to 4; the HUD shows
 how many and their average time per chunk).
 While moving fast, nearby voxel chunks give way to 1 m tiles (full detail up to
-10 m/s, none from 40 m/s; it comes back about a second after you slow down):
+25 m/s, half the radius up to 60 m/s, none beyond; it comes back a moment (0.3 s) after you
+slow down):
 `?fullDetailBelow=A&noDetailAbove=B` (m/s) tune it, `?noDetailAbove=0` turns it off.
 
 ## Voxel rules
@@ -217,12 +218,22 @@ mouse wheel changes the base speed (default 2 m/s). You collide with terrain
 as a 0.6 x 1.8 m body (eyes at 1.62 m); **N** toggles no-clip, which flies
 through everything. Gravity waits until the ground below you has loaded.
 
-**M** opens a map of the whole world (generated terrain; edits aren't shown),
+**M** opens a map of the world (generated terrain; edits aren't shown),
 in the same colours the game renders, with your position and facing, the spawn
-point, a 1 km grid, and a scale bar. Hover for coordinates, ground height, and
-surface; click to go there. M or Esc closes it. The server serves it at
-`/api/world/map?width=N` (64..2048 samples across, default 1024), and a world's climate grid
-for blending biome colours at `/api/world/climate` (204 where biomes don't blend).
+point, a grid, and a scale bar. The wheel zooms (about the cursor, down to 4 pixels per metre),
+dragging moves it (round worlds wrap east-west), 0 shows the whole world again; zoomed in,
+256 x 256-sample tiles at about one sample per screen pixel fill in over the whole-world map
+(fetched four at a time, the middle first, and kept). Hover for coordinates, ground height, and
+surface; click (without dragging) to go there. M or Esc closes it. The server serves the whole
+map at `/api/world/map?width=N` (64..2048 samples across, default 1024), closer looks at
+`/api/world/map/area?x0=&z0=&step=&cols=&rows=` (up to 512 x 512 samples, at least 1 m apart),
+and a world's climate grid for blending biome colours at `/api/world/climate` (204 where biomes
+don't blend).
+
+The client keeps chunks it has seen (up to 32 MB) after they leave the detailed area, so
+turning back costs no requests, and loads the ring of columns just beyond the area (not drawn)
+so walking on finds them ready. Meshes that were replaced stay drawn until the ground they
+covered is drawn again (by chunks or tiles), so nothing goes missing while terrain reloads.
 
 Lighting: a warm sun (about 30 degrees up, low enough to shade the sides of things), blue-ish sky light from above and dim warm light
 bounced from the ground, with ambient occlusion darkening the corners and creases of nearby

@@ -118,5 +118,33 @@ describe('TileManager', () => {
     expect(tm.staleCount).toBe(0);
     expect(scene.children).toHaveLength(0);
   });
+
+  it('keeps a replaced tile until what replaced it is drawn', async () => {
+    const pool = {
+      run: async (job: { tile: Uint8Array }) => {
+        const m = meshTile(decodeTile(job.tile))!;
+        return { id: 0, ms: 0, buffers: packQuads(m.quads), baseY: m.baseY };
+      },
+    } as unknown as MeshWorkerPool;
+    const scene = new THREE.Scene();
+    const tm = new TileManager(scene, new THREE.MeshBasicMaterial(), new THREE.MeshBasicMaterial(), () => {}, pool, 8, () => {});
+    const big: TileCoord = { level: 2, tx: 0, tz: 0 };
+    const halves: TileCoord[] = [{ level: 1, tx: 0, tz: 0 }, { level: 1, tx: 1, tz: 0 }, { level: 1, tx: 0, tz: 1 }, { level: 1, tx: 1, tz: 1 }];
+    tm.setTiles([big], 0, 0);
+    tm.onTileBytes(tileBytes(big));
+    await flush();
+    tm.setTiles(halves, 0, 0); // the big tile splits; its quarters are still on their way
+    const covered = (f: Parameters<TileManager['covers']>[0]) => tm.covers(f);
+    tm.retireCovered(covered, 30_000);
+    expect(tm.staleCount).toBe(1);
+    for (const h of halves.slice(0, 3)) tm.onTileBytes(tileBytes(h));
+    await flush();
+    tm.retireCovered(covered, 30_000);
+    expect(tm.staleCount).toBe(1); // one quarter still missing: still shown
+    tm.onTileBytes(tileBytes(halves[3]!));
+    await flush();
+    tm.retireCovered(covered, 30_000);
+    expect(tm.staleCount).toBe(0);
+  });
 });
 

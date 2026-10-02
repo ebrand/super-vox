@@ -580,10 +580,18 @@ export class World {
     const hit = this.maps.get(width);
     if (hit) return hit;
     const step = Math.ceil(this.config.widthUnits / width);
-    const cols = Math.ceil(this.config.widthUnits / step);
-    const rows = Math.ceil(this.config.depthUnits / step);
+    const map = this.mapArea(0, 0, step, Math.ceil(this.config.widthUnits / step), Math.ceil(this.config.depthUnits / step));
+    this.maps.set(width, map);
+    return map;
+  }
+
+  /**
+   * Surface samples (as getMap) for `cols` x `rows` cells of `step` units from (x0, z0) (units),
+   * each sampled at its centre: a closer look at part of the world. Round worlds wrap in x.
+   */
+  mapArea(x0: number, z0: number, step: number, cols: number, rows: number): WorldMap {
     const n = Math.max(cols, rows);
-    const s = this.generator.surfaceSamples(Math.floor(step / 2), Math.floor(step / 2), step, n);
+    const s = this.generator.surfaceSamples(x0 + Math.floor(step / 2), z0 + Math.floor(step / 2), step, n);
     const heights = new Int16Array(cols * rows);
     const materials = new Uint8Array(cols * rows);
     for (let j = 0; j < rows; j++) {
@@ -595,9 +603,7 @@ export class World {
         materials[i + cols * j] = Math.min(255, wet ? Material.Water : tree ? s.canopy!.material[k]! : s.materials[k]!);
       }
     }
-    const map = { cols, rows, step, seaLevel: this.seaLevel, heights, materials };
-    this.maps.set(width, map);
-    return map;
+    return { cols, rows, step, seaLevel: this.seaLevel, heights, materials };
   }
 
   get cachedChunkCount(): number {

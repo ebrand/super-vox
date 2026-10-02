@@ -80,14 +80,15 @@ export function focusLead(vx: number, vz: number, radius: number): { dx: number;
 }
 
 /** Speeds (m/s) between which voxel chunks give way to tiles while moving fast (see SpeedDetail). */
-export const DETAIL_SPEEDS = { full: 10, none: 40 };
+export const DETAIL_SPEEDS = { full: 25, none: 60 };
 /** How long (ms) a lower speed must last before more voxel chunks come back. */
-export const DETAIL_GROW_MS = 1000;
+export const DETAIL_GROW_MS = 300;
 
 /**
- * Voxel-chunk radius for the current speed: the full `detail` up to `full` m/s, none (-1) from
- * `none` m/s, shrinking in between. It shrinks at once but grows back only after the lower
- * speed has lasted DETAIL_GROW_MS, so speed wobbles don't rebuild terrain.
+ * Voxel-chunk radius for the current speed, in three steps (few, so ordinary speed changes don't
+ * keep rebuilding terrain): the full `detail` up to `full` m/s, half of it up to `none` m/s, none
+ * (-1) beyond. It shrinks at once but grows back only after the lower speed has lasted
+ * DETAIL_GROW_MS, so speed wobbles don't rebuild terrain.
  */
 export class SpeedDetail {
   private current: number;
@@ -96,6 +97,7 @@ export class SpeedDetail {
   constructor(
     private readonly detail: number,
     private readonly speeds = DETAIL_SPEEDS,
+    private readonly growMs = DETAIL_GROW_MS,
   ) {
     this.current = detail;
   }
@@ -104,8 +106,8 @@ export class SpeedDetail {
   target(speed: number): number {
     const { full, none } = this.speeds;
     if (speed <= full) return this.detail;
-    if (speed >= none) return -1;
-    return Math.floor(((none - speed) / (none - full)) * (this.detail + 1)) - 1;
+    if (speed < none) return Math.ceil(this.detail / 2);
+    return -1;
   }
 
   update(speed: number, now: number): number {
@@ -115,7 +117,7 @@ export class SpeedDetail {
       this.higherSince = null;
     } else if (target > this.current) {
       this.higherSince ??= now;
-      if (now - this.higherSince >= DETAIL_GROW_MS) {
+      if (now - this.higherSince >= this.growMs) {
         this.current = target;
         this.higherSince = null;
       }

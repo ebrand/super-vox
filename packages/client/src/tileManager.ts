@@ -10,6 +10,7 @@ import {
 import { createPackedMesh, disposePackedMesh, meshGpuBytes, meshQuads } from './meshFactory.js';
 import { WATER_LAYER } from './water.js';
 import type { MeshWorkerPool } from './workerPool.js';
+import { overlaps, staleToRetire, type Footprint } from './coverage.js';
 
 export interface TileStats {
   tiles: number;
@@ -148,6 +149,21 @@ export class TileManager {
     }
   }
 
+  /** Drops replaced tiles whose ground `covered` says is drawn again, and any older than `maxAgeMs`. */
+  retireCovered(covered: (f: Footprint) => boolean, maxAgeMs: number, now = performance.now()): void {
+    for (const key of staleToRetire(this.stale.keys(), (k) => this.staleAt.get(k)!, (k) => tileFootprint(parseTileKey(k)), covered, maxAgeMs, now)) {
+      disposePackedMesh(this.stale.get(key)!);
+      this.stale.delete(key);
+      this.staleAt.delete(key);
+    }
+  }
+
+  /** Whether every selected tile on this ground is drawn (meshed). */
+  covers(f: Footprint): boolean {
+    for (const [key, t] of this.wanted) if (!this.meshes.has(key) && overlaps(f, tileFootprint(t))) return false;
+    return true;
+  }
+
   dispose(): void {
     this.retireStale();
     for (const m of this.meshes.values()) if (m) disposePackedMesh(m);
@@ -215,3 +231,15 @@ export class TileManager {
     this.meshes.set(key, mesh);
   }
 }
+
+function tileFootprint(t: TileCoord): Footprint {
+  const s = tileSizeUnits(t.level);
+  return { x0: t.tx * s, z0: t.tz * s, x1: (t.tx + 1) * s, z1: (t.tz + 1) * s };
+}
+
+/** The tile a tileKey names. */
+function parseTileKey(key: string): TileCoord {
+  const [level, tx, tz] = key.split(/[:,]/).map(Number) as [number, number, number];
+  return { level, tx, tz };
+}
+

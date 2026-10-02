@@ -1,6 +1,7 @@
 import { UNITS_PER_METER, type ClimateGrid } from '@super-vox/shared';
 import { materialColor, materialName } from './materials.js';
 import { climateTintColors } from './tintColors.js';
+import { TILE, detailTiles, fitView, niceLength, pan, screenToWorld, zoomAt, type MapView, type MapWorld } from './mapView.js';
 
 /** Top-down surface samples for the whole world (see the server's /api/world/map). */
 export interface MapData {
@@ -80,47 +81,100 @@ export interface MapMarker {
   yaw?: number;
 }
 
+/** A map tile: a closer look at part of the map (see the server's /api/world/map/area), drawn over the whole map. */
+interface Tile {
+  /** Where it starts (units; x within a wrapping world). */
+  x0: number;
+  z0: number;
+  map: MapData;
+  image: HTMLCanvasElement;
+}
+
+/** Tiles kept (least recently drawn dropped first), and fetched at once. */
+const MAX_TILES = 150;
+const MAX_FETCHES = 4;
+
 /**
- * Full-screen world map overlay: the colour map, a 1 km grid, a scale bar,
- * the player (with facing) and spawn. Hovering shows the position, height and
- * surface under the cursor; clicking asks to teleport there.
+ * Full-screen world map overlay: the colour map, a grid, a scale bar, the player (with facing)
+ * and spawn. The wheel zooms (about the cursor), dragging pans (round worlds wrap east-west), 0
+ * shows the whole world again; zoomed in, sharper pictures of what's in view are fetched. Hovering
+ * shows the position, height and surface under the cursor; clicking (without dragging) asks to
+ * teleport there.
  */
 export class WorldMapOverlay {
   private readonly root: HTMLDivElement;
-  private readonly image: HTMLCanvasElement;
-  private readonly marks: HTMLCanvasElement;
+  private readonly canvas: HTMLCanvasElement;
+  private readonly base: HTMLCanvasElement = document.createElement('canvas');
   private readonly info: HTMLDivElement;
   private map: MapData | null = null;
   private climate: ClimateGrid | null = null;
   private loading: Promise<void> | null = null;
+  private view: MapView | null = null;
+  /** Tiles by step, x0, z0 (oldest first). */
+  private readonly tiles = new Map<string, Tile>();
+  /** Tiles still to fetch for the current view (nearest the middle first), and how many are on their way. */
+  private wanted: { key: string; x0: number; z0: number; step: number }[] = [];
+  private readonly fetching = new Set<string>();
+  private detailTimer: ReturnType<typeof setTimeout> | null = null;
+  private drag: { x: number; y: number; moved: boolean } | null = null;
+  private readonly world: MapWorld;
   isOpen = false;
 
   constructor(
-    private readonly worldSize: { width: number; depth: number },
+    worldSize: { width: number; depth: number; wrapX?: boolean },
     private readonly player: () => MapMarker,
     private readonly spawn: MapMarker,
     private readonly teleport: (x: number, z: number, surfaceY: number) => void,
     private readonly url = '/api/world/map?width=1024',
+    /** Where to fetch a closer look (see /api/world/map/area). */
+    private readonly areaUrl: (a: { x0: number; z0: number; step: number; cols: number; rows: number }) => string = (a) =>
+      `/api/world/map/area?x0=${a.x0}&z0=${a.z0}&step=${a.step}&cols=${a.cols}&rows=${a.rows}`,
   ) {
+    this.world = { width: worldSize.width, depth: worldSize.depth, wrapX: !!worldSize.wrapX };
     this.root = document.createElement('div');
     this.root.id = 'worldmap';
-    this.root.innerHTML = '<div class="frame"><canvas class="image"></canvas><canvas class="marks"></canvas></div><div class="info">loading map…</div>';
+    this.root.innerHTML = '<div class="frame"><canvas class="marks"></canvas></div><div class="info">loading map…</div>';
     document.body.appendChild(this.root);
-    this.image = this.root.querySelector('canvas.image')!;
-    this.marks = this.root.querySelector('canvas.marks')!;
+    this.canvas = this.root.querySelector('canvas.marks')!;
     this.info = this.root.querySelector('div.info')!;
     // The world's own proportions (a round world is twice as wide as it is deep).
     const frame = this.root.querySelector('div.frame') as HTMLDivElement, ratio = worldSize.width / worldSize.depth;
     frame.style.aspectRatio = `${worldSize.width} / ${worldSize.depth}`;
     frame.style.width = `min(92vw, ${88 * ratio}vh)`;
-    this.marks.addEventListener('mousemove', (e) => this.hover(e));
-    this.marks.addEventListener('mouseleave', () => this.showInfo(null));
-    this.marks.addEventListener('click', (e) => {
+    const c = this.canvas;
+    c.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const r = c.getBoundingClientRect();
+      const px = e.deltaY * (e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1);
+      this.setView(zoomAt(this.currentView(), this.world, r.width, r.height, e.clientX - r.left, e.clientY - r.top, Math.exp(-px * 0.002)));
+    }, { passive: false });
+    c.addEventListener('mousedown', (e) => {
+      if (e.button === 0) this.drag = { x: e.clientX, y: e.clientY, moved: false };
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!this.drag) return;
+      const dx = e.clientX - this.drag.x, dy = e.clientY - this.drag.y;
+      if (!this.drag.moved && Math.hypot(dx, dy) < 4) return; // still a click
+      this.drag = { x: e.clientX, y: e.clientY, moved: true };
+      const r = c.getBoundingClientRect();
+      this.setView(pan(this.currentView(), this.world, r.width, r.height, dx, dy));
+    });
+    window.addEventListener('mouseup', (e) => {
+      const d = this.drag;
+      this.drag = null;
+      if (!d || d.moved || e.button !== 0 || !this.isOpen) return;
       const p = this.at(e);
       if (p) {
         this.teleport(p.x, p.z, p.height);
         this.close();
       }
+    });
+    c.addEventListener('mousemove', (e) => {
+      if (!this.drag?.moved) this.showInfo(this.at(e));
+    });
+    c.addEventListener('mouseleave', () => this.showInfo(null));
+    window.addEventListener('keydown', (e) => {
+      if (this.isOpen && e.code === 'Digit0') this.setView(null);
     });
   }
 
@@ -138,41 +192,90 @@ export class WorldMapOverlay {
 
   close(): void {
     this.isOpen = false;
+    this.drag = null;
     this.root.classList.remove('open');
   }
 
-  /** Redraws markers; call each frame while open. */
+  /** The frame's size in CSS pixels. */
+  private frameSize(): { w: number; h: number } {
+    const r = this.canvas.getBoundingClientRect();
+    return { w: r.width || 1, h: r.height || 1 };
+  }
+
+  private currentView(): MapView {
+    const { w, h } = this.frameSize();
+    return this.view ?? fitView(this.world, w, h);
+  }
+
+  /** Moves the view (null: the whole world), and asks for a sharper picture once it settles. */
+  private setView(v: MapView | null): void {
+    this.view = v;
+    if (this.detailTimer) clearTimeout(this.detailTimer);
+    this.detailTimer = setTimeout(() => this.planTiles(), 150);
+    this.update();
+  }
+
+  /** Redraws the map and markers; call each frame while open. */
   update(): void {
     if (!this.isOpen || !this.map) return;
-    const c = this.marks;
-    const rect = c.getBoundingClientRect();
+    const c = this.canvas;
+    const { w, h } = this.frameSize();
     const dpr = window.devicePixelRatio || 1;
-    if (c.width !== Math.round(rect.width * dpr)) {
-      c.width = Math.round(rect.width * dpr);
-      c.height = Math.round(rect.height * dpr);
+    if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+      c.width = Math.round(w * dpr);
+      c.height = Math.round(h * dpr);
     }
+    const v = this.currentView();
     const g = c.getContext('2d')!;
-    const sx = c.width / this.worldSize.width, sz = c.height / this.worldSize.depth;
-    g.clearRect(0, 0, c.width, c.height);
-    // 1 km grid.
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.fillStyle = '#05070a';
+    g.fillRect(0, 0, c.width, c.height);
+    // World units to device pixels; on a wrapping world, every copy of it in view.
+    const a = dpr * v.scale, tx = dpr * (w / 2 - v.cx * v.scale), ty = dpr * (h / 2 - v.cz * v.scale);
+    const left = v.cx - w / 2 / v.scale, right = v.cx + w / 2 / v.scale;
+    const W = this.world.width;
+    const copies = this.world.wrapX ? range(Math.floor(left / W), Math.floor(right / W)).map((k) => k * W) : [0];
+    g.imageSmoothingEnabled = false;
+    // Tiles in view, coarsest first so the sharpest show.
+    const top0 = v.cz - h / 2 / v.scale, bottom0 = v.cz + h / 2 / v.scale;
+    const inView = [...this.tiles.values()].sort((p, q) => q.map.step - p.map.step);
+    for (const off of copies) {
+      g.setTransform(a, 0, 0, a, tx + a * off, ty);
+      g.drawImage(this.base, 0, 0, this.map.cols * this.map.step, this.map.rows * this.map.step);
+      for (const t of inView) {
+        const size = t.map.cols * t.map.step;
+        if (t.x0 + off >= right || t.x0 + off + size <= left || t.z0 >= bottom0 || t.z0 + size <= top0) continue;
+        g.drawImage(t.image, t.x0, t.z0, size, t.map.rows * t.map.step);
+      }
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    const toX = (x: number) => tx + a * x, toZ = (z: number) => ty + a * z;
+    // Grid: lines about 120 px apart, at round distances.
+    const spacing = niceLength(120 / v.scale);
     g.strokeStyle = 'rgba(255,255,255,0.15)';
     g.lineWidth = 1;
-    const km = 1000 * UNITS_PER_METER;
-    for (let x = km; x < this.worldSize.width; x += km) { g.beginPath(); g.moveTo(x * sx, 0); g.lineTo(x * sx, c.height); g.stroke(); }
-    for (let z = km; z < this.worldSize.depth; z += km) { g.beginPath(); g.moveTo(0, z * sz); g.lineTo(c.width, z * sz); g.stroke(); }
-    // Scale bar: 1 km.
+    for (let x = Math.ceil(left / spacing) * spacing; x < right; x += spacing) {
+      g.beginPath(); g.moveTo(toX(x), 0); g.lineTo(toX(x), c.height); g.stroke();
+    }
+    const top = v.cz - h / 2 / v.scale, bottom = v.cz + h / 2 / v.scale;
+    for (let z = Math.max(spacing, Math.ceil(top / spacing) * spacing); z < Math.min(bottom, this.world.depth); z += spacing) {
+      g.beginPath(); g.moveTo(0, toZ(z)); g.lineTo(c.width, toZ(z)); g.stroke();
+    }
+    // Scale bar: the grid spacing.
+    const meters = spacing / UNITS_PER_METER;
     g.fillStyle = 'white';
-    g.fillRect(12 * dpr, c.height - 16 * dpr, km * sx, 3 * dpr);
+    g.fillRect(12 * dpr, c.height - 16 * dpr, spacing * a, 3 * dpr);
     g.font = `${11 * dpr}px ui-monospace, monospace`;
-    g.fillText('1 km', 12 * dpr, c.height - 22 * dpr);
-    // Spawn and player.
+    g.fillText(meters >= 1000 ? `${meters / 1000} km` : `${meters} m`, 12 * dpr, c.height - 22 * dpr);
+    // Spawn and player, at their copies nearest the middle of the view.
+    const near = (x: number) => (this.world.wrapX ? x + Math.round((v.cx - x) / W) * W : x);
     g.strokeStyle = 'white';
     g.lineWidth = 2 * dpr;
-    g.beginPath(); g.arc(this.spawn.x * sx, this.spawn.z * sz, 5 * dpr, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.arc(toX(near(this.spawn.x)), toZ(this.spawn.z), 5 * dpr, 0, Math.PI * 2); g.stroke();
     const p = this.player();
     const yaw = p.yaw ?? 0;
     const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
-    const px = p.x * sx, pz = p.z * sz, r = 9 * dpr;
+    const px = toX(near(p.x)), pz = toZ(p.z), r = 9 * dpr;
     g.fillStyle = '#ff3b30';
     g.beginPath();
     g.moveTo(px + fx * r, pz + fz * r);
@@ -186,15 +289,15 @@ export class WorldMapOverlay {
   /** Blends biome colours on the map as in the game (see climateTintColors). */
   setClimate(climate: ClimateGrid): void {
     this.climate = climate;
-    if (this.map) this.paint();
+    if (this.map) this.paint(this.map, this.base);
+    for (const t of this.tiles.values()) this.paint(t.map, t.image);
   }
 
-  private paint(): void {
-    const map = this.map!;
+  private paint(map: MapData & { x0?: number; z0?: number }, image: HTMLCanvasElement): void {
     if (this.climate && !map.colors) map.colors = climateTintColors(map, this.climate);
-    this.image.width = map.cols;
-    this.image.height = map.rows;
-    this.image.getContext('2d')!.putImageData(new ImageData(renderMap(map), map.cols, map.rows), 0, 0);
+    image.width = map.cols;
+    image.height = map.rows;
+    image.getContext('2d')!.putImageData(new ImageData(renderMap(map), map.cols, map.rows), 0, 0);
   }
 
   private async load(): Promise<void> {
@@ -204,8 +307,8 @@ export class WorldMapOverlay {
       if (!res.ok) throw new Error(`map request failed: ${res.status}`);
       const map = decodeWorldMap(await res.arrayBuffer());
       this.map = map;
-      this.paint();
-      this.info.textContent = `map ${map.cols} x ${map.rows} (${(map.step / UNITS_PER_METER).toFixed(1)} m per pixel), ${Math.round(performance.now() - t0)} ms · hover for details, click to go there · M or Esc to close`;
+      this.paint(map, this.base);
+      this.info.textContent = `map ${map.cols} x ${map.rows} (${(map.step / UNITS_PER_METER).toFixed(1)} m per pixel), ${Math.round(performance.now() - t0)} ms · ${HINT}`;
       this.update();
     })().catch((err) => {
       this.info.textContent = String(err);
@@ -214,26 +317,77 @@ export class WorldMapOverlay {
     return this.loading;
   }
 
-  /** World position, height, and material under the mouse, or null outside the map. */
+  /** Works out the tiles the current view wants (see detailTiles) and starts fetching them. */
+  private planTiles(): void {
+    if (!this.isOpen || !this.map) return;
+    const { w, h } = this.frameSize();
+    const d = detailTiles(this.currentView(), this.world, w, h, this.map.step);
+    this.wanted = (d?.tiles ?? [])
+      .map(({ x0, z0 }) => {
+        const nx = this.world.wrapX ? mod(x0, this.world.width) : x0;
+        return { key: `${d!.step}:${nx}:${z0}`, x0: nx, z0, step: d!.step };
+      })
+      .filter((t) => {
+        const hit = this.tiles.get(t.key);
+        if (hit) {
+          // In use again: the newest.
+          this.tiles.delete(t.key);
+          this.tiles.set(t.key, hit);
+        }
+        return !hit && !this.fetching.has(t.key);
+      });
+    this.pumpTiles();
+  }
+
+  private pumpTiles(): void {
+    while (this.fetching.size < MAX_FETCHES && this.wanted.length > 0) {
+      const t = this.wanted.shift()!;
+      this.fetching.add(t.key);
+      const cols = Math.min(TILE, Math.ceil((this.world.width - (this.world.wrapX ? 0 : t.x0)) / t.step));
+      const rows = Math.min(TILE, Math.ceil((this.world.depth - t.z0) / t.step));
+      void fetch(this.areaUrl({ x0: t.x0, z0: t.z0, step: t.step, cols: this.world.wrapX ? TILE : cols, rows }))
+        .then(async (res) => {
+          if (!res.ok) throw new Error(`map request failed: ${res.status}`);
+          const map: MapData & { x0: number; z0: number } = { ...decodeWorldMap(await res.arrayBuffer()), x0: t.x0, z0: t.z0 };
+          const image = document.createElement('canvas');
+          this.paint(map, image);
+          this.tiles.set(t.key, { x0: t.x0, z0: t.z0, map, image });
+          while (this.tiles.size > MAX_TILES) this.tiles.delete(this.tiles.keys().next().value!);
+          this.update();
+        })
+        .catch((err: unknown) => {
+          this.info.textContent = String(err);
+        })
+        .finally(() => {
+          this.fetching.delete(t.key);
+          this.pumpTiles();
+        });
+    }
+  }
+
+  /** World position, height, and material under the mouse (from the sharpest picture there), or null outside the world. */
   private at(e: MouseEvent): { x: number; z: number; height: number; material: number } | null {
     const m = this.map;
     if (!m) return null;
-    const rect = this.marks.getBoundingClientRect();
-    const u = (e.clientX - rect.left) / rect.width, v = (e.clientY - rect.top) / rect.height;
-    if (u < 0 || u >= 1 || v < 0 || v >= 1) return null;
-    const i = Math.min(m.cols - 1, Math.floor(u * m.cols)), j = Math.min(m.rows - 1, Math.floor(v * m.rows));
+    const r = this.canvas.getBoundingClientRect();
+    let [x, z] = screenToWorld(this.currentView(), r.width, r.height, e.clientX - r.left, e.clientY - r.top);
+    if (this.world.wrapX) x = mod(x, this.world.width);
+    if (x < 0 || x >= this.world.width || z < 0 || z >= this.world.depth) return null;
+    for (const p of [...this.tiles.values()].sort((a, b) => a.map.step - b.map.step)) {
+      const i = Math.floor((x - p.x0) / p.map.step), j = Math.floor((z - p.z0) / p.map.step);
+      if (i < 0 || j < 0 || i >= p.map.cols || j >= p.map.rows) continue;
+      const k = i + p.map.cols * j;
+      return { x: p.x0 + (i + 0.5) * p.map.step, z: p.z0 + (j + 0.5) * p.map.step, height: p.map.heights[k]!, material: p.map.materials[k]! };
+    }
+    const i = Math.min(m.cols - 1, Math.floor(x / m.step)), j = Math.min(m.rows - 1, Math.floor(z / m.step));
     const k = i + m.cols * j;
     return { x: (i + 0.5) * m.step, z: (j + 0.5) * m.step, height: m.heights[k]!, material: m.materials[k]! };
-  }
-
-  private hover(e: MouseEvent): void {
-    this.showInfo(this.at(e));
   }
 
   private showInfo(p: { x: number; z: number; height: number; material: number } | null): void {
     if (!this.map) return;
     if (!p) {
-      this.info.textContent = 'hover for details, click to go there · M or Esc to close';
+      this.info.textContent = HINT;
       return;
     }
     const m = (u: number) => (u / UNITS_PER_METER).toFixed(0);
@@ -241,4 +395,12 @@ export class WorldMapOverlay {
     const under = sea !== null && p.height < sea ? ` · ${m(sea - p.height)} m under the sea` : '';
     this.info.textContent = `x ${m(p.x)} m, z ${m(p.z)} m · ground ${m(p.height)} m · ${materialName(p.material)}${under} · click to go there`;
   }
+}
+
+const HINT = 'wheel: zoom · drag: move · 0: whole world · hover for details, click to go there · M or Esc to close';
+
+const mod = (v: number, m: number) => ((v % m) + m) % m;
+
+function range(a: number, b: number): number[] {
+  return Array.from({ length: b - a + 1 }, (_, i) => a + i);
 }
