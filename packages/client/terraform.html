@@ -25,9 +25,6 @@
       .choice { display: flex; gap: 8px; align-items: center; margin-top: 8px; } .choice label { width: 44px; font-size: 12px; } .choice select { flex: 1; }
       .slider { display: grid; grid-template-columns: 74px 1fr 52px; gap: 6px; align-items: center; font-size: 12px; margin-top: 4px; }
       .slider input { width: 100%; accent-color: var(--accent); } .slider span { color: var(--dim); font: 11px ui-monospace, monospace; text-align: right; }
-      .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 4px; }
-      .modes button { padding: 4px 0; font-size: 12px; }
-      .modes button[aria-pressed="true"] { background: #2f3b48; border-color: var(--dim); }
       .tools { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 4px; }
       .tools button { padding: 4px 0; font-size: 12px; }
       .tools button[aria-pressed="true"] { background: #1f6feb; border-color: #1f6feb; }
@@ -64,10 +61,7 @@
         <h2>Area</h2>
         <p id="area-about"></p>
         <h2>Shape</h2>
-        <div class="modes" role="radiogroup" aria-label="What the left button does">
-          <button type="button" class="mode" data-mode="shape" aria-pressed="true">Shape</button>
-          <button type="button" class="mode" data-mode="move" aria-pressed="false">Move</button>
-        </div>
+        <p>⌘-drag (Ctrl-drag) on the land to shape it with the brush.</p>
         <div class="tools" role="radiogroup" aria-label="Brush">
           <button type="button" class="tool" data-kind="raise" aria-pressed="true">Raise</button>
           <button type="button" class="tool" data-kind="lower" aria-pressed="false">Lower</button>

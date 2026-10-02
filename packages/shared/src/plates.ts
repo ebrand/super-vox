@@ -4,7 +4,7 @@ import { Material } from './materials.js';
 import { canopyOver, treesIn, type Canopy, type Climate, type Clumping, type Tree } from './trees.js';
 import { RiverIndex, buildHydrology, carveRivers, type Hydrology } from './rivers.js';
 import { NO_WATER } from './water.js';
-import { StrokeIndex, applyStrokes, strokesIn, type TerrainStroke } from './strokes.js';
+import { StrokeIndex, applyStrokes, strokesIn, smoothAverage, smoothReach, type SmoothTarget, type TerrainStroke } from './strokes.js';
 import { fractalGrid, ridgedGrid, type Octave } from './noise.js';
 import type { HeightSource } from './terrain.js';
 import type { WorldConfig } from './world.js';
@@ -396,6 +396,22 @@ const PLAIN_LEVEL = 0.35;
 const MIN_LAKE = 1000;
 const INLAND_LAKE = 700 * M;
 /** Plate noise stops at this feature size; smaller detail is added per column. */
+/** Samples look up the strokes reaching them in squares this wide (units): small, since a drag leaves many strokes close together. */
+const STROKE_CELL = 32 * M;
+
+/** A smooth stroke's targets on a grid `step` units apart over it, `n` by `n` (NaN: not worked out yet). */
+interface SmoothGrid {
+  stroke: TerrainStroke;
+  /** The stroke's place in the strokes. */
+  order: number;
+  /** The grid's corner (units). */
+  x0: number;
+  z0: number;
+  step: number;
+  n: number;
+  values: Float64Array;
+}
+
 const NOISE_FINEST = 64 * M;
 
 export interface Plate {
@@ -535,6 +551,79 @@ export class PlateHeights implements HeightSource {
   /** Terraforming strokes (see strokes.ts), and the grid samples start from: without the strokes, which samples apply exactly. */
   private strokes: readonly TerrainStroke[];
   private strokeIndex: StrokeIndex | null;
+  /**
+   * Each stroke's place in `strokes`; the raises, lowers and levels by where they reach (smooth
+   * only looks at those); and each smooth stroke's targets (see smoothTarget).
+   */
+  private strokeOrder = new Map<TerrainStroke, number>();
+  private shapeIndex: StrokeIndex | null = null;
+  private smoothGrids = new Map<TerrainStroke, SmoothGrid>();
+
+  /**
+   * What smooth stroke `s` pulls (x, z) toward: the average of the land's shape around it (the
+   * raises, lowers and levels before `s` on the broad land; see smoothAverage). Worked out on a
+   * grid over the stroke, finer than the average's reach, as needed, and blended between (the
+   * average changes little over that distance): working it out at every point is far too slow.
+   */
+  private readonly smoothTarget: SmoothTarget = (x, z, s) => {
+    let g = this.smoothGrids.get(s);
+    if (!g) {
+      const R = s.radius * M, step = Math.max(2 * M, smoothReach(s) / 5), n = Math.ceil((2 * R) / step) + 2;
+      g = { stroke: s, order: this.strokeOrder.get(s) ?? Infinity, x0: s.x * M - R, z0: s.z * M - R, step, n, values: new Float64Array(n * n).fill(NaN) };
+      this.smoothGrids.set(s, g);
+    }
+    let dx = x - g.x0;
+    if (this.wrap) {
+      const W = this.world.widthUnits, R = s.radius * M;
+      dx -= Math.round((dx - R) / W) * W;
+    }
+    const n = g.n;
+    const fu = Math.max(0, Math.min(n - 1.001, dx / g.step)), fv = Math.max(0, Math.min(n - 1.001, (z - g.z0) / g.step));
+    const i = Math.floor(fu), j = Math.floor(fv), tu = fu - i, tv = fv - j;
+    const a = this.smoothAt(g, i, j), b = this.smoothAt(g, i + 1, j), c = this.smoothAt(g, i, j + 1), d = this.smoothAt(g, i + 1, j + 1);
+    const top = a + (b - a) * tu;
+    return top + (c + (d - c) * tu - top) * tv;
+  };
+
+  /** A smooth stroke's target at its grid point (i, j), worked out the first time it's wanted. */
+  private smoothAt(g: SmoothGrid, i: number, j: number): number {
+    const k = i + g.n * j;
+    const v = g.values[k]!;
+    if (!Number.isNaN(v)) return v;
+    return (g.values[k] = smoothAverage(g.stroke, g.x0 + i * g.step, g.z0 + j * g.step, (px, pz) => this.shapeBefore(px, pz, g.order)));
+  }
+
+  /** The land's shape at (x, z) (units): the broad land with the raises, lowers and levels before stroke number `order`. */
+  private shapeBefore(x: number, z: number, order: number): number {
+    const base = this.gridAt(this.sampleBase, x, z);
+    if (!this.shapeIndex) return base;
+    // The strokes reaching here, in order: those before `order` come first.
+    const all = this.shapeIndex.at(x, z);
+    let m = 0;
+    while (m < all.length && this.strokeOrder.get(all[m]!)! < order) m++;
+    return m ? applyStrokes(m === all.length ? all : all.slice(0, m), x, z, base, base, this.seaLevel, this.wrap ? this.world.widthUnits : null).broad : base;
+  }
+
+  /** Indexes `strokes` for sampling (see strokeIndex, strokeOrder, shapeIndex). */
+  private indexStrokes(strokes: readonly TerrainStroke[]): void {
+    const W = this.wrap ? this.world.widthUnits : null;
+    // Smooth targets stay right for strokes before which nothing changed.
+    const old = this.strokes ?? [];
+    let same = 0;
+    while (same < strokes.length && same < old.length && strokes[same] === old[same]) same++;
+    const kept = new Map<TerrainStroke, SmoothGrid>();
+    for (let k = 0; k < same; k++) {
+      const g = this.smoothGrids.get(strokes[k]!);
+      if (g) kept.set(strokes[k]!, g);
+    }
+    this.smoothGrids = kept;
+    this.strokes = strokes;
+    this.strokeIndex = strokes.length ? new StrokeIndex(strokes, W, STROKE_CELL) : null;
+    this.strokeOrder = new Map(strokes.map((t, i) => [t, i]));
+    const shaping = strokes.filter((t) => t.kind !== 'smooth');
+    this.shapeIndex = shaping.length ? new StrokeIndex(shaping, W, STROKE_CELL) : null;
+    this.lastSurface = null;
+  }
   private readonly sampleBase: Float32Array;
   /** How low and high strokes may take the ground (units): inside the world, with room for trees. */
   private readonly lowest: number;
@@ -1261,7 +1350,8 @@ export class PlateHeights implements HeightSource {
     // centre). Samples get the strokes exactly (see groundHeights), so they're also kept apart
     // (`delta`), to be taken back out of the grid there.
     this.strokes = strokes;
-    this.strokeIndex = strokes.length ? new StrokeIndex(strokes, this.wrap ? W : null) : null;
+    this.strokeIndex = null;
+    this.indexStrokes(strokes);
     const stroked = memo('strokes', [...heightKey, strokesKey], () => {
       if (strokes.length === 0) return { elevation: shaped.elevation, delta: null };
       const e = shaped.elevation.slice();
@@ -1274,7 +1364,8 @@ export class PlateHeights implements HeightSource {
           for (let cc = this.wrap ? c0 : Math.max(0, c0); cc <= (this.wrap ? c1 : Math.min(cols - 1, c1)); cc++) {
             const i = at(cc, rr);
             if (i < 0) continue;
-            const v = applyStrokes([s], (cc + 0.5) * PLATE_CELL, (rr + 0.5) * PLATE_CELL, e[i]!, e[i]!, sea, W0).ground;
+            // (Smooth averages the grid as shaped so far around the cell.)
+            const v = applyStrokes([s], (cc + 0.5) * PLATE_CELL, (rr + 0.5) * PLATE_CELL, e[i]!, e[i]!, sea, W0, (x, z, t) => smoothAverage(t, x, z, (px, pz) => this.gridAt(e, px, pz))).ground;
             e[i] = Math.max(this.lowest, Math.min(this.highest, v));
           }
         }
@@ -1390,9 +1481,7 @@ export class PlateHeights implements HeightSource {
    * and lakes stays as built: those only follow the new strokes once the world is built with them.
    */
   setSampleStrokes(strokes: readonly TerrainStroke[]): void {
-    this.strokes = strokes;
-    this.strokeIndex = strokes.length ? new StrokeIndex(strokes, this.wrap ? this.world.widthUnits : null) : null;
-    this.lastSurface = null;
+    this.indexStrokes(strokes);
   }
 
   /** Fraction of grid cells above sea level (for tests and tools). */
@@ -1415,6 +1504,19 @@ export class PlateHeights implements HeightSource {
    * Bilinear interpolation weights for a run of positions along one axis:
    * lower/upper cell indices and the blend factor, clamped (or wrapped) to the grid.
    */
+  /** A grid field at one point (units), interpolated as `interpolate` does. */
+  private gridAt(field: Float32Array, x: number, z: number): number {
+    const at = (p: number, cells: number, wrap: boolean): [number, number, number] => {
+      const f = (p + 0.5) / PLATE_CELL - 0.5, a = Math.floor(f);
+      if (wrap) return [((a % cells) + cells) % cells, (((a + 1) % cells) + cells) % cells, f - a];
+      return [Math.max(0, Math.min(cells - 1, a)), Math.max(0, Math.min(cells - 1, a + 1)), f - a];
+    };
+    const [c0, c1, tx] = at(x, this.cols, this.wrap), [r0, r1, tz] = at(z, this.rows, false);
+    const a = field[c0 + this.cols * r0]! + (field[c1 + this.cols * r0]! - field[c0 + this.cols * r0]!) * tx;
+    const b = field[c0 + this.cols * r1]! + (field[c1 + this.cols * r1]! - field[c0 + this.cols * r1]!) * tx;
+    return a + (b - a) * tz;
+  }
+
   private axisWeights(p0: number, count: number, step: number, cells: number, wrap: boolean) {
     const i0 = new Int32Array(count), i1 = new Int32Array(count), t = new Float64Array(count);
     for (let k = 0; k < count; k++) {
@@ -1564,7 +1666,7 @@ export class PlateHeights implements HeightSource {
         // generator's). With many strokes about, only those reaching this spot's square.
         const x = x0 + (k % w) * step, z = z0 + Math.floor(k / w) * step;
         const here = strokes.length > 8 ? this.strokeIndex!.at(x, z) : strokes;
-        h = Math.max(this.lowest, Math.min(this.highest, applyStrokes(here, x, z, h, e, this.seaLevel, this.wrap ? this.world.widthUnits : null).ground));
+        h = Math.max(this.lowest, Math.min(this.highest, applyStrokes(here, x, z, h, e, this.seaLevel, this.wrap ? this.world.widthUnits : null, this.smoothTarget).ground));
       }
       out[k] = Math.round(h);
     }
@@ -1611,9 +1713,27 @@ export class PlateHeights implements HeightSource {
     for (let k = 0; k < out.length; k++) {
       const x = x0 + (k % w) * step, z = z0 + Math.floor(k / w) * step;
       const here = strokes.length > 8 ? this.strokeIndex!.at(x, z) : strokes;
-      out[k] = applyStrokes(here, x, z, out[k]!, out[k]!, this.seaLevel, W).broad;
+      out[k] = applyStrokes(here, x, z, out[k]!, out[k]!, this.seaLevel, W, this.smoothTarget).broad;
     }
     return out;
+  }
+
+  /**
+   * broadGround at the samples moved `e` units east, west, south and north. When `e` is a whole
+   * number of steps and the block is big enough that one block around them all is smaller than
+   * the four, from that (the same points; far less work with strokes).
+   */
+  private broadAround(x0: number, z0: number, w: number, d: number, step: number, e: number): [Float64Array, Float64Array, Float64Array, Float64Array] {
+    if (e % step !== 0 || (w + (2 * e) / step) * (d + (2 * e) / step) >= 4 * w * d) {
+      return [this.broadGround(x0 + e, z0, w, d, step), this.broadGround(x0 - e, z0, w, d, step), this.broadGround(x0, z0 + e, w, d, step), this.broadGround(x0, z0 - e, w, d, step)];
+    }
+    const k = e / step, bw = w + 2 * k, all = this.broadGround(x0 - e, z0 - e, bw, d + 2 * k, step);
+    const shifted = (di: number, dj: number) => {
+      const out = new Float64Array(w * d);
+      for (let j = 0; j < d; j++) for (let i = 0; i < w; i++) out[i + w * j] = all[i + k + di + bw * (j + k + dj)]!;
+      return out;
+    };
+    return [shifted(k, 0), shifted(-k, 0), shifted(0, k), shifted(0, -k)];
   }
 
   materials(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): Uint16Array {
@@ -1624,10 +1744,7 @@ export class PlateHeights implements HeightSource {
     const out = new Uint16Array(w * d);
     // Coarse slope (rise over run) from the 32 m grid, via central differences one cell apart.
     const e = PLATE_CELL;
-    const east = this.broadGround(x0 + e, z0, w, d, step);
-    const west = this.broadGround(x0 - e, z0, w, d, step);
-    const south = this.broadGround(x0, z0 + e, w, d, step);
-    const north = this.broadGround(x0, z0 - e, w, d, step);
+    const [east, west, south, north] = this.broadAround(x0, z0, w, d, step, e);
     const vary = fractalGrid(this.beachNoise, x0, z0, w, d, step);
     const norm = 2 / this.beachNoise.reduce((a, o) => a + o.weight, 0);
     const sea = this.seaLevel;

@@ -96,29 +96,8 @@ sizeEl.addEventListener('change', showChoice);
 detailEl.addEventListener('change', showChoice);
 
 const HINT_OVERVIEW = 'drag: move · right-drag: turn and tilt · wheel: zoom';
-const HINT_SHAPE = 'drag: shape · middle-drag or space-drag: move · right-drag: turn and tilt · wheel: zoom · ⌘Z: undo';
-const HINT_MOVE = 'drag or middle-drag: move · ⌘-drag: shape · right-drag: turn and tilt · wheel: zoom · ⌘Z: undo';
-
-// ---- Shape or move: what a plain left-button drag does in the diorama (holding space: move).
-let mode: 'shape' | 'move' = 'shape';
-let spaceHeld = false;
-function applyMode(): void {
-  const shaping = mode === 'shape' && !spaceHeld;
-  for (const b of document.querySelectorAll<HTMLButtonElement>('.mode')) b.setAttribute('aria-pressed', String(b.dataset.mode === mode));
-  if (diorama) diorama.shaping = shaping;
-  if (showing === 'diorama') hintEl.textContent = mode === 'shape' ? HINT_SHAPE : HINT_MOVE;
-}
-for (const b of document.querySelectorAll<HTMLButtonElement>('.mode')) b.addEventListener('click', () => ((mode = b.dataset.mode as typeof mode), applyMode()));
-window.addEventListener('keydown', (e) => {
-  if (e.code !== 'Space' || showing !== 'diorama' || (e.target as HTMLElement).closest?.('input, select')) return;
-  // (Not pressing a focused button either: space is for moving here.)
-  e.preventDefault();
-  if (!spaceHeld) ((spaceHeld = true), applyMode());
-});
-window.addEventListener('keyup', (e) => {
-  if (e.code === 'Space' && spaceHeld) ((spaceHeld = false), applyMode());
-});
-window.addEventListener('blur', () => spaceHeld && ((spaceHeld = false), applyMode()));
+// As on the 3D map; ⌘-press (Ctrl-press elsewhere) and drag shapes.
+const HINT_DIORAMA = 'drag or middle-drag: move · ⌘-drag: shape · right-drag: turn and tilt · wheel: zoom · ⌘Z: undo';
 
 // ---- The brush (remembered in this browser).
 interface Brush {
@@ -167,8 +146,7 @@ function showBrush(): void {
     // Can't remember it: fine.
   }
 }
-// (Picking a brush means shaping.)
-for (const b of document.querySelectorAll<HTMLButtonElement>('.tool')) b.addEventListener('click', () => ((brush = { ...brush, kind: b.dataset.kind as StrokeKind }), (mode = 'shape'), applyMode(), showBrush()));
+for (const b of document.querySelectorAll<HTMLButtonElement>('.tool')) b.addEventListener('click', () => ((brush = { ...brush, kind: b.dataset.kind as StrokeKind }), showBrush()));
 radiusEl.addEventListener('input', () => ((brush = { ...brush, radius: Number(radiusEl.value) }), showBrush()));
 amountEl.addEventListener('input', () => ((brush = { ...brush, strength: { ...brush.strength, [brush.kind]: Number(amountEl.value) } }), showBrush()));
 softnessEl.addEventListener('input', () => ((brush = { ...brush, softness: Number(softnessEl.value) }), showBrush()));
@@ -402,7 +380,6 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
     diorama.miniature = miniatureEl.checked;
     diorama.setLight(light);
     diorama.onPaint = paint;
-    diorama.shaping = mode === 'shape';
     stage.prepend(diorama.canvas);
   }
   showing = 'diorama';
@@ -410,7 +387,7 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
   diorama.canvas.hidden = false;
   overviewControls.hidden = true;
   dioramaControls.hidden = false;
-  applyMode();
+  hintEl.textContent = HINT_DIORAMA;
   const t0 = performance.now();
   const again = diorama.canvas.dataset.area === `${made.x0},${made.z0},${made.size},${made.step}`;
   diorama.show(made.parts, made, again);

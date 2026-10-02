@@ -4,7 +4,9 @@
  *
  * - raise / lower: the ground up or down by `amount` metres;
  * - level: the ground toward `amount` metres above the sea (flattening a site, say);
- * - smooth: the small-scale bumps (and crags) toward the land's broad shape, by `amount` (0..1).
+ * - smooth: the ground toward the average of the land's shape around it (see SMOOTH_REACH), by
+ *   `amount` (0..1): small-scale bumps and crags go, and so do sharp shapes made by strokes (a
+ *   levelled plateau's edge, a ridge), which round off.
  *
  * They're stored as these few numbers, not as edited blocks, so everything made from the ground
  * (rock and snow, trees, rivers and lakes, maps) follows them.
@@ -64,14 +66,42 @@ export function strokeWeight(s: Pick<TerrainStroke, 'radius' | 'softness'>, dist
   return t * t * (3 - 2 * t);
 }
 
+/** Smooth averages the land's shape over this share of its radius around each point. */
+export const SMOOTH_REACH = 0.4;
+
+/** Where smooth looks around a point: the point and two rings (offsets, as shares of the reach) and their weights. */
+const SMOOTH_KERNEL: readonly (readonly [number, number, number])[] = [
+  [0, 0, 0.2],
+  ...Array.from({ length: 6 }, (_, k) => [0.5 * Math.cos((k * Math.PI) / 3), 0.5 * Math.sin((k * Math.PI) / 3), 0.4 / 6] as const),
+  ...Array.from({ length: 6 }, (_, k) => [Math.cos(((k + 0.5) * Math.PI) / 3), Math.sin(((k + 0.5) * Math.PI) / 3), 0.4 / 6] as const),
+];
+
+/** How far around a point smooth stroke `s` looks (units; see SMOOTH_REACH). */
+export function smoothReach(s: Pick<TerrainStroke, 'radius'>): number {
+  return Math.max(2, s.radius * SMOOTH_REACH) * M;
+}
+
+/** What smooth stroke `s` pulls the ground at (x, z) toward: the weighted average of `shape` around it (units). */
+export function smoothAverage(s: Pick<TerrainStroke, 'radius'>, x: number, z: number, shape: (x: number, z: number) => number): number {
+  const r = smoothReach(s);
+  let sum = 0;
+  for (const [kx, kz, kw] of SMOOTH_KERNEL) sum += kw * shape(x + kx * r, z + kz * r);
+  return sum;
+}
+
+/** What smooth stroke `stroke` pulls the ground at (x, z) toward (units; see smoothAverage). */
+export type SmoothTarget = (x: number, z: number, stroke: TerrainStroke) => number;
+
 /**
  * Applies strokes to a point (units). `ground` is the ground there and `broad` the land's broad
  * shape under it (without small-scale bumps), both units; `sea` the sea level (units). Returns
- * both after the strokes, in order: raise, lower and level move both alike; smooth pulls the
- * ground toward the broad shape. `worldWidth` (units) wraps x when given (round worlds).
+ * both after the strokes, in order: raise, lower and level move both alike; smooth pulls both
+ * toward the average of the land's shape around the point (from `smoothTarget`; without it, the
+ * ground toward the broad shape here, which only removes bumps). `worldWidth` (units) wraps x when given
+ * (round worlds).
  */
 export function applyStrokes(
-  strokes: readonly TerrainStroke[], x: number, z: number, ground: number, broad: number, sea: number, worldWidth: number | null,
+  strokes: readonly TerrainStroke[], x: number, z: number, ground: number, broad: number, sea: number, worldWidth: number | null, smoothTarget?: SmoothTarget,
 ): { ground: number; broad: number } {
   let h = ground, e = broad;
   for (const s of strokes) {
@@ -97,9 +127,12 @@ export function applyStrokes(
         e += (target - e) * w;
         break;
       }
-      case 'smooth':
-        h += (e - h) * w * s.amount;
+      case 'smooth': {
+        const target = smoothTarget ? smoothTarget(x, z, s) : e;
+        h += (target - h) * w * s.amount;
+        e += (target - e) * w * s.amount;
         break;
+      }
     }
   }
   return { ground: h, broad: e };

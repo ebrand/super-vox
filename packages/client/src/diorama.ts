@@ -37,11 +37,9 @@ export class Diorama {
   private readonly brushRing: THREE.LineLoop;
   private brushRadius: number | null = null;
   private brushAt: { x: number; z: number } | null = null;
-  private shapeMode = false;
   /**
-   * Painting: in shape mode (see `shaping`) a left-button drag, in either mode a ⌘-press
-   * (Ctrl-press) and drag. The diorama doesn't move while painting; it calls this with each point
-   * (metres, and the ground's height there) as it goes.
+   * Painting: a ⌘-press (Ctrl-press) and drag. The diorama doesn't move while painting; it calls
+   * this with each point (metres, and the ground's height there) as it goes.
    */
   onPaint: ((phase: 'start' | 'move' | 'end', at: { x: number; y: number; z: number } | null) => void) | null = null;
 
@@ -67,7 +65,7 @@ export class Diorama {
     this.controls.dampingFactor = 0.12;
     this.controls.zoomToCursor = true;
     this.controls.screenSpacePanning = false;
-    // The middle button moves too (handy in shape mode, where the left one paints); the wheel zooms.
+    // The middle button moves too.
     this.controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
     this.controls.minDistance = 5;
     this.controls.maxDistance = 12_000;
@@ -107,19 +105,6 @@ export class Diorama {
     this.controls.target.copy(mid);
     this.camera.position.set(mid.x, mid.y + size * 0.8, mid.z + size * 1.25);
     this.controls.update();
-  }
-
-  /**
-   * Shape mode: the left button paints (the view still turns with the right button and zooms with
-   * the wheel); otherwise it moves the view, as on the 3D map.
-   */
-  get shaping(): boolean {
-    return this.shapeMode;
-  }
-
-  set shaping(on: boolean) {
-    this.shapeMode = on;
-    this.controls.mouseButtons.LEFT = on ? null : THREE.MOUSE.PAN;
   }
 
   /** The ground as sampled (see the worker's area reply), to find what's under the pointer. */
@@ -187,7 +172,7 @@ export class Diorama {
     };
     // (Capture: before the controls see it, so they stay still while painting.)
     c.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0 || !(this.shapeMode || e.metaKey || e.ctrlKey) || !this.onPaint) return;
+      if (e.button !== 0 || !(e.metaKey || e.ctrlKey) || !this.onPaint) return;
       const p = at(e);
       if (!p) return;
       painting = true;
@@ -204,15 +189,8 @@ export class Diorama {
       const p = at(e);
       this.brushAt = p && { x: p.x, z: p.z };
       this.placeBrush();
-      // (In shape mode, a move with the left button down starts painting even if the press itself
-      // went missing, and one with no button down ends it if the release did.)
+      // (A move with no button down ends painting if the release went missing.)
       if (painting && (e.buttons & 1) === 0 && e.pointerType === 'mouse') return stop();
-      if (!painting && this.shapeMode && (e.buttons & 1) && p && this.onPaint) {
-        painting = true;
-        this.controls.enabled = false;
-        this.onPaint('start', p);
-        return;
-      }
       if (painting && p) this.onPaint?.('move', p);
     });
     const stop = () => {

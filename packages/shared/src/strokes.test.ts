@@ -160,6 +160,56 @@ describe('terraforming a plate world', () => {
     expect(Math.abs(sample(p, x, z) - sample(plain, x, z))).toBeLessThan(15);
   });
 
+  it("smooths the edge of a levelled plateau (shapes strokes made, not just the ground's bumps)", () => {
+    const [x, z] = spots[4]!;
+    // A plateau 60 m above the land with a steep edge, then smooth strokes all round its edge.
+    const plateau = stroke({ kind: 'level', x, z, radius: 150, amount: sample(plain, x, z) + 60, softness: 0.1 });
+    const edge = Array.from({ length: 24 }, (_, k) => stroke({ kind: 'smooth', x: x + Math.cos((k * Math.PI) / 12) * 145, z: z + Math.sin((k * Math.PI) / 12) * 145, radius: 50, amount: 1, softness: 0.5 }));
+    const sharp = new PlateHeights(world, cfg, undefined, [plateau]);
+    const soft = new PlateHeights(world, cfg, undefined, [plateau, ...edge]);
+    // The steepest step (m per m) along a line out from the middle across the edge, 1 m apart.
+    const steepest = (p: PlateHeights) => {
+      const h = p.heights((x + 100) * M, z * M, 100, 1, M);
+      let worst = 0;
+      for (let i = 1; i < 100; i++) worst = Math.max(worst, Math.abs(h[i]! - h[i - 1]!) / M);
+      return worst;
+    };
+    expect(steepest(soft)).toBeLessThan(steepest(sharp) * 0.6);
+    // The middle of the plateau stays put.
+    expect(sample(soft, x, z)).toBeCloseTo(sample(sharp, x, z), 0);
+  });
+
+  it('smooths the same while shaping (strokes added and taken back) as built afresh', () => {
+    const [x, z] = spots[4]!;
+    const plateau = stroke({ kind: 'level', x, z, radius: 150, amount: sample(plain, x, z) + 60, softness: 0.1 });
+    const bump = stroke({ kind: 'raise', x: x + 140, z, radius: 40, amount: 25 });
+    // (The same stroke objects throughout, as a draft keeps them.)
+    const [s0, s1] = [0, 1].map((k) => stroke({ kind: 'smooth', x: x + 145, z: z + k * 10, radius: 50, amount: 1, softness: 0.5 }));
+    const block = (p: PlateHeights) => [p.heights((x + 60) * M, (z - 40) * M, 80, 80, M), p.materials((x + 60) * M, (z - 40) * M, 80, 80, M, p.heights((x + 60) * M, (z - 40) * M, 80, 80, M))];
+    const shaping = new PlateHeights(world, cfg, undefined, [plateau]);
+    // Smooth, then add a raise under it, then take the raise back (undo), as the Terraformer does.
+    for (const strokes of [[plateau, s0!], [plateau, s0!, s1!], [plateau, bump, s0!, s1!], [plateau, s0!, s1!]]) {
+      shaping.setSampleStrokes(strokes);
+      block(shaping);
+      const fresh = new PlateHeights(world, cfg, undefined, strokes);
+      fresh.setSampleStrokes(strokes);
+      expect(block(shaping)).toEqual(block(fresh));
+    }
+  });
+
+  it('gives ground the same materials in a block as spot by spot, with strokes about', () => {
+    const [x, z] = spots[4]!;
+    const p = new PlateHeights(world, cfg, undefined, [
+      // A steep-sided plateau (rock on its sides), smoothed in places.
+      stroke({ kind: 'level', x, z, radius: 150, amount: sample(plain, x, z) + 150, softness: 0.05 }),
+      stroke({ kind: 'smooth', x: x + 145, z: z + 30, radius: 40, amount: 1, softness: 0.5 }),
+    ]);
+    // (Big enough that the slopes come from one block around it; one spot works them out alone.)
+    const x0 = (x + 80) * M, z0 = (z - 50) * M, h = p.heights(x0, z0, 100, 100, M), mats = p.materials(x0, z0, 100, 100, M, h);
+    expect(new Set(mats).size).toBeGreaterThan(1);
+    for (let j = 0; j < 100; j += 3) for (let i = 0; i < 100; i += 3) expect(p.materials(x0 + i * M, z0 + j * M, 1, 1, M, h.subarray(i + 100 * j, i + 100 * j + 1))[0]).toBe(mats[i + 100 * j]);
+  });
+
   it('a dug hollow fills with a lake, and the rivers find new ways', () => {
     // A closed hollow: levelled to 20 m below the lowest ground in a ring around it (600..1000 m
     // out), at the first spot where that's still above the sea.
