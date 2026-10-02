@@ -173,6 +173,8 @@ describe('WebSocket handshake', () => {
       // No sign-in on this server: anyone may edit.
       player: null,
       canEdit: true,
+      // (Worlds are survival unless made creative.)
+      mode: 'survival',
     });
     ws.close();
   });
@@ -726,6 +728,32 @@ describe('named worlds', () => {
     await a.close();
   });
 
+  it('creates worlds in either mode, and switches a world\'s mode (its players reload)', async () => {
+    const { a, url } = await catalogApp();
+    const post = (body: object) => a.inject({ method: 'POST', url: '/api/worlds', payload: { plates: { seed: 2 }, shape: 'round-16x8', ...body } });
+    expect((await post({ name: 'make' })).json().mode).toBe('survival');
+    expect((await post({ name: 'build', mode: 'creative' })).json().mode).toBe('creative');
+    expect((await post({ name: 'odd', mode: 'peaceful' })).statusCode).toBe(400);
+    const list = (await a.inject({ method: 'GET', url: '/api/worlds' })).json().worlds;
+    expect(list.find((w: { name: string }) => w.name === 'build').mode).toBe('creative');
+    const inMake = await hello(url, { world: 'make' });
+    expect(inMake.reply).toMatchObject({ type: 'welcome', mode: 'survival' });
+    const told = nextMessage(inMake.ws);
+    const res = await a.inject({ method: 'PUT', url: '/api/worlds/make/mode', payload: { mode: 'creative' } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ name: 'make', mode: 'creative' });
+    expect(await told).toMatchObject({ type: 'error', code: 'world_mode_changed' });
+    expect(await inMake.closed).toBe(1012);
+    // Rejoining plays it in the new mode.
+    const again = await hello(url, { world: 'make' });
+    expect(again.reply).toMatchObject({ type: 'welcome', mode: 'creative' });
+    expect((await a.inject({ method: 'GET', url: '/api/dashboard' })).json().worlds.find((w: { name: string }) => w.name === 'make').mode).toBe('creative');
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/make/mode', payload: { mode: 'hard' } })).statusCode).toBe(400);
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/nope/mode', payload: { mode: 'creative' } })).statusCode).toBe(404);
+    again.ws.close();
+    await a.close();
+  });
+
   it('deletes worlds (not the default one) and disconnects their players', async () => {
     const { a, url, root } = await catalogApp();
     const inOther = await hello(url, { world: 'other' });
@@ -751,6 +779,8 @@ describe('named worlds', () => {
     expect((await a.inject({ method: 'PUT', url: '/api/worlds/other', payload: { plates: {}, shape: 'round-16x8' } })).statusCode).toBe(403);
     expect((await a.inject({ method: 'DELETE', url: '/api/worlds/other' })).statusCode).toBe(403);
     expect((await a.inject({ method: 'POST', url: '/api/worlds/other/strokes', payload: { base: 0, strokes: [{ kind: 'raise', x: 1, z: 1, radius: 5, amount: 1, softness: 0 }] } })).statusCode).toBe(403);
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/other/mode', payload: { mode: 'creative' } })).statusCode).toBe(403);
+    expect(readWorld(root, 'other')!.mode).not.toBe('creative');
     expect(readWorld(root, 'other')!.spec).toEqual({ generator: 'flat', resolution: 8 });
     await a.close();
   });

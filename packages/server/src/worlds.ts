@@ -24,7 +24,7 @@ import {
 } from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
 import { World } from './world.js';
-import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, readStrokes, readWorld, saveClock, updateWorld, worldConfigOf, writeStrokes, type WorldFile } from './worldFile.js';
+import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, readStrokes, readWorld, saveClock, saveMode, updateWorld, worldConfigOf, writeStrokes, type WorldFile } from './worldFile.js';
 
 /** What the HTTP API shows about a world. */
 export type WorldSummary = Pick<WorldFile, 'name' | 'createdAt' | 'updatedAt' | 'spec'> & {
@@ -32,6 +32,8 @@ export type WorldSummary = Pick<WorldFile, 'name' | 'createdAt' | 'updatedAt' | 
   editedChunks: number;
   /** Terraforming strokes applied to it (see WorldCatalog.terraform). */
   strokes: number;
+  /** Survival or creative. */
+  mode: GameMode;
 };
 
 export class DefaultWorldError extends Error {}
@@ -56,7 +58,9 @@ export interface WorldCatalog {
   get(name: string | undefined, tolerance?: number): World | null;
   list(): WorldSummary[];
   /** Creates a plate world; absent where changing worlds isn't allowed (as are update and delete). */
-  create?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape) => WorldSummary;
+  create?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape, mode?: GameMode) => WorldSummary;
+  /** Sets a world's game mode (players rejoin to play it). Throws NoSuchWorldError. Absent where not allowed. */
+  setMode?: (name: string, mode: GameMode) => WorldSummary;
   /** Replaces a world's settings with plate settings, discarding its edits. */
   update?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape) => WorldSummary;
   /** Deletes a world (never the default one: DefaultWorldError). */
@@ -138,7 +142,8 @@ interface Opened {
  */
 export class FileWorldCatalog implements WorldCatalog {
   private readonly open = new Map<string, Opened>();
-  readonly create?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape) => WorldSummary;
+  readonly create?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape, mode?: GameMode) => WorldSummary;
+  readonly setMode?: (name: string, mode: GameMode) => WorldSummary;
   readonly update?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape) => WorldSummary;
   readonly delete?: (name: string) => void;
   readonly setClock?: (name: string, change: ClockChange) => DayClock;
@@ -164,8 +169,14 @@ export class FileWorldCatalog implements WorldCatalog {
     };
     // Creating, changing and deleting worlds: for whoever the server lets (see app.ts: development, or admins).
     {
-      this.create = (name, plates, shape = DEFAULT_WORLD_SHAPE) =>
-        this.summary(createWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize: defaultVoxelize(), shape }));
+      this.create = (name, plates, shape = DEFAULT_WORLD_SHAPE, mode = DEFAULT_GAME_MODE) =>
+        this.summary(createWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize: defaultVoxelize(), shape }, mode));
+      this.setMode = (name, mode) => {
+        const file = saveMode(this.dataRoot, name, mode);
+        const o = this.open.get(name);
+        if (o) o.file = file;
+        return this.summary(file);
+      };
       this.update = (name, plates, shape) => {
         const old = readWorld(this.dataRoot, name);
         // Keep its voxelization (and its shape, unless a new one is given); the terrain settings change.
@@ -270,7 +281,7 @@ export class FileWorldCatalog implements WorldCatalog {
   }
 
   private summary(f: WorldFile): WorldSummary {
-    return { name: f.name, createdAt: f.createdAt, ...(f.updatedAt ? { updatedAt: f.updatedAt } : {}), spec: f.spec, editedChunks: countEdits(this.dataRoot, f.name), strokes: this.strokes(f.name)?.length ?? 0 };
+    return { name: f.name, createdAt: f.createdAt, ...(f.updatedAt ? { updatedAt: f.updatedAt } : {}), spec: f.spec, editedChunks: countEdits(this.dataRoot, f.name), strokes: this.strokes(f.name)?.length ?? 0, mode: modeOf(f) };
   }
 
   strokes(name: string): TerrainStroke[] | null {

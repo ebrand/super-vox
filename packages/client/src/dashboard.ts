@@ -29,6 +29,7 @@ interface WorldInfo {
   players: number;
   diskBytes: number;
   clock: { hours: number; dayMinutes: number | 'real'; frozen: boolean } | null;
+  mode: 'survival' | 'creative' | null;
   editedChunks?: number;
   edits?: number;
   cache?: { chunks: number; tiles: number; capacity: number; chunkHitRate: number | null; tileHitRate: number | null };
@@ -59,6 +60,25 @@ interface Dashboard {
 
 const $ = (id: string) => document.getElementById(id)!;
 const statusEl = $('status');
+/** The world whose mode switch was clicked once (a second click switches it), and when. */
+let switching: { world: string; at: number } | null = null;
+/** Switching a world's mode: click once to arm, again within 5 s to do it (its players reload). */
+document.getElementById('worlds')!.addEventListener('click', (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-mode-world]');
+  if (!b) return;
+  const world = b.dataset.modeWorld!, to = b.dataset.to!;
+  if (!switching || switching.world !== world || Date.now() - switching.at > 5000) {
+    switching = { world, at: Date.now() };
+    b.textContent = `Sure? Players reload`;
+    return;
+  }
+  switching = null;
+  b.disabled = true;
+  void fetch(`/api/worlds/${encodeURIComponent(world)}/mode`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: to }) }).then(async (res) => {
+    if (!res.ok) b.textContent = ((await res.json().catch(() => ({}))) as { error?: string }).error ?? `failed: ${res.status}`;
+  });
+});
+
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
 // ---- Charts: small line charts of the history, drawn on canvases.
@@ -215,6 +235,14 @@ mapSelect.addEventListener('change', () => {
 
 let last: Dashboard | null = null;
 
+/** A world's mode, and a button to switch it (see the click handler above). */
+function modeCell(w: WorldInfo): string {
+  if (!w.mode) return '–';
+  const to = w.mode === 'survival' ? 'creative' : 'survival';
+  const armed = switching && switching.world === w.name && Date.now() - switching.at <= 5000;
+  return `${w.mode} <button type="button" class="mode-switch" data-mode-world="${esc(w.name)}" data-to="${to}">${armed ? 'Sure? Players reload' : `Make ${to}`}</button>`;
+}
+
 function render(d: Dashboard): void {
   const h = d.history, s = h[h.length - 1];
   $('meta').textContent = `up ${formatDuration(d.now - d.startedAt)} · protocol ${d.protocolVersion} · ${d.players.length} player${d.players.length === 1 ? '' : 's'}`;
@@ -233,14 +261,14 @@ function render(d: Dashboard): void {
   const pct = (v: number | null | undefined) => (v === null || v === undefined ? '–' : `${(v * 100).toFixed(0)}%`);
   const ms = (p?: Percentiles) => (p && p.p50 !== null ? `${p.p50.toFixed(1)} / ${p.p95!.toFixed(1)} ms` : '–');
   $('worlds').innerHTML =
-    '<tr><th>World</th><th class="num">Players</th><th>Time</th><th class="num">Edited chunks</th><th class="num">On disk</th><th class="num">Edits</th>' +
+    '<tr><th>World</th><th>Mode</th><th class="num">Players</th><th>Time</th><th class="num">Edited chunks</th><th class="num">On disk</th><th class="num">Edits</th>' +
     '<th class="num">Cached chunks / tiles</th><th class="num">Hit rate (chunks / tiles)</th><th class="num">Chunk p50 / p95</th><th class="num">Tile p50 / p95</th><th class="num">Water pending</th><th class="num">Water changes</th></tr>' +
     d.worlds
       .map((w) => {
         const clock = w.clock ? `${formatHours(w.clock.hours)} <span class="badge">${w.clock.dayMinutes === 'real' ? 'real time' : `${w.clock.dayMinutes} min day`}${w.clock.frozen ? ', stopped' : ''}</span>` : '–';
         return (
           `<tr><td>${esc(w.name)}${w.default ? '<span class="badge">default</span>' : ''}<span class="badge${w.open ? ' on' : ''}">${w.open ? 'open' : 'closed'}</span></td>` +
-          `<td class="num">${w.players}</td><td>${clock}</td>` +
+          `<td>${modeCell(w)}</td><td class="num">${w.players}</td><td>${clock}</td>` +
           `<td class="num">${w.editedChunks ?? '–'}</td><td class="num">${formatBytes(w.diskBytes)}</td><td class="num">${w.edits ?? '–'}</td>` +
           `<td class="num">${w.cache ? `${w.cache.chunks} / ${w.cache.tiles} of ${w.cache.capacity}` : '–'}</td>` +
           `<td class="num">${w.cache ? `${pct(w.cache.chunkHitRate)} / ${pct(w.cache.tileHitRate)}` : '–'}</td>` +

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { defaultPlateTerrain } from '@super-vox/shared';
-import { NoSuchWorldError, WorldExistsError, countEdits, createWorld, deleteWorld, generatorFor, listWorlds, openWorld, readWorld, updateWorld, type WorldSpec } from './worldFile.js';
+import { NoSuchWorldError, WorldExistsError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, openWorld, readWorld, saveMode, updateWorld, type WorldSpec } from './worldFile.js';
 
 const dirs: string[] = [];
 const tmp = () => {
@@ -94,6 +94,27 @@ describe('updateWorld / deleteWorld', () => {
     expect(readWorld(root, 'w')).toEqual(updated);
     expect(countEdits(root, 'w')).toBe(0);
     expect(existsSync(join(root, 'w', 'world.json.tmp'))).toBe(false);
+  });
+
+  it('keeps the game mode when the settings are replaced', () => {
+    const root = tmp();
+    createWorld(root, 'w', plates(), 'creative');
+    expect(modeOf(updateWorld(root, 'w', plates({ landPercent: 55 })))).toBe('creative');
+    expect(modeOf(readWorld(root, 'w')!)).toBe('creative');
+  });
+
+  it('switches the game mode, filing creative inventories apart from survival ones', () => {
+    const root = tmp();
+    const made = createWorld(root, 'w', plates());
+    const survival = inventoryKeyOf(made);
+    const creative = saveMode(root, 'w', 'creative');
+    expect(readWorld(root, 'w')).toEqual(creative);
+    expect(modeOf(creative)).toBe('creative');
+    expect(inventoryKeyOf(creative)).not.toBe(survival);
+    // Back to survival: everyone's survival inventory again.
+    expect(inventoryKeyOf(saveMode(root, 'w', 'survival'))).toBe(survival);
+    expect(() => saveMode(root, 'w', 'peaceful' as never)).toThrow(RangeError);
+    expect(() => saveMode(root, 'nope', 'creative')).toThrow(NoSuchWorldError);
   });
 
   it('refuses to update missing worlds or with invalid settings', () => {

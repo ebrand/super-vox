@@ -39,6 +39,8 @@ import {
   parseClockChange,
   parsePlateTerrain,
   validateStrokes,
+  isGameMode,
+  type GameMode,
   type ServerMessage,
   type WorldShape,
 } from '@super-vox/shared';
@@ -180,6 +182,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         open: !!w,
         players: [...players.values()].filter((p) => p.world === name).length,
         diskBytes: catalog.diskBytes(name),
+        mode: catalog.play(name)?.mode ?? null,
         clock: clock && { hours: clockHours(clock, now), dayMinutes: clock.dayMinutes, frozen: clock.frozen },
       };
       if (!w) return base;
@@ -259,12 +262,13 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     return reply.send({ strokes: total });
   });
 
-  // Development only (no accounts yet): create a plate world. Body: { name, plates }.
+  // Operators only: create a plate world. Body: { name, plates, shape?, mode? }.
   app.post<{ Body: unknown }>('/api/worlds', async (req, reply) => {
     if (!catalog.create) return reply.code(403).send({ error: 'creating worlds is not enabled on this server' });
     if (!(await operator(req))) return reply.code(403).send(notOperator('creating worlds'));
-    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { name?: unknown; plates?: unknown; shape?: unknown };
+    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { name?: unknown; plates?: unknown; shape?: unknown; mode?: unknown };
     if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: 'shape must be "round-64x32", "round-16x8" or "flat-16x16"' });
+    if (body.mode !== undefined && !isGameMode(body.mode)) return reply.code(400).send({ error: 'mode must be "survival" or "creative"' });
     if (!isValidWorldName(body.name)) {
       return reply.code(400).send({ error: 'name must be 1-64 lower-case letters, digits, "-" or "_", starting with a letter or digit' });
     }
@@ -276,7 +280,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       throw err;
     }
     try {
-      return reply.code(201).send(catalog.create(body.name, plates, body.shape as WorldShape | undefined));
+      return reply.code(201).send(catalog.create(body.name, plates, body.shape as WorldShape | undefined, body.mode as GameMode | undefined));
     } catch (err) {
       if (err instanceof WorldExistsError) return reply.code(409).send({ error: err.message });
       throw err;
@@ -307,6 +311,25 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       if (err instanceof NoSuchWorldError) return reply.code(404).send({ error: err.message });
       throw err;
     }
+  });
+
+  // Operators only: set a world's game mode. Body: { mode }. Everyone in it reloads to play it.
+  app.put<{ Params: { name: string }; Body: unknown }>('/api/worlds/:name/mode', async (req, reply) => {
+    if (!catalog.setMode) return reply.code(403).send({ error: 'changing worlds is not enabled on this server' });
+    if (!(await operator(req))) return reply.code(403).send(notOperator('changing worlds'));
+    const { name } = req.params;
+    if (!isValidWorldName(name)) return reply.code(404).send({ error: 'no such world' });
+    const mode = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { mode?: unknown };
+    if (!isGameMode(mode.mode)) return reply.code(400).send({ error: 'mode must be "survival" or "creative"' });
+    let summary;
+    try {
+      summary = catalog.setMode(name, mode.mode);
+    } catch (err) {
+      if (err instanceof NoSuchWorldError) return reply.code(404).send({ error: err.message });
+      throw err;
+    }
+    evict(name, 'world_mode_changed', `"${name}" is now a ${mode.mode} world`);
+    return reply.send(summary);
   });
 
   // Operators only: change a world's clock. Body: { dayMinutes?: minutes | "real", hours?: 0..24,
@@ -360,7 +383,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const clients = new Map<WebSocket, World>();
   const clientWorld = new Map<WebSocket, string>();
   /** Disconnects everyone in world `name`, telling them why (it was replaced or deleted). */
-  const evict = (name: string, code: 'world_changed' | 'world_deleted' | 'world_terraformed', message: string) => {
+  const evict = (name: string, code: 'world_changed' | 'world_deleted' | 'world_terraformed' | 'world_mode_changed', message: string) => {
     for (const [client, n] of clientWorld) {
       if (n !== name) continue;
       if (client.readyState === client.OPEN) {
@@ -557,6 +580,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               serverTime: Date.now(),
               player: who ? { name: who.account.name, admin: who.admin } : null,
               canEdit: canEdit(),
+              mode: catalog.play(msg.world)?.mode ?? 'creative',
             });
             const play = catalog.play(msg.world);
             const store = opts.inventories;

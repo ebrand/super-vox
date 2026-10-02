@@ -426,6 +426,7 @@ interface WorldInfo {
   createdAt: string;
   updatedAt?: string;
   editedChunks: number;
+  mode?: 'survival' | 'creative';
   spec: { generator: string; plates?: PlateTerrainConfig; shape?: WorldShape };
 }
 
@@ -499,7 +500,7 @@ async function loadWorlds(): Promise<void> {
     name.textContent = w.name;
     name.title = `created ${w.createdAt}` + (w.updatedAt ? `, regenerated ${w.updatedAt}` : '') + `, ${w.editedChunks} edited chunks`;
     const kind = document.createElement('em');
-    kind.textContent = w.spec.generator + (w.spec.generator === 'plates' ? (w.spec.shape === 'round-16x8' ? ', round' : ', flat') : '') + (w.name === data.default ? ', default' : '');
+    kind.textContent = w.spec.generator + (w.spec.generator === 'plates' ? (w.spec.shape?.startsWith('round') ? ', round' : ', flat') : '') + (w.mode ? `, ${w.mode}` : '') + (w.name === data.default ? ', default' : '');
     li.append(name, kind);
     if (w.spec.plates) {
       const load = document.createElement('button');
@@ -588,9 +589,10 @@ createEl.addEventListener('click', async () => {
   }
   createEl.disabled = true;
   try {
-    const res = await fetch('/api/worlds', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, plates: config, shape }) });
+    const mode = (document.getElementById('new-mode') as HTMLSelectElement).value;
+    const res = await fetch('/api/worlds', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, plates: config, shape, mode }) });
     if (res.status === 201) {
-      message(`Created "${name}".`, 'good', { href: playHref(name), text: `Play ${name}` });
+      message(`Created "${name}" (${mode}).`, 'good', { href: playHref(name), text: `Play ${name}` });
       nameEl.value = '';
       editing = { name, editedChunks: 0 };
       await loadWorlds();

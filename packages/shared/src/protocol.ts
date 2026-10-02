@@ -80,6 +80,8 @@ export type ServerMessage =
       player: { name: string; admin: boolean } | null;
       /** Whether this connection may edit (signing in is required where the server has accounts). */
       canEdit: boolean;
+      /** The world's game mode (absent from servers before modes were told here: treat as creative). */
+      mode?: GameMode;
     }
   /**
    * The player's inventory in this world (after welcome, and whenever it changes): the world's

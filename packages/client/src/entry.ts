@@ -5,6 +5,7 @@ import { SETTINGS_LIMITS, workersFor, defaultSettings, loadSettings, saveSetting
 interface WorldInfo {
   name: string;
   createdAt: string;
+  mode?: 'survival' | 'creative';
   spec: {
     generator: string;
     plates?: { landPercent: number; majorPlates: number; minorPlates: number; minHeight: number; maxHeight: number };
@@ -36,8 +37,9 @@ function describe(w: WorldInfo): string {
   const p = w.spec.plates;
   const created = new Date(w.createdAt);
   const when = Number.isNaN(created.getTime()) ? '' : ` · created ${created.toLocaleDateString()}`;
-  if (!p) return `${w.spec.generator} terrain${when}`;
-  return `${p.landPercent}% land · ${p.majorPlates} major + ${p.minorPlates} minor plates · ${p.minHeight}..${p.maxHeight} m${when}`;
+  const mode = w.mode ? `${w.mode[0]!.toUpperCase()}${w.mode.slice(1)} · ` : '';
+  if (!p) return `${mode}${w.spec.generator} terrain${when}`;
+  return `${mode}${p.landPercent}% land · ${p.majorPlates} major + ${p.minorPlates} minor plates · ${p.minHeight}..${p.maxHeight} m${when}`;
 }
 
 function showWorld(): void {
@@ -61,7 +63,7 @@ async function loadWorlds(): Promise<void> {
   for (const w of worlds) {
     const opt = document.createElement('option');
     opt.value = w.name;
-    opt.textContent = w.name + (w.name === defaultWorld ? ' (default)' : '');
+    opt.textContent = w.name + (w.mode ? ` · ${w.mode}` : '') + (w.name === defaultWorld ? ' (default)' : '');
     worldEl.appendChild(opt);
   }
   if (worlds.length === 0) {

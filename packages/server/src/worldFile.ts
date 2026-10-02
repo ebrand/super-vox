@@ -57,10 +57,11 @@ export function modeOf(file: WorldFile): GameMode {
 
 /**
  * What players' inventories in a world are filed under: its name and when its terrain was made,
- * so a world created again (or given new terrain, which discards its edits) starts everyone afresh.
+ * so a world created again (or given new terrain, which discards its edits) starts everyone afresh;
+ * and in creative, apart (so switching a world's mode keeps everyone's survival inventory).
  */
 export function inventoryKeyOf(file: WorldFile): string {
-  return `${file.name}@${file.updatedAt ?? file.createdAt}`;
+  return `${file.name}@${file.updatedAt ?? file.createdAt}${modeOf(file) === 'creative' ? '/creative' : ''}`;
 }
 
 export class WorldExistsError extends Error {}
@@ -141,9 +142,19 @@ export function updateWorld(dataRoot: string, name: string, spec: WorldSpec): Wo
   // new terrain with old edits. Its terraforming goes too: it shaped the old terrain.
   rmSync(join(dir, 'chunks'), { recursive: true, force: true });
   rmSync(join(dir, STROKES_FILE), { force: true });
-  const file: WorldFile = { version: 1, name, createdAt: old.createdAt, updatedAt: new Date().toISOString(), spec, ...(old.clock ? { clock: old.clock } : {}) };
+  const file: WorldFile = { version: 1, name, createdAt: old.createdAt, updatedAt: new Date().toISOString(), spec, ...(old.clock ? { clock: old.clock } : {}), ...(old.mode ? { mode: old.mode } : {}) };
   writeWorldFile(dir, file);
   return file;
+}
+
+/** Sets world `name`'s game mode (its terrain, edits and terraforming stay). Throws NoSuchWorldError. */
+export function saveMode(dataRoot: string, name: string, mode: GameMode): WorldFile {
+  if (!isGameMode(mode)) throw new RangeError(`unknown game mode ${JSON.stringify(mode)}`);
+  const file = readWorld(dataRoot, name);
+  if (!file) throw new NoSuchWorldError(`no world named "${name}"`);
+  const out = { ...file, mode };
+  writeWorldFile(join(dataRoot, name), out);
+  return out;
 }
 
 function writeWorldFile(dir: string, file: WorldFile): void {

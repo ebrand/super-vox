@@ -497,8 +497,8 @@ connection = connect({
           joinError = `${msg.message}${worldName !== undefined ? ' (check ?world=)' : ''}`;
         } else if (msg.code === 'world_changed') {
           joinError = `${msg.message}: reload to play it`;
-        } else if (msg.code === 'world_terraformed') {
-          // The land was reshaped (builds kept): load it again, here (on the new ground).
+        } else if (msg.code === 'world_terraformed' || msg.code === 'world_mode_changed') {
+          // The land was reshaped (builds kept), or the world's mode changed: load it again, here.
           joinError = `${msg.message}: reloading`;
           const url = new URL(location.href);
           url.searchParams.set('x', camera.position.x.toFixed(1));
