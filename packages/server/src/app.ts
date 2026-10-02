@@ -106,7 +106,11 @@ export const WATER_STEP_MS = 200;
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
   await app.register(fastifyCookie);
-  await app.register(websocket);
+  // Messages compressed on the way (browsers ask for it): chunks shrink about 40x. Fast deflate
+  // (in zlib's background threads), each connection keeping its window; small messages as they are.
+  await app.register(websocket, {
+    options: { perMessageDeflate: { zlibDeflateOptions: { level: 1 }, threshold: 1024, concurrencyLimit: 16 } },
+  });
   opts.auth?.register(app);
   const catalog = 'catalog' in opts ? opts.catalog : singleWorld(opts.world, opts.worldWithTolerance);
 

@@ -43,9 +43,9 @@ afterEach(async () => {
   await app.close();
 });
 
-function connect(): Promise<WebSocket> {
+function connect(opts: WebSocket.ClientOptions = {}): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(wsUrl, opts);
     ws.once('open', () => resolve(ws));
     ws.once('error', reject);
   });
@@ -77,8 +77,8 @@ async function until(done: () => boolean, ms = 5000): Promise<void> {
   }
 }
 
-async function greeted(): Promise<WebSocket> {
-  const ws = await connect();
+async function greeted(opts: WebSocket.ClientOptions = {}): Promise<WebSocket> {
+  const ws = await connect(opts);
   const reply = nextMessage(ws);
   ws.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION }));
   expect((await reply).type).toBe('welcome');
@@ -158,6 +158,23 @@ describe('world map', () => {
 });
 
 describe('WebSocket handshake', () => {
+  it('compresses messages for clients that ask (browsers do), and they arrive intact', async () => {
+    const ws = await connect();
+    expect(ws.extensions).toContain('permessage-deflate');
+    const reply = nextMessage(ws);
+    ws.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION }));
+    expect((await reply).type).toBe('welcome');
+    const before = (ws as unknown as { _socket: { bytesRead: number } })._socket.bytesRead;
+    const frame = nextFrame(ws);
+    ws.send(JSON.stringify({ type: 'requestChunk', cx: 500, cy: -1, cz: 500 }));
+    const f = await frame;
+    if (!('binary' in f)) throw new Error('expected binary');
+    expect(decodeChunk(f.binary.subarray(1))).toMatchObject({ cx: 500, cy: -1, cz: 500 });
+    // Far fewer bytes came over the wire than the chunk holds.
+    expect((ws as unknown as { _socket: { bytesRead: number } })._socket.bytesRead - before).toBeLessThan(f.binary.length / 4);
+    ws.close();
+  });
+
   it('answers hello with welcome and the world config', async () => {
     const ws = await connect();
     const reply = nextMessage(ws);
@@ -317,7 +334,9 @@ describe('tiles and columns', () => {
   });
 
   it('drops requests cancelled before they were served', async () => {
-    const ws = await greeted();
+    // (Uncompressed: a compressed message is unpacked off the main thread, a moment later, by
+    // when this flat world's 400 cheap chunks are all served; here it's the cancelling that's tested.)
+    const ws = await greeted({ perMessageDeflate: false });
     const chunks: string[] = [];
     ws.on('message', (data, isBinary) => {
       if (!isBinary) return;

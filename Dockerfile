@@ -11,10 +11,12 @@ COPY packages packages
 RUN npm run build && npm prune --omit=dev
 
 FROM node:22-slim
+# (UV_THREADPOOL_SIZE: Node's background threads, for compressing messages and the disk cache.)
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=8787 \
-    WORLD_DATA_DIR=/data
+    WORLD_DATA_DIR=/data \
+    UV_THREADPOOL_SIZE=16
 WORKDIR /app
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules node_modules
