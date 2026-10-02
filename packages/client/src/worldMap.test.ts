@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { Material } from '@super-vox/shared';
 import { materialColor } from './materials.js';
-import { decodeWorldMap, linearToSrgb, mapColor, renderMap, type MapData } from './worldMap.js';
+import { decodeWorldMap, linearToSrgb, mapColor, renderMap, travelClick, type MapData } from './worldMap.js';
 
 describe('map colours', () => {
   it('converts linear to sRGB like three.js (GPU constants; within rounding of its JS helper)', () => {
@@ -60,5 +60,13 @@ describe('world map data', () => {
     for (let k = 0; k < 6; k++) expect(px[k * 4 + 3]).toBe(255);
     // Sample 2 (sand, below sea) is bluer than sample 3 (sand, at sea level).
     expect(px[2 * 4 + 2]! - px[2 * 4]!).toBeGreaterThan(px[3 * 4 + 2]! - px[3 * 4]!);
+  });
+});
+
+describe('travelClick', () => {
+  it('goes somewhere only with ⌘ (or Ctrl) held', () => {
+    expect(travelClick({ metaKey: false, ctrlKey: false })).toBe(false);
+    expect(travelClick({ metaKey: true, ctrlKey: false })).toBe(true);
+    expect(travelClick({ metaKey: false, ctrlKey: true })).toBe(true);
   });
 });

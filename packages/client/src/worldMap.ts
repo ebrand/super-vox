@@ -2,6 +2,7 @@ import { UNITS_PER_METER, type ClimateGrid } from '@super-vox/shared';
 import { materialColor, materialName } from './materials.js';
 import { climateTintColors } from './tintColors.js';
 import { TILE, detailTiles, fitView, niceLength, pan, screenToWorld, zoomAt, type MapView, type MapWorld } from './mapView.js';
+import { DEFAULT_EXAGGERATION, WorldRelief } from './worldRelief.js';
 
 /** Top-down surface samples for the whole world (see the server's /api/world/map). */
 export interface MapData {
@@ -98,8 +99,8 @@ const MAX_FETCHES = 4;
  * Full-screen world map overlay: the colour map, a grid, a scale bar, the player (with facing)
  * and spawn. The wheel zooms (about the cursor), dragging pans (round worlds wrap east-west), 0
  * shows the whole world again; zoomed in, sharper pictures of what's in view are fetched. Hovering
- * shows the position, height and surface under the cursor; clicking (without dragging) asks to
- * teleport there.
+ * shows the position, height and surface under the cursor; ⌘-clicking (Ctrl-clicking; without
+ * dragging) asks to teleport there.
  */
 export class WorldMapOverlay {
   private readonly root: HTMLDivElement;
@@ -118,6 +119,14 @@ export class WorldMapOverlay {
   private detailTimer: ReturnType<typeof setTimeout> | null = null;
   private drag: { x: number; y: number; moved: boolean } | null = null;
   private readonly world: MapWorld;
+  private readonly frameEl: HTMLDivElement;
+  private readonly modeButton: HTMLButtonElement;
+  private readonly heightControl: HTMLLabelElement;
+  private readonly miniatureControl: HTMLLabelElement;
+  /** The 3D view (made the first time it's asked for), whether it's showing, and its frame loop. */
+  private relief: WorldRelief | null = null;
+  private in3d = false;
+  private loop = 0;
   isOpen = false;
 
   constructor(
@@ -133,12 +142,16 @@ export class WorldMapOverlay {
     this.world = { width: worldSize.width, depth: worldSize.depth, wrapX: !!worldSize.wrapX };
     this.root = document.createElement('div');
     this.root.id = 'worldmap';
-    this.root.innerHTML = '<div class="frame"><canvas class="marks"></canvas></div><div class="info">loading map…</div>';
+    this.root.innerHTML =
+      '<div class="bar"><button type="button" class="mode">3D view</button>' +
+      `<label class="height" hidden>height × <input type="range" min="1" max="12" step="0.5" value="${DEFAULT_EXAGGERATION}"><span>${DEFAULT_EXAGGERATION}</span></label>` +
+      '<label class="miniature" hidden><input type="checkbox" checked> miniature</label></div>' +
+      '<div class="frame"><canvas class="marks"></canvas></div><div class="info">loading map…</div>';
     document.body.appendChild(this.root);
     this.canvas = this.root.querySelector('canvas.marks')!;
     this.info = this.root.querySelector('div.info')!;
     // The world's own proportions (a round world is twice as wide as it is deep).
-    const frame = this.root.querySelector('div.frame') as HTMLDivElement, ratio = worldSize.width / worldSize.depth;
+    const frame = (this.frameEl = this.root.querySelector('div.frame') as HTMLDivElement), ratio = worldSize.width / worldSize.depth;
     frame.style.aspectRatio = `${worldSize.width} / ${worldSize.depth}`;
     frame.style.width = `min(92vw, ${88 * ratio}vh)`;
     const c = this.canvas;
@@ -162,7 +175,7 @@ export class WorldMapOverlay {
     window.addEventListener('mouseup', (e) => {
       const d = this.drag;
       this.drag = null;
-      if (!d || d.moved || e.button !== 0 || !this.isOpen) return;
+      if (!d || d.moved || e.button !== 0 || !this.isOpen || !travelClick(e)) return;
       const p = this.at(e);
       if (p) {
         this.teleport(p.x, p.z, p.height);
@@ -173,9 +186,101 @@ export class WorldMapOverlay {
       if (!this.drag?.moved) this.showInfo(this.at(e));
     });
     c.addEventListener('mouseleave', () => this.showInfo(null));
+    // (Ctrl-click is a right-click on Macs: no menu.)
+    c.addEventListener('contextmenu', (e) => e.preventDefault());
     window.addEventListener('keydown', (e) => {
-      if (this.isOpen && e.code === 'Digit0') this.setView(null);
+      if (!this.isOpen || e.code !== 'Digit0') return;
+      if (this.in3d) this.relief?.reset();
+      else this.setView(null);
     });
+    this.modeButton = this.root.querySelector('button.mode')!;
+    this.heightControl = this.root.querySelector('label.height')!;
+    this.modeButton.addEventListener('click', () => this.set3d(!this.in3d));
+    const slider = this.heightControl.querySelector('input')!, shown = this.heightControl.querySelector('span')!;
+    slider.addEventListener('input', () => {
+      shown.textContent = slider.value;
+      this.relief?.setExaggeration(Number(slider.value));
+    });
+    this.miniatureControl = this.root.querySelector('label.miniature')!;
+    const mini = this.miniatureControl.querySelector('input')!;
+    mini.addEventListener('change', () => {
+      if (this.relief) this.relief.miniature = mini.checked;
+    });
+    // Keys typed on the controls stay with them (not the game).
+    for (const el of [slider, mini, this.modeButton]) el.addEventListener('keydown', (e) => e.stopPropagation());
+  }
+
+  /** Whether the 3D view is showing (the game needn't draw itself behind it meanwhile). */
+  get showing3d(): boolean {
+    return this.isOpen && this.in3d;
+  }
+
+  /** Switches between the flat map and the 3D view. */
+  private set3d(on: boolean): void {
+    if (on && !this.map) {
+      this.info.textContent = 'the map is still loading';
+      return;
+    }
+    this.in3d = on;
+    this.modeButton.textContent = on ? 'Flat map' : '3D view';
+    this.heightControl.hidden = this.miniatureControl.hidden = !on;
+    this.canvas.hidden = on;
+    this.frameEl.classList.toggle('in3d', on);
+    if (on && !this.relief) {
+      const relief = (this.relief = new WorldRelief(this.map!, this.world, this.player, this.spawn));
+      relief.miniature = this.miniatureControl.querySelector('input')!.checked;
+      relief.setExaggeration(Number(this.heightControl.querySelector('input')!.value));
+      this.frameEl.append(relief.canvas);
+      this.wire3d(relief);
+    }
+    if (this.relief) this.relief.canvas.hidden = !on;
+    this.info.textContent = on ? HINT_3D : HINT;
+    this.run3d();
+  }
+
+  /** Draws the 3D view each frame while it's showing. */
+  private run3d(): void {
+    cancelAnimationFrame(this.loop);
+    if (!this.showing3d || !this.relief) return;
+    const tick = () => {
+      if (!this.showing3d || !this.relief) return;
+      this.relief.render();
+      this.loop = requestAnimationFrame(tick);
+    };
+    this.loop = requestAnimationFrame(tick);
+  }
+
+  /** Hovering shows what's there; a click (not a drag) goes there. */
+  private wire3d(relief: WorldRelief): void {
+    const c = relief.canvas;
+    let down: { x: number; y: number } | null = null;
+    let hover: { x: number; y: number } | null = null;
+    c.addEventListener('pointerdown', (e) => {
+      if (e.button === 0) down = { x: e.clientX, y: e.clientY };
+    });
+    c.addEventListener('pointerup', (e) => {
+      const d = down;
+      down = null;
+      if (!d || e.button !== 0 || !travelClick(e) || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return;
+      const r = c.getBoundingClientRect();
+      const p = relief.pick(e.clientX - r.left, e.clientY - r.top);
+      if (p) {
+        this.teleport(p.x, p.z, p.height);
+        this.close();
+      }
+    });
+    c.addEventListener('pointermove', (e) => {
+      if (e.buttons) return;
+      const r = c.getBoundingClientRect();
+      // At most one look-up a frame.
+      if (!hover) requestAnimationFrame(() => {
+        if (hover) this.showInfo(relief.pick(hover.x, hover.y), HINT_3D);
+        hover = null;
+      });
+      hover = { x: e.clientX - r.left, y: e.clientY - r.top };
+    });
+    c.addEventListener('pointerleave', () => this.showInfo(null, HINT_3D));
+    c.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   toggle(): void {
@@ -188,12 +293,14 @@ export class WorldMapOverlay {
     this.root.classList.add('open');
     if (!this.map) void this.load();
     this.update();
+    this.run3d();
   }
 
   close(): void {
     this.isOpen = false;
     this.drag = null;
     this.root.classList.remove('open');
+    cancelAnimationFrame(this.loop);
   }
 
   /** The frame's size in CSS pixels. */
@@ -217,7 +324,7 @@ export class WorldMapOverlay {
 
   /** Redraws the map and markers; call each frame while open. */
   update(): void {
-    if (!this.isOpen || !this.map) return;
+    if (!this.isOpen || !this.map || this.in3d) return;
     const c = this.canvas;
     const { w, h } = this.frameSize();
     const dpr = window.devicePixelRatio || 1;
@@ -290,6 +397,7 @@ export class WorldMapOverlay {
   setClimate(climate: ClimateGrid): void {
     this.climate = climate;
     if (this.map) this.paint(this.map, this.base);
+    this.relief?.recolor();
     for (const t of this.tiles.values()) this.paint(t.map, t.image);
   }
 
@@ -384,20 +492,26 @@ export class WorldMapOverlay {
     return { x: (i + 0.5) * m.step, z: (j + 0.5) * m.step, height: m.heights[k]!, material: m.materials[k]! };
   }
 
-  private showInfo(p: { x: number; z: number; height: number; material: number } | null): void {
+  private showInfo(p: { x: number; z: number; height: number; material: number } | null, hint = HINT): void {
     if (!this.map) return;
     if (!p) {
-      this.info.textContent = HINT;
+      this.info.textContent = hint;
       return;
     }
     const m = (u: number) => (u / UNITS_PER_METER).toFixed(0);
     const sea = this.map.seaLevel;
     const under = sea !== null && p.height < sea ? ` · ${m(sea - p.height)} m under the sea` : '';
-    this.info.textContent = `x ${m(p.x)} m, z ${m(p.z)} m · ground ${m(p.height)} m · ${materialName(p.material)}${under} · click to go there`;
+    this.info.textContent = `x ${m(p.x)} m, z ${m(p.z)} m · ground ${m(p.height)} m · ${materialName(p.material)}${under} · ⌘-click to go there`;
   }
 }
 
-const HINT = 'wheel: zoom · drag: move · 0: whole world · hover for details, click to go there · M or Esc to close';
+const HINT = 'wheel: zoom · drag: move · 0: whole world · hover for details, ⌘-click to go there · M or Esc to close';
+const HINT_3D = 'wheel: zoom · drag: move · right-drag: turn and tilt · 0: start again · hover for details, ⌘-click to go there · M or Esc to close';
+
+/** Only a ⌘-click (Ctrl-click elsewhere) goes somewhere: plain clicks and drags just look around. */
+export function travelClick(e: { metaKey: boolean; ctrlKey: boolean }): boolean {
+  return e.metaKey || e.ctrlKey;
+}
 
 const mod = (v: number, m: number) => ((v % m) + m) % m;
 

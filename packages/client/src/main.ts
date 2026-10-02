@@ -610,7 +610,8 @@ renderer.setAnimationLoop(() => {
   applyLighting(lighting, worldHours(), atmosphere, lightingUniforms, view);
   lightingPanel.updateTime();
   atmosphere.uniforms.underwater.value = inWaterAt(camera.position.x, camera.position.y, camera.position.z) ? 1 : 0;
-  water.render(scene, camera);
+  // (Not behind the 3D map, which draws itself: the last frame stays on screen.)
+  if (!worldMap?.showing3d) water.render(scene, camera);
 
   frames++;
   const now = performance.now();
