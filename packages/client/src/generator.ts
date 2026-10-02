@@ -217,7 +217,7 @@ document.getElementById('reset')!.addEventListener('click', () => {
   requestPreview();
 });
 
-// ---- Preview: built in a worker; while one builds, only the newest settings wait.
+// ---- Preview: built in a worker, which drops a build once newer settings arrive.
 
 const canvas = document.getElementById('map') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
@@ -245,12 +245,9 @@ for (const b of Object.values(Biome)) {
   legendEl.appendChild(item);
 }
 const worker = new Worker(new URL('./generator.worker.ts', import.meta.url), { type: 'module' });
-let busy = false;
-/** Settings changed while a preview was building: build again with the latest when it's done. */
-let queued = false;
-/** The settings of the preview being built. */
+/** The newest request sent, and its settings: the worker answers only the newest. */
+let sentId = 0;
 let sent: PlateTerrainConfig = config;
-let nextId = 1;
 let preview: Preview | null = null;
 let previewConfig: PlateTerrainConfig | null = null;
 
@@ -262,20 +259,16 @@ function requestPreview(): void {
     statsEl.className = 'bad';
     return;
   }
-  if (busy) {
-    queued = true;
-    return;
-  }
-  busy = true;
   sent = config;
   canvas.classList.add('busy');
-  const req: PreviewRequest = { id: nextId++, config, size: previewSize(shape), shape };
+  const req: PreviewRequest = { id: ++sentId, config, size: previewSize(shape), shape };
   worker.postMessage(req);
 }
 
 worker.onmessage = (ev: MessageEvent<PreviewResponse>) => {
-  busy = false;
   const res = ev.data;
+  if (res.id !== sentId) return;
+  canvas.classList.remove('busy');
   if (res.ok) {
     preview = res.preview;
     previewConfig = sent;
@@ -303,15 +296,9 @@ worker.onmessage = (ev: MessageEvent<PreviewResponse>) => {
     statsEl.className = 'bad';
     statsEl.textContent = res.error;
   }
-  if (queued) {
-    queued = false;
-    requestPreview();
-  } else {
-    canvas.classList.remove('busy');
-  }
 };
 worker.onerror = (e) => {
-  busy = false;
+  canvas.classList.remove('busy');
   statsEl.className = 'bad';
   statsEl.textContent = `preview failed: ${e.message}`;
 };

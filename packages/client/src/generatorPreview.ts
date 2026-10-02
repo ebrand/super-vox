@@ -1,4 +1,4 @@
-import { FLAT_WORLD_16KM, Material, NO_CANOPY, PlateHeights, type PlateTerrainConfig, type WorldConfig } from '@super-vox/shared';
+import { FLAT_WORLD_16KM, Material, NO_CANOPY, PlateHeights, PlateStagePause, type PlateStageCache, type PlateTerrainConfig, type WorldConfig } from '@super-vox/shared';
 import { climateTintColors } from './tintColors.js';
 import type { MapData } from './worldMap.js';
 
@@ -40,17 +40,45 @@ export interface Preview {
  * statistics. Uses the same PlateHeights as the server, so the preview is the
  * world that would be created.
  */
-export function buildPreview(config: PlateTerrainConfig, size: number, world: WorldConfig = FLAT_WORLD_16KM): Preview {
+export function buildPreview(config: PlateTerrainConfig, size: number, world: WorldConfig = FLAT_WORLD_16KM, cache?: PlateStageCache): Preview {
+  const steps = previewSteps(config, size, world, cache);
+  for (;;) {
+    const r = steps.next();
+    if (r.done) return r.value;
+  }
+}
+
+/**
+ * buildPreview a step at a time: it pauses (yields) between the costly steps, so a caller can
+ * drop a build that's been overtaken by newer settings. `cache` keeps the plate stages between
+ * builds (see PlateStageCache).
+ */
+export function* previewSteps(config: PlateTerrainConfig, size: number, world: WorldConfig = FLAT_WORLD_16KM, cache?: PlateStageCache): Generator<void, Preview> {
   const t0 = performance.now();
-  const p = new PlateHeights(world, config);
+  let p: PlateHeights;
+  for (;;) {
+    try {
+      p = new PlateHeights(world, config, cache);
+      break;
+    } catch (err) {
+      // A stage made (with cache.pauseAfterEach): pause, then build on from the cache.
+      if (!(err instanceof PlateStagePause)) throw err;
+      yield;
+    }
+  }
+  yield;
   const step = world.widthUnits / size;
   const cols = size, rows = Math.round(world.depthUnits / step);
   const h = p.heights(step / 2, step / 2, cols, rows, step);
+  yield;
   const m = p.materials(step / 2, step / 2, cols, rows, step, h);
+  yield;
   const biome = p.biomes(step / 2, step / 2, cols, rows, step, h);
+  yield;
   // Forests, seen from above as the map shows them (biomes and stats are about the ground).
   const canopy = p.canopy(step / 2, step / 2, cols, rows, step, h, m);
   const canopyH = Int32Array.from(h), canopyM = Uint16Array.from(m);
+  yield;
   // Rivers and lakes show as water.
   const standing = p.water(step / 2, step / 2, cols, rows, step);
   if (canopy) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { PlateHeights, defaultPlateTerrain, FLAT_WORLD_16KM, ROUND_WORLD_16x8KM } from '@super-vox/shared';
-import { buildPreview } from './generatorPreview.js';
+import { PlateHeights, PlateStageCache, defaultPlateTerrain, FLAT_WORLD_16KM, ROUND_WORLD_16x8KM } from '@super-vox/shared';
+import { buildPreview, previewSteps } from './generatorPreview.js';
 import { TINTED } from './materials.js';
 
 describe('buildPreview', () => {
@@ -69,5 +69,35 @@ describe('buildPreview', () => {
 
   it('rejects invalid settings', () => {
     expect(() => buildPreview({ ...config, seaLevel: 400 }, 32)).toThrow(/maxHeight/);
+  });
+});
+
+describe('previewSteps', () => {
+  it('pauses between steps and, with a stage cache, builds the same preview as buildPreview', () => {
+    const cache = new PlateStageCache();
+    const config = { ...defaultPlateTerrain(4), landPercent: 35 };
+    const run = (c: typeof config) => {
+      const steps = previewSteps(c, 64, FLAT_WORLD_16KM, cache);
+      let pauses = 0;
+      for (;;) {
+        const r = steps.next();
+        if (r.done) return { pauses, preview: r.value };
+        pauses++;
+      }
+    };
+    const first = run(config);
+    expect(first.pauses).toBeGreaterThanOrEqual(5);
+    const strip = (pv: ReturnType<typeof buildPreview>) => ({ ...pv, stats: { ...pv.stats, ms: 0 } });
+    expect(strip(first.preview)).toEqual(strip(buildPreview(config, 64)));
+    // A change to the snow line only: every plate stage reused, same as a fresh build.
+    const hits = cache.hits;
+    const snow = run({ ...config, snowAltitude: 100 });
+    expect(cache.hits - hits).toBe(7);
+    expect(strip(snow.preview)).toEqual(strip(buildPreview({ ...config, snowAltitude: 100 }, 64)));
+    // Pausing after each new plate stage: one more pause per stage made, and the same preview.
+    cache.pauseAfterEach = true;
+    const paused = run({ ...config, landPercent: 45 });
+    expect(paused.pauses - first.pauses).toBe(5); // all but the layout and relief stages redone
+    expect(strip(paused.preview)).toEqual(strip(buildPreview({ ...config, landPercent: 45 }, 64)));
   });
 });

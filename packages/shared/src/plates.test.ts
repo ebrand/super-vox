@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { voxelAt, type Chunk } from './chunk.js';
 import { Biome, BIOME_GROUND } from './biomes.js';
 import { Material } from './materials.js';
-import { PLATE_CELL, PlateHeights, defaultPlateCounts, defaultPlateTerrain, migratePlateTerrain, parsePlateTerrain, validatePlateTerrain, type PlateTerrainConfig } from './plates.js';
+import { PLATE_CELL, PlateHeights, PlateStageCache, defaultPlateCounts, defaultPlateTerrain, migratePlateTerrain, parsePlateTerrain, validatePlateTerrain, type PlateTerrainConfig } from './plates.js';
 import { TerrainGenerator } from './terrain.js';
 import { CHUNK_SIZE, FLAT_WORLD_16KM, ROUND_WORLD_16x8KM } from './world.js';
 
@@ -990,4 +990,53 @@ describe('TerrainGenerator on plate heights', () => {
     expect(exposed.has(Material.Dirt)).toBe(false);
     expect(exposed.get(Material.Sand) ?? 0).toBeGreaterThan(0);
   });
+});
+
+describe('PlateStageCache', () => {
+  const base: PlateTerrainConfig = { ...defaultPlateTerrain(5, ROUND_WORLD_16x8KM), islandArcs: 50, hotspots: 6, plains: 25 };
+  /** Everything a build decides, to compare builds by. */
+  const summary = (p: PlateHeights) => {
+    const bytes = (a: ArrayBufferView | null) => {
+      if (!a) return null;
+      // FNV-1a over the bytes, and the length.
+      const b = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+      let h = 0x811c9dc5;
+      for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i]!, 0x01000193);
+      return `${b.length}:${h >>> 0}`;
+    };
+    const h = p.heights(0, 0, 200, 100, 128);
+    return {
+      grids: [p.elevation, p.plateOf, p.plainness, p.temperature, p.moisture].map(bytes),
+      layout: JSON.stringify([p.plates, p.islands, p.collisions, p.hydrology]),
+      samples: [bytes(h), bytes(p.materials(0, 0, 200, 100, 128, h)), bytes(p.water(0, 0, 200, 100, 128))],
+    };
+  };
+  const fresh = summary(new PlateHeights(ROUND_WORLD_16x8KM, base));
+
+  it('builds exactly what a build without it does, redoing only the stages a change affects', () => {
+    const cache = new PlateStageCache();
+    new PlateHeights(ROUND_WORLD_16x8KM, base, cache);
+    // Each change, and how many of the 7 stages it leaves as they were.
+    const changes: [Partial<PlateTerrainConfig>, number][] = [
+      [{ snowAltitude: 150, trees: 80, biomeBlend: 10 }, 7],
+      [{ lakes: 10 }, 6],
+      [{ rainfall: 90 }, 5],
+      [{ biomes: 0 }, 5],
+      [{ maxHeight: 350 }, 4],
+      [{ mountainWidth: 3000 }, 3],
+      [{ shoreFractal: 80 }, 3],
+      [{ noiseScale: 4000 }, 2],
+      [{ landPercent: 40 }, 2],
+      [{ seed: 6 }, 0],
+    ];
+    for (const [change, reused] of changes) {
+      const cfg = { ...base, ...change };
+      const hits = cache.hits;
+      const cached = new PlateHeights(ROUND_WORLD_16x8KM, cfg, cache);
+      expect(cache.hits - hits, JSON.stringify(change)).toBe(reused);
+      expect(summary(cached), JSON.stringify(change)).toEqual(summary(new PlateHeights(ROUND_WORLD_16x8KM, cfg)));
+      // And back: nothing a build reused was changed by it (rivers fill basins in a copy, say).
+      expect(summary(new PlateHeights(ROUND_WORLD_16x8KM, base, cache)), JSON.stringify(change)).toEqual(fresh);
+    }
+  }, 60_000);
 });

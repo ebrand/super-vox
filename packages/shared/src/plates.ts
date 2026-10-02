@@ -400,6 +400,43 @@ function rng(seed: number): () => number {
   };
 }
 
+/** A build stopped after making a stage (see PlateStageCache.pauseAfterEach). */
+export class PlateStagePause extends Error {
+  constructor(readonly stage: string) {
+    super(`paused after the ${stage} stage`);
+  }
+}
+
+/**
+ * The stages of the last PlateHeights build (plate layout, mountains, relief, coasts, heights,
+ * climate, rivers), each with the settings it was made from: a build given the cache reuses every
+ * stage whose settings haven't changed. For the generator's preview, rebuilt on every change;
+ * results are shared between builds, so nothing may change them.
+ */
+export class PlateStageCache {
+  private readonly stages = new Map<string, { key: string; value: unknown }>();
+  /**
+   * Stop a build (throwing PlateStagePause) after each stage it makes, so a caller can see
+   * whether it's still wanted between stages; building again picks up where it stopped.
+   */
+  pauseAfterEach = false;
+
+  get<T>(stage: string, key: string, make: () => T): T {
+    const kept = this.stages.get(stage);
+    if (kept && kept.key === key) {
+      this.hits++;
+      return kept.value as T;
+    }
+    const value = make();
+    this.stages.set(stage, { key, value });
+    if (this.pauseAfterEach) throw new PlateStagePause(stage);
+    return value;
+  }
+
+  /** How many stages have been reused, all told (for tests). */
+  hits = 0;
+}
+
 /**
  * Plate-tectonic heights. Everything is decided once, on a 32 m grid, at
  * construction (a few hundred milliseconds); `heights` then interpolates that
@@ -470,6 +507,8 @@ export class PlateHeights implements HeightSource {
   constructor(
     readonly world: WorldConfig,
     readonly config: PlateTerrainConfig,
+    /** Stages kept from earlier builds, to reuse (for previews, rebuilt on every change). */
+    cache?: PlateStageCache,
   ) {
     validatePlateTerrain(config);
     const sea = (this.seaLevel = Math.round(config.seaLevel * M));
@@ -489,8 +528,18 @@ export class PlateHeights implements HeightSource {
     const cols = (this.cols = world.widthUnits / PLATE_CELL);
     const rows = (this.rows = world.depthUnits / PLATE_CELL);
     const n = cols * rows;
-    const rand = rng(config.seed);
     const W = world.widthUnits, D = world.depthUnits;
+    // Each stage below depends on the settings in its key (and the stages before it). With a
+    // cache, a stage whose key hasn't changed since the last build reuses that build's result.
+    const memo = <T>(stage: string, key: readonly unknown[], make: () => T): T => (cache ? cache.get(stage, JSON.stringify(key), make) : make());
+    const cf = config;
+    const layoutKey = [W, D, this.wrap, cf.seed, cf.majorPlates, cf.minorPlates, cf.plateSizeRatio];
+    const mountainKey = [...layoutKey, cf.landPercent, cf.mountains, cf.mountainWidth, cf.mountainRuggedness];
+    const reliefKey = [...layoutKey, cf.terrainSeed, cf.noiseScale, cf.noiseRoughness];
+    const coastKey = [...reliefKey, cf.landPercent, cf.shoreFractal, cf.islandArcs, cf.hotspots, cf.islandMinSize, cf.islandMaxSize];
+    const heightKey = [...coastKey, ...mountainKey, cf.lowlandFlatness, cf.plains, cf.seaLevel, cf.minHeight, cf.maxHeight, cf.mountainHeight];
+    const climateKey = [...heightKey, cf.biomes, cf.northTemperature, cf.southTemperature, cf.equator, cf.equatorTemperature, cf.windFrom, cf.rainfall];
+    const hydrologyKey = [...(cf.biomes === 1 ? climateKey : heightKey), cf.biomes, cf.rivers, cf.lakes];
     // On a wrapping world each octave's lattice must tile the width exactly.
     const fit = (spacing: number) => (this.wrap ? W / Math.max(1, Math.round(W / spacing)) : spacing);
     const octaves = (seed: number, spacings: number[], persistence = 0.5): Octave[] =>
@@ -515,159 +564,182 @@ export class PlateHeights implements HeightSource {
       return c < 0 || c >= cols || r < 0 || r >= rows ? -1 : c + cols * r;
     };
 
-    // 1. Major plates: centres spread out (each the best of several random candidates).
-    const plates: Plate[] = [];
     const distTo = (p: { x: number; z: number }, c: { x: number; z: number }) => Math.hypot(dx(p.x, c.x), p.z - c.z);
-    const majorCount = config.majorPlates;
-    for (let i = 0; i < majorCount; i++) {
-      let best = { x: 0, z: 0 }, bestScore = -Infinity;
-      for (let t = 0; t < 12; t++) {
-        const c = { x: rand() * W, z: rand() * D };
-        const sc = plates.reduce((m, p) => Math.min(m, distTo(p, c)), Infinity);
-        if (sc > bestScore) [best, bestScore] = [c, sc];
-      }
-      plates.push({ ...best, major: true, weight: 0, continental: false });
-    }
-    this.plates = plates;
-
-    // 2. Cells are assigned at warped positions, so borders wander (but never by more than about
-    //    half a minor plate, or small plates fall apart).
-    const minorArea = (W * D) / (majorCount * config.plateSizeRatio + config.minorPlates);
-    const minorRadius = Math.sqrt(minorArea / Math.PI);
-    const warpX = layoutNoise(1, [64000, 32000, 16000]);
-    const warpZ = layoutNoise(2, [64000, 32000, 16000]);
-    const WARP = Math.min(900 * M, 0.5 * minorRadius);
-    const posX = new Float64Array(n), posZ = new Float64Array(n);
-    for (let i = 0; i < n; i++) {
-      const c = i % cols, r = (i - c) / cols;
-      posX[i] = (c + 0.5) * PLATE_CELL + warpX[i]! * WARP;
-      posZ[i] = (r + 0.5) * PLATE_CELL + warpZ[i]! * WARP;
-    }
-    // On worlds bigger than 16 x 16 km, major plates are big enough that their straight borders
-    // (and the coasts that follow them) show: bend them at their own scale too.
-    if (n > 250_000) {
-      const majorRadius = Math.sqrt((minorArea * config.plateSizeRatio) / Math.PI);
-      const spacings = [4 * majorRadius, 2 * majorRadius, majorRadius];
-      const bigX = layoutNoise(3, spacings), bigZ = layoutNoise(4, spacings);
-      for (let i = 0; i < n; i++) {
-        posX[i]! += bigX[i]! * 0.45 * majorRadius;
-        posZ[i]! += bigZ[i]! * 0.45 * majorRadius;
-      }
-    }
-    const power = (p: Plate, x: number, z: number) => {
-      const ddx = dx(p.x, x), ddz = p.z - z;
-      return ddx * ddx + ddz * ddz - p.weight;
-    };
-    // Majors form a power diagram: nearest centre by d^2 - weight. Its borders are straight lines,
-    // and the distance to the border with major b is exactly (power_b - power_a) / (2 |a - b|).
-    const pd = new Float64Array(majorCount);
-    const majorAt = (x: number, z: number) => {
-      let a = 0;
-      for (let k = 0; k < majorCount; k++) {
-        pd[k] = power(plates[k]!, x, z);
-        if (pd[k]! < pd[a]!) a = k;
-      }
-      let seam = Infinity;
-      for (let b = 0; b < majorCount; b++) {
-        if (b !== a) seam = Math.min(seam, (pd[b]! - pd[a]!) / (2 * Math.max(1, distTo(plates[a]!, plates[b]!))));
-      }
-      return { a, seam };
-    };
-    // Once placed, minors join the majors in one power diagram, so every border is a straight
-    // line (before warping) and minors are polygons like the majors, only smaller.
-    const owner = (x: number, z: number, withMinors: boolean) => {
-      let best = 0, bestD = Infinity;
-      const count = withMinors ? plates.length : majorCount;
-      for (let k = 0; k < count; k++) {
-        const d = power(plates[k]!, x, z);
-        if (d < bestD) [best, bestD] = [k, d];
-      }
-      return best;
-    };
-
-    // Plate sizes are tuned on a coarse grid. Each round measures every plate's area and moves
-    // its weight toward its target, with a per-plate step size (as in Rprop): halved when the
-    // plate overshoots (its error changes sign), otherwise grown, so plates far off converge fast.
-    // Coarse grid stride (cells): 4 up to 16 x 16 km, wider on bigger worlds so there are about as
-    // many samples (the cost is samples x plates x rounds).
-    const S = Math.max(4, Math.round(4 * Math.sqrt(n / 250_000)));
-    const sample: number[] = [];
-    for (let r = S >> 1; r < rows; r += S) for (let c = S >> 1; c < cols; c += S) sample.push(c + cols * r);
-    const cellArea = (S * PLATE_CELL) ** 2;
-    const balance = (target: number[], rounds: number, withMinors: boolean) => {
-      const count = target.length;
-      const area = new Float64Array(count);
-      const gain = new Float64Array(count).fill(0.6);
-      const lastErr = new Float64Array(count);
-      for (let iter = 0; iter < rounds; iter++) {
-        area.fill(0);
-        for (const i of sample) area[owner(posX[i]!, posZ[i]!, withMinors)]!++;
-        let mean = 0;
-        for (let k = 0; k < count; k++) {
-          const err = target[k]! - area[k]!;
-          if (err * lastErr[k]! < 0) gain[k]! *= 0.5;
-          else gain[k] = Math.min(20, gain[k]! * 1.2);
-          lastErr[k] = err;
-          // Raising a region's weight by w grows its area by roughly w * pi.
-          plates[k]!.weight += ((err * cellArea) / Math.PI) * gain[k]!;
-          mean += plates[k]!.weight;
+    const layout = memo('layout', layoutKey, () => {
+      const rand = rng(config.seed);
+      // 1. Major plates: centres spread out (each the best of several random candidates).
+      const plates: Plate[] = [];
+      const majorCount = config.majorPlates;
+      for (let i = 0; i < majorCount; i++) {
+        let best = { x: 0, z: 0 }, bestScore = -Infinity;
+        for (let t = 0; t < 12; t++) {
+          const c = { x: rand() * W, z: rand() * D };
+          const sc = plates.reduce((m, p) => Math.min(m, distTo(p, c)), Infinity);
+          if (sc > bestScore) [best, bestScore] = [c, sc];
         }
-        // Only differences between weights matter.
-        mean /= count;
-        for (let k = 0; k < count; k++) plates[k]!.weight -= mean;
+        plates.push({ ...best, major: true, weight: 0, continental: false });
       }
-    };
 
-    // 3. Majors alone, balanced to equal sizes, give the seams the minors are placed on.
-    balance(new Array<number>(majorCount).fill(sample.length / majorCount), 40, false);
-    // Seam samples: within about half a coarse cell of a border between majors.
-    const seamSamples = sample.filter((i) => majorAt(posX[i]!, posZ[i]!).seam < (S * PLATE_CELL) / 2);
-    const parent: number[] = plates.map((_, k) => k);
-    /** A cell's warped position as a plate centre: inside the world (wrapped east-west if it wraps). */
-    const centreAt = (i: number) => ({
-      x: this.wrap ? ((posX[i]! % W) + W) % W : Math.min(W, Math.max(0, posX[i]!)),
-      z: Math.min(D, Math.max(0, posZ[i]!)),
+      // 2. Cells are assigned at warped positions, so borders wander (but never by more than about
+      //    half a minor plate, or small plates fall apart).
+      const minorArea = (W * D) / (majorCount * config.plateSizeRatio + config.minorPlates);
+      const minorRadius = Math.sqrt(minorArea / Math.PI);
+      const warpX = layoutNoise(1, [64000, 32000, 16000]);
+      const warpZ = layoutNoise(2, [64000, 32000, 16000]);
+      const WARP = Math.min(900 * M, 0.5 * minorRadius);
+      const posX = new Float64Array(n), posZ = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        const c = i % cols, r = (i - c) / cols;
+        posX[i] = (c + 0.5) * PLATE_CELL + warpX[i]! * WARP;
+        posZ[i] = (r + 0.5) * PLATE_CELL + warpZ[i]! * WARP;
+      }
+      // On worlds bigger than 16 x 16 km, major plates are big enough that their straight borders
+      // (and the coasts that follow them) show: bend them at their own scale too.
+      if (n > 250_000) {
+        const majorRadius = Math.sqrt((minorArea * config.plateSizeRatio) / Math.PI);
+        const spacings = [4 * majorRadius, 2 * majorRadius, majorRadius];
+        const bigX = layoutNoise(3, spacings), bigZ = layoutNoise(4, spacings);
+        for (let i = 0; i < n; i++) {
+          posX[i]! += bigX[i]! * 0.45 * majorRadius;
+          posZ[i]! += bigZ[i]! * 0.45 * majorRadius;
+        }
+      }
+      const power = (p: Plate, x: number, z: number) => {
+        const ddx = dx(p.x, x), ddz = p.z - z;
+        return ddx * ddx + ddz * ddz - p.weight;
+      };
+      // Majors form a power diagram: nearest centre by d^2 - weight. Its borders are straight lines,
+      // and the distance to the border with major b is exactly (power_b - power_a) / (2 |a - b|).
+      const pd = new Float64Array(majorCount);
+      const majorAt = (x: number, z: number) => {
+        let a = 0;
+        for (let k = 0; k < majorCount; k++) {
+          pd[k] = power(plates[k]!, x, z);
+          if (pd[k]! < pd[a]!) a = k;
+        }
+        let seam = Infinity;
+        for (let b = 0; b < majorCount; b++) {
+          if (b !== a) seam = Math.min(seam, (pd[b]! - pd[a]!) / (2 * Math.max(1, distTo(plates[a]!, plates[b]!))));
+        }
+        return { a, seam };
+      };
+      // Once placed, minors join the majors in one power diagram, so every border is a straight
+      // line (before warping) and minors are polygons like the majors, only smaller.
+      const owner = (x: number, z: number, withMinors: boolean) => {
+        let best = 0, bestD = Infinity;
+        const count = withMinors ? plates.length : majorCount;
+        for (let k = 0; k < count; k++) {
+          const d = power(plates[k]!, x, z);
+          if (d < bestD) [best, bestD] = [k, d];
+        }
+        return best;
+      };
+
+      // Plate sizes are tuned on a coarse grid. Each round measures every plate's area and moves
+      // its weight toward its target, with a per-plate step size (as in Rprop): halved when the
+      // plate overshoots (its error changes sign), otherwise grown, so plates far off converge fast.
+      // Coarse grid stride (cells): 4 up to 16 x 16 km, wider on bigger worlds so there are about as
+      // many samples (the cost is samples x plates x rounds).
+      const S = Math.max(4, Math.round(4 * Math.sqrt(n / 250_000)));
+      const sample: number[] = [];
+      for (let r = S >> 1; r < rows; r += S) for (let c = S >> 1; c < cols; c += S) sample.push(c + cols * r);
+      const cellArea = (S * PLATE_CELL) ** 2;
+      const balance = (target: number[], rounds: number, withMinors: boolean) => {
+        const count = target.length;
+        const area = new Float64Array(count);
+        const gain = new Float64Array(count).fill(0.6);
+        const lastErr = new Float64Array(count);
+        for (let iter = 0; iter < rounds; iter++) {
+          area.fill(0);
+          for (const i of sample) area[owner(posX[i]!, posZ[i]!, withMinors)]!++;
+          let mean = 0;
+          for (let k = 0; k < count; k++) {
+            const err = target[k]! - area[k]!;
+            if (err * lastErr[k]! < 0) gain[k]! *= 0.5;
+            else gain[k] = Math.min(20, gain[k]! * 1.2);
+            lastErr[k] = err;
+            // Raising a region's weight by w grows its area by roughly w * pi.
+            plates[k]!.weight += ((err * cellArea) / Math.PI) * gain[k]!;
+            mean += plates[k]!.weight;
+          }
+          // Only differences between weights matter.
+          mean /= count;
+          for (let k = 0; k < count; k++) plates[k]!.weight -= mean;
+        }
+      };
+
+      // 3. Majors alone, balanced to equal sizes, give the seams the minors are placed on.
+      balance(new Array<number>(majorCount).fill(sample.length / majorCount), 40, false);
+      // Seam samples: within about half a coarse cell of a border between majors.
+      const seamSamples = sample.filter((i) => majorAt(posX[i]!, posZ[i]!).seam < (S * PLATE_CELL) / 2);
+      const parent: number[] = plates.map((_, k) => k);
+      /** A cell's warped position as a plate centre: inside the world (wrapped east-west if it wraps). */
+      const centreAt = (i: number) => ({
+        x: this.wrap ? ((posX[i]! % W) + W) % W : Math.min(W, Math.max(0, posX[i]!)),
+        z: Math.min(D, Math.max(0, posZ[i]!)),
+      });
+      for (let m = 0; m < config.minorPlates; m++) {
+        // Each minor goes on a seam, spaced from the minors already placed (the best of several
+        // random points), so they spread along all the seams instead of bunching. Once the seams are
+        // crowded (no seam point is two minor radii clear), minors spill inland, nearest the seams.
+        let best = centreAt(sample[0]!), bestScore = -Infinity;
+        for (let t = 0; t < 24; t++) {
+          const pool = t % 2 === 0 && seamSamples.length > 0 ? seamSamples : sample;
+          const c = centreAt(pool[Math.floor(rand() * pool.length)]!);
+          let clear = 2 * minorRadius;
+          for (let k = majorCount; k < plates.length; k++) clear = Math.min(clear, distTo(plates[k]!, c));
+          const seam = Math.min(majorAt(c.x, c.z).seam, 4 * minorRadius);
+          const score = clear - 0.25 * seam;
+          if (score > bestScore) [best, bestScore] = [c, score];
+        }
+        const { x, z } = best;
+        const home = majorAt(x, z).a;
+        // A new minor starts with the weight of the major it sits on, and grows to its target.
+        plates.push({ x, z, major: false, weight: plates[home]!.weight, continental: false });
+        parent.push(home);
+      }
+
+      // 4. Majors and minors together: minors carve their share out of the majors along the seams.
+      const unit = sample.length / (majorCount * config.plateSizeRatio + config.minorPlates);
+      balance(plates.map((p) => (p.major ? config.plateSizeRatio : 1) * unit), 80, true);
+      const plateOf = new Uint16Array(n);
+      for (let i = 0; i < n; i++) plateOf[i] = owner(posX[i]!, posZ[i]!, true);
+
+      // For step 5 (below, which depends on the land share): each major's area with its minors,
+      // and the random order they're tried in.
+      const area = new Array<number>(plates.length).fill(0);
+      for (const p of plateOf) area[p]!++;
+      const familyArea = new Array<number>(majorCount).fill(0);
+      plates.forEach((_, k) => (familyArea[parent[k]!]! += area[k]!));
+      // Fisher-Yates with the seeded PRNG: identical on every JS engine.
+      const order = Array.from({ length: majorCount }, (_, k) => k);
+      for (let k = order.length - 1; k > 0; k--) {
+        const j = Math.floor(rand() * (k + 1));
+        [order[k], order[j]] = [order[j]!, order[k]!];
+      }
+      // 6. Distance from every cell to its plate's border (cells).
+      const toSeam = new Float32Array(n).fill(Infinity);
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const i = c + cols * r;
+          for (const [a, b] of [[1, 0], [0, 1]] as const) {
+            const j = at(c + a, r + b);
+            if (j >= 0 && plateOf[j] !== plateOf[i]) toSeam[i] = toSeam[j] = 0.5;
+          }
+        }
+      }
+      chamfer(toSeam, cols, rows, this.wrap);
+      return { plates, parent, plateOf, familyArea, order, toSeam };
     });
-    for (let m = 0; m < config.minorPlates; m++) {
-      // Each minor goes on a seam, spaced from the minors already placed (the best of several
-      // random points), so they spread along all the seams instead of bunching. Once the seams are
-      // crowded (no seam point is two minor radii clear), minors spill inland, nearest the seams.
-      let best = centreAt(sample[0]!), bestScore = -Infinity;
-      for (let t = 0; t < 24; t++) {
-        const pool = t % 2 === 0 && seamSamples.length > 0 ? seamSamples : sample;
-        const c = centreAt(pool[Math.floor(rand() * pool.length)]!);
-        let clear = 2 * minorRadius;
-        for (let k = majorCount; k < plates.length; k++) clear = Math.min(clear, distTo(plates[k]!, c));
-        const seam = Math.min(majorAt(c.x, c.z).seam, 4 * minorRadius);
-        const score = clear - 0.25 * seam;
-        if (score > bestScore) [best, bestScore] = [c, score];
-      }
-      const { x, z } = best;
-      const home = majorAt(x, z).a;
-      // A new minor starts with the weight of the major it sits on, and grows to its target.
-      plates.push({ x, z, major: false, weight: plates[home]!.weight, continental: false });
-      parent.push(home);
-    }
-
-    // 4. Majors and minors together: minors carve their share out of the majors along the seams.
-    const unit = sample.length / (majorCount * config.plateSizeRatio + config.minorPlates);
-    balance(plates.map((p) => (p.major ? config.plateSizeRatio : 1) * unit), 80, true);
-    const plateOf = (this.plateOf = new Uint16Array(n));
-    for (let i = 0; i < n; i++) plateOf[i] = owner(posX[i]!, posZ[i]!, true);
-
+    // Copies: which plates are continental is decided here, per land share.
+    const plates: Plate[] = layout.plates.map((p) => ({ ...p }));
+    this.plates = plates;
+    const { parent, plateOf, familyArea, order, toSeam } = layout;
+    this.plateOf = plateOf;
+    const majorCount = config.majorPlates;
     // 5. Continental major plates, in random order, until continents (majors plus the minors
     //    on their side of the seams) cover a bit more than the land share. Minor plates take the
     //    crust type of the major they sit on. (The exact coastline comes from the sea level below.)
-    const area = new Array<number>(plates.length).fill(0);
-    for (const p of plateOf) area[p]!++;
-    const familyArea = new Array<number>(majorCount).fill(0);
-    plates.forEach((_, k) => (familyArea[parent[k]!]! += area[k]!));
-    // Fisher-Yates with the seeded PRNG: identical on every JS engine.
-    const order = Array.from({ length: majorCount }, (_, k) => k);
-    for (let k = order.length - 1; k > 0; k--) {
-      const j = Math.floor(rand() * (k + 1));
-      [order[k], order[j]] = [order[j]!, order[k]!];
-    }
     const continentalMajor = new Array<boolean>(majorCount).fill(false);
     let covered = 0;
     const landTarget = (config.landPercent / 100) * n * 1.02;
@@ -678,462 +750,470 @@ export class PlateHeights implements HeightSource {
     }
     plates.forEach((p, k) => (p.continental = continentalMajor[parent[k]!]!));
 
-    // 6. Distance from every cell to its plate's border (cells).
-    const toSeam = new Float32Array(n).fill(Infinity);
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const i = c + cols * r;
-        for (const [a, b] of [[1, 0], [0, 1]] as const) {
-          const j = at(c + a, r + b);
-          if (j >= 0 && plateOf[j] !== plateOf[i]) toSeam[i] = toSeam[j] = 0.5;
-        }
-      }
-    }
-    chamfer(toSeam, cols, rows, this.wrap);
-
     // 6b. Mountains: each plate drifts; where two plates converge and at least one is continental
     //     they raise a range (a broad one centred on the seam between continents, a coastal one
     //     set back inland where ocean dives under a continent, with a trench offshore). `uplift`
     //     (0..1, land) and `trench` (0..1, sea) are applied with the heights below.
-    const uplift = new Float32Array(n);
-    const trench = new Float32Array(n);
-    const collisions = new Map<string, { plates: [number, number]; kind: 'continental' | 'coastal' }>();
-    this.collisions = [];
-    if (config.mountains > 0 && plates.length > 1) {
-      const mrand = rng(config.seed ^ 0x51ed270b);
-      const drift = plates.map(() => {
-        const a = mrand() * Math.PI * 2, speed = 0.5 + 0.5 * mrand();
-        return { vx: Math.cos(a) * speed, vz: Math.sin(a) * speed };
-      });
-      // Distance to the nearest seam and the plate across it.
-      const dist = new Float32Array(n).fill(Infinity);
-      const across = new Int32Array(n).fill(-1);
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const i = c + cols * r;
-          for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-            const j = at(c + a, r + b);
-            if (j >= 0 && plateOf[j] !== plateOf[i]) {
-              dist[i] = 0.5;
-              across[i] = plateOf[j]!;
+    const mountains = memo('mountains', mountainKey, () => {
+      const uplift = new Float32Array(n);
+      const trench = new Float32Array(n);
+      const collisions = new Map<string, { plates: [number, number]; kind: 'continental' | 'coastal' }>();
+      if (config.mountains > 0 && plates.length > 1) {
+        const mrand = rng(config.seed ^ 0x51ed270b);
+        const drift = plates.map(() => {
+          const a = mrand() * Math.PI * 2, speed = 0.5 + 0.5 * mrand();
+          return { vx: Math.cos(a) * speed, vz: Math.sin(a) * speed };
+        });
+        // Distance to the nearest seam and the plate across it.
+        const dist = new Float32Array(n).fill(Infinity);
+        const across = new Int32Array(n).fill(-1);
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const i = c + cols * r;
+            for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+              const j = at(c + a, r + b);
+              if (j >= 0 && plateOf[j] !== plateOf[i]) {
+                dist[i] = 0.5;
+                across[i] = plateOf[j]!;
+              }
             }
           }
         }
+        chamferLabel(dist, across, cols, rows, this.wrap);
+        /** How fast plates k and q close on each other across their seam (> 0 converging). */
+        const closing = (k: number, q: number) => {
+          const p = plates[k]!, o = plates[q]!;
+          const nx = dx(p.x, o.x), nz = o.z - p.z, len = Math.hypot(nx, nz) || 1;
+          return ((drift[k]!.vx - drift[q]!.vx) * nx + (drift[k]!.vz - drift[q]!.vz) * nz) / len;
+        };
+        // The colliding seams: of the converging seams with a continental side, the fastest-closing
+        // `mountains` percent (by length).
+        const seamClosing: number[] = [];
+        for (let i = 0; i < n; i++) {
+          if (dist[i] !== 0.5) continue;
+          const k = plateOf[i]!, q = across[i]!, cv = closing(k, q);
+          if (cv > 0 && (plates[k]!.continental || plates[q]!.continental)) seamClosing.push(cv);
+        }
+        const cutoff = seamClosing.length > 0 ? quantile(Float32Array.from(seamClosing), 1 - config.mountains / 100) : Infinity;
+        const W = (config.mountainWidth * M) / PLATE_CELL; // range width in cells
+        // A range's cross-section: a smooth bump exactly W wide (t = distance from its crest over
+        // half the width), so ranges stay bands along their seams rather than covering whole plates.
+        const g = (t: number) => (Math.abs(t) >= 1 ? 0 : (1 - t * t) ** 2);
+        for (let i = 0; i < n; i++) {
+          const q = across[i]!;
+          if (q < 0) continue;
+          const k = plateOf[i]!;
+          const cv = closing(k, q);
+          if (!(cv > cutoff)) continue;
+          const d = dist[i]!;
+          const here = plates[k]!.continental, there = plates[q]!.continental;
+          const pair = k < q ? `${k},${q}` : `${q},${k}`;
+          if (!collisions.has(pair)) collisions.set(pair, { plates: k < q ? [k, q] : [q, k], kind: here && there ? 'continental' : 'coastal' });
+          if (here && there) uplift[i] = g(d / (W / 2));
+          else if (here) uplift[i] = g((d - W * 0.45) / (W / 2)); // coastal range, inland of the seam
+          else if (there) trench[i] = g(d / (W / 3)); // trench on the ocean side
+        }
+        // Ranges vary in height along their length and fade out at their ends (blurred, so a range
+        // doesn't stop dead where its seam meets a quieter one).
+        const R = Math.max(1, Math.round(W / 6));
+        const smoothed = blur(blur(uplift, cols, rows, R, this.wrap), cols, rows, R, this.wrap);
+        const along = layoutNoise(23, [Math.max(4000, config.mountainWidth * M * 3), Math.max(2000, config.mountainWidth * M * 1.5)]);
+        // Ridged noise: sharp crests and V-shaped valleys.
+        const rugged = config.mountainRuggedness / 100;
+        const ridgeSpacing = Math.max(64 * M, (config.mountainWidth * M) / 2);
+        const ridgeOctaves = octaves(config.seed * 7919 + 29, [ridgeSpacing, ridgeSpacing / 2, ridgeSpacing / 4, ridgeSpacing / 8].filter((sp) => sp >= 48 * M), 0.4 + 0.3 * rugged);
+        const ridged = ridgedGrid(ridgeOctaves, PLATE_CELL / 2, PLATE_CELL / 2, cols, rows, PLATE_CELL);
+        const ridgeAmount = 0.25 + 0.65 * rugged;
+        for (let i = 0; i < n; i++) {
+          const u = smoothed[i]! * (0.65 + 0.35 * along[i]!);
+          uplift[i] = Math.max(0, u * (1 - ridgeAmount + ridgeAmount * ridged[i]!));
+        }
+        const tr = blur(trench, cols, rows, Math.max(1, Math.round(W / 8)), this.wrap);
+        trench.set(tr);
       }
-      chamferLabel(dist, across, cols, rows, this.wrap);
-      /** How fast plates k and q close on each other across their seam (> 0 converging). */
-      const closing = (k: number, q: number) => {
-        const p = plates[k]!, o = plates[q]!;
-        const nx = dx(p.x, o.x), nz = o.z - p.z, len = Math.hypot(nx, nz) || 1;
-        return ((drift[k]!.vx - drift[q]!.vx) * nx + (drift[k]!.vz - drift[q]!.vz) * nz) / len;
-      };
-      // The colliding seams: of the converging seams with a continental side, the fastest-closing
-      // `mountains` percent (by length).
-      const seamClosing: number[] = [];
-      for (let i = 0; i < n; i++) {
-        if (dist[i] !== 0.5) continue;
-        const k = plateOf[i]!, q = across[i]!, cv = closing(k, q);
-        if (cv > 0 && (plates[k]!.continental || plates[q]!.continental)) seamClosing.push(cv);
-      }
-      const cutoff = seamClosing.length > 0 ? quantile(Float32Array.from(seamClosing), 1 - config.mountains / 100) : Infinity;
-      const W = (config.mountainWidth * M) / PLATE_CELL; // range width in cells
-      // A range's cross-section: a smooth bump exactly W wide (t = distance from its crest over
-      // half the width), so ranges stay bands along their seams rather than covering whole plates.
-      const g = (t: number) => (Math.abs(t) >= 1 ? 0 : (1 - t * t) ** 2);
-      for (let i = 0; i < n; i++) {
-        const q = across[i]!;
-        if (q < 0) continue;
-        const k = plateOf[i]!;
-        const cv = closing(k, q);
-        if (!(cv > cutoff)) continue;
-        const d = dist[i]!;
-        const here = plates[k]!.continental, there = plates[q]!.continental;
-        const pair = k < q ? `${k},${q}` : `${q},${k}`;
-        if (!collisions.has(pair)) collisions.set(pair, { plates: k < q ? [k, q] : [q, k], kind: here && there ? 'continental' : 'coastal' });
-        if (here && there) uplift[i] = g(d / (W / 2));
-        else if (here) uplift[i] = g((d - W * 0.45) / (W / 2)); // coastal range, inland of the seam
-        else if (there) trench[i] = g(d / (W / 3)); // trench on the ocean side
-      }
-      // Ranges vary in height along their length and fade out at their ends (blurred, so a range
-      // doesn't stop dead where its seam meets a quieter one).
-      const R = Math.max(1, Math.round(W / 6));
-      const smoothed = blur(blur(uplift, cols, rows, R, this.wrap), cols, rows, R, this.wrap);
-      const along = layoutNoise(23, [Math.max(4000, config.mountainWidth * M * 3), Math.max(2000, config.mountainWidth * M * 1.5)]);
-      // Ridged noise: sharp crests and V-shaped valleys.
-      const rugged = config.mountainRuggedness / 100;
-      const ridgeSpacing = Math.max(64 * M, (config.mountainWidth * M) / 2);
-      const ridgeOctaves = octaves(config.seed * 7919 + 29, [ridgeSpacing, ridgeSpacing / 2, ridgeSpacing / 4, ridgeSpacing / 8].filter((sp) => sp >= 48 * M), 0.4 + 0.3 * rugged);
-      const ridged = ridgedGrid(ridgeOctaves, PLATE_CELL / 2, PLATE_CELL / 2, cols, rows, PLATE_CELL);
-      const ridgeAmount = 0.25 + 0.65 * rugged;
-      for (let i = 0; i < n; i++) {
-        const u = smoothed[i]! * (0.65 + 0.35 * along[i]!);
-        uplift[i] = Math.max(0, u * (1 - ridgeAmount + ridgeAmount * ridged[i]!));
-      }
-      const tr = blur(trench, cols, rows, Math.max(1, Math.round(W / 8)), this.wrap);
-      trench.set(tr);
-      this.collisions = [...collisions.values()];
-    }
+      return { uplift, trench, collisions: [...collisions.values()] };
+    });
+    const { uplift, trench } = mountains;
+    this.collisions = mountains.collisions;
 
     // 7. Each plate's relief: its own noise field (seeded from terrainSeed and the plate's index),
     //    with a per-plate bias (some plates sit higher than others) and strength.
-    const persistence = 0.3 + 0.5 * (config.noiseRoughness / 100);
-    const spacings: number[] = [];
-    for (let s = config.noiseScale * M; spacings.length === 0 || s >= NOISE_FINEST; s /= 2) spacings.push(s);
-    const trand = rng(config.terrainSeed ^ 0x5bd1e995);
-    const relief = new Float32Array(n);
-    const box = plates.map(() => ({ c0: cols, c1: -1, r0: rows, r1: -1 }));
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const b = box[plateOf[c + cols * r]!]!;
-        b.c0 = Math.min(b.c0, c); b.c1 = Math.max(b.c1, c); b.r0 = Math.min(b.r0, r); b.r1 = Math.max(b.r1, r);
-      }
-    }
-    plates.forEach((_, k) => {
-      const bias = (trand() * 2 - 1) * 0.35;
-      const strength = 0.6 + trand() * 0.4;
-      const b = box[k]!;
-      if (b.c1 < 0) return; // swallowed by its neighbours
-      const w = b.c1 - b.c0 + 1, d = b.r1 - b.r0 + 1;
-      const field = gridNoise(octaves(config.terrainSeed * 7919 + (k + 1) * 104729, spacings, persistence), b.c0, b.r0, w, d);
-      // Standardize the field (a sum of many octaves is flatter than a few), so the noise
-      // settings change the relief's character rather than just its amplitude.
-      let sum = 0, sq = 0;
-      for (const v of field) { sum += v; sq += v * v; }
-      const mu = sum / field.length, sd = Math.sqrt(Math.max(1e-12, sq / field.length - mu * mu));
-      for (let r = b.r0; r <= b.r1; r++) {
-        for (let c = b.c0; c <= b.c1; c++) {
-          const i = c + cols * r;
-          if (plateOf[i] === k) relief[i] = bias + strength * ((field[c - b.c0 + w * (r - b.r0)]! - mu) / sd) * 0.33;
+    const relief = memo('relief', reliefKey, () => {
+      const persistence = 0.3 + 0.5 * (config.noiseRoughness / 100);
+      const spacings: number[] = [];
+      for (let s = config.noiseScale * M; spacings.length === 0 || s >= NOISE_FINEST; s /= 2) spacings.push(s);
+      const trand = rng(config.terrainSeed ^ 0x5bd1e995);
+      const relief = new Float32Array(n);
+      const box = plates.map(() => ({ c0: cols, c1: -1, r0: rows, r1: -1 }));
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const b = box[plateOf[c + cols * r]!]!;
+          b.c0 = Math.min(b.c0, c); b.c1 = Math.max(b.c1, c); b.r0 = Math.min(b.r0, r); b.r1 = Math.max(b.r1, r);
         }
       }
-    });
-    // Blend across seams: near a border, fade into the smoothed field, which mixes both sides.
-    {
-      const R = Math.max(1, Math.round(SEAM_BLEND / PLATE_CELL / 2));
-      const smooth = blur(blur(relief, cols, rows, R, this.wrap), cols, rows, R, this.wrap);
-      const band = SEAM_BLEND / PLATE_CELL;
-      for (let i = 0; i < n; i++) {
-        const t = 1 - smoothstep(0, band, toSeam[i]!);
-        relief[i] = relief[i]! + (smooth[i]! - relief[i]!) * t;
-      }
-    }
-
-    // 8. Where land and sea fall: crust type (smoothed, so plate borders aren't straight coasts),
-    //    a continent-scale swell, and the plates' relief.
-    let base: Float32Array = new Float32Array(n);
-    for (let i = 0; i < n; i++) base[i] = plates[plateOf[i]!]!.continental ? 1 : -1;
-    base = blur(blur(base, cols, rows, 9, this.wrap), cols, rows, 9, this.wrap);
-    const swell = layoutNoise(7, [64000, 32000, 16000]);
-    const land = new Float32Array(n);
-    for (let i = 0; i < n; i++) land[i] = base[i]! * 0.5 + swell[i]! * 0.3 + relief[i]! * 0.35;
-
-    // 9. Shoreline fractalization: multi-scale noise (0 = none) in a band ~700 m either side of the
-    //    waterline it would otherwise have, so interiors stay solid. Finer octaves weigh nearly as
-    //    much as coarse ones, so coasts break up rather than just shift.
-    const shore = layoutNoise(3, [16000, 8000, 4000, 2000, 1000, 512], 0.8);
-    const shoreAmp = (config.shoreFractal / 100) * 2;
-    const water = 1 - config.landPercent / 100;
-    const tau0 = quantile(land, water);
-    const toShore = new Float32Array(n).fill(Infinity);
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const i = c + cols * r;
-        const wet = land[i]! <= tau0;
-        for (const [a, b] of [[1, 0], [0, 1]] as const) {
-          const j = at(c + a, r + b);
-          if (j >= 0 && (land[j]! <= tau0) !== wet) toShore[i] = toShore[j] = 0;
-        }
-      }
-    }
-    chamfer(toShore, cols, rows, this.wrap);
-    const BAND = (700 * M) / PLATE_CELL;
-    for (let i = 0; i < n; i++) land[i] = land[i]! + shore[i]! * shoreAmp * 0.5 * (1 - smoothstep(0, BAND, toShore[i]!));
-
-    // 10. Islands in open water: arcs along seams where an oceanic plate meets another, and
-    //     hotspot chains inside oceanic plates. Their own random stream, so turning them on or off
-    //     leaves everything above unchanged.
-    const islands: Island[] = [];
-    const island = new Float32Array(n); // 1 - distance/radius inside an island, else 0
-    const islandSize = new Float32Array(n); // island radius / 1 km (its peak's height scale)
-    let islandCells = 0;
-    if (config.islandArcs > 0 || config.hotspots > 0) {
-      const irand = rng(config.seed ^ 0x2c1b3c6d);
-      const tau1 = quantile(land, water);
-      // Distance (cells) from each sea cell to the coast it would have without islands.
-      const toCoast = new Float32Array(n).fill(Infinity);
-      for (let i = 0; i < n; i++) if (land[i]! > tau1) toCoast[i] = 0;
-      chamfer(toCoast, cols, rows, this.wrap);
-      const budget = 0.9 * (config.landPercent / 100) * n;
-      const minR = (config.islandMinSize / 2) * M, maxR = (config.islandMaxSize / 2) * M;
-      // Log-uniform sizes, `bias` > 1 favouring small ones.
-      const size = (bias: number) => minR * (maxR / minR) ** (irand() ** bias);
-      // Island coasts: island-scale noise (250 m down to 32 m), more ragged with shoreFractal.
-      const coastNoise = layoutNoise(11, [4000, 2000, 1000, 512], 0.7);
-      const jag = 0.3 + 0.5 * (config.shoreFractal / 100);
-      const COAST_GAP = 300 * M, ISLAND_GAP = 150 * M;
-      const cellOf = (x: number, z: number) => {
-        const c = Math.floor((((x % W) + W) % W) / PLATE_CELL), r = Math.floor(z / PLATE_CELL);
-        return c >= 0 && c < cols && r >= 0 && r < rows ? c + cols * r : -1;
-      };
-      /** Whether an island of radius R fits at (x, z): in open water, clear of coasts and other islands. */
-      const clearance = (x: number, z: number, R: number) => {
-        const i = cellOf(x, z);
-        if (i < 0 || (!this.wrap && (x < R || x > W - R)) || z < R || z > D - R) return -Infinity;
-        if (land[i]! > tau1) return -Infinity;
-        let room = toCoast[i]! * PLATE_CELL - R - COAST_GAP;
-        for (const o of islands) room = Math.min(room, distTo(o, { x, z }) - o.radius - R - ISLAND_GAP);
-        return room;
-      };
-      /**
-       * Stamps an island of about radius R (an ellipse of the same area, stretched up to 2.2x
-       * along `angle`, with up to two smaller lobes); false, and nothing stamped, if it would
-       * overrun the land budget.
-       */
-      const stamp = (x: number, z: number, R: number, kind: Island['kind'], angle = irand() * Math.PI) => {
-        const aspect = 1 + irand() * 1.2;
-        const parts = [{ x, z, a: R * Math.sqrt(aspect), b: R / Math.sqrt(aspect), angle }];
-        for (let k = Math.floor(irand() * 3); k > 0; k--) {
-          const dir = irand() * Math.PI * 2, off = R * (0.5 + 0.4 * irand()), r2 = R * (0.35 + 0.25 * irand());
-          parts.push({ x: x + Math.cos(dir) * off, z: z + Math.sin(dir) * off, a: r2, b: r2, angle: 0 });
-        }
-        const reach = Math.ceil((R * 2.2) / PLATE_CELL);
-        const c0 = Math.floor(x / PLATE_CELL), r0 = Math.floor(z / PLATE_CELL);
-        const cells: [number, number][] = [];
-        for (let r = r0 - reach; r <= r0 + reach; r++) {
-          for (let c = c0 - reach; c <= c0 + reach; c++) {
-            const i = at(c, r);
-            if (i < 0) continue;
-            const px = (c + 0.5) * PLATE_CELL, pz = (r + 0.5) * PLATE_CELL;
-            let t = Infinity;
-            for (const q of parts) {
-              const ddx = dx(q.x, px), ddz = pz - q.z;
-              const u = ddx * Math.cos(q.angle) + ddz * Math.sin(q.angle), v = -ddx * Math.sin(q.angle) + ddz * Math.cos(q.angle);
-              t = Math.min(t, Math.hypot(u / q.a, v / q.b));
-            }
-            t += coastNoise[i]! * jag;
-            if (t < 1) cells.push([i, 1 - t]);
+      plates.forEach((_, k) => {
+        const bias = (trand() * 2 - 1) * 0.35;
+        const strength = 0.6 + trand() * 0.4;
+        const b = box[k]!;
+        if (b.c1 < 0) return; // swallowed by its neighbours
+        const w = b.c1 - b.c0 + 1, d = b.r1 - b.r0 + 1;
+        const field = gridNoise(octaves(config.terrainSeed * 7919 + (k + 1) * 104729, spacings, persistence), b.c0, b.r0, w, d);
+        // Standardize the field (a sum of many octaves is flatter than a few), so the noise
+        // settings change the relief's character rather than just its amplitude.
+        let sum = 0, sq = 0;
+        for (const v of field) { sum += v; sq += v * v; }
+        const mu = sum / field.length, sd = Math.sqrt(Math.max(1e-12, sq / field.length - mu * mu));
+        for (let r = b.r0; r <= b.r1; r++) {
+          for (let c = b.c0; c <= b.c1; c++) {
+            const i = c + cols * r;
+            if (plateOf[i] === k) relief[i] = bias + strength * ((field[c - b.c0 + w * (r - b.r0)]! - mu) / sd) * 0.33;
           }
         }
-        const fresh = cells.filter(([i]) => island[i] === 0).length;
-        if (fresh === 0 || islandCells + fresh > budget) return false;
-        for (const [i, v] of cells) {
-          island[i] = Math.max(island[i]!, v);
-          islandSize[i] = Math.max(islandSize[i]!, R / (1000 * M));
-        }
-        islandCells += fresh;
-        islands.push({ x, z, radius: R, kind });
-        return true;
-      };
-      /** The best of several random candidates from `pick`, by room to spare; null if none fits. */
-      const bestSpot = (pick: () => number, R: number, tries: number) => {
-        let best: { x: number; z: number } | null = null, bestRoom = 0;
-        for (let t = 0; t < tries; t++) {
-          const i = pick();
-          if (i < 0) continue;
-          const c = i % cols, r = (i - c) / cols;
-          const p = { x: (c + irand()) * PLATE_CELL, z: (r + irand()) * PLATE_CELL };
-          const room = clearance(p.x, p.z, R);
-          if (room >= 0 && (best === null || room > bestRoom)) [best, bestRoom] = [p, room];
-        }
-        return best;
-      };
-
-      // Hotspots: a main island in an oceanic plate, trailing 2-5 smaller ones in the direction
-      // its plate has carried them (the same for every chain on a plate).
-      const oceanic: number[] = [];
-      for (let i = 0; i < n; i++) if (!plates[plateOf[i]!]!.continental && land[i]! <= tau1) oceanic.push(i);
-      const drift = plates.map(() => irand() * Math.PI * 2);
-      for (let h = 0; h < config.hotspots && oceanic.length > 0; h++) {
-        let R = size(1);
-        const at0 = bestSpot(() => oceanic[Math.floor(irand() * oceanic.length)]!, R, 20);
-        if (!at0) continue;
-        const a = drift[plateOf[cellOf(at0.x, at0.z)]!]!;
-        if (!stamp(at0.x, at0.z, R, 'hotspot', a)) continue;
-        let { x, z } = at0;
-        const trail = 2 + Math.floor(irand() * 4);
-        for (let k = 0; k < trail; k++) {
-          const r2 = R * (0.5 + 0.2 * irand());
-          if (r2 < minR) break;
-          const turn = a + (irand() - 0.5) * 0.5, gap = R + r2 + ISLAND_GAP + irand() * R;
-          const nx = x + Math.cos(turn) * gap, nz = z + Math.sin(turn) * gap;
-          if (clearance(nx, nz, r2) < 0 || !stamp(nx, nz, r2, 'hotspot', turn)) break;
-          [x, z, R] = [nx, nz, r2];
+      });
+      // Blend across seams: near a border, fade into the smoothed field, which mixes both sides.
+      {
+        const R = Math.max(1, Math.round(SEAM_BLEND / PLATE_CELL / 2));
+        const smooth = blur(blur(relief, cols, rows, R, this.wrap), cols, rows, R, this.wrap);
+        const band = SEAM_BLEND / PLATE_CELL;
+        for (let i = 0; i < n; i++) {
+          const t = 1 - smoothstep(0, band, toSeam[i]!);
+          relief[i] = relief[i]! + (smooth[i]! - relief[i]!) * t;
         }
       }
+      return relief;
+    });
 
-      // Island arcs: along seams where at least one side is oceanic, ~800 m apart at 100, each
-      // stretched along its seam (perpendicular to the line between the two plates' centres).
-      const seams: number[] = [];
-      const seamAngle = new Map<number, number>();
+    // Steps 8 to 11: where the coasts are.
+    const coast = memo('coast', coastKey, () => {
+      // 8. Where land and sea fall: crust type (smoothed, so plate borders aren't straight coasts),
+      //    a continent-scale swell, and the plates' relief.
+      let base: Float32Array = new Float32Array(n);
+      for (let i = 0; i < n; i++) base[i] = plates[plateOf[i]!]!.continental ? 1 : -1;
+      base = blur(blur(base, cols, rows, 9, this.wrap), cols, rows, 9, this.wrap);
+      const swell = layoutNoise(7, [64000, 32000, 16000]);
+      const land = new Float32Array(n);
+      for (let i = 0; i < n; i++) land[i] = base[i]! * 0.5 + swell[i]! * 0.3 + relief[i]! * 0.35;
+
+      // 9. Shoreline fractalization: multi-scale noise (0 = none) in a band ~700 m either side of the
+      //    waterline it would otherwise have, so interiors stay solid. Finer octaves weigh nearly as
+      //    much as coarse ones, so coasts break up rather than just shift.
+      const shore = layoutNoise(3, [16000, 8000, 4000, 2000, 1000, 512], 0.8);
+      const shoreAmp = (config.shoreFractal / 100) * 2;
+      const water = 1 - config.landPercent / 100;
+      const tau0 = quantile(land, water);
+      const toShore = new Float32Array(n).fill(Infinity);
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           const i = c + cols * r;
-          if (toSeam[i]! > 1 || land[i]! > tau1) continue;
-          const j = at(c + 1, r), k = at(c, r + 1);
-          const across = [j, k].find((q) => q >= 0 && plateOf[q] !== plateOf[i]);
-          if (across === undefined) continue;
-          const p = plates[plateOf[i]!]!, q = plates[plateOf[across]!]!;
-          if (p.continental && q.continental) continue;
-          seams.push(i);
-          seamAngle.set(i, Math.atan2(q.z - p.z, dx(p.x, q.x)) + Math.PI / 2);
+          const wet = land[i]! <= tau0;
+          for (const [a, b] of [[1, 0], [0, 1]] as const) {
+            const j = at(c + a, r + b);
+            if (j >= 0 && (land[j]! <= tau0) !== wet) toShore[i] = toShore[j] = 0;
+          }
         }
       }
-      // Seam cells come in pairs (one each side), each ~1 cell of seam length.
-      const arcCount = Math.round((config.islandArcs / 100) * ((seams.length / 2) * PLATE_CELL) / (800 * M));
-      for (let k = 0; k < arcCount && seams.length > 0; k++) {
-        const R = size(1.6);
-        const spot = bestSpot(() => seams[Math.floor(irand() * seams.length)]!, R, 8);
-        if (spot) stamp(spot.x, spot.z, R, 'arc', seamAngle.get(cellOf(spot.x, spot.z)) ?? irand() * Math.PI);
-      }
-    }
-    this.islands = islands;
-    this.islandCells = islandCells;
+      chamfer(toShore, cols, rows, this.wrap);
+      const BAND = (700 * M) / PLATE_CELL;
+      for (let i = 0; i < n; i++) land[i] = land[i]! + shore[i]! * shoreAmp * 0.5 * (1 - smoothstep(0, BAND, toShore[i]!));
 
-    // 11. The waterline: continents get exactly the land left after the islands (the quantile of
-    //     the other cells that leaves that many above the sea). Then small lakes away from the sea
-    //     are filled in: all water sits at sea level and land rises with distance from any water,
-    //     so an inland pond would be a hole to sea level in a crater ~1.5 km wide. (Lagoons and
-    //     inlets near the coast stay.) To keep the land share exact, as many of
-    //     the lowest coastal cells (next to real sea) go under water instead; water added next to
-    //     other water can only join bodies, never make a new pond.
-    let tau: number;
-    if (islandCells === 0) {
-      tau = quantile(land, water);
-    } else {
-      const rest = new Float32Array(n - islandCells);
-      let m = 0;
-      for (let i = 0; i < n; i++) if (island[i] === 0) rest[m++] = land[i]!;
-      tau = quantile(rest, 1 - ((config.landPercent / 100) * n - islandCells) / rest.length);
-    }
-    const state = new Uint8Array(n); // 0 by the waterline, 1 forced land, 2 forced sea
-    const byWaterline = (i: number) => island[i]! > 0 || land[i]! > tau;
-    const ponds = inlandLakes((i) => !byWaterline(i), MIN_LAKE, INLAND_LAKE / PLATE_CELL, cols, rows, this.wrap);
-    for (const i of ponds) state[i] = 1;
-    const isLand = (i: number) => state[i] === 1 || (state[i] === 0 && byWaterline(i));
-    for (let owed = ponds.length; owed > 0; ) {
-      // Continental coast cells (not islands, not filled ponds) next to sea, lowest first.
-      const coast: number[] = [];
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const i = c + cols * r;
-          if (state[i] !== 0 || island[i]! > 0 || !isLand(i)) continue;
-          if ([at(c + 1, r), at(c - 1, r), at(c, r + 1), at(c, r - 1)].some((j) => j >= 0 && !isLand(j))) coast.push(i);
+      // 10. Islands in open water: arcs along seams where an oceanic plate meets another, and
+      //     hotspot chains inside oceanic plates. Their own random stream, so turning them on or off
+      //     leaves everything above unchanged.
+      const islands: Island[] = [];
+      const island = new Float32Array(n); // 1 - distance/radius inside an island, else 0
+      const islandSize = new Float32Array(n); // island radius / 1 km (its peak's height scale)
+      let islandCells = 0;
+      if (config.islandArcs > 0 || config.hotspots > 0) {
+        const irand = rng(config.seed ^ 0x2c1b3c6d);
+        const tau1 = quantile(land, water);
+        // Distance (cells) from each sea cell to the coast it would have without islands.
+        const toCoast = new Float32Array(n).fill(Infinity);
+        for (let i = 0; i < n; i++) if (land[i]! > tau1) toCoast[i] = 0;
+        chamfer(toCoast, cols, rows, this.wrap);
+        const budget = 0.9 * (config.landPercent / 100) * n;
+        const minR = (config.islandMinSize / 2) * M, maxR = (config.islandMaxSize / 2) * M;
+        // Log-uniform sizes, `bias` > 1 favouring small ones.
+        const size = (bias: number) => minR * (maxR / minR) ** (irand() ** bias);
+        // Island coasts: island-scale noise (250 m down to 32 m), more ragged with shoreFractal.
+        const coastNoise = layoutNoise(11, [4000, 2000, 1000, 512], 0.7);
+        const jag = 0.3 + 0.5 * (config.shoreFractal / 100);
+        const COAST_GAP = 300 * M, ISLAND_GAP = 150 * M;
+        const cellOf = (x: number, z: number) => {
+          const c = Math.floor((((x % W) + W) % W) / PLATE_CELL), r = Math.floor(z / PLATE_CELL);
+          return c >= 0 && c < cols && r >= 0 && r < rows ? c + cols * r : -1;
+        };
+        /** Whether an island of radius R fits at (x, z): in open water, clear of coasts and other islands. */
+        const clearance = (x: number, z: number, R: number) => {
+          const i = cellOf(x, z);
+          if (i < 0 || (!this.wrap && (x < R || x > W - R)) || z < R || z > D - R) return -Infinity;
+          if (land[i]! > tau1) return -Infinity;
+          let room = toCoast[i]! * PLATE_CELL - R - COAST_GAP;
+          for (const o of islands) room = Math.min(room, distTo(o, { x, z }) - o.radius - R - ISLAND_GAP);
+          return room;
+        };
+        /**
+         * Stamps an island of about radius R (an ellipse of the same area, stretched up to 2.2x
+         * along `angle`, with up to two smaller lobes); false, and nothing stamped, if it would
+         * overrun the land budget.
+         */
+        const stamp = (x: number, z: number, R: number, kind: Island['kind'], angle = irand() * Math.PI) => {
+          const aspect = 1 + irand() * 1.2;
+          const parts = [{ x, z, a: R * Math.sqrt(aspect), b: R / Math.sqrt(aspect), angle }];
+          for (let k = Math.floor(irand() * 3); k > 0; k--) {
+            const dir = irand() * Math.PI * 2, off = R * (0.5 + 0.4 * irand()), r2 = R * (0.35 + 0.25 * irand());
+            parts.push({ x: x + Math.cos(dir) * off, z: z + Math.sin(dir) * off, a: r2, b: r2, angle: 0 });
+          }
+          const reach = Math.ceil((R * 2.2) / PLATE_CELL);
+          const c0 = Math.floor(x / PLATE_CELL), r0 = Math.floor(z / PLATE_CELL);
+          const cells: [number, number][] = [];
+          for (let r = r0 - reach; r <= r0 + reach; r++) {
+            for (let c = c0 - reach; c <= c0 + reach; c++) {
+              const i = at(c, r);
+              if (i < 0) continue;
+              const px = (c + 0.5) * PLATE_CELL, pz = (r + 0.5) * PLATE_CELL;
+              let t = Infinity;
+              for (const q of parts) {
+                const ddx = dx(q.x, px), ddz = pz - q.z;
+                const u = ddx * Math.cos(q.angle) + ddz * Math.sin(q.angle), v = -ddx * Math.sin(q.angle) + ddz * Math.cos(q.angle);
+                t = Math.min(t, Math.hypot(u / q.a, v / q.b));
+              }
+              t += coastNoise[i]! * jag;
+              if (t < 1) cells.push([i, 1 - t]);
+            }
+          }
+          const fresh = cells.filter(([i]) => island[i] === 0).length;
+          if (fresh === 0 || islandCells + fresh > budget) return false;
+          for (const [i, v] of cells) {
+            island[i] = Math.max(island[i]!, v);
+            islandSize[i] = Math.max(islandSize[i]!, R / (1000 * M));
+          }
+          islandCells += fresh;
+          islands.push({ x, z, radius: R, kind });
+          return true;
+        };
+        /** The best of several random candidates from `pick`, by room to spare; null if none fits. */
+        const bestSpot = (pick: () => number, R: number, tries: number) => {
+          let best: { x: number; z: number } | null = null, bestRoom = 0;
+          for (let t = 0; t < tries; t++) {
+            const i = pick();
+            if (i < 0) continue;
+            const c = i % cols, r = (i - c) / cols;
+            const p = { x: (c + irand()) * PLATE_CELL, z: (r + irand()) * PLATE_CELL };
+            const room = clearance(p.x, p.z, R);
+            if (room >= 0 && (best === null || room > bestRoom)) [best, bestRoom] = [p, room];
+          }
+          return best;
+        };
+
+        // Hotspots: a main island in an oceanic plate, trailing 2-5 smaller ones in the direction
+        // its plate has carried them (the same for every chain on a plate).
+        const oceanic: number[] = [];
+        for (let i = 0; i < n; i++) if (!plates[plateOf[i]!]!.continental && land[i]! <= tau1) oceanic.push(i);
+        const drift = plates.map(() => irand() * Math.PI * 2);
+        for (let h = 0; h < config.hotspots && oceanic.length > 0; h++) {
+          let R = size(1);
+          const at0 = bestSpot(() => oceanic[Math.floor(irand() * oceanic.length)]!, R, 20);
+          if (!at0) continue;
+          const a = drift[plateOf[cellOf(at0.x, at0.z)]!]!;
+          if (!stamp(at0.x, at0.z, R, 'hotspot', a)) continue;
+          let { x, z } = at0;
+          const trail = 2 + Math.floor(irand() * 4);
+          for (let k = 0; k < trail; k++) {
+            const r2 = R * (0.5 + 0.2 * irand());
+            if (r2 < minR) break;
+            const turn = a + (irand() - 0.5) * 0.5, gap = R + r2 + ISLAND_GAP + irand() * R;
+            const nx = x + Math.cos(turn) * gap, nz = z + Math.sin(turn) * gap;
+            if (clearance(nx, nz, r2) < 0 || !stamp(nx, nz, r2, 'hotspot', turn)) break;
+            [x, z, R] = [nx, nz, r2];
+          }
+        }
+
+        // Island arcs: along seams where at least one side is oceanic, ~800 m apart at 100, each
+        // stretched along its seam (perpendicular to the line between the two plates' centres).
+        const seams: number[] = [];
+        const seamAngle = new Map<number, number>();
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const i = c + cols * r;
+            if (toSeam[i]! > 1 || land[i]! > tau1) continue;
+            const j = at(c + 1, r), k = at(c, r + 1);
+            const across = [j, k].find((q) => q >= 0 && plateOf[q] !== plateOf[i]);
+            if (across === undefined) continue;
+            const p = plates[plateOf[i]!]!, q = plates[plateOf[across]!]!;
+            if (p.continental && q.continental) continue;
+            seams.push(i);
+            seamAngle.set(i, Math.atan2(q.z - p.z, dx(p.x, q.x)) + Math.PI / 2);
+          }
+        }
+        // Seam cells come in pairs (one each side), each ~1 cell of seam length.
+        const arcCount = Math.round((config.islandArcs / 100) * ((seams.length / 2) * PLATE_CELL) / (800 * M));
+        for (let k = 0; k < arcCount && seams.length > 0; k++) {
+          const R = size(1.6);
+          const spot = bestSpot(() => seams[Math.floor(irand() * seams.length)]!, R, 8);
+          if (spot) stamp(spot.x, spot.z, R, 'arc', seamAngle.get(cellOf(spot.x, spot.z)) ?? irand() * Math.PI);
         }
       }
-      if (coast.length === 0) break;
-      coast.sort((p, q) => land[p]! - land[q]! || p - q);
-      for (const i of coast.slice(0, owed)) state[i] = 2;
-      owed -= Math.min(owed, coast.length);
-    }
-    const toSea = new Float32Array(n).fill(Infinity);
-    const toLand = new Float32Array(n).fill(Infinity);
-    for (let i = 0; i < n; i++) (isLand(i) ? toLand : toSea)[i] = 0;
-    chamfer(toSea, cols, rows, this.wrap);
-    chamfer(toLand, cols, rows, this.wrap);
+
+      // 11. The waterline: continents get exactly the land left after the islands (the quantile of
+      //     the other cells that leaves that many above the sea). Then small lakes away from the sea
+      //     are filled in: all water sits at sea level and land rises with distance from any water,
+      //     so an inland pond would be a hole to sea level in a crater ~1.5 km wide. (Lagoons and
+      //     inlets near the coast stay.) To keep the land share exact, as many of
+      //     the lowest coastal cells (next to real sea) go under water instead; water added next to
+      //     other water can only join bodies, never make a new pond.
+      let tau: number;
+      if (islandCells === 0) {
+        tau = quantile(land, water);
+      } else {
+        const rest = new Float32Array(n - islandCells);
+        let m = 0;
+        for (let i = 0; i < n; i++) if (island[i] === 0) rest[m++] = land[i]!;
+        tau = quantile(rest, 1 - ((config.landPercent / 100) * n - islandCells) / rest.length);
+      }
+      const state = new Uint8Array(n); // 0 by the waterline, 1 forced land, 2 forced sea
+      const byWaterline = (i: number) => island[i]! > 0 || land[i]! > tau;
+      const ponds = inlandLakes((i) => !byWaterline(i), MIN_LAKE, INLAND_LAKE / PLATE_CELL, cols, rows, this.wrap);
+      for (const i of ponds) state[i] = 1;
+      const isLand = (i: number) => state[i] === 1 || (state[i] === 0 && byWaterline(i));
+      for (let owed = ponds.length; owed > 0; ) {
+        // Continental coast cells (not islands, not filled ponds) next to sea, lowest first.
+        const coast: number[] = [];
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const i = c + cols * r;
+            if (state[i] !== 0 || island[i]! > 0 || !isLand(i)) continue;
+            if ([at(c + 1, r), at(c - 1, r), at(c, r + 1), at(c, r - 1)].some((j) => j >= 0 && !isLand(j))) coast.push(i);
+          }
+        }
+        if (coast.length === 0) break;
+        coast.sort((p, q) => land[p]! - land[q]! || p - q);
+        for (const i of coast.slice(0, owed)) state[i] = 2;
+        owed -= Math.min(owed, coast.length);
+      }
+      const toSea = new Float32Array(n).fill(Infinity);
+      const toLand = new Float32Array(n).fill(Infinity);
+      for (let i = 0; i < n; i++) (isLand(i) ? toLand : toSea)[i] = 0;
+      chamfer(toSea, cols, rows, this.wrap);
+      chamfer(toLand, cols, rows, this.wrap);
+      const landMask = new Uint8Array(n);
+      for (let i = 0; i < n; i++) landMask[i] = isLand(i) ? 1 : 0;
+      return { island, islandSize, islands, islandCells, landMask, toSea, toLand };
+    });
+    const { island, islandSize, toSea, toLand, landMask } = coast;
+    this.islands = coast.islands;
+    this.islandCells = coast.islandCells;
+    const isLand = (i: number) => landMask[i] === 1;
 
     // 12. Heights: land rises from the coast inland, following its plate's relief; the sea floor
     //    deepens away from land the same way. Both are stretched so the highest land is exactly
     //    maxHeight and the deepest sea floor exactly minHeight.
     // Relief as 0..1, ignoring the most extreme 0.5% at either end so a few outliers don't flatten the rest.
-    const rMin = quantile(relief, 0.005), rMax = quantile(relief, 0.995);
-    const r01 = (v: number) => Math.min(1, Math.max(0, (v - rMin) / Math.max(1e-6, rMax - rMin)));
-    const shape = new Float32Array(n);
-    // Lowland flatness: a height curve that keeps low ground low and flat.
-    const curve = 1 + 2 * (config.lowlandFlatness / 100);
-    let landMax = 0, seaMax = 0;
-    for (let i = 0; i < n; i++) {
-      if (isLand(i)) {
-        let s = smoothstep(0, INLAND / PLATE_CELL, toSea[i]!) ** 0.7 * (0.15 + 0.85 * r01(relief[i]!));
-        // Islands also rise to a peak in the middle (volcanic), lower for small ones.
-        if (island[i]! > 0) s = Math.max(s, 0.45 * island[i]! ** 1.3 * Math.min(1, islandSize[i]!));
-        if (curve !== 1) s **= curve;
-        shape[i] = s;
-        landMax = Math.max(landMax, s);
-      }
-    }
-    // Plains: regions a few km across (from large-scale noise, the lowest `plains` percent of it
-    // over land) where the land is replaced by a heavily smoothed, lowered copy of itself, so
-    // hills melt into broad lowlands and wide valley floors; their edges blend over ~1 km.
-    const plainness = (this.plainness = new Float32Array(n));
-    if (config.plains > 0) {
-      const mask = layoutNoise(17, [64000, 32000, 16000], 0.45);
-      const landMask: number[] = [];
-      for (let i = 0; i < n; i++) if (isLand(i)) landMask.push(mask[i]!);
-      const t = quantile(Float32Array.from(landMask), config.plains / 100);
-      const EDGE = 0.35; // in mask units: the blend from hills to plain
-      const R = Math.round((400 * M) / PLATE_CELL);
-      const smooth = blur(blur(shape, cols, rows, R, this.wrap), cols, rows, R, this.wrap); // sea counts as 0
+    const shaped = memo('heights', heightKey, () => {
+      const rMin = quantile(relief, 0.005), rMax = quantile(relief, 0.995);
+      const r01 = (v: number) => Math.min(1, Math.max(0, (v - rMin) / Math.max(1e-6, rMax - rMin)));
+      const shape = new Float32Array(n);
+      // Lowland flatness: a height curve that keeps low ground low and flat.
+      const curve = 1 + 2 * (config.lowlandFlatness / 100);
+      let landMax = 0, seaMax = 0;
       for (let i = 0; i < n; i++) {
-        if (!isLand(i)) continue;
-        const w = 1 - smoothstep(t - EDGE / 2, t + EDGE / 2, mask[i]!);
-        plainness[i] = w;
-        shape[i] = shape[i]! + (PLAIN_LEVEL * smooth[i]! - shape[i]!) * w;
+        if (isLand(i)) {
+          let s = smoothstep(0, INLAND / PLATE_CELL, toSea[i]!) ** 0.7 * (0.15 + 0.85 * r01(relief[i]!));
+          // Islands also rise to a peak in the middle (volcanic), lower for small ones.
+          if (island[i]! > 0) s = Math.max(s, 0.45 * island[i]! ** 1.3 * Math.min(1, islandSize[i]!));
+          if (curve !== 1) s **= curve;
+          shape[i] = s;
+          landMax = Math.max(landMax, s);
+        }
       }
-      landMax = 0;
-      for (let i = 0; i < n; i++) if (isLand(i)) landMax = Math.max(landMax, shape[i]!);
-    }
-    for (let i = 0; i < n; i++) {
-      if (!isLand(i)) {
-        let s = smoothstep(0, OFFSHORE / PLATE_CELL, toLand[i]!) ** 0.8 * (0.3 + 0.7 * (1 - r01(relief[i]!)));
-        // Trenches off coastal ranges deepen the sea floor (toward the deepest).
-        if (trench[i]! > 0) s += (1.2 - s) * trench[i]! * smoothstep(0, (300 * M) / PLATE_CELL, toLand[i]!);
-        shape[i] = s;
-        seaMax = Math.max(seaMax, s);
+      // Plains: regions a few km across (from large-scale noise, the lowest `plains` percent of it
+      // over land) where the land is replaced by a heavily smoothed, lowered copy of itself, so
+      // hills melt into broad lowlands and wide valley floors; their edges blend over ~1 km.
+      const plainness = new Float32Array(n);
+      if (config.plains > 0) {
+        const mask = layoutNoise(17, [64000, 32000, 16000], 0.45);
+        const landMask: number[] = [];
+        for (let i = 0; i < n; i++) if (isLand(i)) landMask.push(mask[i]!);
+        const t = quantile(Float32Array.from(landMask), config.plains / 100);
+        const EDGE = 0.35; // in mask units: the blend from hills to plain
+        const R = Math.round((400 * M) / PLATE_CELL);
+        const smooth = blur(blur(shape, cols, rows, R, this.wrap), cols, rows, R, this.wrap); // sea counts as 0
+        for (let i = 0; i < n; i++) {
+          if (!isLand(i)) continue;
+          const w = 1 - smoothstep(t - EDGE / 2, t + EDGE / 2, mask[i]!);
+          plainness[i] = w;
+          shape[i] = shape[i]! + (PLAIN_LEVEL * smooth[i]! - shape[i]!) * w;
+        }
+        landMax = 0;
+        for (let i = 0; i < n; i++) if (isLand(i)) landMax = Math.max(landMax, shape[i]!);
       }
-    }
-    const elevation = (this.elevation = new Float32Array(n));
-    const rough = (this.rough = new Float32Array(n));
-    const mountainness = (this.mountainness = new Float32Array(n));
-    for (let i = 0; i < n; i++) {
-      if (isLand(i)) {
-        const f = shape[i]! / Math.max(1e-6, landMax);
-        elevation[i] = Math.max(sea + 1, sea + (hi - sea) * f);
-        // Small-scale roughness grows with height, and fades on plains.
-        rough[i] = f * (1 - 0.85 * plainness[i]!);
-      }
-    }
-    // Mountains rise on top of the land, from ~700 m inland of any coast, scaled so the highest
-    // peak is exactly the mountain height.
-    if (top > hi) {
-      const lift: number[] = [];
       for (let i = 0; i < n; i++) {
-        if (!isLand(i) || uplift[i]! <= 0) continue;
-        const u = uplift[i]! * smoothstep(0, (700 * M) / PLATE_CELL, toSea[i]!);
-        if (u > 1e-4) lift.push(i, u);
-      }
-      if (lift.length > 0) {
-        const peak = (k: number) => {
-          let m = -Infinity;
-          for (let j = 0; j < lift.length; j += 2) m = Math.max(m, elevation[lift[j]!]! + k * lift[j + 1]!);
-          return m;
-        };
-        let kLo = 0, kHi = 1;
-        while (peak(kHi) < top) kHi *= 2;
-        for (let it = 0; it < 50; it++) {
-          const mid = (kLo + kHi) / 2;
-          if (peak(mid) < top) kLo = mid;
-          else kHi = mid;
+        if (!isLand(i)) {
+          let s = smoothstep(0, OFFSHORE / PLATE_CELL, toLand[i]!) ** 0.8 * (0.3 + 0.7 * (1 - r01(relief[i]!)));
+          // Trenches off coastal ranges deepen the sea floor (toward the deepest).
+          if (trench[i]! > 0) s += (1.2 - s) * trench[i]! * smoothstep(0, (300 * M) / PLATE_CELL, toLand[i]!);
+          shape[i] = s;
+          seaMax = Math.max(seaMax, s);
         }
-        let uMax = 0;
-        for (let j = 1; j < lift.length; j += 2) uMax = Math.max(uMax, lift[j]!);
-        for (let j = 0; j < lift.length; j += 2) {
-          const i = lift[j]!, u = lift[j + 1]!;
-          elevation[i] = Math.min(top, elevation[i]! + kLo * u);
-          rough[i] = Math.max(rough[i]!, u / uMax);
-          mountainness[i] = u / uMax;
-        }
-        // Land the very top exactly on the mountain height.
-        let best = -1;
-        for (let j = 0; j < lift.length; j += 2) if (best < 0 || elevation[lift[j]!]! > elevation[best]!) best = lift[j]!;
-        elevation[best] = top;
       }
-    }
-    for (let i = 0; i < n; i++) {
-      if (isLand(i)) continue;
-      const f = shape[i]! / Math.max(1e-6, seaMax);
-      elevation[i] = Math.min(sea - 1, sea - (sea - lo) * f);
-      rough[i] = 0;
-    }
+      const elevation = new Float32Array(n);
+      const rough = new Float32Array(n);
+      const mountainness = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        if (isLand(i)) {
+          const f = shape[i]! / Math.max(1e-6, landMax);
+          elevation[i] = Math.max(sea + 1, sea + (hi - sea) * f);
+          // Small-scale roughness grows with height, and fades on plains.
+          rough[i] = f * (1 - 0.85 * plainness[i]!);
+        }
+      }
+      // Mountains rise on top of the land, from ~700 m inland of any coast, scaled so the highest
+      // peak is exactly the mountain height.
+      if (top > hi) {
+        const lift: number[] = [];
+        for (let i = 0; i < n; i++) {
+          if (!isLand(i) || uplift[i]! <= 0) continue;
+          const u = uplift[i]! * smoothstep(0, (700 * M) / PLATE_CELL, toSea[i]!);
+          if (u > 1e-4) lift.push(i, u);
+        }
+        if (lift.length > 0) {
+          const peak = (k: number) => {
+            let m = -Infinity;
+            for (let j = 0; j < lift.length; j += 2) m = Math.max(m, elevation[lift[j]!]! + k * lift[j + 1]!);
+            return m;
+          };
+          let kLo = 0, kHi = 1;
+          while (peak(kHi) < top) kHi *= 2;
+          for (let it = 0; it < 50; it++) {
+            const mid = (kLo + kHi) / 2;
+            if (peak(mid) < top) kLo = mid;
+            else kHi = mid;
+          }
+          let uMax = 0;
+          for (let j = 1; j < lift.length; j += 2) uMax = Math.max(uMax, lift[j]!);
+          for (let j = 0; j < lift.length; j += 2) {
+            const i = lift[j]!, u = lift[j + 1]!;
+            elevation[i] = Math.min(top, elevation[i]! + kLo * u);
+            rough[i] = Math.max(rough[i]!, u / uMax);
+            mountainness[i] = u / uMax;
+          }
+          // Land the very top exactly on the mountain height.
+          let best = -1;
+          for (let j = 0; j < lift.length; j += 2) if (best < 0 || elevation[lift[j]!]! > elevation[best]!) best = lift[j]!;
+          elevation[best] = top;
+        }
+      }
+      for (let i = 0; i < n; i++) {
+        if (isLand(i)) continue;
+        const f = shape[i]! / Math.max(1e-6, seaMax);
+        elevation[i] = Math.min(sea - 1, sea - (sea - lo) * f);
+        rough[i] = 0;
+      }
+      return { elevation, rough, mountainness, plainness };
+    });
+    const elevation = shaped.elevation;
+    this.rough = shaped.rough;
+    this.mountainness = shaped.mountainness;
+    this.plainness = shaped.plainness;
 
     // 13. Climate, for biomes. Sea-level temperature runs from the north edge to the south edge,
     //     wandering a few degrees; moisture is high by the sea, drops inland, and drops more in the
@@ -1142,9 +1222,10 @@ export class PlateHeights implements HeightSource {
     this.snowTemp = config.snowTemperature;
     this.treeDensity = config.trees;
     this.treeSeed = config.terrainSeed * 7919 + 47;
-    if (config.biomes === 1) {
-      const temp = (this.temperature = new Float32Array(n));
-      const wet = (this.moisture = new Float32Array(n));
+    const climate = memo('climate', climateKey, () => {
+      if (config.biomes !== 1) return { temp: null, wet: null };
+      const temp = new Float32Array(n);
+      const wet = new Float32Array(n);
       const tNoise = layoutNoise(41, [96000, 48000, 24000]);
       const mNoise = layoutNoise(43, [64000, 32000, 16000, 8000], 0.55);
       for (let r = 0; r < rows; r++) {
@@ -1178,10 +1259,10 @@ export class PlateHeights implements HeightSource {
           wet[i] = Math.min(1, Math.max(0, (coast * (1 - 0.65 * shadow) + 0.3 * mNoise[i]!) * rainScale));
         }
       }
-    } else {
-      this.temperature = null;
-      this.moisture = null;
-    }
+      return { temp, wet };
+    });
+    this.temperature = climate.temp;
+    this.moisture = climate.wet;
 
     // Small-scale roughness down to 1 m (also hides the 32 m grid's facets).
     this.detail = octaves(config.terrainSeed * 7919 + 5, [512, 256, 128, 64, 32, 16]);
@@ -1206,16 +1287,20 @@ export class PlateHeights implements HeightSource {
 
     // 14. Rivers and lakes: water drains toward the sea; basins become lakes or are filled in,
     //     and rivers run where enough water gathers (more in wetter country).
-    if (config.rivers > 0 || config.lakes > 0) {
-      this.hydrology = buildHydrology({
-        elevation, cols, rows, cell: PLATE_CELL, sea, wrap: this.wrap,
+    //     Basins that don't become lakes are filled in: on a copy of the heights, which stay as
+    //     they were for the stages above.
+    const water = memo('hydrology', hydrologyKey, () => {
+      if (config.rivers <= 0 && config.lakes <= 0) return { elevation, hydrology: null, rivers: null };
+      const filled = elevation.slice();
+      const hydrology = buildHydrology({
+        elevation: filled, cols, rows, cell: PLATE_CELL, sea, wrap: this.wrap,
         wetness: this.moisture, rivers: config.rivers, lakes: config.lakes, seed: config.terrainSeed * 7919 + 61,
       });
-      this.rivers = this.hydrology.segments.length ? new RiverIndex(this.hydrology.segments, W, this.wrap) : null;
-    } else {
-      this.hydrology = null;
-      this.rivers = null;
-    }
+      return { elevation: filled, hydrology, rivers: hydrology.segments.length ? new RiverIndex(hydrology.segments, W, this.wrap) : null };
+    });
+    this.elevation = water.elevation;
+    this.hydrology = water.hydrology;
+    this.rivers = water.rivers;
   }
 
   /** Fraction of grid cells above sea level (for tests and tools). */
@@ -1594,12 +1679,46 @@ export class PlateHeights implements HeightSource {
 
 /** The value below which a fraction `q` (0..1) of the field lies (just outside the range at 0 and 1). */
 function quantile(field: Float32Array, q: number): number {
-  const sorted = Float32Array.from(field).sort();
-  const n = sorted.length;
-  if (q <= 0) return sorted[0]! - 1e-3;
-  if (q >= 1) return sorted[n - 1]! + 1e-3;
-  const k = Math.floor(q * n);
-  return (sorted[Math.min(n - 1, k)]! + sorted[Math.max(0, k - 1)]!) / 2;
+  const n = field.length;
+  if (q <= 0 || q >= 1) {
+    let lo = Infinity, hi = -Infinity;
+    for (const v of field) [lo, hi] = [Math.min(lo, v), Math.max(hi, v)];
+    return q <= 0 ? lo - 1e-3 : hi + 1e-3;
+  }
+  // The k-th smallest and the one before it, as a full sort would give them (without sorting).
+  const k = Math.min(n - 1, Math.floor(q * n));
+  const a = Float32Array.from(field);
+  selectKth(a, k);
+  let below = a[k]!;
+  if (k > 0) {
+    below = -Infinity;
+    for (let i = 0; i < k; i++) below = Math.max(below, a[i]!);
+  }
+  return (a[k]! + below) / 2;
+}
+
+/** Reorders `a` so a[k] is its k-th smallest, with everything before it no larger (quickselect). */
+function selectKth(a: Float32Array, k: number): void {
+  let lo = 0, hi = a.length - 1;
+  while (hi > lo) {
+    // Median-of-three pivot.
+    const x = a[lo]!, y = a[(lo + hi) >> 1]!, z = a[hi]!;
+    const p = x < y ? (y < z ? y : x < z ? z : x) : x < z ? x : y < z ? z : y;
+    let i = lo, j = hi;
+    while (i <= j) {
+      while (a[i]! < p) i++;
+      while (a[j]! > p) j--;
+      if (i <= j) {
+        const t = a[i]!;
+        a[i++] = a[j]!;
+        a[j--] = t;
+      }
+    }
+    // Now a[lo..j] <= p <= a[i..hi], and anything between equals p.
+    if (k <= j) hi = j;
+    else if (k >= i) lo = i;
+    else return;
+  }
 }
 
 /**
@@ -1705,26 +1824,34 @@ function smoothstep(e0: number, e1: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
-/** Separable box blur of a grid field with the given radius (cells); X wraps if asked. */
+/**
+ * Separable box blur of a grid field with the given radius (cells); X wraps if asked (edges
+ * otherwise repeat). Running sums: each cell costs the same whatever the radius.
+ */
 function blur(src: Float32Array, cols: number, rows: number, radius: number, wrap: boolean): Float32Array {
   const tmp = new Float32Array(src.length), out = new Float32Array(src.length);
   const span = 2 * radius + 1;
+  const col = (c: number) => (wrap ? ((c % cols) + cols) % cols : Math.max(0, Math.min(cols - 1, c)));
+  const row = (r: number) => Math.max(0, Math.min(rows - 1, r));
   for (let r = 0; r < rows; r++) {
+    const o = cols * r;
+    let sum = 0;
+    for (let k = -radius; k <= radius; k++) sum += src[col(k) + o]!;
     for (let c = 0; c < cols; c++) {
-      let sum = 0;
-      for (let k = -radius; k <= radius; k++) {
-        let cc = c + k;
-        cc = wrap ? ((cc % cols) + cols) % cols : Math.max(0, Math.min(cols - 1, cc));
-        sum += src[cc + cols * r]!;
-      }
-      tmp[c + cols * r] = sum / span;
+      tmp[c + o] = sum / span;
+      sum += src[col(c + radius + 1) + o]! - src[col(c - radius) + o]!;
     }
   }
+  const sums = new Float64Array(cols);
+  for (let k = -radius; k <= radius; k++) {
+    const o = cols * row(k);
+    for (let c = 0; c < cols; c++) sums[c]! += tmp[c + o]!;
+  }
   for (let r = 0; r < rows; r++) {
+    const o = cols * r, add = cols * row(r + radius + 1), drop = cols * row(r - radius);
     for (let c = 0; c < cols; c++) {
-      let sum = 0;
-      for (let k = -radius; k <= radius; k++) sum += tmp[c + cols * Math.max(0, Math.min(rows - 1, r + k))]!;
-      out[c + cols * r] = sum / span;
+      out[c + o] = sums[c]! / span;
+      sums[c]! += tmp[c + add]! - tmp[c + drop]!;
     }
   }
   return out;
