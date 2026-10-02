@@ -280,11 +280,17 @@ describe('tree clumping', () => {
     // (About as many: how a world's groves happen to fall moves its count a few percent, more in
     // a small area like this one; the mean chance itself is checked below.)
     for (const xs of [some, lots]) expect(Math.abs(total(xs) / total(even) - 1)).toBeLessThan(0.2);
-    // Blocks vary far more, and glades (blocks with few trees) appear where there were none.
+    // Blocks vary far more, and clearings (blocks with under a quarter of the trees they had
+    // without clumping) appear, more with more clumping. (About a quarter of a whole world's
+    // forest at 100, 30% of this one's; this square alone has more, ~47%.)
     expect(sd(some)).toBeGreaterThan(sd(even) * 2);
-    expect(sd(lots)).toBeGreaterThan(sd(some) * 1.1);
-    const glades = (xs: number[]) => xs.filter((n) => n < 8).length;
-    expect(glades(lots)).toBeGreaterThan(glades(even) + even.length * 0.05);
+    const forest = even.map((n, i) => [n, i]).filter(([n]) => n! >= 20);
+    const clearings = (xs: number[]) => forest.filter(([n, i]) => xs[i!]! < n! / 4).length / forest.length;
+    expect(forest.length).toBeGreaterThan(200);
+    expect(clearings(even)).toBe(0);
+    expect(clearings(lots)).toBeGreaterThan(clearings(some) + 0.03);
+    expect(clearings(lots)).toBeGreaterThan(0.15);
+    expect(clearings(lots)).toBeLessThan(0.6);
   });
 
   it('keeps the mean chance of a tree, even where groves would be fuller than full', () => {

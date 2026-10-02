@@ -115,8 +115,11 @@ export interface Clumping {
   /** 0 (none) .. 100. */
   amount: number;
 }
-/** Doublings of the tree chance across 0.4 of the normalized clump noise (~1.3 deviations), at amount 100. */
-const CLUMP_RANGE = 3;
+/**
+ * Doublings of the tree chance across 0.4 of the normalized clump noise (~1.3 deviations), at
+ * amount 100: there, about a quarter of a forest is clearings (under a quarter of its trees).
+ */
+const CLUMP_RANGE = 6;
 
 interface ClumpState {
   /** Exponent on the normalized noise. */
