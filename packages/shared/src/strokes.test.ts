@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Material } from './materials.js';
 import { PLATE_CELL, PlateHeights, PlateStageCache, defaultPlateTerrain, type PlateTerrainConfig } from './plates.js';
-import { StrokeIndex, applyStrokes, strokeWeight, strokesIn, validateStrokes, type TerrainStroke } from './strokes.js';
+import { StrokeIndex, applyStrokes, strokeWeight, strokesIn, strokesOverColumns, validateStrokes, type TerrainStroke } from './strokes.js';
 import { NO_WATER } from './water.js';
 import { FLAT_WORLD_16KM, ROUND_WORLD_16x8KM, type WorldConfig } from './world.js';
 
@@ -369,5 +369,29 @@ describe('plant and clear strokes', () => {
   it('checks their amounts', () => {
     expect(() => validateStrokes([stroke({ kind: 'plant', amount: 0.5 }), stroke({ kind: 'clear', amount: 1 })])).not.toThrow();
     expect(() => validateStrokes([stroke({ kind: 'plant', amount: 1.5 })])).toThrow(/amount/);
+  });
+});
+
+describe('strokesOverColumns', () => {
+  const col = (cx: number, cz: number) => ({ cx, cz });
+  it('finds the strokes that come within the margin of a protected column, and only those', () => {
+    // Column (10, 10): 160..176 m by 160..176 m.
+    const strokes = [
+      stroke({ x: 168, z: 168, radius: 5 }), // over it
+      stroke({ x: 200, z: 168, radius: 20 }), // 24 m from its edge: within 20 + 12
+      stroke({ x: 200, z: 168, radius: 10 }), // 24 m: not within 10 + 12
+      stroke({ x: 190, z: 190, radius: 10 }), // corner 19.8 m away: within 22
+      stroke({ x: 195, z: 195, radius: 10 }), // corner 26.9 m away: not
+      stroke({ x: 600, z: 600, radius: 50 }),
+    ];
+    expect(strokesOverColumns(strokes, [col(10, 10)], 16, null)).toEqual([0, 1, 3]);
+    expect(strokesOverColumns(strokes, [], 16, null)).toEqual([]);
+  });
+
+  it('wraps across the seam of a round world', () => {
+    // A 16 km wide world: column 0 is next to column 999.
+    expect(strokesOverColumns([stroke({ x: 15995, z: 8, radius: 5 })], [col(0, 0)], 16, 16000)).toEqual([0]);
+    expect(strokesOverColumns([stroke({ x: 5, z: 8, radius: 5 })], [col(999, 0)], 16, 16000)).toEqual([0]);
+    expect(strokesOverColumns([stroke({ x: 5, z: 8, radius: 5 })], [col(999, 0)], 16, null)).toEqual([]);
   });
 });

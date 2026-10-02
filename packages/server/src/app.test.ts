@@ -16,6 +16,8 @@ import {
   decodeClimate,
   decodeTile,
   defaultFlatGen,
+  emptyChunk,
+  encodeChunk,
   defaultPlateTerrain,
   voxelAt,
   type ServerMessage,
@@ -620,6 +622,14 @@ describe('named worlds', () => {
     expect((await create(boss)).statusCode).toBe(201);
     expect((await a.inject({ method: 'DELETE', url: '/api/worlds/made', headers: { cookie: ann } })).statusCode).toBe(403);
     expect((await a.inject({ method: 'DELETE', url: '/api/worlds/made', headers: { cookie: boss } })).statusCode).toBe(204);
+    // Terraforming: admins only.
+    expect((await create(boss)).statusCode).toBe(201);
+    const shape = (cookie?: string) => a.inject({ method: 'POST', url: '/api/worlds/made/strokes', payload: { base: 0, strokes: [{ kind: 'raise', x: 3000, z: 3000, radius: 50, amount: 5, softness: 0.5 }] }, ...(cookie ? { headers: { cookie } } : {}) });
+    expect((await shape(ann)).statusCode).toBe(403);
+    expect((await shape()).statusCode).toBe(403);
+    expect((await a.inject({ method: 'GET', url: '/api/worlds', headers: { cookie: ann } })).json().canTerraform).toBe(false);
+    expect((await a.inject({ method: 'GET', url: '/api/worlds', headers: { cookie: boss } })).json().canTerraform).toBe(true);
+    expect((await shape(boss)).json()).toEqual({ strokes: 1 });
   });
 
   it('serves the climate of worlds whose biomes blend, and nothing for the rest', async () => {
@@ -668,6 +678,54 @@ describe('named worlds', () => {
     await a.close();
   });
 
+  it('terraforms a world (keeping clear of builds), remaking it, and its players reload', async () => {
+    const { a, url, root } = await catalogApp();
+    expect((await a.inject({ method: 'POST', url: '/api/worlds', payload: { name: 'isle', plates: { seed: 2 }, shape: 'round-16x8' } })).statusCode).toBe(201);
+    // Someone has built in the chunk column at 1600..1616 m (cx = cz = 100).
+    mkdirSync(join(root, 'isle', 'chunks'), { recursive: true });
+    writeFileSync(join(root, 'isle', 'chunks', '100_0_100.chunk'), encodeChunk(emptyChunk({ cx: 100, cy: 0, cz: 100 })));
+    const got = (await a.inject({ method: 'GET', url: '/api/worlds/isle/strokes' })).json();
+    expect(got).toEqual({ strokes: [], protected: [{ cx: 100, cz: 100 }], chunkMetres: 16 });
+    const inIsle = await hello(url, { world: 'isle' });
+    const inOther = await hello(url, { world: 'other' });
+    expect(inIsle.reply.type).toBe('welcome');
+    const map = async () => (await a.inject({ method: 'GET', url: `/api/world/map/area?world=isle&x0=${2900 * 16}&z0=${2900 * 16}&step=${16 * 16}&cols=13&rows=13` })).rawPayload;
+    const before = await map();
+    const raise = { kind: 'raise', x: 3000, z: 3000, radius: 60, amount: 80, softness: 0.5 };
+    const post = (body: object) => a.inject({ method: 'POST', url: '/api/worlds/isle/strokes', payload: body });
+    // Strokes reaching the build (within the margin) are refused, naming them; nothing changes.
+    const near = { kind: 'level', x: 1640, z: 1608, radius: 15, amount: 10, softness: 0 };
+    const refused = await post({ base: 0, strokes: [raise, near] });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().strokes).toEqual([1]);
+    expect(inIsle.ws.readyState).toBe(WebSocket.OPEN);
+    // Built on the wrong strokes, malformed, or none: refused.
+    expect((await post({ base: 3, strokes: [raise] })).json()).toMatchObject({ stale: true });
+    expect((await post({ base: 0, strokes: [{ ...raise, kind: 'melt' }] })).statusCode).toBe(400);
+    expect((await post({ base: 0, strokes: [] })).statusCode).toBe(400);
+    expect((await a.inject({ method: 'POST', url: '/api/worlds/nope/strokes', payload: { base: 0, strokes: [raise] } })).statusCode).toBe(404);
+    expect((await a.inject({ method: 'POST', url: '/api/worlds/other/strokes', payload: { base: 0, strokes: [raise] } })).statusCode).toBe(400);
+    // Applied: stored, the world remade with it, and its players told to reload.
+    const told = nextMessage(inIsle.ws);
+    const ok = await post({ base: 0, strokes: [raise] });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toEqual({ strokes: 1 });
+    expect(await told).toMatchObject({ type: 'error', code: 'world_terraformed' });
+    expect(await inIsle.closed).toBe(1012);
+    expect(inOther.ws.readyState).toBe(WebSocket.OPEN);
+    expect(JSON.parse(readFileSync(join(root, 'isle', 'strokes.json'), 'utf8'))).toEqual([raise]);
+    expect((await a.inject({ method: 'GET', url: '/api/worlds/isle/strokes' })).json().strokes).toEqual([raise]);
+    expect((await a.inject({ method: 'GET', url: '/api/worlds' })).json().worlds.find((w: { name: string }) => w.name === 'isle')).toMatchObject({ strokes: 1, editedChunks: 1 });
+    expect(Buffer.compare(await map(), before)).not.toBe(0);
+    // More on top, then new settings: the strokes go with the old terrain.
+    expect((await post({ base: 1, strokes: [{ ...raise, x: 3100 }] })).json()).toEqual({ strokes: 2 });
+    expect((await a.inject({ method: 'PUT', url: '/api/worlds/isle', payload: { plates: { seed: 2 }, shape: 'round-16x8' } })).statusCode).toBe(200);
+    expect((await a.inject({ method: 'GET', url: '/api/worlds/isle/strokes' })).json()).toEqual({ strokes: [], protected: [], chunkMetres: 16 });
+    expect(Buffer.compare(await map(), before)).toBe(0);
+    inOther.ws.close();
+    await a.close();
+  });
+
   it('deletes worlds (not the default one) and disconnects their players', async () => {
     const { a, url, root } = await catalogApp();
     const inOther = await hello(url, { world: 'other' });
@@ -692,6 +750,7 @@ describe('named worlds', () => {
     expect(readWorld(root, 'x')).toBeNull();
     expect((await a.inject({ method: 'PUT', url: '/api/worlds/other', payload: { plates: {}, shape: 'round-16x8' } })).statusCode).toBe(403);
     expect((await a.inject({ method: 'DELETE', url: '/api/worlds/other' })).statusCode).toBe(403);
+    expect((await a.inject({ method: 'POST', url: '/api/worlds/other/strokes', payload: { base: 0, strokes: [{ kind: 'raise', x: 1, z: 1, radius: 5, amount: 1, softness: 0 }] } })).statusCode).toBe(403);
     expect(readWorld(root, 'other')!.spec).toEqual({ generator: 'flat', resolution: 8 });
     await a.close();
   });

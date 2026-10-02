@@ -42,6 +42,20 @@ describe('TerraformDraft', () => {
     expect(d.strokes.map((t) => t.x)).toEqual([1, 2]);
   });
 
+  it('removes strokes by place, dropping emptied groups, undoably', () => {
+    const d = new TerraformDraft();
+    d.begin([s(1), s(2)]);
+    d.begin([s(3)]);
+    d.begin([s(4), s(5)]);
+    d.remove([1, 2, 4]);
+    expect(d.strokes.map((t) => t.x)).toEqual([1, 4]);
+    expect(d.toJSON().length).toBe(2);
+    d.undo();
+    expect(d.strokes.map((t) => t.x)).toEqual([1, 2, 3, 4, 5]);
+    d.remove([]);
+    expect(d.canRedo).toBe(true);
+  });
+
   it('stores and reads back, refusing anything malformed', () => {
     const d = new TerraformDraft();
     d.begin([s(1)]);

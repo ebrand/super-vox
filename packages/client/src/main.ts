@@ -13,7 +13,7 @@ import { createTint } from './tint.js';
 import { applyLighting, loadLighting, saveLighting } from './lighting.js';
 import { LightingPanel } from './lightingPanel.js';
 import { PLAYER, moveAabb, playerBox } from './physics.js';
-import { loadSettings } from './settings.js';
+import { loadSettings, workersFor } from './settings.js';
 import { MeshWorkerPool } from './workerPool.js';
 import { WorldMapOverlay, decodeWorldMap } from './worldMap.js';
 import { startFromParams } from './startAt.js';
@@ -73,8 +73,8 @@ const toleranceWarning =
   requestedTolerance !== undefined && !isValidTolerance(requestedTolerance)
     ? `ignoring tolerance ${toleranceParam} (use an integer 0..16)`
     : '';
-/** ?workers=N: mesh workers (1..16) instead of the default (up to 4, leaving a core free). */
-const workers = params.has('workers') ? Math.round(numberParam('workers', 4, 1, 16)) : undefined;
+/** Mesh workers: ?workers=N (1..64) for one visit, else the Performance setting's. */
+const workers = Math.round(numberParam('workers', workersFor(settings.performance, navigator.hardwareConcurrency || 0), 1, 64));
 /** ?world=name: which of the server's worlds to join (its default when omitted). */
 const worldName = params.get('world') ?? undefined;
 let joinError = '';
@@ -311,7 +311,7 @@ connection = connect({
           controls.lookAt(spawn);
           controls.minY = unitsToMeters(w.minYUnits) + 1;
           const send = (m: Parameters<NonNullable<typeof connection>['send']>[0]) => connection?.send(m);
-          pool = workers === undefined ? new MeshWorkerPool() : new MeshWorkerPool(workers);
+          pool = new MeshWorkerPool(workers);
           chunks = new ChunkManager(w, scene, material, voxelWater, send, pool, 64, onProgress);
           const waterAt = waterAtFor(chunks);
           inWaterAt = (x, y, z) => waterAt(x * UNITS_PER_METER, y * UNITS_PER_METER, z * UNITS_PER_METER) ?? y < atmosphere.uniforms.waterLevel.value;
@@ -497,6 +497,14 @@ connection = connect({
           joinError = `${msg.message}${worldName !== undefined ? ' (check ?world=)' : ''}`;
         } else if (msg.code === 'world_changed') {
           joinError = `${msg.message}: reload to play it`;
+        } else if (msg.code === 'world_terraformed') {
+          // The land was reshaped (builds kept): load it again, here (on the new ground).
+          joinError = `${msg.message}: reloading`;
+          const url = new URL(location.href);
+          url.searchParams.set('x', camera.position.x.toFixed(1));
+          url.searchParams.set('z', camera.position.z.toFixed(1));
+          url.searchParams.delete('y');
+          setTimeout(() => location.replace(url), 1500);
         } else if (msg.code === 'world_deleted') {
           joinError = `${msg.message}: back to the Menu to pick another`;
         }

@@ -3,6 +3,8 @@ import { MapControls } from 'three/examples/jsm/controls/MapControls.js';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import { UNITS_PER_METER, decodeClimate } from '@super-vox/shared';
 import { createAtmosphere, type Atmosphere } from './atmosphere.js';
@@ -44,6 +46,9 @@ export class Diorama {
   private readonly brushRing: Line2;
   /** Under the ring: a wider dark line, so its dashes stand out on any ground. */
   private readonly brushShade: Line2;
+  /** Where players have built (see setProtected): squares outlined on the ground. */
+  private readonly protectedLines: LineSegments2;
+  private protectedSquares: readonly { x0: number; z0: number; size: number }[] = [];
   private brushRadius: number | null = null;
   private brushAt: { x: number; z: number } | null = null;
   /**
@@ -84,6 +89,12 @@ export class Diorama {
     // (Lines a few pixels wide: WebGL's own are one pixel, too faint to see on busy ground.)
     this.brushRing = new Line2(new LineGeometry(), new LineMaterial({ color: 0xffd34d, linewidth: 3, dashed: true, depthTest: false, transparent: true }));
     this.brushShade = new Line2(this.brushRing.geometry, new LineMaterial({ color: 0x000000, linewidth: 5, depthTest: false, transparent: true, opacity: 0.6 }));
+    this.protectedLines = new LineSegments2(new LineSegmentsGeometry(), new LineMaterial({ color: 0xff5a4f, linewidth: 2, depthTest: false, transparent: true }));
+    this.protectedLines.layers.set(OVERLAY_LAYER);
+    this.protectedLines.renderOrder = 9;
+    this.protectedLines.frustumCulled = false;
+    this.protectedLines.visible = false;
+    this.scene.add(this.protectedLines);
     // (Both transparent, so they're drawn in this order: the ring over its shade.)
     for (const [line, order] of [[this.brushShade, 10], [this.brushRing, 11]] as const) {
       line.layers.set(OVERLAY_LAYER);
@@ -139,6 +150,34 @@ export class Diorama {
   setField(heights: Int32Array, n: number, step: number, x0: number, z0: number): void {
     this.field = { heights, n, step, x0, z0 };
     this.placeBrush();
+    this.placeProtected();
+  }
+
+  /** Squares (metres: corner and size) where players have built, outlined in red on the ground. */
+  setProtected(squares: readonly { x0: number; z0: number; size: number }[]): void {
+    this.protectedSquares = squares;
+    this.placeProtected();
+  }
+
+  private placeProtected(): void {
+    const sq = this.protectedSquares;
+    this.protectedLines.visible = sq.length > 0 && this.field !== null;
+    if (!this.protectedLines.visible) return;
+    const pts: number[] = [];
+    const y = (x: number, z: number) => (this.groundAt(x, z) ?? 0) + 0.5;
+    for (const { x0, z0, size } of sq) {
+      // Each side in 4 m pieces, draped over the ground.
+      const n = Math.max(1, Math.round(size / 4)), d = size / n;
+      const sides: [number, number, number, number][] = [[x0, z0, d, 0], [x0 + size, z0, 0, d], [x0 + size, z0 + size, -d, 0], [x0, z0 + size, 0, -d]];
+      for (const [sx, sz, dx, dz] of sides) {
+        for (let k = 0; k < n; k++) {
+          const ax = sx + dx * k, az = sz + dz * k, bx = ax + dx, bz = az + dz;
+          pts.push(ax, y(ax, az), az, bx, y(bx, bz), bz);
+        }
+      }
+    }
+    this.protectedLines.geometry.dispose();
+    this.protectedLines.geometry = new LineSegmentsGeometry().setPositions(pts);
   }
 
   /** The brush ring's radius (metres) and colour (drawn brighter, dashed); null hides it. */

@@ -144,6 +144,44 @@ export function applyStrokes(
   return { ground: h, broad: e };
 }
 
+/** A chunk column (16 m square, by chunk index) that players have built in: strokes keep clear of it. */
+export interface ProtectedColumn {
+  cx: number;
+  cz: number;
+}
+
+/** Metres strokes keep from protected columns (as far as a tree's crown reaches, and a little). */
+export const PROTECT_MARGIN = 12;
+
+/**
+ * Which strokes (their indexes) reach within PROTECT_MARGIN of any of `columns` (chunk columns
+ * `chunkMetres` across); x wraps when `worldWidth` (metres) is given (round worlds).
+ */
+export function strokesOverColumns(strokes: readonly TerrainStroke[], columns: readonly ProtectedColumn[], chunkMetres: number, worldWidth: number | null): number[] {
+  if (columns.length === 0) return [];
+  const wrapCols = worldWidth !== null ? Math.round(worldWidth / chunkMetres) : null;
+  const wrap = (cx: number) => (wrapCols !== null ? ((cx % wrapCols) + wrapCols) % wrapCols : cx);
+  const keys = new Set(columns.map((c) => `${wrap(c.cx)},${c.cz}`));
+  const out: number[] = [];
+  strokes.forEach((s, i) => {
+    const reach = s.radius + PROTECT_MARGIN;
+    const c0 = Math.floor((s.x - reach) / chunkMetres), c1 = Math.floor((s.x + reach) / chunkMetres);
+    const r0 = Math.floor((s.z - reach) / chunkMetres), r1 = Math.floor((s.z + reach) / chunkMetres);
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        if (!keys.has(`${wrap(c)},${r}`)) continue;
+        // The nearest point of the column's square to the stroke's centre.
+        const nx = Math.max(c * chunkMetres, Math.min((c + 1) * chunkMetres, s.x)), nz = Math.max(r * chunkMetres, Math.min((r + 1) * chunkMetres, s.z));
+        if (Math.hypot(nx - s.x, nz - s.z) < reach) {
+          out.push(i);
+          return;
+        }
+      }
+    }
+  });
+  return out;
+}
+
 /**
  * The chance of a tree at (x, z) (units) where the world gives it `chance` (0..1), after the plant
  * and clear strokes, in order: plant takes it toward 1, clear toward 0, each by its amount where

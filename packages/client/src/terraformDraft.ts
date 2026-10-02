@@ -66,6 +66,15 @@ export class TerraformDraft {
     this.groups = [];
   }
 
+  /** Takes out the strokes at these places in `strokes` (undoably); groups left empty go too. */
+  remove(indexes: readonly number[]): void {
+    if (indexes.length === 0) return;
+    this.remember();
+    const gone = new Set(indexes);
+    let k = 0;
+    this.groups = this.groups.map((g) => g.filter(() => !gone.has(k++))).filter((g) => g.length > 0);
+  }
+
   /** For storing: the groups. */
   toJSON(): TerrainStroke[][] {
     return this.groups;

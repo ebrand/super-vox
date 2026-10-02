@@ -1,4 +1,4 @@
-import { STROKE_KINDS, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, type StrokeKind, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
+import { STROKE_KINDS, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, strokesOverColumns, type ProtectedColumn, type StrokeKind, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT, parseDioramaLight, type DioramaLight } from './dioramaLight.js';
 import type { TerraformRequest, TerraformResponse } from './terraform.worker.js';
@@ -13,7 +13,9 @@ import { WorldRelief } from './worldRelief.js';
  * (made in this browser from the world's settings, see terraform.worker.ts), and "Back to the
  * world" returns. In the diorama, ⌘-drag (Ctrl-drag) shapes the ground with the chosen brush:
  * the strokes are a draft (kept in this browser, per world, with undo and redo) that the diorama
- * and the overview show; the world itself doesn't change.
+ * and the overview show, on top of the strokes already applied to the world. Admins apply the
+ * draft to the world (the server remakes it; its players reload), keeping clear of where players
+ * have built.
  */
 
 interface WorldInfo {
@@ -155,6 +157,15 @@ radiusEl.addEventListener('input', () => ((brush = { ...brush, radius: Number(ra
 amountEl.addEventListener('input', () => ((brush = { ...brush, strength: { ...brush.strength, [brush.kind]: Number(amountEl.value) } }), showBrush()));
 softnessEl.addEventListener('input', () => ((brush = { ...brush, softness: Number(softnessEl.value) }), showBrush()));
 
+// ---- The world's own terraforming (applied), and where players have built (kept clear of).
+let applied: TerrainStroke[] = [];
+let protectedCols: ProtectedColumn[] = [];
+let chunkMetres = 16;
+/** Whether whoever's here may apply drafts (an admin, or anyone on a development server). */
+let canTerraform = false;
+/** The world's strokes and then the draft's: what the worker shapes the land with. */
+const allStrokes = () => [...applied, ...draft.strokes];
+
 // ---- The draft (per world, kept in this browser).
 const draftKey = (world: string) => `super-vox-terraform-draft:${world}`;
 let draft = new TerraformDraft();
@@ -181,6 +192,105 @@ function showDraft(): void {
   (document.getElementById('undo') as HTMLButtonElement).disabled = !draft.canUndo;
   (document.getElementById('redo') as HTMLButtonElement).disabled = !draft.canRedo;
   (document.getElementById('clear') as HTMLButtonElement).disabled = draft.count === 0;
+  showApply();
+}
+
+// ---- Applying the draft to the world.
+const applyEl = document.getElementById('apply') as HTMLButtonElement;
+const applyConfirm = document.getElementById('apply-confirm')!;
+/** The draft's strokes that reach where players have built (their places in it). */
+function overBuilds(): number[] {
+  const info = worlds.find((w) => w.name === current);
+  if (!info) return [];
+  const world = WORLD_SHAPES[shapeOf(info)];
+  return strokesOverColumns(draft.strokes, protectedCols, chunkMetres, world.wrapX ? world.widthUnits / UNITS_PER_METER : null);
+}
+function showApply(): void {
+  const over = overBuilds();
+  document.getElementById('builds')!.hidden = over.length === 0;
+  document.getElementById('builds-about')!.textContent = `${over.length} stroke${over.length === 1 ? ' reaches' : 's reach'} where players have built`;
+  document.getElementById('applied-about')!.textContent = applied.length === 0 ? 'The world has no terraforming yet.' : `The world has ${applied.length} stroke${applied.length === 1 ? '' : 's'} applied (shown under the draft).`;
+  applyEl.hidden = !canTerraform;
+  applyEl.disabled = draft.count === 0 || over.length > 0 || applyConfirm.hidden === false;
+  document.getElementById('apply-note')!.textContent = canTerraform ? '' : 'Only admins can apply a draft to the world.';
+  if (draft.count === 0 || over.length > 0) applyConfirm.hidden = true;
+}
+document.getElementById('drop-builds')!.addEventListener('click', () => {
+  draft.remove(overBuilds());
+  draftChanged();
+});
+applyEl.addEventListener('click', () => {
+  document.getElementById('apply-about')!.textContent = `Apply ${draft.count} stroke${draft.count === 1 ? '' : 's'} to "${current}"? The server remakes the world with them, and everyone in it reloads. They can't be taken back here.`;
+  applyConfirm.hidden = false;
+  showApply();
+});
+document.getElementById('apply-no')!.addEventListener('click', () => {
+  applyConfirm.hidden = true;
+  showApply();
+});
+document.getElementById('apply-yes')!.addEventListener('click', () => void applyDraft());
+async function applyDraft(): Promise<void> {
+  const name = current, adding = draft.strokes;
+  applyConfirm.hidden = true;
+  applyEl.disabled = true;
+  status(`applying ${adding.length} strokes to ${name}…`);
+  try {
+    const res = await fetch(`/api/worlds/${encodeURIComponent(name)}/strokes`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ base: applied.length, strokes: adding }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { error?: string; strokes?: number | number[]; stale?: boolean };
+    if (current !== name) return;
+    if (!res.ok) {
+      // Built on since we looked: see where now.
+      if (Array.isArray(body.strokes)) await loadApplied(name);
+      status(`Not applied: ${body.error ?? `the server said ${res.status}`}`, true);
+      return;
+    }
+    // The world has them now: the draft starts again on top (nothing to redraw: the same strokes).
+    applied = [...applied, ...adding];
+    draft = new TerraformDraft();
+    shownStrokes = allStrokes();
+    saveDraft();
+    showDraft();
+    status(`Applied: ${name} now has ${String(body.strokes)} stroke${body.strokes === 1 ? '' : 's'}; players there reload it.`);
+  } catch (err) {
+    status(`Not applied: ${(err as Error).message}`, true);
+  } finally {
+    showApply();
+  }
+}
+
+/** The world's applied strokes and where players have built (none, if the server can't say). */
+async function loadApplied(name: string): Promise<void> {
+  const res = await fetch(`/api/worlds/${encodeURIComponent(name)}/strokes`);
+  if (!res.ok) throw new Error(`the terraforming request failed: ${res.status}`);
+  const body = (await res.json()) as { strokes: TerrainStroke[]; protected: ProtectedColumn[]; chunkMetres: number };
+  if (current !== name) return;
+  applied = body.strokes;
+  protectedCols = body.protected;
+  chunkMetres = body.chunkMetres;
+  showProtected();
+  showApply();
+}
+
+/** The protected columns in the area showing, outlined in the diorama. */
+function showProtected(): void {
+  if (!diorama || !area) return;
+  const info = worlds.find((w) => w.name === current)!;
+  const world = WORLD_SHAPES[shapeOf(info)];
+  const m = UNITS_PER_METER, W = world.widthUnits / m;
+  const ax0 = area.x0 / m, az0 = area.z0 / m, size = area.size / m;
+  const squares: { x0: number; z0: number; size: number }[] = [];
+  for (const c of protectedCols) {
+    let x = c.cx * chunkMetres;
+    const z = c.cz * chunkMetres;
+    // (Round worlds: the copy nearest the area.)
+    if (world.wrapX) x += Math.round((ax0 + size / 2 - (x + chunkMetres / 2)) / W) * W;
+    if (x + chunkMetres > ax0 && x < ax0 + size && z + chunkMetres > az0 && z < az0 + size) squares.push({ x0: x, z0: z, size: chunkMetres });
+  }
+  diorama.setProtected(squares);
 }
 /** The draft's strokes as last shown, to work out where each change is. */
 let shownStrokes: TerrainStroke[] = [];
@@ -189,10 +299,12 @@ function draftChanged(): void {
   overviewStale = true;
   saveDraft();
   showDraft();
-  const now = draft.strokes;
+  const now = allStrokes();
   const box = changedBox(shownStrokes, now);
   shownStrokes = now;
-  if (box) patchArea(box);
+  // (Changed from the overview, say by Undo or Remove them: redraw it.)
+  if (showing === 'overview') refreshOverview();
+  else if (box) patchArea(box);
 }
 document.getElementById('undo')!.addEventListener('click', () => draft.undo() && draftChanged());
 document.getElementById('redo')!.addEventListener('click', () => draft.redo() && draftChanged());
@@ -261,6 +373,8 @@ async function openWorld(name: string): Promise<void> {
   diorama = null;
   history.replaceState(null, '', `#world=${encodeURIComponent(name)}`);
   area = null;
+  applied = [];
+  protectedCols = [];
   loadDraft(name);
   const shape = shapeOf(info);
   const world = WORLD_SHAPES[shape];
@@ -269,7 +383,7 @@ async function openWorld(name: string): Promise<void> {
   send({ type: 'world', key: name, shape, plates: info.spec.plates, voxelize: info.spec.voxelize ?? { minVoxelSize: 1, tolerance: 4 } });
   try {
     const q = `world=${encodeURIComponent(name)}`;
-    const [mapRes, climateRes] = await Promise.all([fetch(`/api/world/map?width=1024&${q}`), fetch(`/api/world/climate?${q}`)]);
+    const [mapRes, climateRes] = await Promise.all([fetch(`/api/world/map?width=1024&${q}`), fetch(`/api/world/climate?${q}`), loadApplied(name)]);
     if (!mapRes.ok) throw new Error(`the map request failed: ${mapRes.status}`);
     const map = decodeWorldMap(await mapRes.arrayBuffer());
     if (climateRes.status === 200) map.colors = climateTintColors(map, decodeClimate(new Uint8Array(await climateRes.arrayBuffer())));
@@ -338,9 +452,9 @@ function enter(): void {
   status('making the area…');
   areaAbout.textContent = `${sizeM} x ${sizeM} m around x ${Math.round((x0 + size / 2) / UNITS_PER_METER)}, z ${Math.round((z0 + size / 2) / UNITS_PER_METER)} m, a sample every ${stepM} m`;
   area = { x0, z0, size, step, depth: BASE_DEPTH };
-  shownStrokes = draft.strokes;
+  shownStrokes = allStrokes();
   lastAreaId = ++areaId;
-  send({ type: 'area', id: lastAreaId, ...area, strokes: draft.strokes });
+  send({ type: 'area', id: lastAreaId, ...area, strokes: shownStrokes });
 }
 
 /**
@@ -355,7 +469,7 @@ function patchArea(box: Box): void {
   patchBox = unionBox(patchBox, box);
   if (patching) return;
   patching = true;
-  send({ type: 'patch', id: ++areaId, strokes: draft.strokes, box: patchBox! });
+  send({ type: 'patch', id: ++areaId, strokes: allStrokes(), box: patchBox! });
   patchBox = null;
 }
 
@@ -368,7 +482,7 @@ function updateRivers(): void {
   if (!area || showing !== 'diorama') return;
   status('rivers and lakes following the draft…');
   lastAreaId = ++areaId;
-  send({ type: 'area', id: lastAreaId, ...area, strokes: draft.strokes });
+  send({ type: 'area', id: lastAreaId, ...area, strokes: allStrokes() });
 }
 document.getElementById('rivers')!.addEventListener('click', updateRivers);
 
@@ -377,7 +491,7 @@ function refreshOverview(): void {
   if (!ready) return;
   overviewStale = false;
   status('redrawing the world with the draft…');
-  send({ type: 'map', id: ++mapId, width: 1024, strokes: draft.strokes });
+  send({ type: 'map', id: ++mapId, width: 1024, strokes: allStrokes() });
 }
 
 function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
@@ -401,6 +515,7 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
   diorama.show(made.parts, made, again);
   diorama.canvas.dataset.area = `${made.x0},${made.z0},${made.size},${made.step}`;
   diorama.setField(made.heights, made.n, made.step, made.x0, made.z0);
+  showProtected();
   diorama.setBrush(brush.radius, BRUSH_COLORS[brush.kind]);
   status(again ? `rivers and lakes updated in ${(made.ms / 1000).toFixed(1)} s` : `made in ${(made.ms / 1000).toFixed(1)} s (${Math.round(made.quads / 1000)}k faces), shown in ${Math.round(performance.now() - t0)} ms`);
   enterEl.disabled = false;
@@ -460,7 +575,8 @@ async function start(): Promise<void> {
   try {
     const res = await fetch('/api/worlds');
     if (!res.ok) throw new Error(`the server said ${res.status}`);
-    const body = (await res.json()) as { default: string; worlds: WorldInfo[] };
+    const body = (await res.json()) as { default: string; canTerraform?: boolean; worlds: WorldInfo[] };
+    canTerraform = body.canTerraform === true;
     worlds = body.worlds.filter((w) => w.spec.generator === 'plates');
     if (worlds.length === 0) {
       status('No plate worlds to terraform.', true);

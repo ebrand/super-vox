@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  CHUNK_SIZE,
   DEFAULT_DAY_MINUTES,
   DEFAULT_GAME_MODE,
   DEFAULT_WORLD_SHAPE,
@@ -9,7 +10,11 @@ import {
   defaultClock,
   defaultVoxelize,
   isValidWorldName,
+  strokesOverColumns,
+  STROKE_LIMITS,
   type ClockChange,
+  type ProtectedColumn,
+  type TerrainStroke,
   type DayClock,
   type GameMode,
   type HeightSource,
@@ -19,15 +24,25 @@ import {
 } from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
 import { World } from './world.js';
-import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, readWorld, saveClock, updateWorld, worldConfigOf, type WorldFile } from './worldFile.js';
+import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, readStrokes, readWorld, saveClock, updateWorld, worldConfigOf, writeStrokes, type WorldFile } from './worldFile.js';
 
 /** What the HTTP API shows about a world. */
 export type WorldSummary = Pick<WorldFile, 'name' | 'createdAt' | 'updatedAt' | 'spec'> & {
   /** Saved edited chunks (discarded if the world's settings are replaced). */
   editedChunks: number;
+  /** Terraforming strokes applied to it (see WorldCatalog.terraform). */
+  strokes: number;
 };
 
 export class DefaultWorldError extends Error {}
+/** Terraforming built on strokes the world no longer has (someone applied others since). */
+export class StaleStrokesError extends Error {}
+/** Terraforming that would reach where players have built: the strokes' indexes. */
+export class StrokesOverBuildsError extends Error {
+  constructor(readonly strokes: number[]) {
+    super(`${strokes.length} stroke${strokes.length === 1 ? '' : 's'} would reach where players have built`);
+  }
+}
 
 /** The worlds a server can serve. */
 export interface WorldCatalog {
@@ -56,7 +71,21 @@ export interface WorldCatalog {
   openWorlds(): { name: string; world: World }[];
   /** Bytes of saved edits of world `name` on disk (0 if none or not kept on disk). */
   diskBytes(name: string): number;
+  /** World `name`'s terraforming strokes, in order; null if there's no such world. */
+  strokes(name: string): TerrainStroke[] | null;
+  /** Where players have built in world `name` (see World.protectedColumns); null if there's no such world. */
+  protectedColumns(name: string): ProtectedColumn[] | null;
+  /**
+   * Adds `added` to world `name`'s terraforming (which must have `base` strokes, else
+   * StaleStrokesError) and remakes the world with it; none may reach where players have built
+   * (StrokesOverBuildsError). Plate worlds only (RangeError). Returns how many it has now.
+   * Throws NoSuchWorldError. Absent where not allowed.
+   */
+  terraform?: (name: string, base: number, added: readonly TerrainStroke[]) => number;
 }
+
+/** A chunk column's width (metres). */
+const CHUNK_METRES = CHUNK_SIZE / 16;
 
 /** The server's offset from UTC in minutes (east positive), for real-time clocks. */
 export function localUtcOffsetMinutes(now = new Date()): number {
@@ -78,6 +107,8 @@ export function singleWorld(
     clock: (n) => (n === undefined || n === name ? clock : null),
     openWorlds: () => [{ name, world }],
     diskBytes: () => 0,
+    strokes: (n) => (n === name ? [] : null),
+    protectedColumns: (n) => (n === name ? world.protectedColumns() : null),
     setClock: (n, change) => {
       if (n !== name) throw new NoSuchWorldError(`no world named "${n}"`);
       return (clock = applyClockChange(clock, change, Date.now()));
@@ -94,6 +125,7 @@ export function singleWorld(
 interface Opened {
   world: World;
   file: WorldFile;
+  strokes: TerrainStroke[];
   heights: HeightSource | null;
   /** Development: the world voxelized at other tolerances (edits stay in memory). */
   variants: Map<number, World>;
@@ -110,6 +142,7 @@ export class FileWorldCatalog implements WorldCatalog {
   readonly update?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape) => WorldSummary;
   readonly delete?: (name: string) => void;
   readonly setClock?: (name: string, change: ClockChange) => DayClock;
+  readonly terraform?: (name: string, base: number, added: readonly TerrainStroke[]) => number;
   readonly dev: boolean;
   private readonly clocks = new Map<string, DayClock>();
 
@@ -142,6 +175,21 @@ export class FileWorldCatalog implements WorldCatalog {
         const file = updateWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize, ...(s ? { shape: s } : {}) });
         this.open.delete(name); // rebuilt from the new settings on next use
         return this.summary(file);
+      };
+      this.terraform = (name, base, added) => {
+        const world = this.get(name);
+        const o = this.open.get(name);
+        if (!world || !o) throw new NoSuchWorldError(`no world named "${name}"`);
+        if (o.file.spec.generator !== 'plates') throw new RangeError('only plate worlds can be terraformed');
+        if (o.strokes.length !== base) throw new StaleStrokesError(`the world has ${o.strokes.length} strokes now, not ${base}: reload to see them`);
+        const all = [...o.strokes, ...added];
+        if (all.length > STROKE_LIMITS.count) throw new RangeError(`at most ${STROKE_LIMITS.count} strokes a world; this would make ${all.length}`);
+        const M = 16, config = world.config;
+        const over = strokesOverColumns(added, world.protectedColumns(), CHUNK_METRES, config.wrapX ? config.widthUnits / M : null);
+        if (over.length) throw new StrokesOverBuildsError(over);
+        writeStrokes(this.dataRoot, name, all);
+        this.open.delete(name); // remade with them on next use
+        return all.length;
       };
       this.delete = (name) => {
         if (name === this.defaultName) throw new DefaultWorldError(`"${name}" is the server's default world and can't be deleted`);
@@ -222,14 +270,26 @@ export class FileWorldCatalog implements WorldCatalog {
   }
 
   private summary(f: WorldFile): WorldSummary {
-    return { name: f.name, createdAt: f.createdAt, ...(f.updatedAt ? { updatedAt: f.updatedAt } : {}), spec: f.spec, editedChunks: countEdits(this.dataRoot, f.name) };
+    return { name: f.name, createdAt: f.createdAt, ...(f.updatedAt ? { updatedAt: f.updatedAt } : {}), spec: f.spec, editedChunks: countEdits(this.dataRoot, f.name), strokes: this.strokes(f.name)?.length ?? 0 };
+  }
+
+  strokes(name: string): TerrainStroke[] | null {
+    if (!isValidWorldName(name)) return null;
+    const o = this.open.get(name);
+    if (o) return o.strokes;
+    return readWorld(this.dataRoot, name) ? readStrokes(this.dataRoot, name) : null;
+  }
+
+  protectedColumns(name: string): ProtectedColumn[] | null {
+    return this.get(name)?.protectedColumns() ?? null;
   }
 
   private build(file: WorldFile): Opened {
     const config = this.opts.config ?? worldConfigOf(file.spec);
-    const { generator, heights } = generatorFor(file.spec, config);
+    const strokes = readStrokes(this.dataRoot, file.name);
+    const { generator, heights } = generatorFor(file.spec, config, strokes);
     const tolerance = file.spec.generator === 'flat' ? null : file.spec.voxelize.tolerance;
     const world = new World(config, generator, { tolerance, store: new FileChunkStore(join(this.dataRoot, file.name, 'chunks')) });
-    return { world, file, heights, variants: new Map() };
+    return { world, file, strokes, heights, variants: new Map() };
   }
 }

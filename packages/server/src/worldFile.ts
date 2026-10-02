@@ -14,7 +14,9 @@ import {
   migratePlateTerrain,
   parseClock,
   validatePlateTerrain,
+  validateStrokes,
   validateVoxelize,
+  type TerrainStroke,
   type ChunkGenerator,
   type DayClock,
   type GameMode,
@@ -136,8 +138,9 @@ export function updateWorld(dataRoot: string, name: string, spec: WorldSpec): Wo
   validateWorldSpec(spec);
   const dir = join(dataRoot, name);
   // Edits first: if this stops halfway, the world keeps its old terrain without edits, never
-  // new terrain with old edits.
+  // new terrain with old edits. Its terraforming goes too: it shaped the old terrain.
   rmSync(join(dir, 'chunks'), { recursive: true, force: true });
+  rmSync(join(dir, STROKES_FILE), { force: true });
   const file: WorldFile = { version: 1, name, createdAt: old.createdAt, updatedAt: new Date().toISOString(), spec, ...(old.clock ? { clock: old.clock } : {}) };
   writeWorldFile(dir, file);
   return file;
@@ -147,6 +150,30 @@ function writeWorldFile(dir: string, file: WorldFile): void {
   const tmp = join(dir, 'world.json.tmp');
   writeFileSync(tmp, JSON.stringify(file, null, 2) + '\n');
   renameSync(tmp, join(dir, 'world.json'));
+}
+
+const STROKES_FILE = 'strokes.json';
+
+/**
+ * World `name`'s terraforming: the strokes applied to it (see strokes.ts), in order, from
+ * data/<name>/strokes.json; none if there's no such file. Throws if it's malformed.
+ */
+export function readStrokes(dataRoot: string, name: string): TerrainStroke[] {
+  checkName(name);
+  const path = join(dataRoot, name, STROKES_FILE);
+  if (!existsSync(path)) return [];
+  const strokes = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  validateStrokes(strokes);
+  return strokes;
+}
+
+/** Replaces world `name`'s terraforming with `strokes`. Throws NoSuchWorldError. */
+export function writeStrokes(dataRoot: string, name: string, strokes: readonly TerrainStroke[]): void {
+  if (!readWorld(dataRoot, name)) throw new NoSuchWorldError(`no world named "${name}"`);
+  validateStrokes(strokes);
+  const dir = join(dataRoot, name), tmp = join(dir, `${STROKES_FILE}.tmp`);
+  writeFileSync(tmp, JSON.stringify(strokes));
+  renameSync(tmp, join(dir, STROKES_FILE));
 }
 
 /** Saves world `name`'s clock. Throws NoSuchWorldError. */
@@ -193,9 +220,12 @@ export function openWorld(dataRoot: string, name: string, specForNew: WorldSpec,
   return { file: createWorld(dataRoot, name, specForNew, modeForNew), dir, created: true, ignored: false };
 }
 
-/** Builds the generator (and its height source, for tolerance variants) for a spec. */
-export function generatorFor(spec: WorldSpec, world: WorldConfig = FLAT_WORLD_16KM): { generator: ChunkGenerator; heights: HeightSource | null } {
+/**
+ * Builds the generator (and its height source, for tolerance variants) for a spec, with its
+ * terraforming `strokes` (plate worlds only).
+ */
+export function generatorFor(spec: WorldSpec, world: WorldConfig = FLAT_WORLD_16KM, strokes: readonly TerrainStroke[] = []): { generator: ChunkGenerator; heights: HeightSource | null } {
   if (spec.generator === 'flat') return { generator: new FlatGenerator(world, defaultFlatGen(spec.resolution)), heights: null };
-  const heights = spec.generator === 'plates' ? new PlateHeights(world, spec.plates) : new NoiseHeights(world, defaultNoiseTerrain(spec.seed));
+  const heights = spec.generator === 'plates' ? new PlateHeights(world, spec.plates, undefined, strokes) : new NoiseHeights(world, defaultNoiseTerrain(spec.seed));
   return { generator: new TerrainGenerator(world, spec.voxelize, heights), heights };
 }

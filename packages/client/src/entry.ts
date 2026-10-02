@@ -1,4 +1,4 @@
-import { SETTINGS_LIMITS, defaultSettings, loadSettings, saveSettings, type Settings } from './settings.js';
+import { SETTINGS_LIMITS, workersFor, defaultSettings, loadSettings, saveSettings, type Performance, type Settings } from './settings.js';
 
 /** The entry page: pick a world, play it, change settings, or open the world generator. */
 
@@ -29,7 +29,7 @@ function status(text: string, kind: 'good' | 'bad' | '' = ''): void {
 const toleranceText = (t: number | null) => (t === null ? "world's own" : `${t}/16 m`);
 
 function showSummary(): void {
-  summaryEl.textContent = `detail ${settings.detail} chunks (${settings.detail * 16} m) · view ${settings.view} m · tolerance ${toleranceText(settings.tolerance)}`;
+  summaryEl.textContent = `detail ${settings.detail} chunks (${settings.detail * 16} m) · view ${settings.view} m · performance ${settings.performance} (${workersFor(settings.performance, navigator.hardwareConcurrency || 0)} mesh workers) · tolerance ${toleranceText(settings.tolerance)}`;
 }
 
 function describe(w: WorldInfo): string {
@@ -99,6 +99,8 @@ const detailHint = document.getElementById('s-detail-hint')!;
 const viewEl = document.getElementById('s-view') as HTMLInputElement;
 const viewRange = document.getElementById('s-view-range') as HTMLInputElement;
 const toleranceEl = document.getElementById('s-tolerance') as HTMLSelectElement;
+const performanceEl = document.getElementById('s-performance') as HTMLSelectElement;
+const performanceHint = document.getElementById('s-performance-hint')!;
 const errorEl = document.getElementById('s-error')!;
 
 toleranceEl.appendChild(new Option("World's own", ''));
@@ -121,11 +123,15 @@ const detailText = () => {
 };
 pair(detailRange, detailEl, detailText);
 pair(viewRange, viewEl, () => {});
+const cores = navigator.hardwareConcurrency || 0;
+if (cores) performanceHint.textContent += ` This computer has ${cores} cores.`;
+for (const o of performanceEl.options) o.textContent += ` (${workersFor(o.value as Performance, cores)} mesh worker${workersFor(o.value as Performance, cores) === 1 ? '' : 's'})`;
 
 function fillForm(s: Settings): void {
   detailEl.value = detailRange.value = String(s.detail);
   viewEl.value = viewRange.value = String(s.view);
   toleranceEl.value = s.tolerance === null ? '' : String(s.tolerance);
+  performanceEl.value = s.performance;
   detailText();
 }
 
@@ -139,6 +145,7 @@ function readForm(): Settings | string {
     detail: clamp(detail, SETTINGS_LIMITS.detail),
     view: clamp(view, SETTINGS_LIMITS.view),
     tolerance: toleranceEl.value === '' ? null : Number(toleranceEl.value),
+    performance: performanceEl.value as Performance,
   };
 }
 

@@ -32,6 +32,8 @@
       .draft span { flex: 1; color: var(--dim); }
       .draft button { padding: 3px 7px; font-size: 12px; }
       .rivers { margin-top: 6px; } .rivers button { font-size: 12px; }
+      .builds { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: 12px; color: #ff5a4f; } .builds span { flex: 1; } .builds button { padding: 3px 7px; font-size: 12px; }
+      .apply { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; } .apply-buttons { display: flex; gap: 6px; }
       .check { display: flex; gap: 6px; align-items: center; margin-top: 8px; font-size: 12px; }
       .key { display: inline-block; width: 12px; height: 2px; background: var(--frame); vertical-align: middle; margin-right: 6px; }
       #stage { flex: 1; min-width: 0; position: relative; }
@@ -73,7 +75,6 @@
         <div class="slider"><label for="b-amount">Strength</label><input type="range" id="b-amount" min="0" max="1" step="0.01"><span id="b-amount-v"></span></div>
         <div class="slider"><label for="b-softness">Softness</label><input type="range" id="b-softness" min="0" max="1" step="0.05"><span id="b-softness-v"></span></div>
         <p id="tool-about"></p>
-        <div class="draft"><span id="draft-count"></span><button type="button" id="undo" title="⌘Z">Undo</button><button type="button" id="redo" title="⇧⌘Z">Redo</button><button type="button" id="clear">Clear</button></div>
         <p class="rivers"><button type="button" id="rivers">Update rivers and lakes</button></p>
         <p>Rivers and lakes follow your shaping when you update them, or when you go back to the world.</p>
         <label class="check"><input type="checkbox" id="miniature" checked> miniature</label>
@@ -85,8 +86,22 @@
         <p><button type="button" id="l-reset">Default light</button></p>
         <p style="margin-top: 8px"><button type="button" id="leave">Back to the world</button></p>
       </div>
+      <div id="draft-controls">
+        <h2>Draft</h2>
+        <div class="draft"><span id="draft-count"></span><button type="button" id="undo" title="⌘Z">Undo</button><button type="button" id="redo" title="⇧⌘Z">Redo</button><button type="button" id="clear">Clear</button></div>
+        <div class="builds" id="builds" hidden><span id="builds-about"></span><button type="button" id="drop-builds">Remove them</button></div>
+        <div class="apply">
+          <p id="applied-about"></p>
+          <p><button type="button" class="primary" id="apply">Apply to the world…</button></p>
+          <div id="apply-confirm" hidden>
+            <p id="apply-about"></p>
+            <p class="apply-buttons"><button type="button" class="primary" id="apply-yes">Apply</button><button type="button" id="apply-no">Cancel</button></p>
+          </div>
+          <p id="apply-note"></p>
+        </div>
+      </div>
       <div id="status"></div>
-      <p>Shaping is a draft, kept in this browser: the world itself doesn't change yet.</p>
+      <p>Shaping is a draft, kept in this browser: the world itself changes only when it's applied. Red squares are where players have built: shaping keeps clear of them.</p>
     </div>
     <div id="stage"><div id="hint"></div></div>
     <script type="module" src="/src/terraform.ts"></script>

@@ -8,6 +8,7 @@ import { PlayerInventory } from './playerInventory.js';
 import { MobManager } from './mobManager.js';
 import {
   BinaryTag,
+  CHUNK_SIZE,
   EditError,
   columnSpans,
   ATTACK_REACH,
@@ -37,6 +38,7 @@ import {
   normalizeX,
   parseClockChange,
   parsePlateTerrain,
+  validateStrokes,
   type ServerMessage,
   type WorldShape,
 } from '@super-vox/shared';
@@ -45,7 +47,7 @@ import { encodeWorldMap, type EditResult, type World } from './world.js';
 import { RequestQueue } from './requestQueue.js';
 import { HISTORY, Metrics, percentile } from './metrics.js';
 import { NoSuchWorldError, WorldExistsError } from './worldFile.js';
-import { DefaultWorldError, singleWorld, type WorldCatalog } from './worlds.js';
+import { DefaultWorldError, StaleStrokesError, StrokesOverBuildsError, singleWorld, type WorldCatalog } from './worlds.js';
 
 export type AppOptions = (
   | { catalog: WorldCatalog }
@@ -211,7 +213,51 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   });
 
   // The worlds on this server and how each was generated.
-  app.get('/api/worlds', async (req) => ({ default: catalog.defaultName, canCreate: catalog.create !== undefined && (await operator(req)), worlds: catalog.list() }));
+  app.get('/api/worlds', async (req) => {
+    const op = await operator(req);
+    return { default: catalog.defaultName, canCreate: catalog.create !== undefined && op, canTerraform: catalog.terraform !== undefined && op, worlds: catalog.list() };
+  });
+
+  // A world's terraforming: its strokes, in order, and the chunk columns (16 m squares, by
+  // chunk index) where players have built, which terraforming keeps clear of.
+  app.get<{ Params: { name: string } }>('/api/worlds/:name/strokes', async (req, reply) => {
+    const { name } = req.params;
+    const strokes = isValidWorldName(name) ? catalog.strokes(name) : null;
+    if (!strokes) return reply.code(404).send({ error: 'no such world' });
+    return { strokes, protected: catalog.protectedColumns(name) ?? [], chunkMetres: CHUNK_SIZE / UNITS_PER_METER };
+  });
+
+  // Operators only: add strokes to a world's terraforming, and remake it with them. Body:
+  // { base, strokes }: `base`, how many it had when they were drawn (409 if it has others now);
+  // none may reach where players have built (409, with `strokes`: their indexes). Everyone in
+  // the world reloads it.
+  app.post<{ Params: { name: string }; Body: unknown }>('/api/worlds/:name/strokes', { bodyLimit: 16 * 1024 * 1024 }, async (req, reply) => {
+    if (!catalog.terraform) return reply.code(403).send({ error: 'terraforming is not enabled on this server' });
+    if (!(await operator(req))) return reply.code(403).send(notOperator('terraforming'));
+    const { name } = req.params;
+    if (!isValidWorldName(name)) return reply.code(404).send({ error: 'no such world' });
+    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { base?: unknown; strokes?: unknown };
+    if (typeof body.base !== 'number' || !Number.isInteger(body.base) || body.base < 0) return reply.code(400).send({ error: 'base must be a whole number' });
+    try {
+      validateStrokes(body.strokes);
+    } catch (err) {
+      if (err instanceof RangeError) return reply.code(400).send({ error: err.message });
+      throw err;
+    }
+    if (body.strokes.length === 0) return reply.code(400).send({ error: 'no strokes to add' });
+    let total;
+    try {
+      total = catalog.terraform(name, body.base, body.strokes);
+    } catch (err) {
+      if (err instanceof NoSuchWorldError) return reply.code(404).send({ error: err.message });
+      if (err instanceof StaleStrokesError) return reply.code(409).send({ error: err.message, stale: true });
+      if (err instanceof StrokesOverBuildsError) return reply.code(409).send({ error: err.message, strokes: err.strokes });
+      if (err instanceof RangeError) return reply.code(400).send({ error: err.message });
+      throw err;
+    }
+    evict(name, 'world_terraformed', `the land of "${name}" was reshaped`);
+    return reply.send({ strokes: total });
+  });
 
   // Development only (no accounts yet): create a plate world. Body: { name, plates }.
   app.post<{ Body: unknown }>('/api/worlds', async (req, reply) => {
@@ -314,7 +360,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const clients = new Map<WebSocket, World>();
   const clientWorld = new Map<WebSocket, string>();
   /** Disconnects everyone in world `name`, telling them why (it was replaced or deleted). */
-  const evict = (name: string, code: 'world_changed' | 'world_deleted', message: string) => {
+  const evict = (name: string, code: 'world_changed' | 'world_deleted' | 'world_terraformed', message: string) => {
     for (const [client, n] of clientWorld) {
       if (n !== name) continue;
       if (client.readyState === client.OPEN) {

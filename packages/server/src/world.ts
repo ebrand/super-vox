@@ -444,6 +444,19 @@ export class World {
     return this.edited.size;
   }
 
+  /**
+   * The chunk columns players have built in: those with edited chunks (blocks placed or dug,
+   * water poured, leaves cut) or placed objects. Terraforming keeps clear of them.
+   */
+  protectedColumns(): { cx: number; cz: number }[] {
+    const keys = new Set(this.editSpans.keys());
+    for (const o of this.objects.values()) keys.add(`${Math.floor((o.x * BLOCK_SIZE) / CHUNK_SIZE)},${Math.floor((o.z * BLOCK_SIZE) / CHUNK_SIZE)}`);
+    return [...keys].map((k) => {
+      const [cx, cz] = k.split(',').map(Number);
+      return { cx: cx!, cz: cz! };
+    });
+  }
+
   private recordEdited(chunk: Chunk): void {
     this.edited.set(chunkKey(chunk), chunk);
     // Render the whole edited chunk layer: edits can raise or dig anywhere in it.
