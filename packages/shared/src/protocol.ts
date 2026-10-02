@@ -10,7 +10,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 24;
+export const PROTOCOL_VERSION = 25;
 
 export type ClientMessage =
   | {
@@ -51,6 +51,11 @@ export type ClientMessage =
   | { type: 'bucket'; id: number; x: number; y: number; z: number; fill: boolean }
   /** A sword's sweep (`sword`: the item) cutting leaves around block (x, y, z); answered with `editResult`. */
   | { type: 'cut'; id: number; sword: number; x: number; y: number; z: number }
+  /**
+   * Survival: starting to mine what's at unit (x, y, z) (a voxel, or a dig box's corner); the
+   * edit that removes it is accepted once it's been mined long enough (see minedLongEnough).
+   */
+  | { type: 'mine'; x: number; y: number; z: number }
   /** Use (open or close) the object with a voxel at unit (x, y, z); answered with `editResult`. */
   | { type: 'use'; id: number; x: number; y: number; z: number }
   /** Hit a mob (`target`, an entity id) with what's in hand (`weapon`: an item id, null for a bare hand). */
@@ -280,6 +285,9 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   }
   if (msg.type === 'cut' && isId(msg.id) && isInt32(msg.sword) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
     return { type: 'cut', id: msg.id as number, sword: msg.sword, x: msg.x, y: msg.y, z: msg.z };
+  }
+  if (msg.type === 'mine' && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
+    return { type: 'mine', x: msg.x, y: msg.y, z: msg.z };
   }
   if (msg.type === 'use' && isId(msg.id) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
     return { type: 'use', id: msg.id as number, x: msg.x, y: msg.y, z: msg.z };

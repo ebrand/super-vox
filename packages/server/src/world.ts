@@ -45,6 +45,7 @@ import {
   FACING_STEP,
   blockFromVoxels,
   blockVoxels,
+  editMiningTime,
   fenceJoins,
   objectBlocks,
   objectHeight,
@@ -455,6 +456,17 @@ export class World {
     const resolved = resolveChunk(this.config, editChunk(e));
     if (!resolved) throw new EditError('outside the world');
     return this.commit([applyEdit(this.current(resolved), e)]);
+  }
+
+  /**
+   * Seconds a survival player takes to mine what an edit removes (see mining.ts): the voxel at a
+   * point, or everything in a box; 0 for nothing there (or outside the world).
+   */
+  miningTime(edit: { op: 'remove'; x: number; y: number; z: number } | { op: 'removeBox'; x: number; y: number; z: number; size: number }): number {
+    return editMiningTime(edit, (cx, cy, cz) => {
+      const resolved = resolveChunk(this.config, { cx, cy, cz });
+      return resolved ? this.current(resolved) : null;
+    });
   }
 
   private current(coord: ChunkCoord): Chunk {

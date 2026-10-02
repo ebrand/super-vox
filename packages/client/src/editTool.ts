@@ -8,6 +8,7 @@ import {
   blockIndex,
   blockVoxelContaining,
   breakSizesFor,
+  editMiningTime,
   facingOfYaw,
   ATTACK_REACH,
   Item,
@@ -127,6 +128,16 @@ export class EditTool {
   /** Accumulated wheel movement not yet turned into a size step. */
   private wheelTravel = 0;
   private lastWheelAt = -Infinity;
+  /**
+   * Survival: removing is mining, holding the left button for as long as what's aimed at takes
+   * (see mining.ts; the server checks), with the progress shown (onMiningProgress: 0..1, or null).
+   */
+  survival = false;
+  onMiningProgress: ((fraction: number | null) => void) | null = null;
+  /** The left button held to mine; what's being mined (and since when, needing how long, ms); what was last mined. */
+  private miningHeld = false;
+  private mining: { key: string; edit: Edit & { op: 'remove' | 'removeBox' }; start: number; need: number } | null = null;
+  private mined: string | null = null;
 
   constructor(
     scene: THREE.Scene,
@@ -277,6 +288,7 @@ export class EditTool {
     this.show(this.digPreview, this.dig, 1.002);
     this.showEntry();
     this.previewMaterial.color.set(this.placement?.valid ? 0x40ff60 : 0xff4040);
+    this.stepMining();
   }
 
   /**
@@ -302,6 +314,7 @@ export class EditTool {
         }
         // A sword cuts leaves (a sweep); otherwise left-click removes.
         if ((held === Item.WoodenSword || held === Item.StoneSword) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) this.cut(held);
+        else if (this.survival) this.miningHeld = true; // (mined as it's held: see stepMining)
         else this.remove();
       } else if (button === 2) {
         // Right-click: with a bucket, fills it at water or pours it out; opens and closes gates and
@@ -318,7 +331,10 @@ export class EditTool {
       this.place();
     } else if (this.dig) {
       const { x, y, z, size } = this.dig;
-      this.submit({ op: 'removeBox', x, y, z, size }, 'dig');
+      if (this.survival) this.miningHeld = true;
+      else this.submit({ op: 'removeBox', x, y, z, size }, 'dig');
+    } else if (this.survival) {
+      this.miningHeld = true;
     } else {
       this.remove();
     }
@@ -500,7 +516,56 @@ export class EditTool {
   }
 
   private remove(): void {
+    if (this.survival) return this.say('survival: hold the left button to mine');
     if (this.target) this.submit({ op: 'remove', x: this.target.x, y: this.target.y, z: this.target.z }, 'remove');
+  }
+
+  /** A mouse button let go (0 = left): stops mining. */
+  release(button: number): void {
+    if (button !== 0) return;
+    this.miningHeld = false;
+    this.stepMining();
+  }
+
+  /** What holding the left button would mine now: the dig box (dig mode) or the voxel aimed at; null for nothing. */
+  private aimedRemoval(): (Edit & { op: 'remove' | 'removeBox' }) | null {
+    if (this.mode === 'dig' && this.dig) return { op: 'removeBox', x: this.dig.x, y: this.dig.y, z: this.dig.z, size: this.dig.size };
+    if (this.mode === 'place' || !this.target) return null;
+    const held = this.materialOf();
+    if ((held === Item.WoodenSword || held === Item.StoneSword) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) return null;
+    return { op: 'remove', x: this.target.x, y: this.target.y, z: this.target.z };
+  }
+
+  /**
+   * Survival, each frame: mining what's aimed at while the left button is held (telling the server
+   * when it starts), and taking it out once it's been mined long enough. Aiming elsewhere starts
+   * again on the new thing; letting go stops.
+   */
+  private stepMining(): void {
+    const edit = this.survival && this.miningHeld ? this.aimedRemoval() : null;
+    const key = edit && JSON.stringify(edit);
+    if (!edit || key !== this.mined) this.mined = null;
+    if (!edit || key === this.mined) {
+      this.mining = null;
+      this.onMiningProgress?.(null);
+      return;
+    }
+    const now = performance.now();
+    if (this.mining?.key !== key) {
+      const need = editMiningTime(edit, (cx, cy, cz) => this.chunks.chunkAt({ cx, cy, cz })) * 1000;
+      this.mining = { key: key!, edit, start: now, need };
+      this.send({ type: 'mine', x: edit.x, y: edit.y, z: edit.z });
+    }
+    const m = this.mining!;
+    if (now - m.start < m.need) {
+      this.onMiningProgress?.((now - m.start) / m.need);
+      return;
+    }
+    // Mined: out it comes (and the next thing aimed at starts, once this one's gone).
+    this.submit(m.edit, m.edit.op === 'removeBox' ? 'dig' : 'remove');
+    this.mined = m.key;
+    this.mining = null;
+    this.onMiningProgress?.(null);
   }
 
   private submit(edit: Edit, label: string): void {

@@ -432,6 +432,13 @@ connection = connect({
             updateHud();
           });
           editTool = new EditTool(scene, camera, chunks, send, () => inventoryUi.material, () => (controls.collide ? playerBox(eyeUnits()) : null));
+          // Survival: removing is mining, held for as long as the material takes (a ring shows how far along).
+          editTool.survival = survivalMovement;
+          const miningRing = document.getElementById('mining')!;
+          editTool.onMiningProgress = (f) => {
+            miningRing.hidden = f === null;
+            if (f !== null) miningRing.style.setProperty('--p', String(f));
+          };
           entities = new EntityView(scene, w, () => camera.position.x * UNITS_PER_METER);
           editTool.pickEntity = (origin, dir, maxDist) => entities!.pick(origin, dir, maxDist);
           const modeTag = document.getElementById('mode')!;
@@ -442,11 +449,13 @@ connection = connect({
           };
           editTool.onModeChange(editTool.mode);
           controls.onClick = (button, mods) => editTool?.click(button, mods);
+          controls.onRelease = (button) => editTool?.release(button);
           controls.onModifiedWheel = (deltaY) => {
             editTool?.scrollSize(deltaY);
             updateHud();
           };
-          controls.onPointerLockChange = (_locked, error) => {
+          controls.onPointerLockChange = (locked, error) => {
+            if (!locked) editTool?.release(0); // (the button's let go unseen once the mouse is free)
             if (error) editTool?.say(error);
             updateHud();
           };

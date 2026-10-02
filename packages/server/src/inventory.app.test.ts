@@ -20,12 +20,12 @@ afterEach(async () => {
 });
 
 /** A flat world (grass over dirt over stone, 1/4 m voxels) in `mode`, with sign-in and inventories. */
-async function setup(mode: GameMode, mobs?: (w: World) => MobManager) {
+async function setup(mode: GameMode, mobs?: (w: World) => MobManager, miningTimeScale = 0.01) {
   const accounts = new MemoryAccountStore();
   const inventories = new MemoryInventoryStore();
   const world = new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4)));
   const auth = new Auth({ googleClientId: 'c', googleClientSecret: 's', sessionSecret: SECRET, adminEmails: [], secureCookies: false }, accounts);
-  app = await buildApp({ catalog: singleWorld(world, undefined, 'default', 24, mode), auth, inventories, ...(mobs ? { mobs } : {}) });
+  app = await buildApp({ catalog: singleWorld(world, undefined, 'default', 24, mode), auth, inventories, miningTimeScale, ...(mobs ? { mobs } : {}) });
   const url = (await app.listen({ port: 0, host: '127.0.0.1' })).replace(/^http/, 'ws') + '/ws';
   const ann = await accounts.signIn({ sub: 'g-ann', email: 'ann@x.com', name: 'Ann' });
   const cookie = `${SESSION_COOKIE}=${sessionToken(ann.id, Date.now() + 1e6, SECRET)}`;
@@ -60,8 +60,56 @@ async function player(url: string, cookie?: string) {
       if (result.type === 'editResult' && result.ok && inventories()[0]?.mode === 'survival') await until(() => inventories().length > before);
       return result;
     },
+    /** Survival: starts mining an edit's spot, waits `ms` (as the player holds the button), then makes it. */
+    async mine(e: { op: string; x: number; y: number; z: number }, ms = 60) {
+      ws.send(JSON.stringify({ type: 'mine', x: e.x, y: e.y, z: e.z }));
+      await new Promise((r) => setTimeout(r, ms));
+      return this.edit(e);
+    },
   };
 }
+
+describe('mining', () => {
+  it('makes survival players mine for as long as the material takes; creative ones not at all', async () => {
+    // Ten times as slow as normal: a 1/4 m grass voxel (0.19 s) takes about 1.9 s.
+    const { url, cookie } = await setup('survival', undefined, 10);
+    const p = await player(url, cookie);
+    await p.until(() => !!p.inventory());
+    const grass = { op: 'remove', x: 1000, y: -1, z: 1000 };
+    // Without mining, too soon, or mining somewhere else: refused.
+    expect(await p.edit(grass)).toMatchObject({ ok: false, error: 'keep mining: it takes longer' });
+    expect(await p.mine(grass, 100)).toMatchObject({ ok: false, error: 'keep mining: it takes longer' });
+    p.ws.send(JSON.stringify({ type: 'mine', x: 1004, y: -1, z: 1000 }));
+    await new Promise((r) => setTimeout(r, 1700));
+    expect(await p.edit(grass)).toMatchObject({ ok: false });
+    // Mined long enough: out it comes.
+    expect(await p.mine(grass, 1700)).toMatchObject({ ok: true });
+    // A dig box needs mining too (everything in it).
+    expect(await p.edit({ op: 'removeBox', x: 2000, y: -16, z: 2000, size: 16 })).toMatchObject({ ok: false, error: 'keep mining: it takes longer' });
+    p.ws.close();
+    // Creative: at once.
+    await app.close();
+    const c = await setup('creative', undefined, 10);
+    const q = await player(c.url, c.cookie);
+    await q.until(() => !!q.inventory());
+    expect(await q.edit(grass)).toMatchObject({ ok: true });
+    expect(await q.edit({ op: 'removeBox', x: 2000, y: -16, z: 2000, size: 16 })).toMatchObject({ ok: true });
+    q.ws.close();
+  }, 20_000);
+
+  it('times mining by what is there', () => {
+    const world = new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4)));
+    // A 1/4 m voxel of grass at the top: 0.75 s a block, a quarter of the edge.
+    expect(world.miningTime({ op: 'remove', x: 1000, y: -1, z: 1000 })).toBeCloseTo(0.75 / 4, 9);
+    // Air: nothing to mine.
+    expect(world.miningTime({ op: 'remove', x: 1000, y: 40, z: 1000 })).toBe(0);
+    // A 1 m box of ground: between all dirt and all stone; deeper (all stone) takes a stone block's time.
+    const top = world.miningTime({ op: 'removeBox', x: 2000, y: -16, z: 2000, size: 16 });
+    expect(top).toBeGreaterThan(0.7);
+    expect(top).toBeLessThan(3);
+    expect(world.miningTime({ op: 'removeBox', x: 2000, y: -160, z: 2000, size: 16 })).toBeCloseTo(3, 6);
+  });
+});
 
 describe('inventories', () => {
   it('start a survival player with the kit, take what they place and give what they mine', async () => {
@@ -75,13 +123,13 @@ describe('inventories', () => {
       hotbar: [Material.Dirt, Material.Stone, Material.Wood, ...Array(HOTBAR_SLOTS - 3).fill(null)],
     });
     // Mining a 1/4 m grass voxel gives that much dirt.
-    expect(await p.edit({ op: 'remove', x: 1000, y: -1, z: 1000 })).toMatchObject({ ok: true });
+    expect(await p.mine({ op: 'remove', x: 1000, y: -1, z: 1000 })).toMatchObject({ ok: true });
     expect(new Map(p.inventory()!.items).get(Material.Dirt)).toBe(16 * B + 64);
     // Placing a 1 m stone block uses one.
     expect(await p.edit({ op: 'place', x: 1600, y: 0, z: 1600, size: 16, material: Material.Stone })).toMatchObject({ ok: true });
     expect(new Map(p.inventory()!.items).get(Material.Stone)).toBe(15 * B);
     // Mining it back gives cobblestone, as mining stone does.
-    expect(await p.edit({ op: 'remove', x: 1600, y: 0, z: 1600 })).toMatchObject({ ok: true });
+    expect(await p.mine({ op: 'remove', x: 1600, y: 0, z: 1600 })).toMatchObject({ ok: true });
     expect(new Map(p.inventory()!.items).get(Material.Stone)).toBe(15 * B);
     expect(new Map(p.inventory()!.items).get(Material.Cobblestone)).toBe(B);
     // No sand, no water in survival.
@@ -180,7 +228,7 @@ describe('inventories', () => {
     expect(await act({ type: 'use', x: 101 * 16 + 8, y: 5, z: 100 * 16 + 8 })).toMatchObject({ ok: true });
     expect(await act({ type: 'use', x: 100 * 16 + 8, y: 5, z: 100 * 16 + 8 })).toMatchObject({ ok: false, error: 'nothing to open there' });
     // Left-click any part of the fence: down it comes, back into the inventory.
-    expect(await p.edit({ op: 'remove', x: 100 * 16 + 7, y: 2, z: 100 * 16 + 7 })).toMatchObject({ ok: true });
+    expect(await p.mine({ op: 'remove', x: 100 * 16 + 7, y: 2, z: 100 * 16 + 7 })).toMatchObject({ ok: true });
     expect(have(Item.Fence)).toBe(2);
     p.ws.close();
     const guest = await player(url);

@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
-import { Material } from '@super-vox/shared';
+import { Material, blockIndex, emptyChunk } from '@super-vox/shared';
 import { EditTool } from './editTool.js';
 import type { ChunkManager } from './chunkManager.js';
 
@@ -51,5 +51,84 @@ describe('EditTool hybrid placement size', () => {
     tool.click(2, { meta: false, alt: false });
     window.dispatchEvent(key('keydown', 'MetaLeft', true));
     expect(tool.placeSize(target)).toBe(4);
+  });
+});
+
+describe('EditTool mining (survival)', () => {
+  let tool: EditTool;
+  let sent: { type: string; [k: string]: unknown }[];
+  let now = 0;
+  const stone = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+  stone.blocks[blockIndex(0, 0, 0)] = { kind: 'uniform', size: 16, material: Material.Stone };
+
+  beforeEach(() => {
+    (globalThis as { window?: EventTarget }).window = new EventTarget();
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    // A 1 m block of stone at the origin; air all around it (loaded).
+    const chunks = { chunkAt: (c: { cx: number; cy: number; cz: number }) => (c.cx === 0 && c.cy === 0 && c.cz === 0 ? stone : emptyChunk(c)) } as unknown as ChunkManager;
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(0.5, 3, 0.5);
+    camera.lookAt(0.5, 0, 0.5);
+    camera.updateMatrixWorld();
+    sent = [];
+    tool = new EditTool(new THREE.Scene(), camera, chunks, (m) => sent.push(m as never), () => Material.Stone);
+    tool.survival = true;
+  });
+  afterEach(() => {
+    tool.dispose();
+    vi.restoreAllMocks();
+    delete (globalThis as { window?: EventTarget }).window;
+  });
+  const edits = () => sent.filter((m) => m.type === 'edit');
+
+  it('mines while the button is held for as long as the material takes, then takes it out once', () => {
+    const progress: (number | null)[] = [];
+    tool.onMiningProgress = (f) => progress.push(f);
+    now = 1000;
+    tool.click(0, { meta: false, alt: false });
+    tool.update();
+    expect(sent.filter((m) => m.type === 'mine')).toEqual([{ type: 'mine', x: 0, y: 0, z: 0 }]);
+    // Stone: 3 s for a 1 m block.
+    now = 3900;
+    tool.update();
+    expect(edits()).toEqual([]);
+    expect(progress.at(-1)).toBeCloseTo(0.9667, 3);
+    now = 4000;
+    tool.update();
+    expect(edits()).toMatchObject([{ type: 'edit', edit: { op: 'remove', x: 0, y: 0, z: 0 } }]);
+    expect(progress.at(-1)).toBeNull();
+    // Still held, still aimed at it (the server's reply isn't in yet): not mined again, however
+    // long it's held (let go and press again to retry).
+    const mines = sent.filter((m) => m.type === 'mine').length;
+    for (now = 4100; now <= 12000; now += 500) tool.update();
+    expect(edits().length).toBe(1);
+    expect(sent.filter((m) => m.type === 'mine').length).toBe(mines);
+  });
+
+  it('stops when the button is let go, and starts again from nothing', () => {
+    now = 0;
+    tool.click(0, { meta: false, alt: false });
+    tool.update();
+    now = 2500;
+    tool.update();
+    tool.release(0);
+    now = 3500;
+    tool.update();
+    expect(edits()).toEqual([]);
+    tool.click(0, { meta: false, alt: false });
+    tool.update();
+    now = 6000;
+    tool.update();
+    expect(edits()).toEqual([]);
+    now = 6600;
+    tool.update();
+    expect(edits().length).toBe(1);
+  });
+
+  it('removes at once in creative', () => {
+    tool.survival = false;
+    tool.click(0, { meta: false, alt: false });
+    expect(edits()).toMatchObject([{ edit: { op: 'remove', x: 0, y: 0, z: 0 } }]);
+    expect(sent.some((m) => m.type === 'mine')).toBe(false);
   });
 });

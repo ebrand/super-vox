@@ -38,6 +38,7 @@ import {
   normalizeX,
   parseClockChange,
   parsePlateTerrain,
+  minedLongEnough,
   validateStrokes,
   isGameMode,
   type GameMode,
@@ -71,6 +72,8 @@ export type AppOptions = (
   inventories?: InventoryStore;
   /** Makes a world's mob manager (tests: to place mobs themselves). */
   mobs?: (world: World) => MobManager;
+  /** Survival mining times are multiplied by this (tests: to mine quickly); default 1. */
+  miningTimeScale?: number;
 };
 
 /** `f` of a value, at once if it's to hand, else when its promise settles (a promise of that). */
@@ -502,6 +505,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const whoReady: Promise<SignedIn | null> = opts.auth ? opts.auth.signedIn(req.cookies).catch(() => null) : Promise.resolve(null);
     let who: SignedIn | null = null;
     const canEdit = () => !opts.auth || who !== null;
+    /** Survival: where this player started mining, and when (see the `mine` message). */
+    let mining: { x: number; y: number; z: number; at: number } | null = null;
     /** The signed-in player's inventory here; null until loaded (or without accounts). */
     let inventory: PlayerInventory | null = null;
     let inventoryLoading = false;
@@ -660,6 +665,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           }
           break;
 
+        case 'mine':
+          mining = { x: msg.x, y: msg.y, z: msg.z, at: Date.now() };
+          break;
+
         case 'cancel':
           for (const [cx, cy, cz] of msg.chunks ?? []) queue.cancel(`c:${cx},${cy},${cz}`);
           for (const [level, tx, tz] of msg.tiles ?? []) queue.cancel(`t:${level},${tx},${tz}`);
@@ -678,6 +687,16 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (opts.inventories && who && !inventory) {
             send({ type: 'editResult', id: msg.id, ok: false, error: inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded" });
             return;
+          }
+          // Survival: digging takes time (see mining.ts), counted from the `mine` message for this spot.
+          if (inventory?.mode === 'survival' && (msg.edit.op === 'remove' || msg.edit.op === 'removeBox')) {
+            const e = msg.edit;
+            const started = mining && mining.x === e.x && mining.y === e.y && mining.z === e.z ? mining.at : null;
+            if (!minedLongEnough(started, Date.now(), world.miningTime(e) * (opts.miningTimeScale ?? 1))) {
+              send({ type: 'editResult', id: msg.id, ok: false, error: 'keep mining: it takes longer' });
+              return;
+            }
+            mining = null;
           }
           // Left-clicking any part of an object takes the whole thing down (and gives it back).
           if (msg.edit.op === 'remove') {

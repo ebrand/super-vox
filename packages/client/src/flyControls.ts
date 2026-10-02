@@ -82,6 +82,8 @@ export class FlyControls {
   onWheel: ((deltaY: number) => boolean) | null = null;
   /** Receives wheel movement (deltaY) while Command is held, instead of changing speed. */
   onModifiedWheel: ((deltaY: number) => void) | null = null;
+  /** Called when a mouse button is let go while the mouse is captured. */
+  onRelease: ((button: number) => void) | null = null;
   /** Called when the mouse is captured or released, with an error message if capture failed. */
   onPointerLockChange: ((locked: boolean, error?: string) => void) | null = null;
   private readonly listeners: [EventTarget, string, EventListener][] = [];
@@ -105,7 +107,8 @@ export class FlyControls {
         this.dragTravel = 0;
       }
     });
-    on(window, 'mouseup', () => {
+    on(window, 'mouseup', (e: MouseEvent) => {
+      if (this.pointerLocked) this.onRelease?.(e.button);
       // Uncaptured: a click (not a drag) captures the mouse.
       if (this.dragging && this.dragTravel < 5) this.requestPointerLock();
       this.dragging = false;

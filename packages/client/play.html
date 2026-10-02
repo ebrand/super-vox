@@ -54,6 +54,11 @@
           linear-gradient(#fff, #fff) center / 14px 2px no-repeat;
         mix-blend-mode: difference;
       }
+      /* Survival mining: a ring filling round the crosshair (--p: 0..1). */
+      #mining { position: fixed; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px; pointer-events: none; border-radius: 50%;
+        background: conic-gradient(rgba(255,255,255,0.9) calc(var(--p, 0) * 360deg), rgba(255,255,255,0.15) 0);
+        -webkit-mask: radial-gradient(circle, transparent 12px, #000 13px); mask: radial-gradient(circle, transparent 12px, #000 13px); }
+      #mining[hidden] { display: none; }
       #hotbar { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 4px; padding: 4px; background: rgba(0,0,0,0.45); border-radius: 8px; z-index: 5; }
       #hotbar[hidden] { display: none; }
       #hotbar .slot { position: relative; width: 46px; height: 46px; border: 2px solid rgba(255,255,255,0.18); border-radius: 6px; padding: 3px; cursor: pointer; }
@@ -90,6 +95,7 @@
     <div id="status">connecting…</div>
     <a id="menu" href="/" title="Back to the menu (Esc frees the mouse first)">Menu</a>
     <div id="crosshair"></div>
+    <div id="mining" hidden></div>
     <div id="mode"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
