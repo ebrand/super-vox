@@ -116,7 +116,10 @@ export function applyStrokes(
       const W = worldWidth / M;
       dx -= Math.round(dx / W) * W;
     }
-    const w = strokeWeight(s, Math.hypot(dx, z / M - s.z));
+    const dz = z / M - s.z;
+    // (Clearly beyond its rim by the squared distance: no weight, without the root.)
+    if (dx * dx + dz * dz > s.radius * s.radius * (1 + 1e-9)) continue;
+    const w = strokeWeight(s, Math.hypot(dx, dz));
     if (w <= 0) continue;
     switch (s.kind) {
       case 'raise':

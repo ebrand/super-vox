@@ -1558,12 +1558,21 @@ export class PlateHeights implements HeightSource {
     const Z = this.axisWeights(z0, d, step, this.rows, false);
     const out = new Float64Array(w * d);
     const cols = this.cols;
+    // Each pair of grid rows, blended along x once for every sample row between them (many share it).
+    const A = new Float64Array(w), B = new Float64Array(w);
+    let rows = -1;
     for (let j = 0; j < d; j++) {
       const r0 = Z.i0[j]! * cols, r1 = Z.i1[j]! * cols, tz = Z.t[j]!;
+      if (r0 * 4_000_037 + r1 !== rows) {
+        rows = r0 * 4_000_037 + r1;
+        for (let i = 0; i < w; i++) {
+          const c0 = X.i0[i]!, c1 = X.i1[i]!, tx = X.t[i]!;
+          A[i] = field[r0 + c0]! + (field[r0 + c1]! - field[r0 + c0]!) * tx;
+          B[i] = field[r1 + c0]! + (field[r1 + c1]! - field[r1 + c0]!) * tx;
+        }
+      }
       for (let i = 0; i < w; i++) {
-        const c0 = X.i0[i]!, c1 = X.i1[i]!, tx = X.t[i]!;
-        const a = field[r0 + c0]! + (field[r0 + c1]! - field[r0 + c0]!) * tx;
-        const b = field[r1 + c0]! + (field[r1 + c1]! - field[r1 + c0]!) * tx;
+        const a = A[i]!, b = B[i]!;
         out[i + w * j] = a + (b - a) * tz;
       }
     }
@@ -1593,6 +1602,9 @@ export class PlateHeights implements HeightSource {
     if (h) {
       const rivers = this.rivers;
       const lakes = h.lakeCount > 0;
+      // The lake level over a grid cell (the highest of it and its neighbours'), worked out once
+      // per cell: many samples share one.
+      let lakeCell = NaN, lakeLevel = NaN;
       for (let j = 0; j < d; j++) {
         for (let i = 0; i < w; i++) {
           const k = i + w * j, x = x0 + i * step, z = z0 + j * step;
@@ -1606,15 +1618,20 @@ export class PlateHeights implements HeightSource {
           if (lakes) {
             // A lake fills its basin up to its level, around its cells and a cell beyond.
             const c = Math.floor(x / PLATE_CELL), r = Math.floor(z / PLATE_CELL);
-            let level = NaN;
-            for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) {
-              let cc = c + a;
-              if (this.wrap) cc = ((cc % this.cols) + this.cols) % this.cols;
-              const rr = r + b;
-              if (cc < 0 || cc >= this.cols || rr < 0 || rr >= this.rows) continue;
-              const l = h.lakeLevel[cc + this.cols * rr]!;
-              if (!Number.isNaN(l) && !(l <= level)) level = l;
+            const cell = c * 1_000_003 + r;
+            if (cell !== lakeCell) {
+              lakeCell = cell;
+              lakeLevel = NaN;
+              for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) {
+                let cc = c + a;
+                if (this.wrap) cc = ((cc % this.cols) + this.cols) % this.cols;
+                const rr = r + b;
+                if (cc < 0 || cc >= this.cols || rr < 0 || rr >= this.rows) continue;
+                const l = h.lakeLevel[cc + this.cols * rr]!;
+                if (!Number.isNaN(l) && !(l <= lakeLevel)) lakeLevel = l;
+              }
             }
+            const level = lakeLevel;
             if (!Number.isNaN(level) && heights[k]! < level) top = Math.max(top ?? -Infinity, level);
           }
           if (top !== null && top > heights[k]! && top > this.seaLevel) {
@@ -1639,6 +1656,17 @@ export class PlateHeights implements HeightSource {
 
   /** The polar ice's surface over samples (units; -Infinity where there's none), or null if none is near. */
   private iceTops(x0: number, z0: number, w: number, d: number, step: number): Float64Array | null {
+    if (!this.ice) return null;
+    // (The heights and the materials of a block both ask: worked out once.)
+    const key = `${x0},${z0},${w},${d},${step}`;
+    if (this.lastIce?.key === key) return this.lastIce.tops;
+    const tops = this.iceTopsOf(x0, z0, w, d, step);
+    this.lastIce = { key, tops };
+    return tops;
+  }
+  private lastIce: { key: string; tops: Float64Array | null } | null = null;
+
+  private iceTopsOf(x0: number, z0: number, w: number, d: number, step: number): Float64Array | null {
     if (!this.ice) return null;
     const D = this.world.depthUnits, reach = ICE_BAND * 1.4;
     const zLo = z0, zHi = z0 + (d - 1) * step;
@@ -1763,9 +1791,17 @@ export class PlateHeights implements HeightSource {
     // Coarse slope (rise over run) from the 32 m grid, via central differences one cell apart.
     const e = PLATE_CELL;
     const [east, west, south, north] = this.broadAround(x0, z0, w, d, step, e);
-    const vary = fractalGrid(this.beachNoise, x0, z0, w, d, step);
-    const norm = 2 / this.beachNoise.reduce((a, o) => a + o.weight, 0);
+    // (slope > rockSlope, squared: the rise across two cells' width squared.)
+    const rockQ = (this.rockSlope * 2 * e) ** 2;
     const sea = this.seaLevel;
+    // The coast's noise (about -1..1) matters only on ground near the sea (see rocky and beachTop
+    // below: at most ROCKY_ABOVE or the beach's height above it, and ROCKY_BELOW under it), so it's
+    // only made where some is (with room to spare for rounding).
+    const coastTop = sea + Math.max(ROCKY_ABOVE, this.beachHeight) + M, coastBottom = sea - ROCKY_BELOW - M;
+    let coastal = false;
+    for (let k = 0; k < heights.length && !coastal; k++) coastal = heights[k]! > coastBottom && heights[k]! <= coastTop;
+    const vary = coastal ? fractalGrid(this.beachNoise, x0, z0, w, d, step) : null;
+    const norm = 2 / this.beachNoise.reduce((a, o) => a + o.weight, 0);
     // With biomes, snow and rock follow the ground's temperature (and with altitudeSnow and
     // altitudeRock, also lie above their altitudes); without, fixed heights. Either way the snow line
     // wanders (in degrees or metres), computed only where some ground is within its reach.
@@ -1778,8 +1814,12 @@ export class PlateHeights implements HeightSource {
       return f.map((v) => Math.max(-wander, Math.min(wander, v * s)));
     };
     const degrees = (this.snowWander / SNOW_FRACTAL_MAX) * SNOW_FRACTAL_DEGREES;
-    const tempShift = climate ? shiftNear(degrees, () => climate.temperature.some((t) => Math.abs(t - this.snowTemp) <= degrees + ROCK_BAND_DEGREES)) : null;
-    const heightShift = byHeight ? shiftNear(this.snowWander, () => heights.some((h) => Math.abs(h - this.snowLine) <= this.snowWander)) : null;
+    const anyWithin = (vs: ArrayLike<number>, centre: number, reach: number) => {
+      for (let k = 0; k < vs.length; k++) if (Math.abs(vs[k]! - centre) <= reach) return true;
+      return false;
+    };
+    const tempShift = climate ? shiftNear(degrees, () => anyWithin(climate.temperature, this.snowTemp, degrees + ROCK_BAND_DEGREES)) : null;
+    const heightShift = byHeight ? shiftNear(this.snowWander, () => anyWithin(heights, this.snowLine, this.snowWander)) : null;
     // River and lake beds (only looked up where this world has any), and polar ice.
     const standing = this.hydrology ? this.surface(x0, z0, w, d, step).water : null;
     const ice = this.iceTops(x0, z0, w, d, step);
@@ -1793,12 +1833,16 @@ export class PlateHeights implements HeightSource {
         out[k] = Material.Sand;
         continue;
       }
-      const slope = Math.hypot(east[k]! - west[k]!, south[k]! - north[k]!) / (2 * e);
-      const v = vary[k]! * norm; // about -1..1
+      // The slope, worked out exactly only where it's needed: near the sea, and where its square
+      // doesn't settle whether it's steeper than rockSlope.
+      const dx = east[k]! - west[k]!, dz = south[k]! - north[k]!, q = dx * dx + dz * dz;
+      const slope = () => Math.hypot(dx, dz) / (2 * e);
+      const v = vary ? vary[k]! * norm : 0; // about -1..1 (0 far from the sea: it makes no difference there)
       // Steep coasts: bare rock at the waterline (the threshold wanders so the edge isn't a line).
-      const rocky = slope + 0.02 * v > ROCKY && h > sea - ROCKY_BELOW && h <= sea + ROCKY_ABOVE;
-      // Gentle coasts: sand up to a height that shrinks as the coast steepens.
-      const beachTop = sea + this.beachHeight * (1 - smoothstep(GENTLE, STEEP, slope)) * (0.6 + 0.4 * v);
+      const rocky = h > sea - ROCKY_BELOW && h <= sea + ROCKY_ABOVE && slope() + 0.02 * v > ROCKY;
+      // Gentle coasts: sand up to a height that shrinks as the coast steepens (at most the beach's height).
+      const sandy = h <= sea || (h <= sea + this.beachHeight + M && h <= sea + this.beachHeight * (1 - smoothstep(GENTLE, STEEP, slope())) * (0.6 + 0.4 * v));
+      const steep = q < rockQ * (1 - 1e-9) ? false : q > rockQ * (1 + 1e-9) ? true : slope() > this.rockSlope;
       const high = byHeight && h >= this.snowLine + (heightShift ? heightShift[k]! : 0);
       let snow: boolean, bare: boolean;
       if (climate) {
@@ -1814,8 +1858,8 @@ export class PlateHeights implements HeightSource {
       // Steep ground is bare rock even above the snow line: steep faces don't hold snow.
       out[k] =
         rocky ? Material.Stone
-        : h <= sea || h <= beachTop ? Material.Sand
-        : slope > this.rockSlope ? Material.Stone
+        : sandy ? Material.Sand
+        : steep ? Material.Stone
         : snow ? Material.Snow
         : bare ? Material.Stone
         : climate ? BIOME_GROUND[climate.biome[k]! as BiomeId]
@@ -1906,8 +1950,12 @@ export class PlateHeights implements HeightSource {
       const ft = fractalGrid(nt, x0, z0, w, d, step), fm = fractalGrid(nm, x0, z0, w, d, step);
       const st = (2 / nt.reduce((a, o) => a + o.weight, 0)) * this.ragged.degrees, sm = (2 / nm.reduce((a, o) => a + o.weight, 0)) * this.ragged.moisture;
       const dt = this.ragged.degrees, dm = this.ragged.moisture;
-      biomeTemperature = temperature.map((t, k) => t + Math.max(-dt, Math.min(dt, ft[k]! * st)));
-      biomeMoisture = m.map((v, k) => v + Math.max(-dm, Math.min(dm, fm[k]! * sm)));
+      biomeTemperature = new Float64Array(temperature.length);
+      biomeMoisture = new Float64Array(m.length);
+      for (let k = 0; k < temperature.length; k++) {
+        biomeTemperature[k] = temperature[k]! + Math.max(-dt, Math.min(dt, ft[k]! * st));
+        biomeMoisture[k] = m[k]! + Math.max(-dm, Math.min(dm, fm[k]! * sm));
+      }
     }
     const biome = new Uint8Array(w * d);
     for (let k = 0; k < biome.length; k++) biome[k] = classifyBiome(biomeTemperature[k]!, biomeMoisture[k]!);

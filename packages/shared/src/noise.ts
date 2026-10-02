@@ -50,6 +50,7 @@ export function fractalGrid(
   const fz = new Float64Array(d);
   const iz = new Int32Array(d);
   const wrapX = (o: Octave, gx: number) => (o.periodX > 0 ? ((gx % o.periodX) + o.periodX) % o.periodX : gx);
+  let A = new Float64Array(0), B = new Float64Array(0);
   for (const o of octaves) {
     for (let i = 0; i < w; i++) {
       const p = (x0 + i * step + 0.5) / o.spacing;
@@ -70,14 +71,23 @@ export function fractalGrid(
       for (let b = 0; b < ld; b++) {
         for (let a = 0; a < lw; a++) lattice[a + lw * b] = hash2(wrapX(o, lx0 + a), lz0 + b, o.seed) - 0.5;
       }
+      // Each pair of lattice rows, blended along x once for every sample row between them.
+      if (A.length < w) [A, B] = [new Float64Array(w), new Float64Array(w)];
+      let blended = -1;
       for (let j = 0; j < d; j++) {
         const row = (iz[j]! - lz0) * lw;
         const tz = fz[j]!;
+        if (row !== blended) {
+          blended = row;
+          for (let i = 0; i < w; i++) {
+            const k = row + ix[i]! - lx0;
+            const tx = fx[i]!;
+            A[i] = lattice[k]! + (lattice[k + 1]! - lattice[k]!) * tx;
+            B[i] = lattice[k + lw]! + (lattice[k + lw + 1]! - lattice[k + lw]!) * tx;
+          }
+        }
         for (let i = 0; i < w; i++) {
-          const k = row + ix[i]! - lx0;
-          const tx = fx[i]!;
-          const a = lattice[k]! + (lattice[k + 1]! - lattice[k]!) * tx;
-          const b = lattice[k + lw]! + (lattice[k + lw + 1]! - lattice[k + lw]!) * tx;
+          const a = A[i]!, b = B[i]!;
           out[i + w * j]! += (a + (b - a) * tz) * o.weight;
         }
       }

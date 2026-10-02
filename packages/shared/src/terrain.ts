@@ -206,8 +206,48 @@ interface Column {
   trees: Tree[];
   /** Water surface per column (units; NO_WATER for none), or null without any water. */
   S: Int32Array | null;
+  /** S's lowest and highest over aligned squares (see WaterRanges), or null without S. */
+  SR: WaterRanges | null;
   /** Lowest and highest water surface over the ground, or null. */
   water: { min: number; max: number } | null;
+}
+
+/**
+ * A chunk column's water surface (CHUNK_SIZE across), its lowest and highest over the aligned
+ * squares fillWater looks at: for each size 1, 2, 4 .. BLOCK_SIZE, the squares at multiples of it.
+ */
+class WaterRanges {
+  private readonly lo: Int32Array[] = [];
+  private readonly hi: Int32Array[] = [];
+
+  constructor(S: Int32Array) {
+    this.lo.push(S);
+    this.hi.push(S);
+    for (let s = 2, l = 1; s <= BLOCK_SIZE; s *= 2, l++) {
+      const n = CHUNK_SIZE / s, m = CHUNK_SIZE / (s / 2);
+      const lo = new Int32Array(n * n), hi = new Int32Array(n * n), plo = this.lo[l - 1]!, phi = this.hi[l - 1]!;
+      for (let j = 0; j < n; j++) {
+        for (let i = 0; i < n; i++) {
+          const a = 2 * i + m * 2 * j, b = a + m;
+          lo[i + n * j] = Math.min(plo[a]!, plo[a + 1]!, plo[b]!, plo[b + 1]!);
+          hi[i + n * j] = Math.max(phi[a]!, phi[a + 1]!, phi[b]!, phi[b + 1]!);
+        }
+      }
+      this.lo.push(lo);
+      this.hi.push(hi);
+    }
+  }
+
+  /** The lowest and highest surface over the square of size s (a power of two) at chunk-local (x, z), a multiple of s. */
+  low(x: number, z: number, s: number): number {
+    const l = 31 - Math.clz32(s), n = CHUNK_SIZE >> l;
+    return this.lo[l]![(x >> l) + n * (z >> l)]!;
+  }
+
+  high(x: number, z: number, s: number): number {
+    const l = 31 - Math.clz32(s), n = CHUNK_SIZE >> l;
+    return this.hi[l]![(x >> l) + n * (z >> l)]!;
+  }
 }
 
 export class TerrainGenerator implements ChunkGenerator {
@@ -297,7 +337,7 @@ export class TerrainGenerator implements ChunkGenerator {
         else if (s > water.max) water.max = s;
       }
     }
-    col = { H, M, trees: this.source.trees?.(x0, z0, x0 + CHUNK_SIZE, z0 + CHUNK_SIZE) ?? [], S, water };
+    col = { H, M, trees: this.source.trees?.(x0, z0, x0 + CHUNK_SIZE, z0 + CHUNK_SIZE) ?? [], S, SR: S && new WaterRanges(S), water };
     this.columns.set(key, col);
     if (this.columns.size > this.columnCacheSize) this.columns.delete(this.columns.keys().next().value!);
     return col;
@@ -333,7 +373,7 @@ export class TerrainGenerator implements ChunkGenerator {
     if (x0 < 0 || x0 >= w.widthUnits || z0 < 0 || z0 >= w.depthUnits) return chunk;
     if (y0 < w.minYUnits || y0 >= w.maxYUnits) return chunk;
 
-    const { H, M, trees, S } = this.chunkColumn(coord.cx, coord.cz);
+    const { H, M, trees, S, SR } = this.chunkColumn(coord.cx, coord.cz);
     // Per block column: min / max surface height, and the top material at the minimum.
     const bMin = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(2 ** 31 - 1);
     const bMax = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(-(2 ** 31));
@@ -361,22 +401,21 @@ export class TerrainGenerator implements ChunkGenerator {
           chunk.blocks[blockIndex(bx, by, bz)] =
             by0 + BLOCK_SIZE <= minH
               ? this.uniformBlock(this.materialFor(minH, by0 + BLOCK_SIZE, bMat[k]!))
-              : this.buildBlock(H, M, S, bx * BLOCK_SIZE, by0, bz * BLOCK_SIZE);
+              : this.buildBlock(H, M, SR, bx * BLOCK_SIZE, by0, bz * BLOCK_SIZE);
         }
       }
     }
     if (trees.length > 0) plantTrees(chunk, trees);
     // Water over the ground: the sea, rivers and lakes (blocks through the ground got theirs as
     // they were built).
-    if (S) {
+    if (S && SR) {
       for (let bz = 0; bz < BLOCKS_PER_AXIS; bz++) {
         for (let bx = 0; bx < BLOCKS_PER_AXIS; bx++) {
-          let top = NO_WATER;
-          for (let z = bz * BLOCK_SIZE; z < (bz + 1) * BLOCK_SIZE; z++) for (let x = bx * BLOCK_SIZE; x < (bx + 1) * BLOCK_SIZE; x++) top = Math.max(top, S[x + CHUNK_SIZE * z]!);
+          const top = Math.max(NO_WATER, SR.high(bx * BLOCK_SIZE, bz * BLOCK_SIZE, BLOCK_SIZE));
           for (let by = 0; by < BLOCKS_PER_AXIS && y0 + by * BLOCK_SIZE < top; by++) {
             const i = blockIndex(bx, by, bz);
             if (chunk.blocks[i]) continue;
-            const voxels = this.waterVoxels(S, bx * BLOCK_SIZE, y0 + by * BLOCK_SIZE, bz * BLOCK_SIZE);
+            const voxels = this.waterVoxels(SR, bx * BLOCK_SIZE, y0 + by * BLOCK_SIZE, bz * BLOCK_SIZE);
             if (voxels.packed.length === 1 && voxels.packed[0] === packVoxel(0, 0, 0, BLOCK_SIZE)) chunk.blocks[i] = setBlockWater(null, 0);
             else if (voxels.packed.length) chunk.blocks[i] = { kind: 'voxels', packed: Uint16Array.from(voxels.packed), materials: Uint16Array.from(voxels.materials) };
           }
@@ -390,15 +429,8 @@ export class TerrainGenerator implements ChunkGenerator {
    * Source water filling the open cube [x, x+s)^3 (block-local units; the block's corner at
    * chunk-local (lx, lz) and world y `y0`) below each column's water surface `S`.
    */
-  private fillWater(S: Int32Array, lx: number, y0: number, lz: number, x: number, y: number, z: number, s: number, out: { packed: number[]; materials: number[] }): void {
-    let lo = Infinity, hi = -Infinity;
-    for (let j = lz + z; j < lz + z + s; j++) {
-      for (let i = lx + x; i < lx + x + s; i++) {
-        const v = S[i + CHUNK_SIZE * j]!;
-        if (v < lo) lo = v;
-        if (v > hi) hi = v;
-      }
-    }
+  private fillWater(S: WaterRanges, lx: number, y0: number, lz: number, x: number, y: number, z: number, s: number, out: { packed: number[]; materials: number[] }): void {
+    const lo = S.low(lx + x, lz + z, s), hi = S.high(lx + x, lz + z, s);
     if (y0 + y + s <= lo) {
       out.packed.push(packVoxel(x, y, z, s));
       out.materials.push(Material.Water);
@@ -410,7 +442,7 @@ export class TerrainGenerator implements ChunkGenerator {
   }
 
   /** Water voxels for an empty block (see fillWater). */
-  private waterVoxels(S: Int32Array, lx: number, y0: number, lz: number): { packed: number[]; materials: number[] } {
+  private waterVoxels(S: WaterRanges, lx: number, y0: number, lz: number): { packed: number[]; materials: number[] } {
     const out = { packed: [] as number[], materials: [] as number[] };
     this.fillWater(S, lx, y0, lz, 0, 0, 0, BLOCK_SIZE, out);
     return out;
@@ -420,7 +452,7 @@ export class TerrainGenerator implements ChunkGenerator {
    * Voxelizes the block whose corner is at chunk-local (lx, lz) and world y `y0`; open space
    * below the columns' water surfaces `S` (if any) is source water.
    */
-  private buildBlock(H: Int32Array, M: Uint16Array | null, S: Int32Array | null, lx: number, y0: number, lz: number): Block {
+  private buildBlock(H: Int32Array, M: Uint16Array | null, S: WaterRanges | null, lx: number, y0: number, lz: number): Block {
     const root = this.buildNode(H, M, lx, y0, lz, BLOCK_SIZE);
     if (typeof root === 'number') {
       if (root !== 0) return this.uniformBlock(root);

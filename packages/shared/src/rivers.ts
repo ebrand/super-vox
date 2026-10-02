@@ -338,8 +338,16 @@ export class RiverIndex {
   at(x: number, z: number): readonly RiverSegment[] {
     const cols = Math.ceil(this.worldWidth / this.size);
     const bx = Math.floor(x / this.size);
-    return this.buckets.get(this.key(this.wrap ? ((bx % cols) + cols) % cols : bx, Math.floor(z / this.size))) ?? NONE;
+    const key = this.key(this.wrap ? ((bx % cols) + cols) % cols : bx, Math.floor(z / this.size));
+    // (Samples come a row at a time: mostly the same bucket as the last.)
+    if (key !== this.lastKey) {
+      this.lastKey = key;
+      this.lastList = this.buckets.get(key) ?? NONE;
+    }
+    return this.lastList;
   }
+  private lastKey = NaN;
+  private lastList: readonly RiverSegment[] = NONE;
 
   /** Segments that may shape the ground in the box [x0, x1] x [z0, z1] (units). */
   near(x0: number, z0: number, x1: number, z1: number): RiverSegment[] {
@@ -361,6 +369,9 @@ export class RiverIndex {
  * BANK_SLOPE beyond its edge, and giving way to the ground over the outer half of VALLEY_REACH),
  * and the water surface where it's in a channel (or null).
  */
+/** carveRivers' banks within reach (reused: it's called for every sample near a river). */
+const bankEdge: number[] = [], bankSurface: number[] = [];
+
 export function carveRivers(segments: readonly RiverSegment[], x: number, z: number, ground: number, worldWidth: number, wrap: boolean): { ground: number; water: number | null } {
   let g = ground, water: number | null = null;
   // The valley rises from the nearest bank, at the water's level there: blended over the banks
@@ -368,15 +379,22 @@ export function carveRivers(segments: readonly RiverSegment[], x: number, z: num
   // nearest piece of river changes. (Taking the lowest of every piece's valley instead lets a
   // steep stream's lower pieces cut fans far up the hillside.)
   let nearest = Infinity, weight = 0, level = 0;
-  const banks: { edge: number; surface: number }[] = [];
+  let banks = 0;
   for (const s of segments) {
     let px = x;
     if (wrap) px -= Math.round((px - (s.ax + s.bx) / 2) / worldWidth) * worldWidth;
+    // (Quickly past pieces whose box, widened by their reach and a unit to spare, is clear of the
+    // point: they're beyond reach, as the exact test below would find.)
+    const reach = s.width / 2 + VALLEY_REACH + 1;
+    if (px < Math.min(s.ax, s.bx) - reach || px > Math.max(s.ax, s.bx) + reach || z < Math.min(s.az, s.bz) - reach || z > Math.max(s.az, s.bz) + reach) continue;
     const vx = s.bx - s.ax, vz = s.bz - s.az;
     const len2 = vx * vx + vz * vz;
     const t = len2 > 0 ? Math.max(0, Math.min(1, ((px - s.ax) * vx + (z - s.az) * vz) / len2)) : 0;
-    const d = Math.hypot(px - (s.ax + t * vx), z - (s.az + t * vz));
+    const ex = px - (s.ax + t * vx), ez = z - (s.az + t * vz);
     const half = s.width / 2;
+    // (Clearly out of reach by the squared distance, with room to spare: no need for the root.)
+    if (ex * ex + ez * ez > (half + VALLEY_REACH + 1) ** 2) continue;
+    const d = Math.hypot(ex, ez);
     if (d > half + VALLEY_REACH) continue;
     const surface = s.sa + (s.sb - s.sa) * t;
     if (d < half) {
@@ -384,14 +402,15 @@ export function carveRivers(segments: readonly RiverSegment[], x: number, z: num
       g = Math.min(g, surface - s.depth * (1 - u * u));
       water = water === null ? surface : Math.max(water, surface);
     }
-    banks.push({ edge: Math.max(0, d - half), surface });
+    bankEdge[banks] = Math.max(0, d - half);
+    bankSurface[banks++] = surface;
     nearest = Math.min(nearest, Math.max(0, d - half));
   }
-  if (banks.length > 0) {
-    for (const b of banks) {
-      const w = Math.exp(-(b.edge - nearest) / VALLEY_BLEND);
+  if (banks > 0) {
+    for (let i = 0; i < banks; i++) {
+      const w = Math.exp(-(bankEdge[i]! - nearest) / VALLEY_BLEND);
       weight += w;
-      level += w * b.surface;
+      level += w * bankSurface[i]!;
     }
     const valley = Math.min(ground, level / weight + nearest * BANK_SLOPE);
     const t = Math.max(0, Math.min(1, (nearest - VALLEY_FADE) / (VALLEY_REACH - VALLEY_FADE)));
