@@ -7,6 +7,8 @@ import {
   creativeHotbar,
   describeRecipe,
   formatAmount,
+  formatBlocks,
+  Material,
   isBlock,
   itemName,
   type GameMode,
@@ -161,7 +163,8 @@ export class InventoryUi {
   /** Materials the inventory screen lists. */
   private listed(): MaterialId[] {
     if (this.mode === 'creative') return [...ALL_ITEMS];
-    return [...this.items.keys()].filter((m) => (this.items.get(m) ?? 0) > 0).sort((a, b) => ALL_ITEMS.indexOf(a) - ALL_ITEMS.indexOf(b));
+    // (Water is carried in buckets: the bucket shows it.)
+    return [...this.items.keys()].filter((m) => (this.items.get(m) ?? 0) > 0 && m !== Material.Water).sort((a, b) => ALL_ITEMS.indexOf(a) - ALL_ITEMS.indexOf(b));
   }
 
   private place(m: MaterialId): void {
@@ -195,7 +198,9 @@ export class InventoryUi {
   }
 
   private render(): void {
-    const amountText = (m: ItemId) => (this.mode === 'creative' ? '' : formatAmount(m, this.items.get(m) ?? 0));
+    // A bucket shows the water it holds (in m³).
+    const amountText = (m: ItemId) =>
+      this.mode === 'creative' ? '' : m === Item.Bucket ? `${formatBlocks(this.items.get(Material.Water) ?? 0)} m³` : formatAmount(m, this.items.get(m) ?? 0);
     this.bar.replaceChildren(
       ...this.hotbar.map((m, i) => {
         const slot = document.createElement('div');

@@ -187,7 +187,12 @@ the server (Postgres with sign-in, else memory):
 **Crafting** (in the inventory screen): 1 wood → 4 planks, 2 planks → 4 sticks, 4 planks → a
 crafting table; and, within 5 m of a placed crafting table, wooden and stone swords, fences,
 gates, doors and buckets (see `RECIPES`). Mining stone gives cobblestone. Items that aren't
-blocks (sticks, tools, ...) are counted whole; buckets can't be used yet.
+blocks (sticks, tools, ...) are counted whole.
+
+**Buckets**: with one in the hotbar, right-click water to fill it, anywhere else to pour it into the
+block in front of you. Each bucket you own holds 1 m³; the sea, lakes and rivers never run dry,
+and poured water can be scooped back up. **Swords** cut leaves (and only leaves): left-click
+leaves with one in hand; a wooden sword clears the 1 m block, a stone sword 3 x 3 x 3 m.
 
 **Fences, gates and doors**: with one in the hotbar, right-click a face (hybrid mode) to place it
 in the 1 m block there, facing the way you look (doors are two blocks tall). Fences join each
@@ -243,14 +248,15 @@ at the view distance into a sky that matches it. **L** opens a lighting panel (n
 and direction, sun strength and warmth; sky light; ground bounce; corner shading; haze;
 exposure), applied live and saved in this browser.
 
-Water is a material: below sea level every open cell is source water, and water you place (key
-4 in the edit tool) fills the open space of a whole 1 m block as a source. It isn't solid (you
-see, aim and swim through it) and flows on the server a block at a time, five steps a second,
-like Minecraft's: it falls into open space, spreads sideways over anything it can't fall into,
-one level weaker per block up to 7 blocks from a source (shallower the further it goes), dries
-up when nothing feeds it, and open space between two sources becomes a source. Digging below sea
-level next to the sea lets it in; a pit dug inland stays dry. Near the player the sea is these
-voxels; further away a flat sea surface stands in for it.
+Water is a material, and there are two kinds. **Natural water** (the sea, lakes and rivers) never
+moves and never runs dry: it fills space you open beside or under it at once (a channel dug from
+the sea below its surface fills as you dig; up to 512 blocks an edit), but it never runs out
+over the land. **Poured water** (from a bucket, or placed in creative) is finite: on the server,
+five steps a second, it falls into open space below and otherwise levels out with its
+neighbours, comparing surfaces (it runs down steps, never up), until it settles flat; it's never
+made or lost, except into natural water, which it joins. Water isn't solid (you see, aim and
+swim through it). Near the player the sea is these voxels; further away a flat sea surface stands
+in for it.
 
 Rivers and lakes (`WORLD_RIVERS`, `WORLD_LAKES`, 0..100, default 50; older worlds have none):
 water drains from every 32 m cell toward the sea along the lowest route (basins filled to their

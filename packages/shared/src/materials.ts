@@ -31,19 +31,24 @@ export const Material = {
   FenceWood: 29,
   GateWood: 30,
   DoorWood: 31,
+  /**
+   * Water players poured (from buckets): finite, it falls and levels out (see PouredWater), unlike
+   * the sea, lakes and rivers (Water), which stay put and never run dry.
+   */
+  PouredWater: 32,
 } as const;
 
 /** Flowing water reaches this many blocks from its source. */
 export const MAX_FLOW = 7;
 
-/** Whether a material is water (a source or flowing). */
+/** Whether a material is water (natural, flowing from older worlds, or poured). */
 export function isWater(m: number): boolean {
-  return m >= Material.Water && m <= Material.Water + MAX_FLOW;
+  return (m >= Material.Water && m <= Material.Water + MAX_FLOW) || m === Material.PouredWater;
 }
 
-/** Flow level of a water material: 0 for a source, 1..MAX_FLOW for flowing water. */
+/** Flow level of a water material: 0 for a source (and poured water), 1..MAX_FLOW for flowing water. */
 export function waterLevelOf(m: number): number {
-  return m - Material.Water;
+  return m === Material.PouredWater ? 0 : m - Material.Water;
 }
 
 /** Water material for a flow level (0 = source). */
@@ -81,6 +86,7 @@ const MATERIAL_NAMES: Record<number, string> = {
   [Material.GateWood]: 'gate',
   [Material.DoorWood]: 'door',
 };
+
 
 export function materialName(m: MaterialId): string {
   return isWater(m) ? 'water' : (MATERIAL_NAMES[m] ?? `material ${m}`);

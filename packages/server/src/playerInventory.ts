@@ -1,5 +1,8 @@
 import {
   ALL_ITEMS,
+  BLOCK_VOLUME,
+  Item,
+  Material,
   HOTBAR_SLOTS,
   canPlace,
   cannotCraft,
@@ -45,6 +48,20 @@ export class PlayerInventory {
     const have = this.inv.items.get(edit.material) ?? 0;
     const need = voxelVolume(edit.size);
     return have >= need ? null : `not enough ${itemName(edit.material)} (have ${formatBlocks(have)}, need ${formatBlocks(need)} blocks)`;
+  }
+
+  /** How many of an item there are (Infinity in creative). */
+  count(item: ItemId): number {
+    return this.mode === 'creative' ? Infinity : (this.inv.items.get(item) ?? 0);
+  }
+
+  /** Water in buckets (unit-voxel volume; Infinity in creative), and room for more: 1 m³ per bucket. */
+  water(): number {
+    return this.count(Material.Water);
+  }
+
+  waterRoom(): number {
+    return this.mode === 'creative' ? Infinity : (this.inv.items.get(Item.Bucket) ?? 0) * BLOCK_VOLUME - this.water();
   }
 
   /** Why an item can't be used up here (null if it can): survival needs one. */

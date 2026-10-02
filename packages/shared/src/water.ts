@@ -1,6 +1,6 @@
 import { BLOCK_SIZE, gridCellIndex, rasterizeVoxels, type Block, type Chunk } from './chunk.js';
 import { blockFromVoxels, blockVoxels, type BlockVoxel } from './edit.js';
-import { MAX_FLOW, isWater, waterLevelOf, waterMaterial } from './materials.js';
+import { MAX_FLOW, Material, isWater, waterLevelOf, waterMaterial, type MaterialId } from './materials.js';
 
 /**
  * Water is voxels of the water materials (see materials.ts), filling the open space of 1 m
@@ -135,9 +135,14 @@ const uniformWater = new Map<number, Block>();
  * `level` null, the block without water.
  */
 export function setBlockWater(block: Block, level: number | null, below = level === null ? 0 : waterHeight(level)): Block {
+  if (level === null) return withoutWater(block);
+  return fillWater(block, waterMaterial(level), below);
+}
+
+/** The block's solid part, with `material` water in its open space below block-local height `below`. */
+function fillWater(block: Block, material: MaterialId, below: number): Block {
   const solid = withoutWater(block);
-  if (level === null || below <= 0) return solid;
-  const material = waterMaterial(level);
+  if (below <= 0) return solid;
   if (!solid && below >= BLOCK_SIZE) {
     let u = uniformWater.get(material);
     if (!u) uniformWater.set(material, (u = { kind: 'uniform', size: BLOCK_SIZE, material }));
@@ -270,3 +275,151 @@ export class WaterFlow {
     return best !== null && best <= MAX_FLOW ? best : null;
   }
 }
+
+/**
+ * Poured water (see Material.PouredWater): an amount per 1 m block, as how deep it stands above
+ * the block's floor (units; see blockFloor). Natural water (the sea, lakes and rivers, and flowing water of older
+ * worlds) doesn't move and is always full: water poured into it joins it.
+ */
+export type WaterKind = 'natural' | 'poured' | null;
+
+/** What water a block holds (natural if any natural water at all). */
+export function waterKind(block: Block): WaterKind {
+  if (!block) return null;
+  const materials = block.kind === 'uniform' ? [block.material] : block.materials;
+  let poured = false;
+  for (const m of materials) {
+    if (m === Material.PouredWater) poured = true;
+    else if (isWater(m)) return 'natural';
+  }
+  return poured ? 'poured' : null;
+}
+
+const floors = new WeakMap<Exclude<Block, null>, number>();
+
+/**
+ * Where water would rest in a block (block-local units): the lowest layer with room, e.g. 13 in a
+ * block whose bottom 13/16 m is ground; BLOCK_SIZE for a solid block. Water depths are measured
+ * from here.
+ */
+export function blockFloor(block: Block): number {
+  const solid = withoutWater(block);
+  if (!solid) return 0;
+  const hit = floors.get(solid);
+  if (hit !== undefined) return hit;
+  const cells = solidCells(solid);
+  const layer = BLOCK_SIZE * BLOCK_SIZE;
+  let floor = BLOCK_SIZE;
+  for (let y = 0; y < BLOCK_SIZE && floor === BLOCK_SIZE; y++) {
+    for (let i = 0; i < layer; i++) {
+      if (cells[i + layer * y] === 0) {
+        floor = y;
+        break;
+      }
+    }
+  }
+  floors.set(solid, floor);
+  return floor;
+}
+
+/** How deep water can stand in a block (units above its floor). */
+export function waterCapacity(block: Block): number {
+  return BLOCK_SIZE - blockFloor(block);
+}
+
+/** How deep a block's poured water stands (units above its floor); natural water counts as full. */
+export function waterAmount(block: Block): number {
+  const kind = waterKind(block);
+  return kind === 'natural' ? waterCapacity(block) : kind === 'poured' ? Math.max(0, blockWaterTop(block) - blockFloor(block)) : 0;
+}
+
+/** The block with poured water `depth` units deep above its floor (0: none) in its open space. */
+export function setPouredWater(block: Block, depth: number): Block {
+  return depth <= 0 ? withoutWater(block) : fillWater(block, Material.PouredWater, Math.min(BLOCK_SIZE, blockFloor(block) + depth));
+}
+
+/**
+ * Poured water, a step at a time: in each block that has some, it falls into open space below
+ * (as much as fits), and where it can't fall it levels out with its four neighbours, comparing
+ * surfaces (floor plus depth): half the difference to each that's at least 2 units lower, so it
+ * settles flat to within a unit, a last thin layer stays put, and it runs down steps, never up. It is never made or lost, except into natural water (which it
+ * joins) and out of the world. Each step looks at the blocks the previous one changed.
+ */
+export class PouredWater {
+  private queue = new Set<string>();
+
+  /** Queues a block and its neighbours to be looked at (after an edit, or a pour). */
+  touch(bx: number, by: number, bz: number): void {
+    this.queue.add(`${bx},${by},${bz}`);
+    for (const [dx, dy, dz] of AROUND) this.queue.add(`${bx + dx},${by + dy},${bz + dz}`);
+  }
+
+  get pending(): number {
+    return this.queue.size;
+  }
+
+  /** Moves water in up to `limit` queued blocks; returns the blocks changed. */
+  step(world: WaterWorld, limit = 4096): [number, number, number][] {
+    const keys = [...this.queue].slice(0, limit);
+    for (const k of keys) this.queue.delete(k);
+    // Amounts as they change this step (so water moved once isn't moved again from a stale view).
+    const amounts = new Map<string, number>();
+    const changed = new Set<string>();
+    const cell = (x: number, y: number, z: number) => {
+      const key = `${x},${y},${z}`;
+      const block = world.getBlock(x, y, z);
+      if (block === undefined || !blockHasRoom(block)) return null; // outside the world or solid: holds water
+      const natural = waterKind(block) === 'natural';
+      const floor = blockFloor(block);
+      return { key, block, natural, floor, capacity: BLOCK_SIZE - floor, amount: amounts.get(key) ?? waterAmount(block) };
+    };
+    const move = (from: { key: string }, to: { key: string; natural: boolean }, n: number, fromAmount: number, toAmount: number) => {
+      amounts.set(from.key, fromAmount - n);
+      changed.add(from.key);
+      if (!to.natural) {
+        amounts.set(to.key, toAmount + n);
+        changed.add(to.key);
+      }
+    };
+    for (const k of keys) {
+      const [x, y, z] = k.split(',').map(Number) as [number, number, number];
+      const here = cell(x, y, z);
+      if (!here || here.natural || here.amount <= 0) continue;
+      let a = here.amount;
+      // Fall (only water resting on the very bottom of its block reaches the block below): as
+      // much as that block has room for (natural water takes it all).
+      const below = here.floor === 0 ? cell(x, y - 1, z) : null;
+      const canFall = !!below && (below.natural || below.amount < below.capacity);
+      if (canFall) {
+        const n = below.natural ? a : Math.min(a, below.capacity - below.amount);
+        move(here, below, n, a, below.amount);
+        a -= n;
+        if (a <= 0) continue;
+        if (!below.natural && below.amount + n < below.capacity) continue; // still falling
+      }
+      // Level out: towards each neighbour whose surface (or, dry, its floor) is at least 2 units
+      // lower, half the difference (as much as it has room for).
+      for (const [dx, , dz] of SIDES) {
+        const side = cell(x + dx, y, z + dz);
+        if (!side || side.natural) continue;
+        const drop = here.floor + a - (side.floor + side.amount);
+        if (drop < 2) continue;
+        const n = Math.min(a, Math.floor(drop / 2), side.capacity - side.amount);
+        if (n <= 0) continue;
+        move(here, side, n, a, side.amount);
+        a -= n;
+      }
+    }
+    const out: [number, number, number][] = [];
+    for (const key of changed) {
+      const [x, y, z] = key.split(',').map(Number) as [number, number, number];
+      const block = world.getBlock(x, y, z);
+      if (block === undefined) continue;
+      world.setBlock(x, y, z, setPouredWater(block, amounts.get(key)!));
+      out.push([x, y, z]);
+      this.touch(x, y, z);
+    }
+    return out;
+  }
+}
+

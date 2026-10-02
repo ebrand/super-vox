@@ -9,6 +9,8 @@ import {
   BinaryTag,
   EditError,
   columnSpans,
+  BLOCK_VOLUME,
+  Item,
   OBJECT_ITEM,
   itemName,
   objectKindOf,
@@ -560,7 +562,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         }
 
         case 'placeObject':
-        case 'use': {
+        case 'use':
+        case 'bucket':
+        case 'cut': {
           if (!greeted) return;
           const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
           if (!canEdit()) return fail('sign in to build');
@@ -574,6 +578,34 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               if (why) return fail(why);
               result = world.placeObject(kind, msg.x, msg.y, msg.z, msg.facing);
               inventory?.addItem(msg.item, -1);
+            } else if (msg.type === 'bucket') {
+              // Water in buckets is kept by volume (a 1 m block of it is BLOCK_VOLUME); 16 units deep fills a block.
+              const perUnit = BLOCK_VOLUME / 16;
+              if (inventory && inventory.count(Item.Bucket) < 1) return fail('you need a bucket (crafted from planks)');
+              if (msg.fill) {
+                const want = Math.min(16, Math.floor((inventory?.waterRoom() ?? Infinity) / perUnit));
+                if (want <= 0) return fail('your buckets are full');
+                const r = world.scoopWater(msg.x, msg.y, msg.z, want);
+                if (r.taken <= 0) return fail('no water there');
+                inventory?.addItem(Material.Water, r.taken * perUnit);
+                send({ type: 'editResult', id: msg.id, ok: true });
+                if (inventory?.mode === 'survival') send(inventory.message());
+                if (r.result) broadcast(world, r.result);
+                break;
+              }
+              const amount = Math.min(16, Math.floor((inventory?.water() ?? Infinity) / perUnit));
+              if (amount <= 0) return fail('your buckets are empty: fill one at the sea, a lake or a river');
+              const r = world.pourWater(msg.x, msg.y, msg.z, amount);
+              if (!r.result) return fail('no room for water there');
+              inventory?.addItem(Material.Water, -r.poured * perUnit);
+              result = r.result;
+            } else if (msg.type === 'cut') {
+              const radius = msg.sword === Item.StoneSword ? 1 : msg.sword === Item.WoodenSword ? 0 : -1;
+              if (radius < 0) return fail(`a ${itemName(msg.sword)} doesn't cut`);
+              if (inventory && inventory.count(msg.sword) < 1) return fail(`you have no ${itemName(msg.sword)}`);
+              const r = world.cutLeaves(msg.x, msg.y, msg.z, radius);
+              if (!r) return fail('no leaves there');
+              result = r;
             } else {
               const o = world.objectAt(Math.floor(msg.x / 16), Math.floor(msg.y / 16), Math.floor(msg.z / 16));
               if (!o || o.kind === 'fence') return fail('nothing to open there');
@@ -586,7 +618,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           metrics.totals.edits++;
           players.get(socket)!.edits++;
           send({ type: 'editResult', id: msg.id, ok: true });
-          if (msg.type === 'placeObject' && inventory?.mode === 'survival') send(inventory.message());
+          if ((msg.type === 'placeObject' || msg.type === 'bucket') && inventory?.mode === 'survival') send(inventory.message());
           broadcast(world, result);
           break;
         }

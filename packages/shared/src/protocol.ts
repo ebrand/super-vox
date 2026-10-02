@@ -9,7 +9,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 22;
+export const PROTOCOL_VERSION = 23;
 
 export type ClientMessage =
   | {
@@ -43,6 +43,13 @@ export type ClientMessage =
    * coordinates), facing `facing`; answered with `editResult` (`id` as for edits).
    */
   | { type: 'placeObject'; id: number; item: number; x: number; y: number; z: number; facing: Facing }
+  /**
+   * A bucket at block (x, y, z) (1 m block coordinates): `fill` takes up to 1 m of water from it,
+   * otherwise pours up to 1 m into it (see PouredWater); answered with `editResult`.
+   */
+  | { type: 'bucket'; id: number; x: number; y: number; z: number; fill: boolean }
+  /** A sword's sweep (`sword`: the item) cutting leaves around block (x, y, z); answered with `editResult`. */
+  | { type: 'cut'; id: number; sword: number; x: number; y: number; z: number }
   /** Use (open or close) the object with a voxel at unit (x, y, z); answered with `editResult`. */
   | { type: 'use'; id: number; x: number; y: number; z: number }
   /** Make something (a recipe id, see RECIPES); answered with the new inventory, or an error. */
@@ -236,6 +243,12 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   const isId = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 2 ** 32;
   if (msg.type === 'placeObject' && isId(msg.id) && isInt32(msg.item) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z) && isFacing(msg.facing)) {
     return { type: 'placeObject', id: msg.id as number, item: msg.item, x: msg.x, y: msg.y, z: msg.z, facing: msg.facing };
+  }
+  if (msg.type === 'bucket' && isId(msg.id) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z) && typeof msg.fill === 'boolean') {
+    return { type: 'bucket', id: msg.id as number, x: msg.x, y: msg.y, z: msg.z, fill: msg.fill };
+  }
+  if (msg.type === 'cut' && isId(msg.id) && isInt32(msg.sword) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
+    return { type: 'cut', id: msg.id as number, sword: msg.sword, x: msg.x, y: msg.y, z: msg.z };
   }
   if (msg.type === 'use' && isId(msg.id) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
     return { type: 'use', id: msg.id as number, x: msg.x, y: msg.y, z: msg.z };

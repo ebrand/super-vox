@@ -190,6 +190,55 @@ describe('inventories', () => {
     guest.ws.close();
   });
 
+  it('carry water in buckets, a cubic metre each, and pour it out', async () => {
+    const { url, cookie, inventories, ann } = await setup('survival');
+    await inventories.save(ann.id, 'default@single', { items: new Map([[Item.Bucket, 1], [Material.Water, B]]), hotbar: Array(HOTBAR_SLOTS).fill(null) });
+    const p = await player(url, cookie);
+    await p.until(() => !!p.inventory());
+    let id = 200;
+    const act = async (msg: object) => {
+      const n = ++id;
+      p.ws.send(JSON.stringify({ ...msg, id: n }));
+      await p.until(() => p.msgs.some((m) => m.type === 'editResult' && m.id === n));
+      await new Promise((r) => setTimeout(r, 30));
+      return p.msgs.find((m) => m.type === 'editResult' && m.id === n);
+    };
+    const water = () => new Map(p.inventory()!.items).get(Material.Water) ?? 0;
+    // Full: no more fits.
+    expect(await act({ type: 'bucket', x: 50, y: 0, z: 50, fill: true })).toMatchObject({ ok: false, error: 'your buckets are full' });
+    // Pour it on the ground (block y = 0 is the air above it): all of it goes.
+    expect(await act({ type: 'bucket', x: 50, y: 0, z: 50, fill: false })).toMatchObject({ ok: true });
+    expect(water()).toBe(0);
+    expect(await act({ type: 'bucket', x: 60, y: 0, z: 60, fill: false })).toMatchObject({ ok: false, error: expect.stringMatching(/^your buckets are empty/) });
+    // Scoop it back up straight away: still all there.
+    expect(await act({ type: 'bucket', x: 50, y: 0, z: 50, fill: true })).toMatchObject({ ok: true });
+    expect(water()).toBe(B);
+    expect(await act({ type: 'bucket', x: 70, y: 0, z: 70, fill: true })).toMatchObject({ ok: false }); // no water there
+    p.ws.close();
+  });
+
+  it('need a bucket for water, and cut leaves with a sword (only leaves)', async () => {
+    const { url, cookie, inventories, ann } = await setup('survival');
+    await inventories.save(ann.id, 'default@single', { items: new Map([[Material.Leaves, 4 * B], [Item.WoodenSword, 1]]), hotbar: Array(HOTBAR_SLOTS).fill(null) });
+    const p = await player(url, cookie);
+    await p.until(() => !!p.inventory());
+    let id = 300;
+    const act = async (msg: object) => {
+      const n = ++id;
+      p.ws.send(JSON.stringify({ ...msg, id: n }));
+      await p.until(() => p.msgs.some((m) => m.type === 'editResult' && m.id === n));
+      return p.msgs.find((m) => m.type === 'editResult' && m.id === n);
+    };
+    expect(await act({ type: 'bucket', x: 5, y: 0, z: 5, fill: true })).toMatchObject({ ok: false, error: expect.stringMatching(/^you need a bucket/) });
+    // Leaves on the ground, then the sword through them.
+    expect(await p.edit({ op: 'place', x: 80 * 16, y: 0, z: 80 * 16, size: 16, material: Material.Leaves })).toMatchObject({ ok: true });
+    expect(await act({ type: 'cut', sword: Item.WoodenSword, x: 80, y: 0, z: 80 })).toMatchObject({ ok: true });
+    expect(await act({ type: 'cut', sword: Item.WoodenSword, x: 80, y: 0, z: 80 })).toMatchObject({ ok: false, error: 'no leaves there' });
+    expect(await act({ type: 'cut', sword: Item.WoodenSword, x: 80, y: -1, z: 80 })).toMatchObject({ ok: false, error: 'no leaves there' }); // the ground stays
+    expect(await act({ type: 'cut', sword: Item.StoneSword, x: 80, y: 0, z: 80 })).toMatchObject({ ok: false, error: 'you have no stone sword' });
+    p.ws.close();
+  });
+
   it("don't exist for players who aren't signed in", async () => {
     const { url } = await setup('survival');
     const p = await player(url);

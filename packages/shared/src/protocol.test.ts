@@ -115,6 +115,13 @@ describe('protocol', () => {
     }
   });
 
+  it('validates buckets and sword sweeps', () => {
+    expect(decodeClientMessage('{"type":"bucket","id":1,"x":2,"y":-3,"z":4,"fill":true}')).toEqual({ type: 'bucket', id: 1, x: 2, y: -3, z: 4, fill: true });
+    expect(decodeClientMessage('{"type":"cut","id":2,"sword":1001,"x":2,"y":3,"z":4}')).toEqual({ type: 'cut', id: 2, sword: 1001, x: 2, y: 3, z: 4 });
+    expect(decodeClientMessage('{"type":"bucket","id":1,"x":2,"y":3,"z":4,"fill":"yes"}')).toBeNull();
+    expect(decodeClientMessage('{"type":"cut","id":2,"x":2,"y":3,"z":4}')).toBeNull();
+  });
+
   it('validates craft requests', () => {
     expect(decodeClientMessage('{"type":"craft","recipe":"wooden-sword"}')).toEqual({ type: 'craft', recipe: 'wooden-sword' });
     for (const raw of ['{"type":"craft"}', '{"type":"craft","recipe":5}', '{"type":"craft","recipe":"Bad Id"}', `{"type":"craft","recipe":"${'a'.repeat(65)}"}`]) {

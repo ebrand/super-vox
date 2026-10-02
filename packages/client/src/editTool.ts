@@ -9,7 +9,9 @@ import {
   blockVoxelContaining,
   breakSizesFor,
   facingOfYaw,
+  Item,
   isBlock,
+  isWater,
   isObjectMaterial,
   isUsableMaterial,
   itemName,
@@ -25,7 +27,7 @@ import {
 import type { ChunkManager } from './chunkManager.js';
 import type { Aabb } from './physics.js';
 import { digBox, placementBox, raycastVoxels, type Box, type SolidAt } from './picking.js';
-import { solidAtFor } from './worldQuery.js';
+import { solidAtFor, waterAtFor } from './worldQuery.js';
 
 /** While scrolling continuously, wheel travel (pixels) per further voxel-size step. */
 const WHEEL_STEP = 30;
@@ -61,6 +63,8 @@ function nearestToolSize(size: number): number {
 }
 
 const floorDiv = (v: number, m: number) => Math.floor(v / m);
+/** What a sword cuts. */
+const LEAVES = new Set<number>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves]);
 const mod = (v: number, m: number) => ((v % m) + m) % m;
 
 /**
@@ -132,6 +136,13 @@ export class EditTool {
     private readonly body: () => Aabb | null = () => null,
   ) {
     this.solidAt = solidAtFor(chunks);
+    const waterAt = waterAtFor(chunks);
+    // With a bucket in hand, water stops the aim (to fill it there).
+    this.solidOrWaterAt = (x, y, z) => {
+      const s = this.solidAt(x, y, z);
+      if (s !== false) return s;
+      return waterAt(x, y, z);
+    };
     const box = new THREE.BoxGeometry(1, 1, 1);
     this.outline = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0xffffff }));
     this.previewMaterial = new THREE.MeshBasicMaterial({ color: 0x40ff60, transparent: true, opacity: 0.3, depthWrite: false });
@@ -237,7 +248,7 @@ export class EditTool {
     {
       const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
       const dir = this.camera.getWorldDirection(new THREE.Vector3());
-      const hit = raycastVoxels([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], REACH, this.solidAt);
+      const hit = raycastVoxels([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], REACH, this.materialOf() === Item.Bucket ? this.solidOrWaterAt : this.solidAt);
       const aimed = hit ? this.voxelBox(hit.cell) : null;
       this.target = aimed;
       if (hit && aimed) {
@@ -275,10 +286,16 @@ export class EditTool {
     this.update(); // aim with the modifiers as they are right now
     if (button === 1) return this.breakSmaller();
     if (this.mode === 'hybrid') {
-      if (button === 0) this.remove();
-      else if (button === 2) {
-        // Right-click opens and closes gates and doors; with a fence, gate or door in hand, places one.
-        if (this.targetMaterial !== null && isUsableMaterial(this.targetMaterial)) this.use();
+      const held = this.materialOf();
+      if (button === 0) {
+        // A sword cuts leaves (a sweep); otherwise left-click removes.
+        if ((held === Item.WoodenSword || held === Item.StoneSword) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) this.cut(held);
+        else this.remove();
+      } else if (button === 2) {
+        // Right-click: with a bucket, fills it at water or pours it out; opens and closes gates and
+        // doors; with a fence, gate or door in hand, places one.
+        if (held === Item.Bucket) this.bucket();
+        else if (this.targetMaterial !== null && isUsableMaterial(this.targetMaterial)) this.use();
         else if (this.material && objectKindOf(this.material.id)) this.placeObject(this.material.id);
         else this.place();
       }
@@ -341,9 +358,14 @@ export class EditTool {
       : this.targetMaterial !== null && isObjectMaterial(this.targetMaterial)
         ? `aiming at a ${materialName(this.targetMaterial)}${usable ? ' (right-click: open / close)' : ''} (left-click: take it down)`
         : `aiming at a ${sizeLabel(this.target.size)} voxel`;
+    const held = this.materialOf();
     const actions =
       this.mode === 'hybrid'
-        ? 'click: remove · right-click: place (⌘+wheel: pick size, ⌘ shows it)'
+        ? held === Item.Bucket
+          ? 'click: remove · right-click: fill the bucket at water, or pour it out'
+          : held === Item.WoodenSword || held === Item.StoneSword
+            ? `click: cut leaves (${held === Item.StoneSword ? '3 x 3 x 3 m' : '1 m'}), or remove · right-click: place`
+            : 'click: remove · right-click: place (⌘+wheel: pick size, ⌘ shows it)'
         : this.mode === 'dig'
           ? 'click: remove · ⌘+click: remove everything in the box (⌘ shows it) · ⌥: 1/16 m steps'
           : 'click: place · ⌥: 1/16 m steps';
@@ -420,6 +442,25 @@ export class EditTool {
     this.submit({ op: 'place', x, y, z, size, material: material.id }, 'place');
   }
 
+  /** Fills the bucket at the water aimed at, or pours it into the block beside the face aimed at. */
+  private bucket(): void {
+    if (!this.hit) return;
+    const fill = this.targetMaterial !== null && isWater(this.targetMaterial);
+    const cell = fill ? this.hit.cell : (this.hit.cell.map((c, a) => c + this.hit!.normal[a]!) as [number, number, number]);
+    const [x, y, z] = cell.map((c) => floorDiv(c, BLOCK_SIZE)) as [number, number, number];
+    const id = this.nextId++;
+    this.pending.set(id, fill ? 'fill' : 'pour');
+    this.send({ type: 'bucket', id, x, y, z, fill });
+  }
+
+  /** A sword's sweep through the leaves aimed at. */
+  private cut(sword: ItemId): void {
+    if (!this.target) return;
+    const id = this.nextId++;
+    this.pending.set(id, 'cut');
+    this.send({ type: 'cut', id, sword, x: floorDiv(this.target.x, BLOCK_SIZE), y: floorDiv(this.target.y, BLOCK_SIZE), z: floorDiv(this.target.z, BLOCK_SIZE) });
+  }
+
   /** Opens or closes the gate or door aimed at. */
   private use(): void {
     if (!this.target) return;
@@ -457,6 +498,7 @@ export class EditTool {
   }
 
   private readonly solidAt: SolidAt;
+  private readonly solidOrWaterAt: SolidAt;
 
   /** World box of the voxel covering unit cell `cell`. */
   private voxelBox([x, y, z]: [number, number, number]): (Box & { material: MaterialId }) | null {

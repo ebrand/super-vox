@@ -6,7 +6,12 @@ import {
   NO_GROUND,
   Material,
   BLOCK_SIZE,
-  WaterFlow,
+  PouredWater,
+  blockWaterTop,
+  setPouredWater,
+  waterAmount,
+  waterCapacity,
+  waterKind,
   blockHasRoom,
   blockIndex,
   isWater,
@@ -108,7 +113,16 @@ export function encodeWorldMap(m: WorldMap): Uint8Array {
 }
 
 const mod = (v: number, m: number) => ((v % m) + m) % m;
+/** What a sword cuts. */
+const LEAVES = new Set<number>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves]);
 const objectKey = (x: number, y: number, z: number) => `${x},${y},${z}`;
+
+/** One edit's results after another's (later chunks win). */
+function mergeResults(a: EditResult, b: EditResult): EditResult {
+  const change = new Map(a.change);
+  for (const [m, d] of b.change) change.set(m, (change.get(m) ?? 0) + d);
+  return { changes: [...a.changes, ...b.changes], columns: [...a.columns, ...b.columns], change };
+}
 
 /** The unit box an edit touches. */
 function editBounds(edit: Edit): { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } {
@@ -144,8 +158,8 @@ export class World {
   readonly tolerance: number | null;
   /** Sea level (units), or null without a sea. */
   readonly seaLevel: number | null;
-  /** Water flowing after edits (see stepWater). */
-  private readonly flow = new WaterFlow();
+  /** Poured water moving after edits and pours (see stepWater). */
+  private readonly flow = new PouredWater();
   /** Placed objects (fences, gates, doors) by their bottom block, "bx,by,bz" (block X in the world's range). */
   private readonly objects = new Map<string, PlacedObject>();
   /** Running totals since the world was opened, for monitoring (see WorldStats). */
@@ -208,12 +222,48 @@ export class World {
     if (held) throw new EditError(`that's a ${held.kind}: left-click takes it down`);
     const result = this.applyEditOnly(edit);
     this.stats.edits++;
-    // Water around whatever changed may flow.
+    // Water around whatever changed may flow, and the sea fills what was opened beside it.
     const size = edit.op === 'place' || edit.op === 'removeBox' ? edit.size : 1;
+    const touched: [number, number, number][] = [];
     for (let by = edit.y >> 4; by <= (edit.y + size - 1) >> 4; by++)
       for (let bz = edit.z >> 4; bz <= (edit.z + size - 1) >> 4; bz++)
-        for (let bx = edit.x >> 4; bx <= (edit.x + size - 1) >> 4; bx++) this.flow.touch(bx, by, bz);
-    return result;
+        for (let bx = edit.x >> 4; bx <= (edit.x + size - 1) >> 4; bx++) {
+          this.flow.touch(bx, by, bz);
+          touched.push([bx, by, bz]);
+        }
+    const refill = this.refillFromNatural(touched);
+    return refill ? mergeResults(result, refill) : result;
+  }
+
+  /**
+   * Natural water (the sea, lakes, rivers) fills open space opened beside it, at once: dry,
+   * open blocks among `seeds` (and, from those, connected open blocks) next to natural water
+   * (beside it: up to its surface; under it: all the way) fill with it. Natural water never runs
+   * across the land or drains, so only digging (or building) next to it lets it in. At most
+   * `limit` blocks an edit (the rest wait for another edit nearby).
+   */
+  private refillFromNatural(seeds: [number, number, number][], limit = 512): EditResult | null {
+    const writes = new Map<string, { bx: number; by: number; bz: number; block: Block }>();
+    const top = (x: number, y: number, z: number) => {
+      const w = writes.get(`${x},${y},${z}`);
+      const b = w ? w.block : this.blockAt(x, y, z);
+      return b !== undefined && waterKind(b) === 'natural' ? blockWaterTop(b) : 0;
+    };
+    const queue = [...seeds], seen = new Set<string>();
+    while (queue.length && writes.size < limit) {
+      const [x, y, z] = queue.shift()!;
+      const key = `${x},${y},${z}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const block = this.blockAt(x, y, z);
+      if (block === undefined || !blockHasRoom(block) || waterKind(block) !== null || this.objectAt(x, y, z)) continue;
+      const level = top(x, y + 1, z) > 0 ? 16 : Math.max(...FACINGS.map((f) => top(x + FACING_STEP[f][0], y, z + FACING_STEP[f][1])));
+      if (level <= 0) continue;
+      writes.set(key, { bx: x, by: y, bz: z, block: setBlockWater(block, 0, level) });
+      for (const f of FACINGS) queue.push([x + FACING_STEP[f][0], y, z + FACING_STEP[f][1]]);
+      queue.push([x, y - 1, z]);
+    }
+    return writes.size ? this.writeBlocks([...writes.values()]) : null;
   }
 
   /** Blocks waiting for water to flow. */
@@ -222,7 +272,7 @@ export class World {
   }
 
   /**
-   * Lets water flow one step (see WaterFlow), saving the chunks it changed; null if nothing
+   * Lets poured water move one step (see PouredWater), saving the chunks it changed; null if nothing
    * changed. Call a few times a second.
    */
   stepWater(limit = 4096): EditResult | null {
@@ -259,7 +309,7 @@ export class World {
 
   private applyEditOnly(edit: Edit): EditResult {
     if (edit.op === 'place' && isWater(edit.material)) {
-      // Water fills the open space of every 1 m block the cube touches, as a source.
+      // Water (poured: finite, see PouredWater) fills the open space of every 1 m block the cube touches.
       const next = new Map<string, Chunk>();
       const n = BLOCKS_PER_CHUNK_AXIS;
       for (let by = edit.y >> 4; by <= (edit.y + edit.size - 1) >> 4; by++) {
@@ -271,9 +321,9 @@ export class World {
             const chunk = next.get(key) ?? this.current(resolved);
             const i = blockIndex(((bx % n) + n) % n, ((by % n) + n) % n, ((bz % n) + n) % n);
             const block = chunk.blocks[i] ?? null;
-            if (!blockHasRoom(block)) continue;
+            if (!blockHasRoom(block) || waterKind(block) === 'natural') continue;
             const blocks = chunk.blocks.slice();
-            blocks[i] = setBlockWater(block, 0);
+            blocks[i] = setPouredWater(block, 16);
             next.set(key, { cx: chunk.cx, cy: chunk.cy, cz: chunk.cz, blocks });
           }
         }
@@ -517,6 +567,69 @@ export class World {
     this.objects.set(objectKey(o.x, o.y, o.z), next);
     const result = this.writeBlocks(this.objectWrites(next));
     this.saveObjects();
+    return result;
+  }
+
+  /**
+   * Takes up to `amount` units (height in a 1 m block, see PouredWater) of water from block
+   * (bx, by, bz): natural water gives it all and stays; poured water gives what it has. Returns
+   * how much was taken and what changed (null if nothing did).
+   */
+  scoopWater(bx: number, by: number, bz: number, amount: number): { taken: number; result: EditResult | null } {
+    const block = this.blockAt(bx, by, bz);
+    if (block === undefined) return { taken: 0, result: null };
+    const kind = waterKind(block);
+    if (kind === 'natural') return { taken: amount, result: null };
+    if (kind !== 'poured') return { taken: 0, result: null };
+    const have = waterAmount(block), taken = Math.min(have, amount);
+    const result = this.writeBlocks([{ bx, by, bz, block: setPouredWater(block, have - taken) }]);
+    this.flow.touch(bx, by, bz);
+    return { taken, result };
+  }
+
+  /**
+   * Pours up to `amount` units of water into block (bx, by, bz), as much as it has room for, and
+   * the rest into the block above (e.g. aiming at ground that fills most of its block); it moves
+   * on from there. Returns how much was poured and what changed (null if nothing).
+   */
+  pourWater(bx: number, by: number, bz: number, amount: number): { poured: number; result: EditResult | null } {
+    const writes: { bx: number; by: number; bz: number; block: Block }[] = [];
+    let left = amount;
+    for (let y = by; y <= by + 1 && left > 0; y++) {
+      if (this.objectAt(bx, y, bz)) break;
+      const block = this.blockAt(bx, y, bz);
+      if (block === undefined || !blockHasRoom(block) || waterKind(block) === 'natural') break;
+      const have = waterAmount(block), n = Math.min(waterCapacity(block) - have, left);
+      if (n <= 0) continue;
+      writes.push({ bx, by: y, bz, block: setPouredWater(block, have + n) });
+      left -= n;
+    }
+    if (!writes.length) return { poured: 0, result: null };
+    const result = this.writeBlocks(writes);
+    for (const w of writes) this.flow.touch(w.bx, w.by, w.bz);
+    return { poured: amount - left, result };
+  }
+
+  /**
+   * Cuts leaves (and only leaves) in the blocks within `radius` (Chebyshev, 1 m blocks) of block
+   * (bx, by, bz): a sword's sweep. Returns what changed, or null if there were none.
+   */
+  cutLeaves(bx: number, by: number, bz: number, radius: number): EditResult | null {
+    const writes: { bx: number; by: number; bz: number; block: Block }[] = [];
+    for (let y = by - radius; y <= by + radius; y++)
+      for (let z = bz - radius; z <= bz + radius; z++)
+        for (let x = bx - radius; x <= bx + radius; x++) {
+          if (this.objectAt(x, y, z)) continue;
+          const block = this.blockAt(x, y, z);
+          if (!block) continue;
+          const voxels = blockVoxels(block);
+          const kept = voxels.filter((v) => !LEAVES.has(v.material));
+          if (kept.length !== voxels.length) writes.push({ bx: x, by: y, bz: z, block: blockFromVoxels(kept) });
+        }
+    if (!writes.length) return null;
+    const result = this.writeBlocks(writes);
+    for (const w of writes) this.flow.touch(w.bx, w.by, w.bz);
+    this.stats.edits++;
     return result;
   }
 

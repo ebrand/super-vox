@@ -52,44 +52,44 @@ describe('water in the world', () => {
     expect(materialOf(w, 490 * M, M, Z)).not.toBe(0); // land is solid
   });
 
-  it('floods a channel dug from the sea into the land, as far as water flows', () => {
+  it('lets the sea into a channel dug from it below its surface, wherever the digging starts', () => {
     const w = makeWorld();
     // A 1 m wide, 1 m deep channel from the sea (x = 500 m) 12 m into the land, its floor at 2 m.
     for (let x = 488; x < 500; x++) w.applyEdit({ op: 'removeBox', x: x * M, y: 2 * M, z: Z - 8, size: M });
-    // Its floor is above the sea, so the sea doesn't flow up into it.
+    // Its floor is above the sea, so the sea doesn't come up into it.
     settle(w);
     expect(materialOf(w, 499 * M + 8, 2 * M + 8, Z)).toBe(0);
-    // Deeper: down to 1 m below the sea, so water can come in.
+    // Deeper, dug from the land end towards the sea: down to 1 m below the sea's surface.
     for (let x = 488; x < 500; x++) for (const y of [1, 0, -1]) w.applyEdit({ op: 'removeBox', x: x * M, y: y * M, z: Z - 8, size: M });
-    expect(settle(w)).toBeGreaterThan(0);
-    expect(w.waterPending).toBe(0);
-    // Below sea level the channel fills from the sea, weaker each block, as far as water flows
-    // (one source beside each block: no new sources, as in Minecraft).
-    for (let x = 499; x >= 488; x--) {
-      const level = 500 - x;
-      expect(materialOf(w, x * M + 8, -M + 1, Z)).toBe(level <= 7 ? Material.Water + level : 0);
-    }
-    // At and above the sea's surface it stays dry.
+    settle(w);
+    // Below the surface the whole channel is sea (natural water: it stays and never runs dry).
+    for (let x = 499; x >= 488; x--) expect(materialOf(w, x * M + 8, -M + 1, Z)).toBe(Material.Water);
+    // At and above the surface it stays dry, and the sea never ran out over the land.
     expect(materialOf(w, 499 * M + 8, 8, Z)).toBe(0);
-
+    expect(materialOf(w, 488 * M + 8, 3 * M + 8, Z - 16)).toBe(0);
   });
 
-  it('spreads placed water over the land, then dries up when its source is covered', () => {
+  it('spreads poured water over the land until it settles, keeping every drop', () => {
     const w = makeWorld();
     const y = 3 * M; // on the ground
     w.applyEdit({ op: 'place', x: 300 * M, y, z: Z - 8, size: 16, material: Material.Water });
-    expect(materialOf(w, 300 * M + 8, y + 8, Z)).toBe(Material.Water);
-    settle(w);
-    // Flowing water is shallower further out: level 3 stands 12/16 m deep, level 7 4/16 m.
-    expect(materialOf(w, 303 * M + 8, y + 11, Z)).toBe(Material.Water + 3);
-    expect(materialOf(w, 303 * M + 8, y + 12, Z)).toBe(0);
-    expect(materialOf(w, 307 * M + 8, y + 3, Z)).toBe(Material.Water + 7);
-    expect(materialOf(w, 307 * M + 8, y + 4, Z)).toBe(0);
-    expect(materialOf(w, 308 * M + 8, y + 1, Z)).toBe(0);
-    // Fill the source block with stone: the water drains away.
-    w.applyEdit({ op: 'place', x: 300 * M, y, z: Z - 8, size: 16, material: Material.Stone });
-    settle(w);
-    for (const x of [301, 304, 307]) expect(materialOf(w, x * M + 8, y + 1, Z)).toBe(0);
+    expect(materialOf(w, 300 * M + 8, y + 8, Z)).toBe(Material.PouredWater);
+    settle(w, 200);
+    expect(w.waterPending).toBe(0);
+    // Every drop is still there (16 units deep in one block's worth), now spread thin and level.
+    let total = 0;
+    const depths: number[] = [];
+    for (let x = 290; x <= 310; x++) {
+      for (let z = 990; z <= 1010; z++) {
+        let d = 0;
+        while (d < 16 && materialOf(w, x * M + 8, y + d, z * M + 8) === Material.PouredWater) d++;
+        total += d;
+        if (d) depths.push(d);
+      }
+    }
+    expect(total).toBe(16);
+    expect(depths.length).toBeGreaterThan(4);
+    expect(Math.max(...depths) - Math.min(...depths)).toBeLessThanOrEqual(1);
   });
 
   it("doesn't remove water as if it were solid, and lets solids push it out", () => {
