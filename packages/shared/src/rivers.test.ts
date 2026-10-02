@@ -135,3 +135,38 @@ describe('rivers and lakes in plate worlds', () => {
     expect(water).toBeGreaterThan(0);
   });
 });
+
+describe('river valleys on steep ground', () => {
+  it('leave no steps: a stream falling faster than its banks rise, beside a steep hillside', () => {
+    // A stream running south, falling 0.5 m per metre, in 40 m pieces with a bend; the hillside to
+    // the east rises 1 m per metre (and falls with the stream).
+    const pts = [[0, 0], [5, 40], [0, 80], [10, 120], [5, 160], [0, 200]].map(([x, z]) => [x! * M, z! * M] as const);
+    const segs: RiverSegment[] = pts.slice(1).map(([bx, bz], k) => {
+      const [ax, az] = pts[k]!;
+      return { ax, az, bx, bz, sa: (300 - az / M / 2) * M, sb: (300 - bz / M / 2) * M, width: 6 * M, depth: 2 * M };
+    });
+    const hill = (x: number, z: number) => (300 - z / M / 2 + 2 + Math.max(0, x / M)) * M;
+    const N = 160, step = M; // metres east and south, 1 m apart
+    const h: number[][] = [], wet: boolean[][] = [];
+    for (let j = 0; j < N; j++) {
+      h.push([]);
+      wet.push([]);
+      for (let i = 0; i < N; i++) {
+        const x = (i - 20) * step, z = (j + 20) * step;
+        const r = carveRivers(segs, x, z, hill(x, z), 1e9, false);
+        h[j]!.push(r.ground);
+        wet[j]!.push(r.water !== null);
+      }
+    }
+    // Out of the channel (a steep bowl across the stream), the slope changes gradually: a step
+    // (or a valley cut off at its reach) shows as a sudden change between neighbouring metres.
+    let worst = 0;
+    for (let j = 2; j < N; j++) {
+      for (let i = 2; i < N; i++) {
+        if (wet[j]![i] || wet[j]![i - 1] || wet[j]![i - 2] || wet[j - 1]![i] || wet[j - 2]![i]) continue;
+        worst = Math.max(worst, Math.abs(h[j]![i]! - 2 * h[j]![i - 1]! + h[j]![i - 2]!), Math.abs(h[j]![i]! - 2 * h[j - 1]![i]! + h[j - 2]![i]!));
+      }
+    }
+    expect(worst / M).toBeLessThan(1);
+  });
+});

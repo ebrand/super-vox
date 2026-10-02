@@ -57,6 +57,14 @@ const M = 16;
 export const BANK_SLOPE = 0.3;
 /** How far beyond its edge a river shapes the ground (units). */
 export const VALLEY_REACH = 96 * M;
+/**
+ * Over the outer part of that reach, from this far out, the valley gives way to the ground, so it
+ * ends where the ground is instead of cutting off. (On a stream falling faster than BANK_SLOPE,
+ * the valley there can still be well below the ground, and a cut-off left a step of metres.)
+ */
+const VALLEY_FADE = VALLEY_REACH / 2;
+/** Banks this much further away than the nearest count e^-1 as much toward the valley's level (units). */
+const VALLEY_BLEND = 6 * M;
 /** Widest river (units). */
 const MAX_WIDTH = 50 * M;
 /** A basin must be this deep (units) to hold a lake. */
@@ -350,10 +358,17 @@ export class RiverIndex {
 /**
  * The ground and river water at a point (units) near `segments`: the ground cut to the river's
  * channel (a rounded bed `depth` below its surface across its width) and valley (rising at
- * BANK_SLOPE beyond its edge), and the water surface where it's in a channel (or null).
+ * BANK_SLOPE beyond its edge, and giving way to the ground over the outer half of VALLEY_REACH),
+ * and the water surface where it's in a channel (or null).
  */
 export function carveRivers(segments: readonly RiverSegment[], x: number, z: number, ground: number, worldWidth: number, wrap: boolean): { ground: number; water: number | null } {
   let g = ground, water: number | null = null;
+  // The valley rises from the nearest bank, at the water's level there: blended over the banks
+  // nearly as close (weights falling off over VALLEY_BLEND), so it has no seams where the
+  // nearest piece of river changes. (Taking the lowest of every piece's valley instead lets a
+  // steep stream's lower pieces cut fans far up the hillside.)
+  let nearest = Infinity, weight = 0, level = 0;
+  const banks: { edge: number; surface: number }[] = [];
   for (const s of segments) {
     let px = x;
     if (wrap) px -= Math.round((px - (s.ax + s.bx) / 2) / worldWidth) * worldWidth;
@@ -368,9 +383,19 @@ export function carveRivers(segments: readonly RiverSegment[], x: number, z: num
       const u = d / half;
       g = Math.min(g, surface - s.depth * (1 - u * u));
       water = water === null ? surface : Math.max(water, surface);
-    } else {
-      g = Math.min(g, surface + (d - half) * BANK_SLOPE);
     }
+    banks.push({ edge: Math.max(0, d - half), surface });
+    nearest = Math.min(nearest, Math.max(0, d - half));
+  }
+  if (banks.length > 0) {
+    for (const b of banks) {
+      const w = Math.exp(-(b.edge - nearest) / VALLEY_BLEND);
+      weight += w;
+      level += w * b.surface;
+    }
+    const valley = Math.min(ground, level / weight + nearest * BANK_SLOPE);
+    const t = Math.max(0, Math.min(1, (nearest - VALLEY_FADE) / (VALLEY_REACH - VALLEY_FADE)));
+    g = Math.min(g, valley + (ground - valley) * t * t * (3 - 2 * t));
   }
   return { ground: g, water: water !== null && g < water ? water : null };
 }

@@ -15,7 +15,8 @@ import { LightingPanel } from './lightingPanel.js';
 import { PLAYER, moveAabb, playerBox } from './physics.js';
 import { loadSettings } from './settings.js';
 import { MeshWorkerPool } from './workerPool.js';
-import { WorldMapOverlay } from './worldMap.js';
+import { WorldMapOverlay, decodeWorldMap } from './worldMap.js';
+import { startFromParams } from './startAt.js';
 import { InventoryUi } from './inventory.js';
 import { EntityView } from './entities.js';
 import type { Footprint } from './coverage.js';
@@ -335,23 +336,36 @@ connection = connect({
             return at(feet) !== undefined && at(feet - CHUNK_SIZE) !== undefined;
           };
           const worldParam = worldName !== undefined ? `&world=${encodeURIComponent(worldName)}` : '';
+          /** Goes to (x, z) (units), landing a little above `surfaceY` (walking settles onto it). */
+          const landAt = (x: number, z: number, surfaceY: number) => {
+            const ground = Math.max(surfaceY, msg.seaLevel ?? surfaceY);
+            // On a round world, go to the copy of that spot nearest where we are.
+            const here = camera.position.x * UNITS_PER_METER;
+            const vx = w.wrapX ? x + Math.round((here - x) / w.widthUnits) * w.widthUnits : x;
+            camera.position.set(vx / UNITS_PER_METER, ground / UNITS_PER_METER + PLAYER.eye / UNITS_PER_METER + 2, z / UNITS_PER_METER);
+            updateLod();
+          };
           worldMap = new WorldMapOverlay(
             { width: w.widthUnits, depth: w.depthUnits, wrapX: w.wrapX },
             // (On a round world, where you are in it: past the seam counts from the other side.)
             () => ({ x: normalizeX(w, camera.position.x * UNITS_PER_METER), z: camera.position.z * UNITS_PER_METER, yaw: controls.yaw }),
             { x: msg.spawn.x, z: msg.spawn.z },
-            (x, z, surfaceY) => {
-              // Land on the ground there (a little above it; walking settles onto it).
-              const ground = Math.max(surfaceY, msg.seaLevel ?? surfaceY);
-              // On a round world, go to the copy of that spot nearest where we are.
-              const here = camera.position.x * UNITS_PER_METER;
-              const vx = w.wrapX ? x + Math.round((here - x) / w.widthUnits) * w.widthUnits : x;
-              camera.position.set(vx / UNITS_PER_METER, ground / UNITS_PER_METER + PLAYER.eye / UNITS_PER_METER + 2, z / UNITS_PER_METER);
-              updateLod();
-            },
+            landAt,
             `/api/world/map?width=1024${worldParam}`,
             (a) => `/api/world/map/area?x0=${a.x0}&z0=${a.z0}&step=${a.step}&cols=${a.cols}&rows=${a.rows}${worldParam}`,
           );
+          // ?x=…&z=… (metres): start there instead of at the spawn point, on the surface as the
+          // world map shows it (looked up the same way), or at &y= if given.
+          const start = startFromParams(params, w);
+          if (start) {
+            if (start.y !== null) landAt(start.x, start.z, start.y);
+            else {
+              void fetch(`/api/world/map/area?x0=${start.x}&z0=${start.z}&step=16&cols=1&rows=1${worldParam}`)
+                .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`map ${r.status}`))))
+                .then((buf) => landAt(start.x, start.z, decodeWorldMap(buf).heights[0]!))
+                .catch((err: unknown) => editTool?.say(`couldn't go to x ${start.x / UNITS_PER_METER}, z ${start.z / UNITS_PER_METER}: ${err instanceof Error ? err.message : String(err)}`));
+            }
+          }
           window.addEventListener('keydown', (e) => {
             if (e.repeat || e.metaKey || e.ctrlKey) return;
             if (e.code === 'KeyM' || (e.code === 'Escape' && worldMap?.isOpen)) {
