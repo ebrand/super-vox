@@ -13,16 +13,27 @@ export function starterInventory(): Inventory {
   return { items: new Map(STARTER_KIT), hotbar: starterHotbar() };
 }
 
-/** Inventories by account and world (see inventoryKeyOf). */
+/** Where a player was in a world (their eye, units; yaw, radians), to come back to. */
+export interface Place {
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+}
+
+/** Inventories by account and world (see inventoryKeyOf), and where each player was in each world. */
 export interface InventoryStore {
   load(accountId: string, world: string): Promise<Inventory | null>;
   save(accountId: string, world: string, inventory: Inventory): Promise<void>;
+  loadPlace(accountId: string, world: string): Promise<Place | null>;
+  savePlace(accountId: string, world: string, place: Place): Promise<void>;
 }
 
 const copy = (inv: Inventory): Inventory => ({ items: new Map(inv.items), hotbar: [...inv.hotbar] });
 
 export class MemoryInventoryStore implements InventoryStore {
   private readonly saved = new Map<string, Inventory>();
+  private readonly places = new Map<string, Place>();
 
   async load(accountId: string, world: string): Promise<Inventory | null> {
     const inv = this.saved.get(`${accountId} ${world}`);
@@ -31,6 +42,15 @@ export class MemoryInventoryStore implements InventoryStore {
 
   async save(accountId: string, world: string, inventory: Inventory): Promise<void> {
     this.saved.set(`${accountId} ${world}`, copy(inventory));
+  }
+
+  async loadPlace(accountId: string, world: string): Promise<Place | null> {
+    const p = this.places.get(`${accountId} ${world}`);
+    return p ? { ...p } : null;
+  }
+
+  async savePlace(accountId: string, world: string, place: Place): Promise<void> {
+    this.places.set(`${accountId} ${world}`, { ...place });
   }
 }
 
@@ -54,6 +74,19 @@ export class PgInventoryStore implements InventoryStore {
       `insert into ${SCHEMA}.inventories (account_id, world, items, hotbar) values ($1, $2, $3, $4)
        on conflict (account_id, world) do update set items = excluded.items, hotbar = excluded.hotbar, updated_at = now()`,
       [accountId, world, JSON.stringify([...inventory.items].filter(([, v]) => v > 0)), JSON.stringify(inventory.hotbar)],
+    );
+  }
+
+  async loadPlace(accountId: string, world: string): Promise<Place | null> {
+    const { rows } = await this.pool.query<Place>(`select x, y, z, yaw from ${SCHEMA}.places where account_id = $1 and world = $2`, [accountId, world]);
+    return rows[0] ?? null;
+  }
+
+  async savePlace(accountId: string, world: string, place: Place): Promise<void> {
+    await this.pool.query(
+      `insert into ${SCHEMA}.places (account_id, world, x, y, z, yaw) values ($1, $2, $3, $4, $5, $6)
+       on conflict (account_id, world) do update set x = excluded.x, y = excluded.y, z = excluded.z, yaw = excluded.yaw, updated_at = now()`,
+      [accountId, world, place.x, place.y, place.z, place.yaw],
     );
   }
 }

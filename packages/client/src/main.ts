@@ -626,6 +626,15 @@ connection = connect({
       case 'debris':
         explosions.debris(msg.pieces);
         break;
+      case 'returnTo':
+        // Signed in, back in a world: where we were when we left it (as we looked then, level).
+        camera.position.set(unitsToMeters(msg.x), unitsToMeters(msg.y), unitsToMeters(msg.z));
+        controls.yaw = msg.yaw;
+        controls.pitch = 0;
+        controls.stopFalling();
+        updateLod(true);
+        editTool?.say('back where you left off');
+        break;
       case 'respawn':
         // Died: back at the spawn point (standing on it).
         camera.position.set(unitsToMeters(msg.x), unitsToMeters(msg.y) + PLAYER.eye / UNITS_PER_METER + 0.5, unitsToMeters(msg.z));
