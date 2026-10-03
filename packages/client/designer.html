@@ -90,13 +90,20 @@
           <div class="group">
             <button id="mirror" title="Mirror left to right (M)">Mirror</button>
           </div>
+          <div class="group" title="The working plane: aiming at empty space finds it (or the box's far walls), so lines and boxes can start in mid-air">
+            <button id="plane-down" title="Plane down / back ([ or Page Down)">▼</button>
+            <button id="plane-up" title="Plane up / forward (] or Page Up)">▲</button>
+            <button id="plane-turn" title="Turn the plane: flat, upright facing the front, upright facing the side (V)">Turn</button>
+            <button id="plane-home" title="Back to the floor (Home)">Floor</button>
+            <span id="plane-at" class="note" style="align-self: center; padding: 0 6px"></span>
+          </div>
           <div class="group">
             <button id="undo" title="Undo (⌘Z)">Undo</button>
             <button id="redo" title="Redo (⇧⌘Z)">Redo</button>
           </div>
         </div>
         <div id="hover"></div>
-        <div class="help">click: use the tool · shift-click: erase · Line: drag a row or column · Box: drag its base, let go, move up or down, click (Esc: stop) · shift: lines and boxes clear · alt-click: pick up a material · drag: turn · right-drag: move · wheel: zoom · 1-5: voxel size · the arrow marks its front (toward whoever places it)</div>
+        <div class="help">click: use the tool · shift-click: erase · Line: drag a row or column · Box: drag its base, let go, move up or down, click (Esc: stop) · shift: lines and boxes clear · plane: [ ] up and down, V turn, Home floor · alt-click: pick up a material · drag: turn · right-drag: move · wheel: zoom · 1-5: voxel size · the arrow marks its front (toward whoever places it)</div>
       </div>
       <aside class="right">
         <div id="readonly" class="readonly" hidden></div>

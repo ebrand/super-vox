@@ -316,3 +316,55 @@ export function placeAgainst(point: readonly number[], normal: readonly number[]
   const [x, y, z] = p.map((c) => Math.floor(c / size) * size) as [number, number, number];
   return { x, y, z };
 }
+
+/** The working plane: across axis `axis` (0 x, 1 y: flat, 2 z), `at` units along it (see aimSurface). */
+export interface WorkPlane {
+  axis: 0 | 1 | 2;
+  at: number;
+}
+
+/**
+ * What a ray (units; from outside or inside the box) aims at when it misses every voxel: the nearer
+ * of the working plane (where it crosses inside the box) and the box's far side (where the ray
+ * leaves it: the floor looking down, the back wall looking across). The normal points back toward
+ * the ray's origin (so a build lands on the near side). Null if the ray misses the box.
+ */
+export function aimSurface(
+  origin: readonly number[],
+  dir: readonly number[],
+  extent: readonly number[],
+  plane: WorkPlane,
+): { point: [number, number, number]; normal: [number, number, number]; on: 'plane' | 'wall' } | null {
+  // The box: where the ray is inside it, [t0, t1] (slabs).
+  let t0 = 0, t1 = Infinity, exitAxis = -1;
+  for (let a = 0; a < 3; a++) {
+    const o = origin[a]!, d = dir[a]!, hi = extent[a]!;
+    if (Math.abs(d) < 1e-12) {
+      if (o < 0 || o > hi) return null;
+      continue;
+    }
+    let near = (0 - o) / d, far = (hi - o) / d;
+    if (near > far) [near, far] = [far, near];
+    if (near > t0) t0 = near;
+    if (far < t1) {
+      t1 = far;
+      exitAxis = a;
+    }
+  }
+  if (t0 > t1 || exitAxis < 0) return null;
+  const at = (t: number) => [0, 1, 2].map((a) => origin[a]! + dir[a]! * t) as [number, number, number];
+  const back = (axis: number) => [0, 1, 2].map((a) => (a === axis ? -Math.sign(dir[a]!) : 0)) as [number, number, number];
+  // The plane, if the ray crosses it while inside the box.
+  const d = dir[plane.axis]!;
+  if (Math.abs(d) > 1e-12) {
+    const t = (plane.at - origin[plane.axis]!) / d;
+    if (t >= t0 - 1e-9 && t <= t1 + 1e-9 && t > 0) {
+      const p = at(t);
+      p[plane.axis] = plane.at;
+      return { point: p, normal: back(plane.axis), on: 'plane' };
+    }
+  }
+  const p = at(t1);
+  p[exitAxis] = dir[exitAxis]! > 0 ? extent[exitAxis]! : 0;
+  return { point: p, normal: back(exitAxis), on: 'wall' };
+}

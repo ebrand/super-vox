@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FIRST_DESIGN_ITEM, Material, parseDesign } from '@super-vox/shared';
-import { DesignEditor, cellsIn, clipRegion, draftOf, placeAgainst, regionBetween } from './designEditor.js';
+import { DesignEditor, aimSurface, cellsIn, clipRegion, draftOf, placeAgainst, regionBetween } from './designEditor.js';
 
 const P = Material.Planks, S = Material.Stone;
 
@@ -130,5 +130,36 @@ describe('placeAgainst', () => {
     expect(placeAgainst([8, 3, 3], [1, 0, 0], 2)).toEqual({ x: 8, y: 2, z: 2 });
     // Its -x face: the one before.
     expect(placeAgainst([8, 3, 3], [-1, 0, 0], 2)).toEqual({ x: 6, y: 2, z: 2 });
+  });
+});
+
+describe('aimSurface', () => {
+  const box = [32, 32, 32];
+  const floor = { axis: 1 as const, at: 0 };
+  it('finds the floor looking down, and the far wall looking across', () => {
+    expect(aimSurface([10, 50, 10], [0, -1, 0], box, floor)).toEqual({ point: [10, 0, 10], normal: [0, 1, 0], on: 'plane' });
+    // Looking across (toward -z) from the front at y 8: the back wall, z 0, facing us.
+    expect(aimSurface([10, 8, 60], [0, 0, -1], box, floor)).toEqual({ point: [10, 8, 0], normal: [0, 0, 1], on: 'wall' });
+    // Looking up from below the floor: the ceiling's the far side.
+    expect(aimSurface([10, -20, 10], [0, 1, 0], box, floor)!.on).toBe('plane'); // (crosses the floor plane first)
+    expect(aimSurface([10, -20, 10], [0, 1, 0], box, { axis: 1, at: 40 })).toMatchObject({ point: [10, 32, 10], normal: [0, -1, 0], on: 'wall' });
+    // Missing the box: nothing.
+    expect(aimSurface([100, 50, 10], [0, -1, 0], box, floor)).toBeNull();
+  });
+
+  it('finds a raised or upright plane first when the ray crosses it inside the box', () => {
+    const p = aimSurface([10, 50, 10], [0, -1, 0], box, { axis: 1, at: 12 })!;
+    expect(p).toEqual({ point: [10, 12, 10], normal: [0, 1, 0], on: 'plane' });
+    // Built against it (a 4-unit voxel): on top of it, at y 12.
+    expect(placeAgainst(p.point, p.normal, 4)).toEqual({ x: 8, y: 12, z: 8 });
+    // An upright plane facing the front (across z) at z 16, looked at from the front: in front of it.
+    const q = aimSurface([10, 8, 60], [0, 0, -1], box, { axis: 2, at: 16 })!;
+    expect(q).toEqual({ point: [10, 8, 16], normal: [0, 0, 1], on: 'plane' });
+    expect(placeAgainst(q.point, q.normal, 4)).toEqual({ x: 8, y: 8, z: 16 });
+    // From behind it: the voxel's on our side (z 12).
+    const r = aimSurface([10, 8, -40], [0, 0, 1], box, { axis: 2, at: 16 })!;
+    expect(placeAgainst(r.point, r.normal, 4)).toEqual({ x: 8, y: 8, z: 12 });
+    // A plane outside where the ray is in the box: the far wall instead.
+    expect(aimSurface([10, 50, 10], [0.3, -1, 0], box, { axis: 0, at: 4 })!.on).toBe('wall');
   });
 });
