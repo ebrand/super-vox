@@ -6,13 +6,14 @@ import { HOTBAR_SLOTS, type GameMode } from './items.js';
 import { MAX_MATERIAL_ID } from './materials.js';
 import type { DebrisPiece } from './debris.js';
 import type { DeathCause } from './survival.js';
-import { isFacing, type Facing } from './objects.js';
+import { isFacing, type Facing, type PlacedObject } from './objects.js';
+import type { ObjectDesign } from './designs.js';
 import type { EntityKind } from './mobs.js';
 import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 30;
+export const PROTOCOL_VERSION = 31;
 
 export type ClientMessage =
   | {
@@ -104,6 +105,13 @@ export type ServerMessage =
    * items counted); and their hotbar. Not sent to players who aren't signed in.
    */
   | { type: 'inventory'; mode: GameMode; items: [number, number][]; hotbar: (number | null)[] }
+  /** The library of designed objects (see designs.ts): after welcome, and whenever an admin changes it. */
+  | { type: 'designs'; designs: ObjectDesign[] }
+  /**
+   * The designed objects placed in the world (after welcome, and whenever one is placed, taken down
+   * or changes state), so clients know a click on one means it (they're built of ordinary materials).
+   */
+  | { type: 'objects'; objects: PlacedObject[] }
   /**
    * Everything moving near the player (mobs and other players, see EntitySnapshot), as it is now;
    * sent a few times a second. Anything not listed has gone (out of range, or gone for good).
@@ -327,7 +335,7 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   if (msg.type === 'eat' && isInt32(msg.item)) {
     return { type: 'eat', item: msg.item };
   }
-  if (msg.type === 'craft' && typeof msg.recipe === 'string' && /^[a-z0-9-]{1,64}$/.test(msg.recipe)) {
+  if (msg.type === 'craft' && typeof msg.recipe === 'string' && /^[a-z0-9:-]{1,64}$/.test(msg.recipe)) {
     return { type: 'craft', recipe: msg.recipe };
   }
   if (

@@ -42,6 +42,14 @@ export const Item = {
   Pork: 1007,
   /** Placed as a workbench (see objects.ts); recipes that need one want one placed nearby. */
   CraftingTable: 1008,
+  /**
+   * Stations, placed as the design that stands in for each (see STATIONS in designs.ts): only in
+   * play once one does (see setDesigns).
+   */
+  Furnace: 1009,
+  Stove: 1010,
+  Anvil: 1011,
+  SmithingTable: 1012,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -56,15 +64,25 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.Bucket]: 'bucket',
   [Item.Pork]: 'pork',
   [Item.CraftingTable]: 'crafting table',
+  [Item.Furnace]: 'furnace',
+  [Item.Stove]: 'stove',
+  [Item.Anvil]: 'anvil',
+  [Item.SmithingTable]: 'smithing table',
 };
+
+/** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */
+const DESIGNED_ONLY = new Set<ItemId>([Item.Furnace, Item.Stove, Item.Anvil, Item.SmithingTable]);
 
 /** Whether an id is a block material (amounts are volumes) rather than an item (amounts are counts). */
 export function isBlock(id: ItemId): boolean {
   return id < FIRST_ITEM;
 }
 
+/** Items added while running (objects designed with the designer, see designs.ts): their names. */
+const EXTRA_NAMES = new Map<ItemId, string>();
+
 export function itemName(id: ItemId): string {
-  return isBlock(id) ? materialName(id) : (ITEM_NAMES[id] ?? `item ${id}`);
+  return isBlock(id) ? materialName(id) : (ITEM_NAMES[id] ?? EXTRA_NAMES.get(id) ?? `item ${id}`);
 }
 
 /** What players can place: in creative all of these, in survival those they have. */
@@ -93,8 +111,22 @@ export const PLACEABLE: readonly MaterialId[] = [
   Material.Water,
 ];
 
-/** Everything a player can have: what creative lists, and what can go on a hotbar. */
-export const ALL_ITEMS: readonly ItemId[] = [...PLACEABLE, ...(Object.values(Item) as ItemId[])];
+const BUILT_IN: readonly ItemId[] = [...PLACEABLE, ...(Object.values(Item) as ItemId[]).filter((id) => !DESIGNED_ONLY.has(id))];
+const allItems: ItemId[] = [...BUILT_IN];
+
+/**
+ * Everything a player can have: what creative lists, and what can go on a hotbar (the built-in
+ * ones, then those added while running: see setExtraItems).
+ */
+export const ALL_ITEMS: readonly ItemId[] = allItems;
+
+/** Sets the items added while running (designed objects, see setDesigns), replacing those before. */
+export function setExtraItems(items: readonly (readonly [ItemId, string])[]): void {
+  EXTRA_NAMES.clear();
+  for (const [id, name] of items) EXTRA_NAMES.set(id, name);
+  allItems.length = BUILT_IN.length;
+  allItems.push(...items.map(([id]) => id));
+}
 
 /** Placeable in this mode: water only in creative (survival will carry it in buckets). */
 export function canPlace(material: MaterialId, mode: GameMode): boolean {

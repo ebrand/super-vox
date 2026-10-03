@@ -1,5 +1,6 @@
 import { BLOCK_SIZE } from './chunk.js';
 import type { BlockVoxel } from './edit.js';
+import { designBlocks, designById, designItem, designSpan, type DesignRole } from './designs.js';
 import { Item, type ItemId } from './items.js';
 import { Material, type MaterialId } from './materials.js';
 
@@ -22,15 +23,72 @@ export function isFacing(v: unknown): v is Facing {
 /** Block offsets (x, z) of each facing. */
 export const FACING_STEP: Record<Facing, readonly [number, number]> = { n: [0, -1], e: [1, 0], s: [0, 1], w: [-1, 0] };
 
-/** A placed object; (x, y, z) is its (bottom) block, in 1 m block coordinates. */
+/** What a placed object is: a built-in kind, or a design (see designs.ts). */
+export type PlacedKind = ObjectKind | 'design';
+
+/**
+ * A placed object; (x, y, z) is its (bottom) block, in 1 m block coordinates (a design: the least
+ * corner of its box).
+ */
 export interface PlacedObject {
-  kind: ObjectKind;
+  kind: PlacedKind;
   x: number;
   y: number;
   z: number;
   facing: Facing;
   /** Gates and doors: open (fences: always false). */
   open: boolean;
+  /** A design: its id. */
+  design?: string;
+  /** A design: which of its states it's in. */
+  state?: number;
+  /** A design: the blocks its box takes along x, y and z (as placed: turned; kept, should the design change). */
+  span?: [number, number, number];
+}
+
+/** The blocks an object takes, as offsets from (x, y, z). */
+export function objectCells(o: PlacedObject): [number, number, number][] {
+  const [w, h, d] = o.kind === 'design' ? (o.span ?? [1, 1, 1]) : [1, objectHeight(o.kind), 1];
+  const out: [number, number, number][] = [];
+  for (let dy = 0; dy < h; dy++) for (let dz = 0; dz < d; dz++) for (let dx = 0; dx < w; dx++) out.push([dx, dy, dz]);
+  return out;
+}
+
+/** The item taking an object down gives back (null: a design no longer in the library). */
+export function objectItem(o: PlacedObject): ItemId | null {
+  if (o.kind !== 'design') return OBJECT_ITEM[o.kind];
+  const design = designById(o.design ?? '');
+  return design ? designItem(design) : null;
+}
+
+/** The station an object is, if any: the built-in table, or a design standing in for one. */
+export function objectStation(o: PlacedObject): DesignRole | null {
+  if (o.kind === 'table') return 'crafting-table';
+  return o.kind === 'design' ? (designById(o.design ?? '')?.role ?? null) : null;
+}
+
+/**
+ * Whether any of `objects` that's station `role` takes a block within `reach` (units, Chebyshev,
+ * by block, as materialNearIn) of (x, y, z) (units). `wrapBlocks`: round worlds, blocks around.
+ */
+export function stationAmong(objects: Iterable<PlacedObject>, role: DesignRole, x: number, y: number, z: number, reach: number, wrapBlocks: number | null = null): boolean {
+  const lo = (v: number) => Math.floor((v - reach) / BLOCK_SIZE), hi = (v: number) => Math.floor((v + reach) / BLOCK_SIZE);
+  const px = Math.floor(x / BLOCK_SIZE), r = hi(x) - px;
+  for (const o of objects) {
+    if (objectStation(o) !== role) continue;
+    for (const [dx, dy, dz] of objectCells(o)) {
+      let ddx = o.x + dx - px;
+      if (wrapBlocks) ddx = ((((ddx % wrapBlocks) + wrapBlocks + Math.floor(wrapBlocks / 2)) % wrapBlocks) - Math.floor(wrapBlocks / 2));
+      const by = o.y + dy, bz = o.z + dz;
+      if (ddx >= lo(x) - px && ddx <= r && by >= lo(y) && by <= hi(y) && bz >= lo(z) && bz <= hi(z)) return true;
+    }
+  }
+  return false;
+}
+
+/** What an object is called. */
+export function objectName(o: PlacedObject): string {
+  return o.kind === 'design' ? (designById(o.design ?? '')?.name ?? 'object') : o.kind === 'table' ? 'crafting table' : o.kind;
 }
 
 export const OBJECT_ITEM: Record<ObjectKind, ItemId> = { fence: Item.Fence, gate: Item.Gate, door: Item.Door, table: Item.CraftingTable };
@@ -51,8 +109,13 @@ export function isObjectMaterial(m: MaterialId): boolean {
 }
 
 /** Whether an object opens and closes (gates and doors). */
-export function opens(kind: ObjectKind): boolean {
+export function opens(kind: PlacedKind): boolean {
   return kind === 'gate' || kind === 'door';
+}
+
+/** Whether a right-click changes an object: gates and doors open and shut; designs with more than one state step to the next. */
+export function usable(o: PlacedObject): boolean {
+  return opens(o.kind) || (o.kind === 'design' && (designById(o.design ?? '')?.states.length ?? 0) > 1);
 }
 
 /** Whether right-clicking an object's voxel opens or closes it. */
@@ -142,15 +205,23 @@ export function tableVoxels(facing: Facing): BlockVoxel[] {
   return [...top, ...legs, ...stretchers, ...turn([...hammer, ...square], TURNS[facing])];
 }
 
-/** Every block (offset from the object's bottom block) of an object with its voxels. */
-export function objectBlocks(o: PlacedObject, fenceToward: readonly Facing[] = []): { dy: number; voxels: BlockVoxel[] }[] {
-  if (o.kind === 'fence') return [{ dy: 0, voxels: fenceVoxels(fenceToward) }];
-  if (o.kind === 'table') return [{ dy: 0, voxels: tableVoxels(o.facing) }];
-  if (o.kind === 'gate') return [{ dy: 0, voxels: gateVoxels(o.facing, o.open) }];
+/**
+ * Every block (offset from the object's (x, y, z)) of an object with its voxels. A design no longer
+ * in the library, or changed to another size: none (it can't be redrawn).
+ */
+export function objectBlocks(o: PlacedObject, fenceToward: readonly Facing[] = []): { dx: number; dy: number; dz: number; voxels: BlockVoxel[] }[] {
+  if (o.kind === 'design') {
+    const design = designById(o.design ?? '');
+    if (!design || designSpan(design, o.facing).join() !== (o.span ?? []).join()) return [];
+    return designBlocks(design, o.state ?? 0, o.facing);
+  }
+  if (o.kind === 'fence') return [{ dx: 0, dy: 0, dz: 0, voxels: fenceVoxels(fenceToward) }];
+  if (o.kind === 'table') return [{ dx: 0, dy: 0, dz: 0, voxels: tableVoxels(o.facing) }];
+  if (o.kind === 'gate') return [{ dx: 0, dy: 0, dz: 0, voxels: gateVoxels(o.facing, o.open) }];
   const door = doorVoxels(o.facing, o.open);
   return [
-    { dy: 0, voxels: door },
-    { dy: 1, voxels: door },
+    { dx: 0, dy: 0, dz: 0, voxels: door },
+    { dx: 0, dy: 1, dz: 0, voxels: door },
   ];
 }
 

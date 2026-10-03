@@ -22,6 +22,14 @@ import {
   itemName,
   materialName,
   objectKindOf,
+  objectCells,
+  objectName,
+  designById,
+  designOfItem,
+  designOrigin,
+  designSpan,
+  usable,
+  type PlacedObject,
   type ItemId,
   nextBreakSize,
   type ClientMessage,
@@ -130,6 +138,12 @@ export class EditTool {
   private nextId = 1;
   private readonly pending = new Map<number, string>();
   private readonly outline: THREE.LineSegments;
+  /** Where a designed object in hand would go (its box), when one's aimed somewhere. */
+  private readonly designPreview: THREE.LineSegments;
+  /** Designed objects placed in the world (see setPlacedObjects), by each block they take ("bx,by,bz"). */
+  private readonly designCells = new Map<string, PlacedObject>();
+  /** Round worlds: blocks around (block X wraps); null: they don't. */
+  wrapBlocks: number | null = null;
   private readonly preview: THREE.Mesh;
   private readonly previewMaterial: THREE.MeshBasicMaterial;
   private readonly digPreview: THREE.Mesh;
@@ -175,6 +189,9 @@ export class EditTool {
     };
     const box = new THREE.BoxGeometry(1, 1, 1);
     this.outline = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0xffffff }));
+    this.designPreview = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0x40ff60 }));
+    this.designPreview.visible = false;
+    scene.add(this.designPreview);
     this.previewMaterial = new THREE.MeshBasicMaterial({ color: 0x40ff60, transparent: true, opacity: 0.3, depthWrite: false });
     this.preview = new THREE.Mesh(box, this.previewMaterial);
     // The dig box's volume lies inside solid ground, so it is drawn faintly through everything.
@@ -288,6 +305,45 @@ export class EditTool {
     this.onModeChange?.(this.mode);
   }
 
+  /** The designed objects placed in the world (from the server: see the `objects` message). */
+  setPlacedObjects(objects: readonly PlacedObject[]): void {
+    this.designCells.clear();
+    for (const o of objects) for (const [dx, dy, dz] of objectCells(o)) this.designCells.set(`${this.wrapBlock(o.x + dx)},${o.y + dy},${o.z + dz}`, o);
+  }
+
+  private wrapBlock(bx: number): number {
+    const n = this.wrapBlocks;
+    return n ? ((bx % n) + n) % n : bx;
+  }
+
+  /** The designed object aimed at, if it's one. */
+  private aimedDesign(): PlacedObject | undefined {
+    if (!this.target) return undefined;
+    const b = (v: number) => floorDiv(v, BLOCK_SIZE);
+    return this.designCells.get(`${this.wrapBlock(b(this.target.x))},${b(this.target.y)},${b(this.target.z)}`);
+  }
+
+  /** The block an object placed now would go in (beside the face aimed at), and the way it would face. */
+  private objectSpot(): { x: number; y: number; z: number; facing: ReturnType<typeof facingOfYaw> } | null {
+    if (!this.hit) return null;
+    const [x, y, z] = this.hit.cell.map((c, a) => floorDiv(c + this.hit!.normal[a]!, BLOCK_SIZE)) as [number, number, number];
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    return { x, y, z, facing: facingOfYaw(Math.atan2(-dir.x, -dir.z)) };
+  }
+
+  /** Shows where the designed object in hand would go (its whole box), if one is. */
+  private showDesignPreview(): void {
+    const held = this.materialOf();
+    const design = this.mode === 'hybrid' && held !== null ? designOfItem(held) : undefined;
+    const spot = design && this.objectSpot();
+    this.designPreview.visible = !!spot;
+    if (!design || !spot) return;
+    const at = designOrigin(design, spot.facing, spot.x, spot.y, spot.z);
+    const [w, h, d] = designSpan(design, spot.facing);
+    this.designPreview.scale.set(w * 1.002, h * 1.002, d * 1.002);
+    this.designPreview.position.set(at.x + w / 2, at.y + h / 2, at.z + d / 2);
+  }
+
   /** Re-aims from the camera; call every frame. */
   update(): void {
     this.aim();
@@ -341,6 +397,7 @@ export class EditTool {
       }
     }
     this.show(this.outline, this.target, 1.004);
+    this.showDesignPreview();
     // Hybrid previews only while Command is held (when choosing a size), like Minecraft otherwise.
     const preview = this.mode === 'place' || (this.mode === 'hybrid' && this.modifiers.meta);
     this.show(this.preview, preview ? this.placement : null, 0.999);
@@ -379,10 +436,12 @@ export class EditTool {
       } else if (button === 2) {
         // Right-click: with a bucket, fills it at water or pours it out; opens and closes gates and
         // doors; with a fence, gate or door in hand, places one.
+        const design = this.aimedDesign();
         if (held === Item.Bucket) this.bucket();
-        else if (this.targetMaterial !== null && isUsableMaterial(this.targetMaterial)) this.use();
+        else if (design && usable(design)) this.use();
+        else if (!design && this.targetMaterial !== null && isUsableMaterial(this.targetMaterial)) this.use();
         else if (held !== null && isFood(held)) this.eat(held);
-        else if (this.material && objectKindOf(this.material.id)) this.placeObject(this.material.id);
+        else if (this.material && (objectKindOf(this.material.id) || designOfItem(this.material.id))) this.placeObject(this.material.id);
         else this.place();
       }
       return;
@@ -441,11 +500,16 @@ export class EditTool {
           ? `places ${sizeLabel(this.hybridSize)} while ⌘ is held`
           : 'places matching size (⌘+wheel: choose)'
         : sizeLabel(this.size);
-    const usable = this.targetMaterial !== null && isUsableMaterial(this.targetMaterial);
+    const opensHere = this.targetMaterial !== null && isUsableMaterial(this.targetMaterial);
+    const design = this.aimedDesign();
+    const states = design && designById(design.design ?? '')?.states;
+    const next = design && states && usable(design) ? states[((design.state ?? 0) + 1) % states.length]!.name : null;
     const target = !this.target
       ? 'nothing in reach'
+      : design
+        ? `aiming at a ${objectName(design)}${next ? ` (right-click: ${next})` : ''} (left-click: take it down)`
       : this.targetMaterial !== null && isObjectMaterial(this.targetMaterial)
-        ? `aiming at a ${materialName(this.targetMaterial)}${usable ? ' (right-click: open / close)' : ''} (left-click: take it down)`
+        ? `aiming at a ${materialName(this.targetMaterial)}${opensHere ? ' (right-click: open / close)' : ''} (left-click: take it down)`
         : this.targetMaterial !== null && isExplosive(this.targetMaterial)
           ? `aiming at ${sizeLabel(this.target.size)} of ${materialName(this.targetMaterial)}${this.mode === 'hybrid' ? ' (click: light it, then stand back)' : ''}`
           : `aiming at a ${sizeLabel(this.target.size)} voxel`;
@@ -480,6 +544,7 @@ export class EditTool {
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
     this.outline.removeFromParent();
+    this.designPreview.removeFromParent();
     this.preview.removeFromParent();
     this.digPreview.removeFromParent();
     this.digEntry.removeFromParent();
@@ -570,12 +635,14 @@ export class EditTool {
     this.send({ type: 'eat', item: food });
   }
 
-  /** Places an object (fence, gate, door) in the 1 m block beside the face aimed at, facing the way we look. */
+  /**
+   * Places an object (fence, gate, door, table; a design: the middle of its front row) in the 1 m
+   * block beside the face aimed at, facing the way we look.
+   */
   private placeObject(item: ItemId): void {
-    if (!this.hit) return;
-    const [x, y, z] = this.hit.cell.map((c, a) => floorDiv(c + this.hit!.normal[a]!, BLOCK_SIZE)) as [number, number, number];
-    const dir = this.camera.getWorldDirection(new THREE.Vector3());
-    const facing = facingOfYaw(Math.atan2(-dir.x, -dir.z));
+    const spot = this.objectSpot();
+    if (!spot) return;
+    const { x, y, z, facing } = spot;
     const id = this.nextId++;
     this.pending.set(id, 'place');
     this.send({ type: 'placeObject', id, item, x, y, z, facing });

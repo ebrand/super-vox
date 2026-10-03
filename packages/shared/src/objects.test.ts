@@ -113,6 +113,6 @@ describe('crafting table', () => {
     // Clicking its tools means the table too.
     expect(isObjectMaterial(Material.DarkMetal) && isObjectMaterial(Material.LightMetal)).toBe(true);
     expect(new Set(tableVoxels('n').map((v) => v.material))).toEqual(new Set([Material.CraftingTable, Material.DarkMetal, Material.LightMetal]));
-    expect(objectBlocks({ kind: 'table', x: 0, y: 0, z: 0, facing: 's', open: false })).toEqual([{ dy: 0, voxels: tableVoxels('s') }]);
+    expect(objectBlocks({ kind: 'table', x: 0, y: 0, z: 0, facing: 's', open: false })).toEqual([{ dx: 0, dy: 0, dz: 0, voxels: tableVoxels('s') }]);
   });
 });

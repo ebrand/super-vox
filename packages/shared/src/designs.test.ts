@@ -1,0 +1,244 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  ALL_ITEMS,
+  FIRST_DESIGN_ITEM,
+  Item,
+  Material,
+  RECIPES,
+  designBlocks,
+  designOfItem,
+  designOrigin,
+  designSpan,
+  designVoxels,
+  itemName,
+  objectBlocks,
+  objectCells,
+  objectItem,
+  parseDesign,
+  recipeById,
+  setDesigns,
+  stationAmong,
+  usable,
+  type ObjectDesign,
+  type PlacedObject,
+} from './index.js';
+
+const P = Material.Planks;
+
+/** A bench 2 m wide (x), 1 m tall, 1 m deep: a seat across, a leg at each end, a 1/16 m mark at its back-left. */
+function bench(): ObjectDesign {
+  return {
+    id: 'bench',
+    name: 'Bench',
+    size: [2, 1, 1],
+    item: FIRST_DESIGN_ITEM,
+    recipe: { inputs: [[P, 3]], count: 1, table: true },
+    states: [
+      {
+        name: 'plain',
+        voxels: [
+          ...[0, 8, 16, 24].map((x) => ({ x, y: 8, z: 0, size: 8, material: P })),
+          ...[0, 8, 16, 24].map((x) => ({ x, y: 8, z: 8, size: 8, material: P })),
+          { x: 0, y: 0, z: 8, size: 8, material: Material.Stone },
+          { x: 24, y: 0, z: 8, size: 8, material: Material.Stone },
+        ],
+      },
+      { name: 'marked', voxels: [{ x: 0, y: 0, z: 0, size: 1, material: Material.DarkMetal }] },
+    ],
+  };
+}
+
+afterEach(() => setDesigns([]));
+
+describe('parseDesign', () => {
+  it('takes a good design as it is', () => {
+    expect(parseDesign(JSON.parse(JSON.stringify(bench())))).toEqual(bench());
+  });
+
+  it('says what is wrong with a bad one', () => {
+    const bad = (change: (d: Record<string, any>) => void) => {
+      const d = JSON.parse(JSON.stringify(bench()));
+      change(d);
+      return parseDesign(d);
+    };
+    expect(bad((d) => (d.id = 'Bad Id'))).toMatch(/id/);
+    expect(bad((d) => (d.name = ' '))).toMatch(/name/);
+    expect(bad((d) => (d.size = [5, 1, 1]))).toMatch(/size/);
+    expect(bad((d) => (d.size = [0, 1, 1]))).toMatch(/size/);
+    expect(bad((d) => (d.states = []))).toMatch(/states/);
+    expect(bad((d) => (d.states[1].voxels = []))).toMatch(/empty/);
+    expect(bad((d) => (d.states[0].voxels[0].size = 3))).toMatch(/no size/);
+    expect(bad((d) => (d.states[0].voxels[0].x = 4))).toMatch(/off its grid/);
+    expect(bad((d) => (d.states[0].voxels[0].x = 32))).toMatch(/outside/); // 2 m wide: 32 is past it
+    expect(bad((d) => (d.states[0].voxels[0].y = 16))).toMatch(/outside/); // 1 m tall
+    expect(bad((d) => (d.states[0].voxels[0].x = 8))).toMatch(/overlap/);
+    expect(bad((d) => d.states[0].voxels.push({ x: 4, y: 12, z: 4, size: 1, material: P }))).toMatch(/overlap/); // inside a 1/2 m one
+    expect(bad((d) => (d.states[0].voxels[0].material = Material.TNT))).toMatch(/material/);
+    expect(bad((d) => (d.states[0].voxels[0].material = Material.Water))).toMatch(/material/);
+    expect(bad((d) => (d.states[0].voxels[0].material = Material.DoorWood))).toMatch(/material/);
+    expect(bad((d) => (d.recipe.inputs = []))).toMatch(/ingredients/);
+    expect(bad((d) => (d.recipe.inputs = [[P, 1], [P, 2]]))).toMatch(/twice/);
+    expect(bad((d) => (d.recipe.inputs = [[999999, 1]]))).toMatch(/there isn't/);
+    expect(bad((d) => (d.recipe.count = 0))).toMatch(/make/);
+    expect(bad((d) => (d.item = 5))).toMatch(/item/);
+    // No recipe: fine (creative only).
+    expect(bad((d) => (d.recipe = null))).toMatchObject({ recipe: null });
+  });
+});
+
+describe('placing designs', () => {
+  it('turns with its facing: its box (x and z swap east and west) and its voxels', () => {
+    const d = bench();
+    expect(designSpan(d, 'n')).toEqual([2, 1, 1]);
+    expect(designSpan(d, 'e')).toEqual([1, 1, 2]);
+    expect(designSpan(d, 's')).toEqual([2, 1, 1]);
+    // The 1/16 m mark at the back-left corner (x 0, z 0: facing north, the back is -z)...
+    const mark = (f: 'n' | 'e' | 's' | 'w') => designVoxels(d, 1, f)[0];
+    expect(mark('n')).toMatchObject({ x: 0, z: 0 });
+    // ...turned clockwise (seen from above) once: back-left is now at the far +x, least z.
+    expect(mark('e')).toMatchObject({ x: 15, z: 0 });
+    expect(mark('s')).toMatchObject({ x: 31, z: 15 });
+    expect(mark('w')).toMatchObject({ x: 0, z: 31 });
+    // Every voxel stays inside the turned box, and none overlap (the volume is the same).
+    for (const f of ['n', 'e', 's', 'w'] as const) {
+      const [w, h, dd] = designSpan(d, f);
+      const vs = designVoxels(d, 0, f);
+      for (const v of vs) {
+        expect(v.x).toBeGreaterThanOrEqual(0);
+        expect(v.x + v.size).toBeLessThanOrEqual(w * 16);
+        expect(v.y + v.size).toBeLessThanOrEqual(h * 16);
+        expect(v.z + v.size).toBeLessThanOrEqual(dd * 16);
+      }
+      expect(parseDesign({ ...d, size: designSpan(d, f), states: [{ name: 'x', voxels: vs }] })).not.toBeTypeOf('string');
+    }
+  });
+
+  it('splits into its blocks (every one, empty ones too), block-local', () => {
+    const blocks = designBlocks(bench(), 0, 'e'); // 1 x 1 x 2
+    expect(blocks.map((b) => [b.dx, b.dy, b.dz])).toEqual([
+      [0, 0, 0],
+      [0, 0, 1],
+    ]);
+    for (const b of blocks) {
+      expect(b.voxels.length).toBe(5);
+      for (const v of b.voxels) expect(v.x >= 0 && v.z >= 0 && v.x + v.size <= 16 && v.z + v.size <= 16).toBe(true);
+    }
+    const tall = { ...bench(), size: [1, 3, 1] as [number, number, number], states: [{ name: 'a', voxels: [{ x: 0, y: 40, z: 0, size: 8, material: P }] }] };
+    const t = designBlocks(tall, 0, 'n');
+    expect(t.map((b) => b.voxels.length)).toEqual([0, 0, 1]);
+    expect(t[2]).toMatchObject({ dy: 2, voxels: [{ x: 0, y: 8, z: 0, size: 8 }] });
+  });
+
+  it('stands with the middle of its front row in the block placed at, running away from the placer', () => {
+    const d = { ...bench(), size: [3, 1, 2] as [number, number, number] };
+    // Facing north (looking -z): front row z = 1 (nearest the placer, at +z), middle x = 1.
+    expect(designOrigin(d, 'n', 10, 5, 10)).toEqual({ x: 9, y: 5, z: 9 });
+    // Facing south (looking +z): box 3 x 2 still, its front at its least z.
+    expect(designOrigin(d, 's', 10, 5, 10)).toEqual({ x: 9, y: 5, z: 10 });
+    // Facing east (looking +x): box 2 x 3, front at least x.
+    expect(designOrigin(d, 'e', 10, 5, 10)).toEqual({ x: 10, y: 5, z: 9 });
+    expect(designOrigin(d, 'w', 10, 5, 10)).toEqual({ x: 9, y: 5, z: 9 });
+    // The front of the turned voxels is where the origin says: facing east, a voxel at the north
+    // design's front (z = 31) lands in the least-x column.
+    const front = { ...d, states: [{ name: 'a', voxels: [{ x: 0, y: 0, z: 31, size: 1, material: P }] }] };
+    expect(designVoxels(front, 0, 'e')[0]!.x).toBe(0);
+    expect(designVoxels(front, 0, 's')[0]!.z).toBe(0);
+    expect(designVoxels(front, 0, 'w')[0]!.x).toBe(31);
+  });
+
+  it('is known by its item and recipe once set, and forgotten when not', () => {
+    const d = bench();
+    setDesigns([d]);
+    expect(designOfItem(d.item)).toBe(d);
+    expect(itemName(d.item)).toBe('Bench');
+    expect(ALL_ITEMS).toContain(d.item);
+    expect(recipeById('design:bench')).toEqual({ id: 'design:bench', group: 'objects', inputs: [[P, 3]], output: [d.item, 1], table: true });
+    expect(RECIPES.at(-1)!.id).toBe('design:bench');
+    setDesigns([]);
+    expect(designOfItem(d.item)).toBeUndefined();
+    expect(ALL_ITEMS).not.toContain(d.item);
+    expect(recipeById('design:bench')).toBeUndefined();
+    expect(recipeById('planks')).toBeDefined(); // the built-in ones stay
+    expect(ALL_ITEMS).toContain(Item.Stick);
+  });
+
+  it('as a placed object: its cells, blocks, item and use', () => {
+    const d = bench();
+    setDesigns([d]);
+    const o: PlacedObject = { kind: 'design', design: 'bench', state: 1, x: 0, y: 0, z: 0, facing: 'e', open: false, span: [1, 1, 2] };
+    expect(objectCells(o)).toEqual([
+      [0, 0, 0],
+      [0, 0, 1],
+    ]);
+    expect(objectBlocks(o).flatMap((b) => b.voxels)).toEqual([{ x: 15, y: 0, z: 0, size: 1, material: Material.DarkMetal }]);
+    expect(objectItem(o)).toBe(d.item);
+    expect(usable(o)).toBe(true);
+    // Changed in the library to another size: it can't be redrawn (but it still takes its cells).
+    setDesigns([{ ...d, size: [3, 1, 1] }]);
+    expect(objectBlocks(o)).toEqual([]);
+    expect(objectCells(o).length).toBe(2);
+    // Gone from the library: nothing to give back; one state: nothing to use.
+    setDesigns([{ ...d, states: [d.states[0]!] }]);
+    expect(usable(o)).toBe(false);
+    setDesigns([]);
+    expect(objectItem(o)).toBeNull();
+    // Built-in objects as before.
+    expect(objectCells({ kind: 'door', x: 0, y: 0, z: 0, facing: 'n', open: false })).toEqual([
+      [0, 0, 0],
+      [0, 1, 0],
+    ]);
+    expect(objectItem({ kind: 'gate', x: 0, y: 0, z: 0, facing: 'n', open: false })).toBe(Item.Gate);
+  });
+
+  it('one can be the crafting table: placed by its item, giving it back, and counting as a table', () => {
+    const table = { ...bench(), id: 'my-table', name: 'My table', role: 'crafting-table' as const };
+    expect(parseDesign(JSON.parse(JSON.stringify(table)))).toEqual(table);
+    expect(parseDesign({ ...table, role: 'spaceship' })).toMatch(/stands in/);
+    setDesigns([table]);
+    // The crafting table item places it; it has no item or recipe of its own.
+    expect(designOfItem(Item.CraftingTable)).toBe(table);
+    expect(designOfItem(table.item)).toBeUndefined();
+    expect(ALL_ITEMS).not.toContain(table.item);
+    expect(recipeById('design:my-table')).toBeUndefined();
+    expect(recipeById('crafting-table')!.output).toEqual([Item.CraftingTable, 1]);
+    const o: PlacedObject = { kind: 'design', design: 'my-table', state: 0, x: 100, y: 0, z: 100, facing: 'n', open: false, span: [2, 1, 1] };
+    expect(objectItem(o)).toBe(Item.CraftingTable);
+    // Within 5 m (by block) of either of its blocks: near; further: not.
+    const at = (bx: number) => [bx * 16 + 8, 8, 100 * 16 + 8] as const;
+    expect(stationAmong([o], 'crafting-table', ...at(106), 80)).toBe(true); // 5 blocks past x 101
+    expect(stationAmong([o], 'crafting-table', ...at(107), 80)).toBe(false);
+    expect(stationAmong([o], 'crafting-table', ...at(95), 80)).toBe(true);
+    expect(stationAmong([o], 'crafting-table', ...at(94), 80)).toBe(false);
+    // Other designs aren't tables; the built-in table is.
+    setDesigns([bench()]);
+    expect(stationAmong([{ ...o, design: 'bench' }], 'crafting-table', ...at(101), 80)).toBe(false);
+    expect(stationAmong([{ kind: 'table', x: 100, y: 0, z: 100, facing: 'n', open: false }], 'crafting-table', ...at(101), 80)).toBe(true);
+    // Round worlds: across the seam (1000 blocks around: 999 is beside 0).
+    setDesigns([table]);
+    expect(stationAmong([{ ...o, x: 0 }], 'crafting-table', 999 * 16 + 8, 8, 100 * 16 + 8, 80, 1000)).toBe(true);
+    expect(stationAmong([{ ...o, x: 0 }], 'crafting-table', 999 * 16 + 8, 8, 100 * 16 + 8, 80)).toBe(false);
+  });
+
+  it('stands in for the other stations too: their items and recipes in play only then, each near only itself', () => {
+    const furnace = { ...bench(), id: 'my-furnace', role: 'furnace' as const };
+    const anvil = { ...bench(), id: 'my-anvil', item: FIRST_DESIGN_ITEM + 1, role: 'anvil' as const };
+    expect(ALL_ITEMS).not.toContain(Item.Furnace);
+    expect(recipeById('furnace')).toBeUndefined();
+    setDesigns([furnace, anvil]);
+    expect(designOfItem(Item.Furnace)).toBe(furnace);
+    expect(designOfItem(Item.Anvil)).toBe(anvil);
+    expect(ALL_ITEMS).toEqual(expect.arrayContaining([Item.Furnace, Item.Anvil]));
+    expect(ALL_ITEMS).not.toContain(Item.Stove);
+    expect(itemName(Item.Furnace)).toBe('furnace');
+    expect(recipeById('furnace')).toEqual({ id: 'furnace', group: 'building', inputs: [[Material.Cobblestone, 8]], output: [Item.Furnace, 1], table: true });
+    expect(recipeById('anvil')).toBeUndefined(); // (no metal yet)
+    const o: PlacedObject = { kind: 'design', design: 'my-furnace', state: 0, x: 100, y: 0, z: 100, facing: 'n', open: false, span: [2, 1, 1] };
+    expect(objectItem(o)).toBe(Item.Furnace);
+    expect(stationAmong([o], 'furnace', 100 * 16, 8, 100 * 16, 80)).toBe(true);
+    expect(stationAmong([o], 'crafting-table', 100 * 16, 8, 100 * 16, 80)).toBe(false);
+    expect(parseDesign({ ...furnace, role: 'smithing-table' })).toMatchObject({ role: 'smithing-table' });
+    setDesigns([]);
+    expect(ALL_ITEMS).not.toContain(Item.Furnace);
+    expect(recipeById('furnace')).toBeUndefined();
+  });
+});

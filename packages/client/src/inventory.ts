@@ -9,6 +9,8 @@ import {
   formatAmount,
   formatBlocks,
   Material,
+  designMaterial,
+  designOfItem,
   isBlock,
   itemName,
   stored,
@@ -49,8 +51,17 @@ const ITEM_LOOK: Record<number, { color: readonly [number, number, number]; glyp
   [Item.CraftingTable]: { color: [0.33, 0.17, 0.07], glyph: '⊓' },
 };
 
+/** How an item looks in slots: built-in ones as ITEM_LOOK has them; designed objects, the colour of what they're mostly made of, and their initial. */
+function lookOf(id: ItemId): { color: readonly [number, number, number]; glyph: string } | undefined {
+  // (Built-in items keep their look, even placing a design: the crafting table.)
+  if (ITEM_LOOK[id]) return ITEM_LOOK[id];
+  const design = designOfItem(id);
+  if (design) return { color: materialColor(designMaterial(design)), glyph: design.name.trim()[0]!.toUpperCase() };
+  return undefined;
+}
+
 function colorOf(id: ItemId): string {
-  return css(isBlock(id) ? materialColor(id) : (ITEM_LOOK[id]?.color ?? [1, 0, 1]));
+  return css(isBlock(id) ? materialColor(id) : (lookOf(id)?.color ?? [1, 0, 1]));
 }
 
 /** The window's tabs: those that work, and the stations still to come (shown, greyed, with why). */
@@ -156,6 +167,11 @@ export class InventoryUi {
   /** How much of a material there is (survival; Infinity in creative). */
   amount(m: MaterialId): number {
     return this.mode === 'creative' ? Infinity : (this.items.get(m) ?? 0);
+  }
+
+  /** Draws it again (the designs changed: new items and recipes, or names). */
+  refresh(): void {
+    this.render();
   }
 
   update(msg: InventoryMessage): void {
@@ -280,7 +296,7 @@ export class InventoryUi {
     if (m !== null) {
       el.style.background = colorOf(m);
       el.title = itemName(m);
-      const glyph = ITEM_LOOK[m]?.glyph;
+      const glyph = lookOf(m)?.glyph;
       if (glyph) {
         const g = document.createElement('b');
         g.textContent = glyph;

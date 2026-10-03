@@ -10,8 +10,8 @@ export default defineConfig({
   build: {
     rollupOptions: {
       // The entry page, the game (/play.html), the world generator (/generator.html), the
-      // dashboard (/dashboard.html), the castle site finder (/sites.html) and the terraformer
-      // (/terraform.html).
+      // dashboard (/dashboard.html), the castle site finder (/sites.html), the terraformer
+      // (/terraform.html) and the object designer (/designer.html).
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         play: fileURLToPath(new URL('./play.html', import.meta.url)),
@@ -19,6 +19,7 @@ export default defineConfig({
         dashboard: fileURLToPath(new URL('./dashboard.html', import.meta.url)),
         sites: fileURLToPath(new URL('./sites.html', import.meta.url)),
         terraform: fileURLToPath(new URL('./terraform.html', import.meta.url)),
+        designer: fileURLToPath(new URL('./designer.html', import.meta.url)),
       },
     },
   },

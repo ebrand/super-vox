@@ -53,12 +53,19 @@ function connect(opts: WebSocket.ClientOptions = {}): Promise<WebSocket> {
 
 type Frame = { text: ServerMessage } | { binary: Uint8Array };
 
+/** Told after every welcome (the design library, and designs placed), and not what these tests look at: passed over. */
+const AFTER_WELCOME = new Set(['designs', 'objects']);
+
 function nextFrame(ws: WebSocket): Promise<Frame> {
   return new Promise((resolve, reject) => {
-    ws.once('message', (data, isBinary) => {
+    const on = (data: WebSocket.RawData, isBinary: boolean) => {
       const buf = data as Buffer;
-      resolve(isBinary ? { binary: new Uint8Array(buf) } : { text: JSON.parse(buf.toString()) as ServerMessage });
-    });
+      const f: Frame = isBinary ? { binary: new Uint8Array(buf) } : { text: JSON.parse(buf.toString()) as ServerMessage };
+      if ('text' in f && AFTER_WELCOME.has(f.text.type)) return;
+      ws.off('message', on);
+      resolve(f);
+    };
+    ws.on('message', on);
     ws.once('error', reject);
   });
 }
@@ -79,9 +86,19 @@ async function until(done: () => boolean, ms = 5000): Promise<void> {
 
 async function greeted(opts: WebSocket.ClientOptions = {}): Promise<WebSocket> {
   const ws = await connect(opts);
+  // (Welcome, then the designs and where they're placed: the last thing sent unasked.)
+  const placed = new Promise<void>((resolve) => {
+    const on = (data: WebSocket.RawData, isBinary: boolean) => {
+      if (isBinary || (JSON.parse(String(data)) as ServerMessage).type !== 'objects') return;
+      ws.off('message', on);
+      resolve();
+    };
+    ws.on('message', on);
+  });
   const reply = nextMessage(ws);
   ws.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION }));
   expect((await reply).type).toBe('welcome');
+  await placed;
   return ws;
 }
 
@@ -159,11 +176,8 @@ describe('world map', () => {
 
 describe('WebSocket handshake', () => {
   it('compresses messages for clients that ask (browsers do), and they arrive intact', async () => {
-    const ws = await connect();
+    const ws = await greeted();
     expect(ws.extensions).toContain('permessage-deflate');
-    const reply = nextMessage(ws);
-    ws.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION }));
-    expect((await reply).type).toBe('welcome');
     const before = (ws as unknown as { _socket: { bytesRead: number } })._socket.bytesRead;
     const frame = nextFrame(ws);
     ws.send(JSON.stringify({ type: 'requestChunk', cx: 500, cy: -1, cz: 500 }));

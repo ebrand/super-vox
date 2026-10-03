@@ -3,7 +3,7 @@ import { BLOCK_SIZE, BLOCKS_PER_AXIS, blockIndex, type Chunk } from './chunk.js'
 import { Material, type MaterialId } from './materials.js';
 
 /** What a recipe makes, for grouping them (see RECIPE_GROUPS). */
-export type RecipeGroup = 'materials' | 'building' | 'tools' | 'explosives';
+export type RecipeGroup = 'materials' | 'building' | 'tools' | 'explosives' | 'objects';
 
 /** The groups in the order recipes are shown, with their names. */
 export const RECIPE_GROUPS: readonly { group: RecipeGroup; name: string }[] = [
@@ -11,6 +11,7 @@ export const RECIPE_GROUPS: readonly { group: RecipeGroup; name: string }[] = [
   { group: 'building', name: 'Building' },
   { group: 'tools', name: 'Tools and weapons' },
   { group: 'explosives', name: 'Explosives' },
+  { group: 'objects', name: 'Objects' },
 ];
 
 /**
@@ -55,8 +56,7 @@ export function materialNearIn(chunkAt: (cx: number, cy: number, cz: number) => 
 
 const r = (id: string, group: RecipeGroup, inputs: [ItemId, number][], output: [ItemId, number], table = false): Recipe => ({ id, group, inputs, output, table });
 
-/** In the order the inventory lists them. */
-export const RECIPES: readonly Recipe[] = [
+const BUILT_IN: readonly Recipe[] = [
   r('planks', 'materials', [[Material.Wood, 1]], [Material.Planks, 4]),
   r('sticks', 'materials', [[Material.Planks, 2]], [Item.Stick, 4]),
   r('crafting-table', 'building', [[Material.Planks, 4]], [Item.CraftingTable, 1]),
@@ -68,6 +68,16 @@ export const RECIPES: readonly Recipe[] = [
   r('bucket', 'tools', [[Material.Planks, 3]], [Item.Bucket, 1], true),
   r('tnt', 'explosives', [[Material.Sand, 4], [Material.Planks, 1]], [Material.TNT, 1], true),
 ];
+const recipes: Recipe[] = [...BUILT_IN];
+
+/** In the order the inventory lists them: the built-in ones, then those added while running (see setExtraRecipes). */
+export const RECIPES: readonly Recipe[] = recipes;
+
+/** Sets the recipes added while running (for designed objects, see setDesigns), replacing those before. */
+export function setExtraRecipes(extra: readonly Recipe[]): void {
+  recipes.length = BUILT_IN.length;
+  recipes.push(...extra);
+}
 
 export function recipeById(id: string): Recipe | undefined {
   return RECIPES.find((x) => x.id === id);

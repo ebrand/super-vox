@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CHUNK_SIZE, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, type DayClock, type DeathCause, type WorldConfig } from '@super-vox/shared';
+import { BLOCK_SIZE, CHUNK_SIZE, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool, sizeLabel } from './editTool.js';
@@ -131,7 +131,10 @@ const inventoryUi = new InventoryUi(
   () => {
     if (!chunks) return false;
     const p = camera.position;
-    return materialNearIn((cx, cy, cz) => chunks!.chunkAt({ cx, cy, cz }), p.x * UNITS_PER_METER, p.y * UNITS_PER_METER, p.z * UNITS_PER_METER, TABLE_REACH, Material.CraftingTable);
+    const [x, y, z] = [p.x * UNITS_PER_METER, p.y * UNITS_PER_METER, p.z * UNITS_PER_METER];
+    // (The design that's the crafting table is of ordinary materials: known from where designs are placed.)
+    const wrap = world?.wrapX ? world.widthUnits / BLOCK_SIZE : null;
+    return stationAmong(placedObjects, 'crafting-table', x, y, z, TABLE_REACH, wrap) || materialNearIn((cx, cy, cz) => chunks!.chunkAt({ cx, cy, cz }), x, y, z, TABLE_REACH, Material.CraftingTable);
   },
 );
 // The wheel steps through the hotbar (while it's there: players who can build).
@@ -188,6 +191,8 @@ let pool: MeshWorkerPool | null = null;
 let chunks: ChunkManager | null = null;
 let tiles: TileManager | null = null;
 let editTool: EditTool | null = null;
+/** Designed objects placed in the world (see the `objects` message), for the edit tool. */
+let placedObjects: PlacedObject[] = [];
 let worldMap: WorldMapOverlay | null = null;
 /**
  * Playing survival (signed in, or anyone where the server has no accounts): no flying, no-clip
@@ -508,6 +513,8 @@ connection = connect({
           editTool.survival = survivalMovement;
           // Creative: dig and fill boxes up to 16 m (dig and place modes).
           editTool.bigBoxes = msg.mode === 'creative';
+          editTool.wrapBlocks = w.wrapX ? w.widthUnits / BLOCK_SIZE : null;
+          editTool.setPlacedObjects(placedObjects);
           const miningRing = document.getElementById('mining')!;
           editTool.onMiningProgress = (f) => {
             miningRing.hidden = f === null;
@@ -628,6 +635,16 @@ connection = connect({
       case 'inventory':
         inventoryUi.update(msg);
         updateHud();
+        break;
+      case 'designs':
+        // (Their items and recipes become known: see setDesigns.)
+        setDesigns(msg.designs);
+        inventoryUi.refresh();
+        updateHud();
+        break;
+      case 'objects':
+        placedObjects = msg.objects;
+        editTool?.setPlacedObjects(placedObjects);
         break;
       case 'editResult':
         editTool?.onServerMessage(msg);

@@ -59,6 +59,14 @@ import {
   fenceJoins,
   objectBlocks,
   objectHeight,
+  objectCells,
+  objectStation,
+  type DesignRole,
+  objectName,
+  designById,
+  designOrigin,
+  designSpan,
+  type ObjectDesign,
   withoutWater,
   type MaterialId,
   volumeChange,
@@ -204,8 +212,12 @@ export class World {
   private readonly flow = new PouredWater();
   /** Decoded chunks recently looked at by solidAt (mobs walking about), oldest first. */
   private readonly decoded = new Map<string, Chunk>();
-  /** Placed objects (fences, gates, doors) by their bottom block, "bx,by,bz" (block X in the world's range). */
+  /** Placed objects (fences, gates, doors, designs) by their bottom block, "bx,by,bz" (block X in the world's range). */
   private readonly objects = new Map<string, PlacedObject>();
+  /** Every block a placed object takes (see objectCells), "bx,by,bz", to the object. */
+  private readonly cells = new Map<string, PlacedObject>();
+  /** Told whenever objects are placed, taken down or change (to tell players about designs: see designObjects). */
+  onObjectsChanged: (() => void) | null = null;
   /** Running totals since the world was opened, for monitoring (see WorldStats). */
   readonly stats: WorldStats = {
     chunkHits: 0, chunkMisses: 0, tileHits: 0, tileMisses: 0,
@@ -237,7 +249,7 @@ export class World {
       }
       this.recordEdited(chunk);
     }
-    for (const o of this.store?.loadObjects?.() ?? []) this.objects.set(objectKey(o.x, o.y, o.z), o);
+    for (const o of this.store?.loadObjects?.() ?? []) this.addObject(o);
     if (config.widthUnits % CHUNK_SIZE !== 0 || config.depthUnits % CHUNK_SIZE !== 0) {
       throw new RangeError('world width and depth must be multiples of the chunk size');
     }
@@ -370,7 +382,7 @@ export class World {
    */
   applyEdit(edit: Edit): EditResult {
     const held = this.objectIn(editBounds(edit));
-    if (held) throw new EditError(`that's a ${held.kind}: left-click takes it down`);
+    if (held) throw new EditError(`that's a ${objectName(held)}: left-click takes it down`);
     const result = this.applyEditOnly(edit);
     this.stats.edits++;
     // Water around whatever changed may flow, and the sea fills what was opened beside it.
@@ -661,7 +673,8 @@ export class World {
    */
   protectedColumns(): { cx: number; cz: number }[] {
     const keys = new Set(this.editSpans.keys());
-    for (const o of this.objects.values()) keys.add(`${Math.floor((o.x * BLOCK_SIZE) / CHUNK_SIZE)},${Math.floor((o.z * BLOCK_SIZE) / CHUNK_SIZE)}`);
+    for (const o of this.objects.values())
+      for (const [x, , z] of this.objectBlocksAt(o)) keys.add(`${Math.floor((x * BLOCK_SIZE) / CHUNK_SIZE)},${Math.floor((z * BLOCK_SIZE) / CHUNK_SIZE)}`);
     return [...keys].map((k) => {
       const [cx, cz] = k.split(',').map(Number);
       return { cx: cx!, cz: cz! };
@@ -700,13 +713,29 @@ export class World {
     return this.config.wrapX ? ((bx % n) + n) % n : bx;
   }
 
-  /** The object occupying block (bx, by, bz) (1 m block coordinates), if any (doors: either block). */
+  /** The object occupying block (bx, by, bz) (1 m block coordinates), if any (doors: either block; designs: any in their box). */
   objectAt(bx: number, by: number, bz: number): PlacedObject | undefined {
-    const x = this.wrapBlockX(bx);
-    const o = this.objects.get(objectKey(x, by, bz));
-    if (o) return o;
-    const below = this.objects.get(objectKey(x, by - 1, bz));
-    return below && objectHeight(below.kind) === 2 ? below : undefined;
+    return this.cells.get(objectKey(this.wrapBlockX(bx), by, bz));
+  }
+
+  /** The blocks an object takes, in world block coordinates (X in the world's range). */
+  private objectBlocksAt(o: PlacedObject): [number, number, number][] {
+    return objectCells(o).map(([dx, dy, dz]) => [this.wrapBlockX(o.x + dx), o.y + dy, o.z + dz]);
+  }
+
+  private addObject(o: PlacedObject): void {
+    this.objects.set(objectKey(o.x, o.y, o.z), o);
+    for (const [x, y, z] of this.objectBlocksAt(o)) this.cells.set(objectKey(x, y, z), o);
+  }
+
+  private dropObject(o: PlacedObject): void {
+    this.objects.delete(objectKey(o.x, o.y, o.z));
+    for (const [x, y, z] of this.objectBlocksAt(o)) this.cells.delete(objectKey(x, y, z));
+  }
+
+  /** The designs placed in this world (see ObjectDesign). */
+  designObjects(): PlacedObject[] {
+    return [...this.objects.values()].filter((o) => o.kind === 'design');
   }
 
   /** Any object in the blocks a unit box [x0, x1) x [y0, y1) x [z0, z1) touches. */
@@ -751,7 +780,7 @@ export class World {
   /** The blocks of an object as it should be now (fences join their neighbours). */
   private objectWrites(o: PlacedObject): { bx: number; by: number; bz: number; block: Block }[] {
     const joins = o.kind === 'fence' ? fenceJoins(o.x, o.y, o.z, (x, y, z) => this.objectAt(x, y, z)) : [];
-    return objectBlocks(o, joins).map(({ dy, voxels }) => ({ bx: o.x, by: o.y + dy, bz: o.z, block: blockFromVoxels(voxels) }));
+    return objectBlocks(o, joins).map(({ dx, dy, dz, voxels }) => ({ bx: this.wrapBlockX(o.x + dx), by: o.y + dy, bz: o.z + dz, block: blockFromVoxels(voxels) }));
   }
 
   /** Fences beside block (bx, by, bz), redrawn (they may join or part from what's there now). */
@@ -765,6 +794,17 @@ export class World {
 
   private saveObjects(): void {
     this.store?.saveObjects?.([...this.objects.values()]);
+    this.onObjectsChanged?.();
+  }
+
+  /** Throws EditError unless every block `o` would take is in the world, empty (water aside) and free of objects. */
+  private checkRoom(o: PlacedObject, what: string): void {
+    for (const [x, y, z] of this.objectBlocksAt(o)) {
+      if (this.objectAt(x, y, z)) throw new EditError(`there's already something there`);
+      const block = this.blockAt(x, y, z);
+      if (block === undefined) throw new EditError('outside the world');
+      if (blockVoxels(withoutWater(block)).length > 0) throw new EditError(what);
+    }
   }
 
   /**
@@ -773,14 +813,26 @@ export class World {
    */
   placeObject(kind: ObjectKind, bx: number, by: number, bz: number, facing: Facing): EditResult {
     const o: PlacedObject = { kind, x: this.wrapBlockX(bx), y: by, z: bz, facing, open: false };
-    for (let dy = 0; dy < objectHeight(kind); dy++) {
-      if (this.objectAt(o.x, by + dy, bz)) throw new EditError(`there's already something there`);
-      const block = this.blockAt(o.x, by + dy, bz);
-      if (block === undefined) throw new EditError('outside the world');
-      if (blockVoxels(withoutWater(block)).length > 0) throw new EditError(`a ${kind} needs ${kind === 'door' ? 'two empty blocks' : 'an empty block'}`);
-    }
-    this.objects.set(objectKey(o.x, o.y, o.z), o);
+    this.checkRoom(o, `a ${kind} needs ${kind === 'door' ? 'two empty blocks' : 'an empty block'}`);
+    this.addObject(o);
     const result = this.writeBlocks([...this.objectWrites(o), ...this.neighbourFenceWrites(o.x, o.y, o.z)]);
+    this.stats.edits++;
+    this.saveObjects();
+    return result;
+  }
+
+  /**
+   * Places a design (see ObjectDesign) in its first state, the middle of its front row at block
+   * (bx, by, bz) (see designOrigin), facing `facing`. Throws EditError if any block of its box is
+   * outside the world, holds something solid, or holds another object.
+   */
+  placeDesign(design: ObjectDesign, bx: number, by: number, bz: number, facing: Facing): EditResult {
+    const at = designOrigin(design, facing, bx, by, bz);
+    const o: PlacedObject = { kind: 'design', design: design.id, state: 0, x: this.wrapBlockX(at.x), y: at.y, z: at.z, facing, open: false, span: designSpan(design, facing) };
+    const [w, h, d] = o.span!;
+    this.checkRoom(o, `a ${design.name} needs ${w} x ${h} x ${d} m of empty space`);
+    this.addObject(o);
+    const result = this.writeBlocks(this.objectWrites(o));
     this.stats.edits++;
     this.saveObjects();
     return result;
@@ -788,8 +840,8 @@ export class World {
 
   /** Takes an object down (its blocks become empty); fences beside it let go. */
   removeObject(o: PlacedObject): EditResult {
-    this.objects.delete(objectKey(o.x, o.y, o.z));
-    const empty = Array.from({ length: objectHeight(o.kind) }, (_, dy) => ({ bx: o.x, by: o.y + dy, bz: o.z, block: null }));
+    this.dropObject(o);
+    const empty = this.objectBlocksAt(o).map(([bx, by, bz]) => ({ bx, by, bz, block: null }));
     const result = this.writeBlocks([...empty, ...this.neighbourFenceWrites(o.x, o.y, o.z)]);
     this.stats.edits++;
     this.saveObjects();
@@ -872,8 +924,13 @@ export class World {
     const results: EditResult[] = [];
     // Objects in it: gone.
     for (const o of [...this.objects.values()]) {
-      const ox = (o.x + 0.5) * BLOCK_SIZE, oz = (o.z + 0.5) * BLOCK_SIZE;
-      const dx = deltaX(this.config, x, ox), dy = Math.max(0, Math.max(o.y * BLOCK_SIZE - y, y - (o.y + objectHeight(o.kind)) * BLOCK_SIZE)), dz = oz - z;
+      // (The nearest point of its box: a 1 m column's middle, as ever, for the built-in ones.)
+      const [w, h, d] = o.kind === 'design' ? (o.span ?? [1, 1, 1]) : [1, objectHeight(o.kind), 1];
+      const near = (lo: number, hi: number, v: number) => Math.max(0, lo - v, v - hi);
+      const cx = deltaX(this.config, x, (o.x + w / 2) * BLOCK_SIZE);
+      const dx = o.kind === 'design' ? Math.max(0, Math.abs(cx) - (w / 2) * BLOCK_SIZE) : cx;
+      const dz = o.kind === 'design' ? near(o.z * BLOCK_SIZE, (o.z + d) * BLOCK_SIZE, z) : (o.z + 0.5) * BLOCK_SIZE - z;
+      const dy = near(o.y * BLOCK_SIZE, (o.y + h) * BLOCK_SIZE, y);
       if (dx * dx + dy * dy + dz * dz <= r2) results.push(this.removeObject(o));
     }
     const tnt: Explosive[] = [];
@@ -944,11 +1001,24 @@ export class World {
     return { result: results.length ? results.reduce(mergeResults) : null, tnt, removed };
   }
 
-  /** Opens or closes a gate or door; throws EditError for anything else. */
+  /**
+   * Opens or closes a gate or door, or steps a design to its next state; throws EditError for
+   * anything else (or a design that's changed since it was placed: it can't be redrawn).
+   */
   toggleObject(o: PlacedObject): EditResult {
+    if (o.kind === 'design') {
+      const design = designById(o.design ?? '');
+      if (!design || design.states.length < 2) throw new EditError(`a ${objectName(o)} doesn't change`);
+      const next = { ...o, state: ((o.state ?? 0) + 1) % design.states.length };
+      if (objectBlocks(next).length === 0) throw new EditError(`the ${design.name} design has changed since this one was placed: take it down and place it again`);
+      this.addObject(next);
+      const result = this.writeBlocks(this.objectWrites(next));
+      this.saveObjects();
+      return result;
+    }
     if (!opens(o.kind)) throw new EditError(`${o.kind === 'table' ? 'crafting tables' : 'fences'} don't open`);
     const next = { ...o, open: !o.open };
-    this.objects.set(objectKey(o.x, o.y, o.z), next);
+    this.addObject(next);
     const result = this.writeBlocks(this.objectWrites(next));
     this.saveObjects();
     return result;
@@ -1021,6 +1091,17 @@ export class World {
    * Whether any 1 m block within `reach` units (Chebyshev) of (x, y, z) holds `material` (e.g. a
    * crafting table near a player). Looks at generated or edited chunks as they are now.
    */
+  /** Whether station `role` (a design standing in for it; the crafting table: the built-in one too) is placed within `reach` (units, as materialNear) of (x, y, z). */
+  stationNear(role: DesignRole, x: number, y: number, z: number, reach: number): boolean {
+    for (let by = Math.floor((y - reach) / BLOCK_SIZE); by <= Math.floor((y + reach) / BLOCK_SIZE); by++)
+      for (let bz = Math.floor((z - reach) / BLOCK_SIZE); bz <= Math.floor((z + reach) / BLOCK_SIZE); bz++)
+        for (let bx = Math.floor((x - reach) / BLOCK_SIZE); bx <= Math.floor((x + reach) / BLOCK_SIZE); bx++) {
+          const o = this.objectAt(bx, by, bz);
+          if (o && objectStation(o) === role) return true;
+        }
+    return false;
+  }
+
   materialNear(x: number, y: number, z: number, reach: number, material: MaterialId): boolean {
     return materialNearIn(
       (cx, cy, cz) => {

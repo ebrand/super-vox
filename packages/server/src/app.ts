@@ -25,10 +25,12 @@ import {
   deltaX,
   BLOCK_VOLUME,
   Item,
-  OBJECT_ITEM,
+  objectItem,
+  objectName,
+  designOfItem,
   itemName,
   objectKindOf,
-  opens,
+  usable,
   Material,
   TABLE_REACH,
   recipeById,
@@ -57,6 +59,7 @@ import type { WebSocket } from 'ws';
 import { encodeWorldMap, type EditResult, type World } from './world.js';
 import { Explosives } from './explosives.js';
 import { RequestQueue } from './requestQueue.js';
+import { DesignLibrary } from './designs.js';
 import { HISTORY, Metrics, percentile } from './metrics.js';
 import { NoSuchWorldError, WorldExistsError } from './worldFile.js';
 import { DefaultWorldError, StaleStrokesError, StrokesOverBuildsError, singleWorld, type WorldCatalog } from './worlds.js';
@@ -83,6 +86,8 @@ export type AppOptions = (
   mobs?: (world: World) => MobManager;
   /** Survival mining times are multiplied by this (tests: to mine quickly); default 1. */
   miningTimeScale?: number;
+  /** The library of designed objects (see DesignLibrary); default: an empty one in memory. */
+  designs?: DesignLibrary;
 };
 
 /** `f` of a value, at once if it's to hand, else when its promise settles (a promise of that). */
@@ -235,6 +240,36 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       players: [...players.values()].map((p) => ({ ...p })),
       errors: metrics.errors,
     };
+  });
+
+  // The library of designed objects (see DesignLibrary), for everyone; `canEdit`: whether this
+  // request may change it (operators: admins, or anyone on a development server).
+  const designs = opts.designs ?? new DesignLibrary(null);
+  /** Everyone connected, told the library changed. */
+  const designsChanged = () => {
+    const bytes = encodeMessage({ type: 'designs', designs: designs.list() });
+    for (const [client] of clients) if (client.readyState === client.OPEN) out(client, bytes);
+  };
+  app.get('/api/designs', async (req) => ({ designs: designs.list(), canEdit: await operator(req) }));
+
+  // Operators only: adds or replaces a design (body: the design, its id as in the URL; its item
+  // number is kept or given). 400 with why, if it isn't a good one.
+  app.put<{ Params: { id: string }; Body: unknown }>('/api/designs/:id', { bodyLimit: 8 * 1024 * 1024 }, async (req, reply) => {
+    if (!(await operator(req))) return reply.code(403).send(notOperator('designing objects'));
+    const body = req.body as { id?: unknown } | null;
+    if (typeof body !== 'object' || body === null || body.id !== req.params.id) return reply.code(400).send({ error: "the design's id must match the URL" });
+    const design = designs.put(body);
+    if (typeof design === 'string') return reply.code(400).send({ error: design });
+    designsChanged();
+    return { design };
+  });
+
+  // Operators only: takes a design out of the library (placed ones stay).
+  app.delete<{ Params: { id: string } }>('/api/designs/:id', async (req, reply) => {
+    if (!(await operator(req))) return reply.code(403).send(notOperator('designing objects'));
+    if (!designs.delete(req.params.id)) return reply.code(404).send({ error: 'no such design' });
+    designsChanged();
+    return { ok: true };
   });
 
   // The worlds on this server and how each was generated.
@@ -645,7 +680,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               name: who?.account.name ?? null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
               vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0,
             });
-            send({
+            // Designs (named: some may be in their inventory) before the inventory, and where they're placed.
+            const sendWelcome = (welcome: ServerMessage) => {
+              send(welcome);
+              send({ type: 'designs', designs: designs.list() });
+              send({ type: 'objects', objects: world.designObjects() });
+              world.onObjectsChanged ??= () => toWorld(world, { type: 'objects', objects: world.designObjects() });
+            };
+            sendWelcome({
               type: 'welcome',
               protocolVersion: PROTOCOL_VERSION,
               world: world.config,
@@ -792,8 +834,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               const result = world.removeObject(o);
               metrics.totals.edits++;
               send({ type: 'editResult', id: msg.id, ok: true });
-              if (inventory) {
-                inventory.addItem(OBJECT_ITEM[o.kind], 1);
+              const item = objectItem(o);
+              if (inventory && item !== null) {
+                inventory.addItem(item, 1);
                 send(inventory.message());
               }
               broadcast(world, result);
@@ -851,11 +894,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           let result: EditResult;
           try {
             if (msg.type === 'placeObject') {
-              const kind = objectKindOf(msg.item);
-              if (!kind) return fail(`a ${itemName(msg.item)} isn't placed like that`);
+              const kind = objectKindOf(msg.item), design = designOfItem(msg.item);
+              if (!kind && !design) return fail(`a ${itemName(msg.item)} isn't placed like that`);
               const why = inventory?.refuseItem(msg.item);
               if (why) return fail(why);
-              result = world.placeObject(kind, msg.x, msg.y, msg.z, msg.facing);
+              result = design ? world.placeDesign(design, msg.x, msg.y, msg.z, msg.facing) : world.placeObject(kind!, msg.x, msg.y, msg.z, msg.facing);
               inventory?.addItem(msg.item, -1);
             } else if (msg.type === 'bucket') {
               // Water in buckets is kept by volume (a 1 m block of it is BLOCK_VOLUME); 16 units deep fills a block.
@@ -887,7 +930,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               result = r;
             } else {
               const o = world.objectAt(Math.floor(msg.x / 16), Math.floor(msg.y / 16), Math.floor(msg.z / 16));
-              if (!o || !opens(o.kind)) return fail('nothing to open there');
+              if (!o || !usable(o)) return fail(o?.kind === 'design' ? `a ${objectName(o)} doesn't change` : 'nothing to open there');
               result = world.toggleObject(o);
             }
           } catch (err) {
@@ -931,7 +974,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           // A crafting table placed within reach of where the player last said they were.
           const pose = players.get(socket)?.pose;
           const recipe = recipeById(msg.recipe);
-          const nearTable = !!recipe?.table && !!pose && world.materialNear(pose.x, pose.y, pose.z, TABLE_REACH, Material.CraftingTable);
+          // (A crafting table: the built-in object, the design that's the crafting table, or one placed as a block before tables were objects.)
+          const nearTable = !!recipe?.table && !!pose && (world.stationNear('crafting-table', pose.x, pose.y, pose.z, TABLE_REACH) || world.materialNear(pose.x, pose.y, pose.z, TABLE_REACH, Material.CraftingTable));
           const why = inventory.craft(msg.recipe, nearTable);
           if (why) send({ type: 'error', code: 'craft', message: why });
           else send(inventory.message());

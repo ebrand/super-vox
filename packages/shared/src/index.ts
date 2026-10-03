@@ -21,6 +21,7 @@ export * from './world.js';
 export * from './protocol.js';
 export * from './items.js';
 export * from './recipes.js';
+export * from './designs.js';
 export * from './objects.js';
 export * from './physics.js';
 export * from './walking.js';

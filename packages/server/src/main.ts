@@ -7,6 +7,7 @@ import { MemoryAccountStore, PgAccountStore, type AccountStore } from './account
 import { openDatabase } from './db.js';
 import { MemoryInventoryStore, PgInventoryStore, type InventoryStore } from './inventories.js';
 import { buildApp } from './app.js';
+import { DesignLibrary } from './designs.js';
 import { Auth } from './auth.js';
 import { authConfigFromEnv, loadDevSecrets } from './authConfig.js';
 import { openWorld, type WorldSpec } from './worldFile.js';
@@ -148,7 +149,9 @@ if (authConfig) {
   }
 }
 const auth = authConfig && accounts ? new Auth(authConfig, accounts) : undefined;
-const app = await buildApp({ catalog, logger: true, ...(clientDir ? { clientDir } : {}), ...(auth ? { auth } : {}), ...(inventories ? { inventories } : {}) });
+// Designed objects (see DesignLibrary): one library for every world, beside them.
+const designs = new DesignLibrary(join(dataRoot, 'designs.json'));
+const app = await buildApp({ catalog, designs, logger: true, ...(clientDir ? { clientDir } : {}), ...(auth ? { auth } : {}), ...(inventories ? { inventories } : {}) });
 app.addHook('onClose', async () => pool?.end());
 app.log.info(
   { signIn: !!auth, accounts: accounts ? (pool ? 'postgres' : 'memory') : null, fromAuthDir },
