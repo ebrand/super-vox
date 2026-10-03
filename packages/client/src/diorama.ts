@@ -184,6 +184,8 @@ export class Diorama {
   /** The ground as sampled (see the worker's area reply), to find what's under the pointer. */
   setField(heights: Int32Array, n: number, step: number, x0: number, z0: number): void {
     this.field = { heights, n, step, x0, z0 };
+    // (The ground's in steps of a sample: the water's foam is smoothed over them, see bottomStep.)
+    this.water.uniforms.bottomStep.value = step / UNITS_PER_METER;
     this.placeBrush();
     this.placeProtected();
   }

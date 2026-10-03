@@ -20,6 +20,9 @@ export const WATER_GLSL = /* glsl */ `
   uniform vec3 cameraForward;
   // Ripples and foam this many times bigger (1 in the game; a diorama, seen from far off, swells them).
   uniform float waveScale;
+  // The size (m) of the steps the ground is made in, where it's coarser than the water's own voxels
+  // (the terraformer's close-up: its samples); 0 in the game.
+  uniform float bottomStep;
 
   // Distance along the view axis to the opaque scene at a screen position (log depth, see three's
   // logdepthbuf: depth = log2(1 + w) / log2(far + 1)).
@@ -61,7 +64,9 @@ export const WATER_GLSL = /* glsl */ `
     return s;
   }
 
-  vec3 waterColor(vec3 worldPos, vec3 n0) {
+  // "cell": the size (m) of the steps the bottom here is made in (coarse far off, where it's
+  // tiles), for smoothing the foam over (see below); 0: not known (a few pixels' worth is used).
+  vec3 waterColor(vec3 worldPos, vec3 n0, float cell) {
     vec3 ray = worldPos - cameraPosition;
     float dist = length(ray);
     vec3 view = ray / dist;
@@ -104,10 +109,31 @@ export const WATER_GLSL = /* glsl */ `
 
     // Foam where it's very shallow: broken up by the ripples, drifting with them.
     // (Thin flowing water over the ground stays mostly clear: foam is a light lace, strongest
-    // right at the waterline.)
-    float shallow = 1.0 - smoothstep(0.0, 0.12 * waveScale, depth);
+    // right at the waterline.) Its depth is averaged over a ring about a step and a half across:
+    // a bottom made in coarse steps (far tiles, the terraformer's close-up) would otherwise foam in
+    // whole squares, each step either in the band or out of it.
+    float steps = max(cell, bottomStep);
+    float ringPx = clamp((steps > 0.0 ? 1.5 * steps : 6.0 * pixel) / max(pixel, 1e-4), 0.0, 96.0);
+    float foamDepth = depth;
+    if (ringPx >= 1.0) {
+      float k = max(dot(view, cameraForward), 1e-3), sinkAlong = max(-view.y, 0.05);
+      float sum = depth * 2.0;
+      // Two rings (the whole way out, and half), staggered.
+      for (int i = 0; i < 16; i++) {
+        float a = float(i) * 0.7854 + (i >= 8 ? 0.3927 : 0.0);
+        float r = i >= 8 ? ringPx * 0.5 : ringPx;
+        float w = sceneViewDepth(uv + vec2(cos(a), sin(a)) * r / resolution);
+        // (In front of the water there: the shore, dry: as shallow as it gets.)
+        sum += max(0.0, (w - surfaceW) / k) * sinkAlong;
+      }
+      foamDepth = sum / 18.0;
+    }
+    float shallow = 1.0 - smoothstep(0.0, 0.12 * waveScale, foamDepth);
+    // (Two layers of noise drifting apart, bent by the ripples: lace, not a grid. Sines across
+    // times sines along made a checkerboard, plain to see wherever foam covered more than a strip.)
     vec2 fp = worldPos.xz / waveScale;
-    float froth = smoothstep(0.4, 0.8, sin(fp.x * 2.3 + slope.x * 6.0 + time * 0.7) * sin(fp.y * 2.1 - slope.y * 6.0 - time * 0.5) + shallow * 0.6);
+    float lace = noised(fp * 0.7 + slope * 4.0 + vec2(time * 0.06, 0.0)).x * 0.6 + noised(mat2(0.8, 0.6, -0.6, 0.8) * fp * 1.7 - vec2(0.0, time * 0.05) + 7.3).x * 0.4;
+    float froth = smoothstep(0.5, 0.8, lace + shallow * 0.35);
     rgb = mix(rgb, vec3(0.9, 0.93, 0.95) * (skyAmbient * 1.4 + sunColor * max(sunDir.y, 0.2)), shallow * froth * 0.45 * (fromBelow ? 0.0 : 1.0));
     return rgb;
   }
@@ -124,6 +150,7 @@ export function waterUniforms(atmosphere: Atmosphere) {
     time: { value: 0 },
     cameraForward: { value: new THREE.Vector3(0, 0, -1) },
     waveScale: { value: 1 },
+    bottomStep: { value: 0 },
   };
 }
 
@@ -157,7 +184,7 @@ export function createSeaMaterial(uniforms: ReturnType<typeof waterUniforms>): T
         vec2 d = abs(vWorld.xz - nearCentre);
         if (max(d.x, d.y) < nearHalf) discard;
         #include <logdepthbuf_fragment>
-        gl_FragColor = vec4(applyHaze(waterColor(vWorld, vec3(0.0, 1.0, 0.0)), vWorld), 1.0);
+        gl_FragColor = vec4(applyHaze(waterColor(vWorld, vec3(0.0, 1.0, 0.0), 0.0), vWorld), 1.0);
         #include <colorspace_fragment>
       }
     `,
@@ -270,6 +297,7 @@ export function createVoxelWaterMaterial(uniforms: ReturnType<typeof waterUnifor
       attribute vec4 face;
       varying vec3 vWorld;
       varying vec3 vNormal;
+      varying float vCell;
       #include <common>
       #include <logdepthbuf_pars_vertex>
       const vec3 NORMALS[6] = vec3[6](
@@ -277,7 +305,10 @@ export function createVoxelWaterMaterial(uniforms: ReturnType<typeof waterUnifor
         vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
         vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0));
       void main() {
-        vNormal = NORMALS[int(mod(floor(face.x + 0.5), 8.0))];
+        float b0 = floor(face.x + 0.5);
+        vNormal = NORMALS[int(mod(b0, 8.0))];
+        // This face's voxel size, in the world (coarse in far tiles: the bottom's steps are too).
+        vCell = (floor(b0 / 8.0) + 1.0) * length(modelMatrix[0].xyz);
         vec4 w = modelMatrix * vec4(position, 1.0);
         vWorld = w.xyz;
         gl_Position = projectionMatrix * viewMatrix * w;
@@ -289,10 +320,11 @@ export function createVoxelWaterMaterial(uniforms: ReturnType<typeof waterUnifor
       ${WATER_GLSL}
       varying vec3 vWorld;
       varying vec3 vNormal;
+      varying float vCell;
       #include <logdepthbuf_pars_fragment>
       void main() {
         #include <logdepthbuf_fragment>
-        gl_FragColor = vec4(applyHaze(waterColor(vWorld, vNormal), vWorld), 1.0);
+        gl_FragColor = vec4(applyHaze(waterColor(vWorld, vNormal, vCell), vWorld), 1.0);
         #include <colorspace_fragment>
       }
     `,
