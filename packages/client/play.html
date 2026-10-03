@@ -26,6 +26,15 @@
       #mode[data-mode="dig"] { border-left-color: #ff8a20; }
       #mode[data-mode="place"] { border-left-color: #40ff60; }
       #mode:empty { display: none; }
+      /* The size chosen (see main.ts): under the crosshair for a moment after it changes. */
+      #size-badge {
+        position: fixed; left: 50%; top: calc(50% + 34px); transform: translateX(-50%);
+        display: flex; align-items: center; gap: 8px; padding: 4px 10px;
+        font: 600 15px/1 ui-monospace, monospace; color: #fff; background: rgba(0, 0, 0, 0.55); border-radius: 6px;
+        pointer-events: none; opacity: 0; transition: opacity 0.25s;
+      }
+      #size-badge.shown { opacity: 1; transition: none; }
+      #size-badge > span:first-child { display: block; border: 2px solid #fff; box-sizing: border-box; }
       #worldmap {
         position: fixed; inset: 0; z-index: 20; display: none;
         flex-direction: column; align-items: center; justify-content: center; gap: 8px;
@@ -61,30 +70,79 @@
       #mining[hidden] { display: none; }
       #hotbar { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 4px; padding: 4px; background: rgba(0,0,0,0.45); border-radius: 8px; z-index: 5; }
       #hotbar[hidden] { display: none; }
-      #hotbar .slot { position: relative; width: 46px; height: 46px; border: 2px solid rgba(255,255,255,0.18); border-radius: 6px; padding: 3px; cursor: pointer; }
-      #hotbar .slot.selected { border-color: #fff; }
-      #hotbar .slot.empty .swatch { opacity: 0.35; }
-      #hotbar .slot i { position: absolute; left: 4px; top: 1px; font: 600 10px system-ui, sans-serif; font-style: normal; color: rgba(255,255,255,0.7); text-shadow: 0 1px 2px #000; }
+      #hotbar .slot, #inventory .window-bar .slot { position: relative; width: 46px; height: 46px; border: 2px solid rgba(255,255,255,0.18); border-radius: 6px; padding: 3px; cursor: pointer; box-sizing: content-box; }
+      #hotbar .slot.selected, #inventory .window-bar .slot.selected { border-color: #fff; }
+      #hotbar .slot.empty .swatch, #inventory .window-bar .slot.empty .swatch { opacity: 0.35; }
+      #hotbar .slot i, #inventory .window-bar .slot i { position: absolute; left: 4px; top: 1px; font: 600 10px system-ui, sans-serif; font-style: normal; color: rgba(255,255,255,0.7); text-shadow: 0 1px 2px #000; }
       .swatch { width: 100%; height: 100%; border-radius: 3px; position: relative; box-shadow: inset 0 -6px 0 rgba(0,0,0,0.25); }
       .swatch span { position: absolute; right: 3px; bottom: 1px; font: 600 11px ui-monospace, monospace; color: #fff; text-shadow: 0 1px 2px #000, 0 0 2px #000; }
-      #inventory { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 140px); overflow: auto; background: rgba(16, 19, 24, 0.94); border: 1px solid #333a44; border-radius: 10px; padding: 16px 18px; z-index: 6; color: #e6e6e6; font: 13px/1.4 system-ui, sans-serif; }
-      #inventory h2 { margin: 0 0 4px; font-size: 16px; }
-      #inventory .hint { color: #8b949e; margin: 0 0 12px; font-size: 12px; }
-      #inventory .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
-      #inventory .item { display: flex; flex-direction: column; gap: 5px; align-items: stretch; background: #1c2128; border: 1px solid #30363d; border-radius: 6px; padding: 6px; color: inherit; font: inherit; cursor: pointer; }
+      .swatch b { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font: 700 20px system-ui, sans-serif; color: rgba(255,255,255,0.85); text-shadow: 0 1px 2px #000; }
+      .over { outline: 2px dashed #58a6ff; outline-offset: 2px; }
+      /* The inventory window (see inventory.ts): tabs, the hotbar, then the tab. */
+      #inventory { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(820px, calc(100vw - 32px)); height: min(640px, calc(100vh - 60px)); overflow: auto; background: rgba(16, 19, 24, 0.96); border: 1px solid #333a44; border-radius: 10px; padding: 0 18px 12px; z-index: 6; color: #e6e6e6; font: 13px/1.4 system-ui, sans-serif; box-sizing: border-box; }
+      #inventory .tabs { display: flex; gap: 2px; margin: 0 -18px; padding: 0 12px; border-bottom: 1px solid #333a44; background: #0d1117; border-radius: 10px 10px 0 0; position: sticky; top: 0; z-index: 1; }
+      #inventory .tab { background: none; border: none; border-bottom: 2px solid transparent; color: #8b949e; font: 600 13px system-ui, sans-serif; padding: 10px 12px 8px; cursor: pointer; }
+      #inventory .tab:hover:not(:disabled) { color: #e6e6e6; }
+      #inventory .tab.on { color: #fff; border-bottom-color: #58a6ff; }
+      #inventory .tab:disabled { opacity: 0.4; cursor: not-allowed; }
+      #inventory .window-bar { display: flex; gap: 4px; justify-content: center; margin: 12px 0 4px; }
+      #inventory h3 { margin: 14px 0 6px; font-size: 13px; color: #c9d1d9; }
+      #inventory .hint { color: #8b949e; margin: 10px 0 0; font-size: 12px; text-align: center; }
+      #inventory .note { color: #ffb86c; min-height: 1.4em; margin: 2px 0 6px; font-size: 12px; text-align: center; }
+      #inventory .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+      #inventory .toolbar input, #inventory .toolbar select { background: #0d1117; color: inherit; border: 1px solid #30363d; border-radius: 6px; padding: 5px 8px; font: inherit; }
+      #inventory .toolbar input { flex: 1; }
+      #inventory .bin { margin-left: auto; border: 1px dashed #6e4040; border-radius: 6px; padding: 5px 10px; color: #c98a8a; font-size: 12px; white-space: nowrap; }
+      #inventory .bin.asking { border-style: solid; color: #ffb3b3; }
+      #inventory .bin button { margin-left: 6px; }
+      #inventory .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+      #inventory .grid.small { grid-template-columns: repeat(auto-fill, minmax(86px, 1fr)); }
+      #inventory .item { display: flex; flex-direction: column; gap: 4px; align-items: stretch; background: #1c2128; border: 1px solid #30363d; border-radius: 6px; padding: 6px; color: inherit; font: inherit; cursor: pointer; text-align: left; }
       #inventory .item:hover { border-color: #8b949e; }
       #inventory .item.current { border-color: #fff; }
+      #inventory .item.used { opacity: 0.4; }
       #inventory .item .swatch { height: 34px; }
-      #inventory .item .label { font-size: 12px; text-align: left; }
-      .swatch b { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font: 700 20px system-ui, sans-serif; color: rgba(255,255,255,0.85); text-shadow: 0 1px 2px #000; }
-      #inventory h3 { margin: 16px 0 6px; font-size: 14px; }
-      #inventory .note { color: #ffb86c; min-height: 1.4em; margin: 0 0 6px; font-size: 12px; }
+      #inventory .item .label { font-size: 12px; }
+      #inventory .item .count { font: 11px ui-monospace, monospace; color: #8b949e; }
+      #inventory button { background: #21262d; color: inherit; border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer; }
+      #inventory button:hover:not(:disabled) { border-color: #8b949e; }
+      #inventory button:disabled { opacity: 0.45; cursor: not-allowed; }
+      #inventory button.primary { background: #238636; border-color: #2ea043; color: #fff; }
+      /* Where things are combined: plain until there's a crafting table to hand, then the table itself. */
+      #inventory .station { border: 1px dashed #484f58; border-radius: 10px; padding: 12px 10px; margin-top: 8px; }
+      #inventory .station.wood {
+        border: 3px solid #4a2f17; border-radius: 6px; padding: 14px 10px 8px;
+        background: repeating-linear-gradient(0deg, #8a5a2b 0 23px, #6e4520 23px 25px), #8a5a2b;
+        box-shadow: inset 0 2px 0 rgba(255, 220, 170, 0.25), 0 4px 0 #3a2410;
+      }
+      #inventory .station.wood .tslot { background: rgba(40, 24, 10, 0.35); border-color: #4a2f17; }
+      #inventory .station.wood .caption { color: #f0d6b0; font-weight: 600; letter-spacing: 0.04em; text-shadow: 0 1px 1px #000; }
+      #inventory .table { display: flex; gap: 8px; justify-content: center; }
+      #inventory .tslot { width: 52px; height: 52px; border: 1px solid #484f58; border-radius: 6px; padding: 3px; cursor: pointer; }
+      #inventory .tslot.free { border-style: dashed; cursor: default; }
+      #inventory .caption { text-align: center; color: #8b949e; font-size: 12px; margin-top: 6px; }
+      #inventory .could { text-align: center; color: #8b949e; font-size: 12px; min-height: 1.4em; margin: 8px 0; }
+      #inventory .result { display: flex; gap: 8px; justify-content: center; align-items: center; flex-wrap: wrap; min-height: 84px; } /* (room kept: what's below doesn't move as it fills) */
+      #inventory .result .item { width: 120px; }
+      #inventory .actions { display: flex; gap: 6px; align-items: center; }
+      #inventory .cols { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; }
       #inventory .recipes { display: flex; flex-direction: column; gap: 6px; }
-      #inventory .recipe { display: flex; align-items: center; gap: 10px; background: #1c2128; border: 1px solid #30363d; border-radius: 6px; padding: 5px 8px; color: inherit; font: inherit; cursor: pointer; text-align: left; }
-      #inventory .recipe:hover { border-color: #8b949e; }
+      #inventory .recipe { display: flex; align-items: center; gap: 10px; text-align: left; padding: 5px 8px; }
       #inventory .recipe.cant { opacity: 0.45; }
       #inventory .recipe .swatch { width: 30px; height: 30px; flex: none; }
       #inventory .recipe .swatch b { font-size: 15px; }
+      #inventory .recipe-list { display: flex; flex-direction: column; gap: 6px; }
+      #inventory .recipe-row { display: grid; grid-template-columns: 200px 1fr auto; gap: 12px; align-items: center; background: #1c2128; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; }
+      #inventory .recipe-row.cant .what { opacity: 0.5; }
+      #inventory .recipe-row .what { display: grid; grid-template-columns: 30px 1fr; column-gap: 8px; align-items: center; }
+      #inventory .recipe-row .what .swatch { width: 30px; height: 30px; grid-row: span 2; }
+      #inventory .recipe-row .what .swatch b { font-size: 15px; }
+      #inventory .recipe-row .where { font-size: 11px; color: #8b949e; }
+      #inventory .needs { display: flex; flex-wrap: wrap; gap: 6px; }
+      #inventory .need { display: inline-flex; align-items: center; gap: 5px; font: 11px ui-monospace, monospace; background: #0d1117; border: 1px solid #30363d; border-radius: 5px; padding: 2px 6px 2px 2px; }
+      #inventory .need .swatch { width: 18px; height: 18px; }
+      #inventory .need .swatch b { font-size: 11px; }
+      #inventory .need.short { opacity: 0.45; border-color: #6e4040; }
       #health { position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); display: grid; grid-template-columns: auto auto; column-gap: 24px; row-gap: 4px; font: 20px/1 system-ui, sans-serif; letter-spacing: 2px; text-shadow: 0 1px 2px #000; z-index: 5; pointer-events: none; }
       #health .hearts { color: #ff4d5a; grid-row: 2; }
       #health .food { color: #e8a24a; grid-row: 2; }
@@ -98,6 +156,7 @@
     <div id="status">connecting…</div>
     <a id="menu" href="/" title="Back to the menu (Esc frees the mouse first)">Menu</a>
     <div id="crosshair"></div>
+    <div id="size-badge"><span></span><span></span></div>
     <div id="mining" hidden></div>
     <div id="mode"></div>
     <script type="module" src="/src/main.ts"></script>

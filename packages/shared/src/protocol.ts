@@ -12,7 +12,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 29;
+export const PROTOCOL_VERSION = 30;
 
 export type ClientMessage =
   | {
@@ -72,6 +72,8 @@ export type ClientMessage =
   | { type: 'craft'; recipe: string }
   /** The player's hotbar arrangement (HOTBAR_SLOTS item ids, null for empty), kept with their inventory. */
   | { type: 'setHotbar'; hotbar: (number | null)[] }
+  /** Survival: throw away `amount` of `item` (stored amounts: blocks by volume, items by count). */
+  | { type: 'discard'; item: number; amount: number }
   /** Where the player is (world units) and faces (radians, 0 = -Z); sent a couple of times a second, not answered. */
   | { type: 'pose'; x: number; y: number; z: number; yaw: number };
 
@@ -335,6 +337,9 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
     msg.hotbar.every((v) => v === null || (Number.isInteger(v) && (v as number) >= 0 && (v as number) <= MAX_MATERIAL_ID))
   ) {
     return { type: 'setHotbar', hotbar: msg.hotbar as (number | null)[] };
+  }
+  if (msg.type === 'discard' && Number.isInteger(msg.item) && (msg.item as number) >= 0 && (msg.item as number) <= MAX_MATERIAL_ID && Number.isInteger(msg.amount) && (msg.amount as number) > 0) {
+    return { type: 'discard', item: msg.item as number, amount: msg.amount as number };
   }
   if (msg.type === 'pose' && [msg.x, msg.y, msg.z, msg.yaw].every((v) => typeof v === 'number' && Number.isFinite(v))) {
     return { type: 'pose', x: msg.x as number, y: msg.y as number, z: msg.z as number, yaw: msg.yaw as number };

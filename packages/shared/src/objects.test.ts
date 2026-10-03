@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { blockFromVoxels, blockVoxels, type BlockVoxel } from './edit.js';
-import { FACINGS, doorVoxels, facingOfYaw, fenceJoins, fenceVoxels, gateVoxels, objectBlocks, type PlacedObject } from './objects.js';
+import { FACINGS, doorVoxels, facingOfYaw, fenceJoins, fenceVoxels, gateVoxels, isObjectMaterial, isUsableMaterial, objectBlocks, objectKindOf, tableVoxels, type Facing, type PlacedObject } from './objects.js';
+import { Item } from './items.js';
 import { Material } from './materials.js';
 
 /** Unit cells a shape fills (also checks it makes a valid block: in bounds, no overlaps). */
@@ -65,5 +66,53 @@ describe('objects', () => {
     expect(facingOfYaw(-Math.PI / 2)).toBe('e');
     expect(facingOfYaw(Math.PI)).toBe('s');
     expect(facingOfYaw(Math.PI / 2 + 0.3)).toBe('w');
+  });
+});
+
+describe('crafting table', () => {
+  it('is a workbench of small voxels, all inside its block, on their grids, never overlapping', () => {
+    for (const facing of FACINGS) {
+      const voxels = tableVoxels(facing);
+      const cells = new Set<string>();
+      for (const v of voxels) {
+        expect([1, 2, 4, 8, 16]).toContain(v.size);
+        for (const c of [v.x, v.y, v.z]) {
+          expect(c % v.size).toBe(0); // on its own grid
+          expect(c).toBeGreaterThanOrEqual(0);
+          expect(c + v.size).toBeLessThanOrEqual(16);
+        }
+        for (let y = v.y; y < v.y + v.size; y++)
+          for (let z = v.z; z < v.z + v.size; z++)
+            for (let x = v.x; x < v.x + v.size; x++) {
+              const k = `${x},${y},${z}`;
+              expect(cells.has(k)).toBe(false);
+              cells.add(k);
+            }
+        // Wood, but for the hammer's head (dark metal) and the square (light metal).
+        expect([Material.CraftingTable, Material.DarkMetal, Material.LightMetal]).toContain(v.material);
+        if (v.y < 14) expect(v.material).toBe(Material.CraftingTable);
+      }
+      // Top whole, legs at the corners, room under it.
+      expect(cells.has('0,12,0') && cells.has('15,13,15')).toBe(true);
+      expect(cells.has('2,0,2') && cells.has('13,0,13')).toBe(true);
+      expect(cells.has('8,8,8')).toBe(false);
+      // Sizes of all kinds: 1/16 m to 1/8 m.
+      expect(new Set(voxels.map((v) => v.size))).toEqual(new Set([1, 2]));
+    }
+    // Facing turns the tools on top, not the table.
+    const top = (f: Facing) => tableVoxels(f).filter((v) => v.y >= 14).map((v) => `${v.x},${v.z}`).sort();
+    expect(top('n')).not.toEqual(top('e'));
+    const body = (f: Facing) => tableVoxels(f).filter((v) => v.y < 14).length;
+    expect(body('n')).toBe(body('w'));
+  });
+
+  it('is placed from its item, and is no door', () => {
+    expect(objectKindOf(Item.CraftingTable)).toBe('table');
+    expect(isObjectMaterial(Material.CraftingTable)).toBe(true);
+    expect(isUsableMaterial(Material.CraftingTable)).toBe(false);
+    // Clicking its tools means the table too.
+    expect(isObjectMaterial(Material.DarkMetal) && isObjectMaterial(Material.LightMetal)).toBe(true);
+    expect(new Set(tableVoxels('n').map((v) => v.material))).toEqual(new Set([Material.CraftingTable, Material.DarkMetal, Material.LightMetal]));
+    expect(objectBlocks({ kind: 'table', x: 0, y: 0, z: 0, facing: 's', open: false })).toEqual([{ dy: 0, voxels: tableVoxels('s') }]);
   });
 });

@@ -24,7 +24,7 @@ export const BLOCK_VOLUME = BLOCK_SIZE ** 3;
 export const voxelVolume = (size: number) => size ** 3;
 
 /** Hotbar slots. */
-export const HOTBAR_SLOTS = 9;
+export const HOTBAR_SLOTS = 10;
 
 /**
  * Things that aren't blocks, counted whole (ids from FIRST_ITEM; below it, an id is a material,
@@ -40,6 +40,8 @@ export const Item = {
   Bucket: 1006,
   /** Food (see FOODS): from pigs. */
   Pork: 1007,
+  /** Placed as a workbench (see objects.ts); recipes that need one want one placed nearby. */
+  CraftingTable: 1008,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -53,6 +55,7 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.Door]: 'door',
   [Item.Bucket]: 'bucket',
   [Item.Pork]: 'pork',
+  [Item.CraftingTable]: 'crafting table',
 };
 
 /** Whether an id is a block material (amounts are volumes) rather than an item (amounts are counts). */
@@ -85,7 +88,6 @@ export const PLACEABLE: readonly MaterialId[] = [
   Material.Tundra,
   Material.Planks,
   Material.Cobblestone,
-  Material.CraftingTable,
   Material.TNT,
   Material.C4,
   Material.Water,
@@ -124,9 +126,9 @@ export function starterHotbar(): (MaterialId | null)[] {
   return Array.from({ length: HOTBAR_SLOTS }, (_, i) => STARTER_KIT[i]?.[0] ?? null);
 }
 
-/** A creative player's first hotbar: a spread of materials, water last. */
+/** A creative player's first hotbar: a spread of materials, water, then TNT. */
 export function creativeHotbar(): (MaterialId | null)[] {
-  return [Material.Stone, Material.Dirt, Material.Grass, Material.Sand, Material.Wood, Material.Leaves, Material.Snow, Material.Ice, Material.Water];
+  return [Material.Stone, Material.Dirt, Material.Grass, Material.Sand, Material.Wood, Material.Leaves, Material.Snow, Material.Ice, Material.Water, Material.TNT];
 }
 
 /** Volume (unit voxels) of each material in a chunk. */

@@ -302,12 +302,12 @@ describe('inventories', () => {
     const p = await player(url, cookie);
     await p.until(() => !!p.inventory());
     await p.edit({ op: 'place', x: 1600, y: 0, z: 1600, size: 16, material: Material.Wood });
-    const hotbar = [Material.Wood, null, null, null, null, null, null, null, Material.Dirt];
+    const hotbar = [Material.Wood, null, null, null, null, null, null, null, null, Material.Dirt];
     p.ws.send(JSON.stringify({ type: 'setHotbar', hotbar }));
     await new Promise((r) => setTimeout(r, 50));
     p.ws.close();
     // Saved when the connection closes.
-    for (let i = 0; i < 100 && !(await inventories.load(ann.id, 'default@single'))?.hotbar[8]; i++) await new Promise((r) => setTimeout(r, 10));
+    for (let i = 0; i < 100 && !(await inventories.load(ann.id, 'default@single'))?.hotbar[9]; i++) await new Promise((r) => setTimeout(r, 10));
     const again = await player(url, cookie);
     await again.until(() => !!again.inventory());
     expect(again.inventory()!.hotbar).toEqual(hotbar);
@@ -345,19 +345,21 @@ describe('inventories', () => {
     expect(have(Material.Wood)).toBe(14 * B);
     expect(await craft('sticks')).toBeNull();
     expect(await craft('crafting-table')).toBeNull();
-    expect(have(Material.CraftingTable)).toBe(B);
+    expect(have(Item.CraftingTable)).toBe(1); // (an item: placed as a workbench, see tableVoxels)
     // Standing over open ground: no table near.
     p.ws.send(JSON.stringify({ type: 'pose', x: 1608, y: 40, z: 1608, yaw: 0 }));
-    expect(await craft('wooden-sword')).toBe('needs a crafting table nearby');
-    // Put the table down right there.
-    expect(await p.edit({ op: 'place', x: 1600, y: 0, z: 1600, size: 16, material: Material.CraftingTable })).toMatchObject({ ok: true });
-    expect(have(Material.CraftingTable)).toBe(0);
+    expect(await craft('wooden-sword')).toBe('needs a crafting table placed nearby');
+    // Put the table down right there (an object: a workbench of small voxels).
+    p.ws.send(JSON.stringify({ type: 'placeObject', id: 777, item: Item.CraftingTable, x: 100, y: 0, z: 100, facing: 'n' }));
+    await p.until(() => p.msgs.some((m) => m.type === 'editResult' && m.id === 777));
+    expect(p.msgs.find((m) => m.type === 'editResult' && m.id === 777)).toMatchObject({ ok: true });
+    await p.until(() => have(Item.CraftingTable) === 0);
     expect(await craft('wooden-sword')).toBeNull();
     expect(have(Item.WoodenSword)).toBe(1);
     // Walk 10 m away (with planks enough): out of reach again.
     expect(await craft('planks')).toBeNull();
     p.ws.send(JSON.stringify({ type: 'pose', x: 1608 + 160, y: 40, z: 1608, yaw: 0 }));
-    expect(await craft('wooden-sword')).toBe('needs a crafting table nearby');
+    expect(await craft('wooden-sword')).toBe('needs a crafting table placed nearby');
     p.ws.close();
   });
 

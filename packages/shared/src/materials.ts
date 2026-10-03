@@ -40,6 +40,9 @@ export const Material = {
   TNT: 33,
   /** As TNT, far stronger: a 1/8 m voxel blows as a 1 m TNT block (see EXPLOSIVE_POWER). */
   C4: 34,
+  /** Metal on things players make (a crafting table's hammer and square, see objects.ts): dark and light. */
+  DarkMetal: 35,
+  LightMetal: 36,
 } as const;
 
 /** Flowing water reaches this many blocks from its source. */
@@ -91,6 +94,8 @@ const MATERIAL_NAMES: Record<number, string> = {
   [Material.DoorWood]: 'door',
   [Material.TNT]: 'TNT',
   [Material.C4]: 'C4',
+  [Material.DarkMetal]: 'dark metal',
+  [Material.LightMetal]: 'light metal',
 };
 
 

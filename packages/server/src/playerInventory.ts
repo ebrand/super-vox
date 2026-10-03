@@ -37,7 +37,19 @@ export class PlayerInventory {
     private readonly inv: Inventory,
     private readonly persist: (inv: Inventory) => Promise<void>,
     private readonly saveDelayMs = 2000,
-  ) {}
+  ) {
+    // (Saved before the hotbar grew: the new slots are empty.)
+    while (inv.hotbar.length < HOTBAR_SLOTS) inv.hotbar.push(null);
+    inv.hotbar.length = HOTBAR_SLOTS;
+    // (Saved when crafting tables were a material, counted by volume: now they're items, one a block's worth.)
+    const tables = inv.items.get(Material.CraftingTable);
+    if (tables !== undefined) {
+      inv.items.delete(Material.CraftingTable);
+      const n = Math.round(tables / BLOCK_VOLUME);
+      if (n > 0) inv.items.set(Item.CraftingTable, (inv.items.get(Item.CraftingTable) ?? 0) + n);
+      inv.hotbar = inv.hotbar.map((h) => (h === Material.CraftingTable ? Item.CraftingTable : h));
+    }
+  }
 
   /** Why `edit` isn't allowed (null if it is): placing what this mode doesn't allow, or more than you have. */
   refuse(edit: Edit): string | null {
@@ -68,6 +80,18 @@ export class PlayerInventory {
   refuseItem(item: ItemId): string | null {
     if (this.mode === 'creative') return null;
     return (this.inv.items.get(item) ?? 0) >= 1 ? null : `no ${itemName(item)} left`;
+  }
+
+  /** Survival: throws away up to `amount` of `item` (stored amounts); why not, or null. */
+  discard(item: ItemId, amount: number): string | null {
+    if (this.mode !== 'survival') return 'creative: nothing to throw away';
+    const has = this.inv.items.get(item) ?? 0;
+    if (has <= 0) return `no ${itemName(item)} to throw away`;
+    const left = has - Math.min(has, amount);
+    if (left > 0) this.inv.items.set(item, left);
+    else this.inv.items.delete(item);
+    this.changed();
+    return null;
   }
 
   /** Survival: one of an item used up (placing an object) or given back (taking one down). */

@@ -18,6 +18,7 @@ import {
   isWater,
   isExplosive,
   craterShape,
+  materialNearIn,
   setBlockWater,
   applyEdit,
   decodeChunk,
@@ -26,6 +27,7 @@ import {
   removeBoxFromChunk,
   fillBoxInChunk,
   isObjectMaterial,
+  opens,
   validateFillBox,
   splitPlacement,
   validateRemoveBox,
@@ -530,7 +532,7 @@ export class World {
     }
     if (edit.op === 'fillBox') {
       validateFillBox(edit);
-      if (isObjectMaterial(edit.material)) throw new EditError("fences, gates and doors aren't filled in boxes");
+      if (isObjectMaterial(edit.material)) throw new EditError("fences, gates, doors and crafting tables aren't filled in boxes");
       const changed: Chunk[] = [];
       for (const c of removeBoxChunks(edit)) {
         const resolved = resolveChunk(this.config, c);
@@ -944,7 +946,7 @@ export class World {
 
   /** Opens or closes a gate or door; throws EditError for anything else. */
   toggleObject(o: PlacedObject): EditResult {
-    if (o.kind === 'fence') throw new EditError("fences don't open");
+    if (!opens(o.kind)) throw new EditError(`${o.kind === 'table' ? 'crafting tables' : 'fences'} don't open`);
     const next = { ...o, open: !o.open };
     this.objects.set(objectKey(o.x, o.y, o.z), next);
     const result = this.writeBlocks(this.objectWrites(next));
@@ -1020,23 +1022,13 @@ export class World {
    * crafting table near a player). Looks at generated or edited chunks as they are now.
    */
   materialNear(x: number, y: number, z: number, reach: number, material: MaterialId): boolean {
-    const n = BLOCKS_PER_CHUNK_AXIS;
-    const b0 = (v: number) => Math.floor((v - reach) / BLOCK_SIZE), b1 = (v: number) => Math.floor((v + reach) / BLOCK_SIZE);
-    for (let cy = Math.floor(b0(y) / n); cy <= Math.floor(b1(y) / n); cy++)
-      for (let cz = Math.floor(b0(z) / n); cz <= Math.floor(b1(z) / n); cz++)
-        for (let cx = Math.floor(b0(x) / n); cx <= Math.floor(b1(x) / n); cx++) {
-          const resolved = resolveChunk(this.config, { cx, cy, cz });
-          if (!resolved) continue;
-          const chunk = this.current(resolved);
-          for (let by = Math.max(0, b0(y) - cy * n); by <= Math.min(n - 1, b1(y) - cy * n); by++)
-            for (let bz = Math.max(0, b0(z) - cz * n); bz <= Math.min(n - 1, b1(z) - cz * n); bz++)
-              for (let bx = Math.max(0, b0(x) - cx * n); bx <= Math.min(n - 1, b1(x) - cx * n); bx++) {
-                const b = chunk.blocks[blockIndex(bx, by, bz)];
-                if (!b) continue;
-                if (b.kind === 'uniform' ? b.material === material : b.materials.includes(material)) return true;
-              }
-        }
-    return false;
+    return materialNearIn(
+      (cx, cy, cz) => {
+        const resolved = resolveChunk(this.config, { cx, cy, cz });
+        return resolved ? this.current(resolved) : null;
+      },
+      x, y, z, reach, material,
+    );
   }
 
   /** Ground height range of a chunk column, or null outside the world. */

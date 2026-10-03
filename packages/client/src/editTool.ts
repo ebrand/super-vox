@@ -100,6 +100,19 @@ export class EditTool {
   mode: Mode = MODES[0];
   /** Called whenever the mode changes (and once when set), e.g. to update an on-screen tag. */
   onModeChange: ((mode: Mode) => void) | null = null;
+  /** Called when the size chosen changes (see chosenSize): stepped through, or (hybrid) let go of with ⌘. */
+  onSizeChange: ((size: number | null) => void) | null = null;
+
+  /**
+   * The size (units) placing and digging will use, to show: in dig and place, the selected size; in
+   * hybrid while ⌘ is held, the one placed (picked with ⌘+wheel, or matching what's aimed at); else
+   * null (hybrid without ⌘: it matches whatever's aimed at, as it goes).
+   */
+  get chosenSize(): number | null {
+    if (this.mode !== 'hybrid') return this.size;
+    if (!this.modifiers.meta) return null;
+    return this.hybridSize ?? (this.target ? nearestToolSize(this.target.size) : null);
+  }
   /** Index into TOOL_SIZES of the selected size. */
   private sizeIndex = TOOL_SIZES.indexOf(4);
   private target: Box | null = null;
@@ -186,6 +199,9 @@ export class EditTool {
     scene.add(this.outline, this.preview, this.digPreview, this.digEntry);
     this.onKeyDown = (e) => {
       this.readModifiers(e);
+      // (Typing in a text field, such as the inventory's search: not for the tool.)
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
       this.handleKey(e);
     };
     this.onKeyUp = (e) => {
@@ -255,6 +271,8 @@ export class EditTool {
     const index = wrap ? (next + n) % n : Math.max(0, Math.min(n - 1, next));
     if (this.mode === 'hybrid') this.hybridSize = TOOL_SIZES[index]!;
     else this.sizeIndex = index;
+    this.toldSize = undefined; // (stepped: say so, even if it's come round to the same)
+    this.tellSize();
   }
 
   /** The material placements use (the selected hotbar slot), if any. */
@@ -272,6 +290,21 @@ export class EditTool {
 
   /** Re-aims from the camera; call every frame. */
   update(): void {
+    this.aim();
+    this.tellSize();
+  }
+
+  /** Says if the size chosen changed (see onSizeChange): it can with what's aimed at, in hybrid with ⌘ held. */
+  private tellSize(): void {
+    const size = this.chosenSize;
+    if (size === this.toldSize) return;
+    this.toldSize = size;
+    this.onSizeChange?.(size);
+  }
+  private toldSize: number | null | undefined = undefined;
+
+  /** Works out what's aimed at, and where a placement or dig would go. */
+  private aim(): void {
     this.target = this.placement = this.dig = null;
     this.targetMaterial = null;
     this.hit = null;
@@ -461,6 +494,7 @@ export class EditTool {
   private setMeta(held: boolean): void {
     if (!held) this.hybridSize = null;
     this.modifiers.meta = held;
+    this.tellSize();
   }
 
   private handleKey(e: KeyboardEvent): void {

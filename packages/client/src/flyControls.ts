@@ -140,6 +140,9 @@ export class FlyControls {
     });
     on(window, 'keydown', (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey) return;
+      // (Typing in a text field, such as the inventory's search: not moving.)
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
       this.keys.add(e.code);
       if (e.code === 'Space') e.preventDefault();
     });

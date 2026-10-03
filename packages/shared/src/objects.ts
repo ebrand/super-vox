@@ -4,12 +4,12 @@ import { Item, type ItemId } from './items.js';
 import { Material, type MaterialId } from './materials.js';
 
 /**
- * Things players build that are more than a voxel: fences, gates and doors. Each is made of small
- * voxels of its own material (so a click on one can be recognised) inside one 1 m block (doors:
- * two, stacked), and the server keeps a register of where they are, which way they face and
- * whether they're open (see PlacedObject).
+ * Things players build that are more than a voxel: fences, gates, doors and crafting tables. Each
+ * is made of small voxels of its own material (so a click on one can be recognised) inside one 1 m
+ * block (doors: two, stacked), and the server keeps a register of where they are, which way they
+ * face and whether they're open (see PlacedObject).
  */
-export type ObjectKind = 'fence' | 'gate' | 'door';
+export type ObjectKind = 'fence' | 'gate' | 'door' | 'table';
 
 /** Which way an object faces: the way the player looked when placing it (n = -Z). */
 export type Facing = 'n' | 'e' | 's' | 'w';
@@ -33,17 +33,26 @@ export interface PlacedObject {
   open: boolean;
 }
 
-export const OBJECT_ITEM: Record<ObjectKind, ItemId> = { fence: Item.Fence, gate: Item.Gate, door: Item.Door };
-export const OBJECT_MATERIAL: Record<ObjectKind, MaterialId> = { fence: Material.FenceWood, gate: Material.GateWood, door: Material.DoorWood };
+export const OBJECT_ITEM: Record<ObjectKind, ItemId> = { fence: Item.Fence, gate: Item.Gate, door: Item.Door, table: Item.CraftingTable };
+export const OBJECT_MATERIAL: Record<ObjectKind, MaterialId> = { fence: Material.FenceWood, gate: Material.GateWood, door: Material.DoorWood, table: Material.CraftingTable };
 
 /** The object an item places, if it places one. */
 export function objectKindOf(item: ItemId): ObjectKind | null {
-  return item === Item.Fence ? 'fence' : item === Item.Gate ? 'gate' : item === Item.Door ? 'door' : null;
+  return item === Item.Fence ? 'fence' : item === Item.Gate ? 'gate' : item === Item.Door ? 'door' : item === Item.CraftingTable ? 'table' : null;
 }
 
-/** Whether a material belongs to a placed object (and so a click on it means the object). */
+/**
+ * Whether a material belongs to a placed object (and so a click on it means the object). (Crafting
+ * tables placed as solid blocks, before they were objects, are of the same material: a click on one
+ * finds no object there, and mines it as a block.)
+ */
 export function isObjectMaterial(m: MaterialId): boolean {
-  return m === Material.FenceWood || m === Material.GateWood || m === Material.DoorWood;
+  return m === Material.FenceWood || m === Material.GateWood || m === Material.DoorWood || m === Material.CraftingTable || m === Material.DarkMetal || m === Material.LightMetal;
+}
+
+/** Whether an object opens and closes (gates and doors). */
+export function opens(kind: ObjectKind): boolean {
+  return kind === 'gate' || kind === 'door';
 }
 
 /** Whether right-clicking an object's voxel opens or closes it. */
@@ -114,9 +123,29 @@ export function doorVoxels(facing: Facing, open: boolean): BlockVoxel[] {
   return turn(panel, TURNS[facing]);
 }
 
+/**
+ * A crafting table: a workbench a 1 m block across, of voxels its size wants (1/16 m and 1/8 m): a
+ * 1/8 m top on four 1/8 m legs (inset), 1/16 m stretchers between the legs, and on the top, a
+ * claw hammer (a dark metal head on a wooden handle) and a light metal carpenter's square, turned
+ * to face the way the placer looked.
+ */
+export function tableVoxels(facing: Facing): BlockVoxel[] {
+  const m = Material.CraftingTable;
+  const top = box(0, 12, 0, 16, 14, 16, 2, m);
+  const legs = [2, 12].flatMap((x) => [2, 12].flatMap((z) => box(x, 0, z, x + 2, 12, z + 2, 2, m)));
+  // Stretchers: along x (front and back) low, along z (the sides) a little higher, so they don't meet.
+  const stretchers = [...box(4, 3, 2, 12, 4, 3, 1, m), ...box(4, 3, 13, 12, 4, 14, 1, m), ...box(2, 5, 4, 3, 6, 12, 1, m), ...box(13, 5, 4, 14, 6, 12, 1, m)];
+  // On the top (looked at from the south, facing north): a hammer to the right (its handle along x,
+  // its head across it: the face end standing up, the claw lying down), a square to the left.
+  const hammer = [...box(5, 14, 5, 11, 15, 6, 1, m), ...box(11, 14, 4, 12, 16, 7, 1, Material.DarkMetal), ...box(11, 14, 2, 12, 15, 4, 1, Material.DarkMetal)];
+  const square = [...box(3, 14, 11, 9, 15, 12, 1, Material.LightMetal), ...box(3, 14, 8, 4, 15, 11, 1, Material.LightMetal)];
+  return [...top, ...legs, ...stretchers, ...turn([...hammer, ...square], TURNS[facing])];
+}
+
 /** Every block (offset from the object's bottom block) of an object with its voxels. */
 export function objectBlocks(o: PlacedObject, fenceToward: readonly Facing[] = []): { dy: number; voxels: BlockVoxel[] }[] {
   if (o.kind === 'fence') return [{ dy: 0, voxels: fenceVoxels(fenceToward) }];
+  if (o.kind === 'table') return [{ dy: 0, voxels: tableVoxels(o.facing) }];
   if (o.kind === 'gate') return [{ dy: 0, voxels: gateVoxels(o.facing, o.open) }];
   const door = doorVoxels(o.facing, o.open);
   return [

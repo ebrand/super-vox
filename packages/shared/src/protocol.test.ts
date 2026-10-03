@@ -141,8 +141,14 @@ describe('protocol', () => {
     }
   });
 
+  it('validates throwing things away', () => {
+    expect(decodeClientMessage('{"type":"discard","item":1001,"amount":2}')).toEqual({ type: 'discard', item: 1001, amount: 2 });
+    for (const bad of ['{"type":"discard","item":1001,"amount":0}', '{"type":"discard","item":-1,"amount":2}', '{"type":"discard","item":1001,"amount":1.5}', '{"type":"discard","item":"x","amount":2}'])
+      expect(decodeClientMessage(bad)).toBeNull();
+  });
+
   it('validates hotbars', () => {
-    const nine = [1, 2, null, null, null, null, null, null, 12];
+    const nine = [1, 2, null, null, null, null, null, null, null, 12]; // (ten slots: the name's from when there were nine)
     expect(decodeClientMessage(JSON.stringify({ type: 'setHotbar', hotbar: nine }))).toEqual({ type: 'setHotbar', hotbar: nine });
     for (const hotbar of [nine.slice(1), [...nine, 1], [1.5, ...nine.slice(1)], [-1, ...nine.slice(1)], ['1', ...nine.slice(1)], 'x']) {
       expect(decodeClientMessage(JSON.stringify({ type: 'setHotbar', hotbar }))).toBeNull();

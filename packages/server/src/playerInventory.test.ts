@@ -13,6 +13,28 @@ function survival(inv: Inventory = starterInventory()) {
 }
 
 describe('PlayerInventory', () => {
+  it('throws away what you ask (up to what you have), in survival only', () => {
+    const { p } = survival({ items: new Map([[Material.Dirt, 3 * BLOCK_VOLUME], [Item.Stick, 5]]), hotbar: Array(HOTBAR_SLOTS).fill(null) });
+    expect(p.discard(Item.Stick, 2)).toBeNull();
+    expect(p.count(Item.Stick)).toBe(3);
+    expect(p.discard(Material.Dirt, 99 * BLOCK_VOLUME)).toBeNull(); // (all there is)
+    expect(p.message().items.find(([id]) => id === Material.Dirt)).toBeUndefined();
+    expect(p.discard(Material.Sand, 1)).toMatch(/no sand/);
+    const creative = new PlayerInventory('creative', { items: new Map(), hotbar: [] }, async () => {});
+    expect(creative.discard(Material.Dirt, 1)).toMatch(/creative/);
+  });
+
+  it('turns crafting tables saved as a material (by volume) into crafting-table items', () => {
+    const { p } = survival({ items: new Map([[Material.CraftingTable, 2 * BLOCK_VOLUME], [Material.Dirt, BLOCK_VOLUME]]), hotbar: [Material.CraftingTable, null, null, null, null, null, null, null, null, null] });
+    expect(new Map(p.message().items)).toEqual(new Map([[Item.CraftingTable, 2], [Material.Dirt, BLOCK_VOLUME]]));
+    expect(p.message().hotbar[0]).toBe(Item.CraftingTable);
+  });
+
+  it('gives a hotbar saved before there were ten slots the slots it lacks, empty', () => {
+    const { p } = survival({ items: new Map(), hotbar: [Material.Dirt, null, null, null, null, null, null, null, Material.Stone] });
+    expect(p.message().hotbar).toEqual([Material.Dirt, null, null, null, null, null, null, null, Material.Stone, null]);
+  });
+
   it('in survival, lets you place only what you have enough of, and no water', () => {
     const { p } = survival();
     expect(p.refuse(place(Material.Stone))).toBeNull();
@@ -51,7 +73,7 @@ describe('PlayerInventory', () => {
 
   it('takes a new hotbar of placeable materials only', () => {
     const { p } = survival();
-    const hotbar = [Material.Sand, null, null, null, null, null, null, null, Material.Stone];
+    const hotbar = [Material.Sand, null, null, null, null, null, null, null, null, Material.Stone];
     expect(p.setHotbar(hotbar)).toBeNull();
     expect(p.message().hotbar).toEqual(hotbar);
     expect(p.setHotbar([waterMaterial(3), ...hotbar.slice(1)])).toMatch(/can't go on the hotbar/);
@@ -80,7 +102,7 @@ describe('PlayerInventory', () => {
     expect(new Map(p.message().items).get(Material.Planks)).toBe(4 * B);
     expect(p.craft('wooden-sword', false)).toBe('need 1 more stick');
     expect(p.craft('sticks', false)).toBeNull();
-    expect(p.craft('wooden-sword', false)).toBe('needs a crafting table nearby');
+    expect(p.craft('wooden-sword', false)).toBe('needs a crafting table placed nearby');
     expect(p.craft('wooden-sword', true)).toBeNull();
     expect(new Map(p.message().items).get(Item.WoodenSword)).toBe(1);
     expect(p.craft('nope', true)).toBe('no recipe "nope"');
@@ -90,7 +112,7 @@ describe('PlayerInventory', () => {
 
   it("puts items on the hotbar, but doesn't place them", () => {
     const { p } = survival();
-    expect(p.setHotbar([Item.WoodenSword, Item.Door, null, null, null, null, null, null, Material.Cobblestone])).toBeNull();
+    expect(p.setHotbar([Item.WoodenSword, Item.Door, null, null, null, null, null, null, null, Material.Cobblestone])).toBeNull();
     expect(p.refuse(place(Item.Door))).toBe("a door can't be placed yet");
   });
 });

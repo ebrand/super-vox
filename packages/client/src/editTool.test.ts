@@ -45,6 +45,30 @@ describe('EditTool hybrid placement size', () => {
     expect(tool.placeSize(target)).toBe(4);
   });
 
+  it('says when the chosen size changes (for showing it): stepping with Command, and letting Command go', () => {
+    const told: (number | null)[] = [];
+    tool.onSizeChange = (size) => told.push(size);
+    expect(tool.chosenSize).toBeNull(); // hybrid: matches what's aimed at
+    window.dispatchEvent(key('keydown', 'MetaLeft', true));
+    tool.scrollSize(-200);
+    expect(told.at(-1)).toBe(tool.chosenSize);
+    expect(tool.chosenSize).not.toBeNull();
+    // Told each step, and only when there's something new to tell.
+    const n = told.length;
+    tool.update();
+    expect(told.length).toBe(n);
+    window.dispatchEvent(key('keyup', 'MetaLeft', false));
+    expect(told.at(-1)).toBeNull();
+    expect(tool.chosenSize).toBeNull();
+    // In place mode, the selected size, always.
+    window.dispatchEvent(key('keydown', 'Tab', false));
+    window.dispatchEvent(key('keydown', 'Tab', false));
+    expect(tool.mode).toBe('place');
+    expect(tool.chosenSize).toBe(tool.size);
+    tool.scrollSize(-200, performance.now() + 10_000);
+    expect(told.at(-1)).toBe(tool.size);
+  });
+
   it('forgets the chosen size when a click comes without Command (a key-up was missed)', () => {
     window.dispatchEvent(key('keydown', 'MetaLeft', true));
     tool.scrollSize(-200);

@@ -28,6 +28,7 @@ import {
   OBJECT_ITEM,
   itemName,
   objectKindOf,
+  opens,
   Material,
   TABLE_REACH,
   recipeById,
@@ -886,7 +887,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               result = r;
             } else {
               const o = world.objectAt(Math.floor(msg.x / 16), Math.floor(msg.y / 16), Math.floor(msg.z / 16));
-              if (!o || o.kind === 'fence') return fail('nothing to open there');
+              if (!o || !opens(o.kind)) return fail('nothing to open there');
               result = world.toggleObject(o);
             }
           } catch (err) {
@@ -927,7 +928,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             send({ type: 'error', code: 'craft', message: 'sign in to craft' });
             return;
           }
-          // A crafting table within reach of where the player last said they were.
+          // A crafting table placed within reach of where the player last said they were.
           const pose = players.get(socket)?.pose;
           const recipe = recipeById(msg.recipe);
           const nearTable = !!recipe?.table && !!pose && world.materialNear(pose.x, pose.y, pose.z, TABLE_REACH, Material.CraftingTable);
@@ -941,6 +942,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (!inventory) return;
           const why = inventory.setHotbar(msg.hotbar);
           if (why) send({ type: 'error', code: 'bad_hotbar', message: why });
+          break;
+        }
+
+        case 'discard': {
+          if (!inventory) return;
+          const why = inventory.discard(msg.item, msg.amount);
+          if (why) send({ type: 'error', code: 'craft', message: why });
+          else send(inventory.message());
           break;
         }
 

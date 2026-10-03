@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { CHUNK_SIZE, MAX_AIR, MAX_FOOD, REGEN_FOOD, UNITS_PER_METER, clockHours, decodeClimate, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, type DayClock, type DeathCause, type WorldConfig } from '@super-vox/shared';
+import { CHUNK_SIZE, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, type DayClock, type DeathCause, type WorldConfig } from '@super-vox/shared';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
-import { EditTool } from './editTool.js';
+import { EditTool, sizeLabel } from './editTool.js';
 import { FlyControls } from './flyControls.js';
 import { ExplosionView } from './explosions.js';
 import { sampleBlast } from './blastCloud.js';
@@ -115,11 +115,24 @@ let serverOffset = 0;
 const worldHours = () => (clock ? clockHours(clock, Date.now() + serverOffset) : 10);
 applyLighting(lighting, worldHours(), atmosphere, lightingUniforms, view);
 /** L: sliders for the lighting (saved in this browser), and the world's time. */
+/** Whether a key went to a text field (typing, not playing). */
+export function typingIn(e: KeyboardEvent): boolean {
+  const t = e.target;
+  return t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+}
+
 /** Hotbar and inventory screen (E); the server keeps what's in them (see InventoryUi). */
 const inventoryUi = new InventoryUi(
   document.body,
   (hotbar) => connection?.send({ type: 'setHotbar', hotbar }),
   (recipe) => connection?.send({ type: 'craft', recipe }),
+  (item, amount) => connection?.send({ type: 'discard', item, amount }),
+  // (A crafting table placed near: from the chunks here, as the server works it out.)
+  () => {
+    if (!chunks) return false;
+    const p = camera.position;
+    return materialNearIn((cx, cy, cz) => chunks!.chunkAt({ cx, cy, cz }), p.x * UNITS_PER_METER, p.y * UNITS_PER_METER, p.z * UNITS_PER_METER, TABLE_REACH, Material.CraftingTable);
+  },
 );
 // The wheel steps through the hotbar (while it's there: players who can build).
 controls.onWheel = (deltaY) => {
@@ -444,6 +457,8 @@ connection = connect({
           }
           window.addEventListener('keydown', (e) => {
             if (e.repeat || e.metaKey || e.ctrlKey) return;
+            // Typing (the inventory's search box): only Esc, to close it.
+            if (typingIn(e) && e.code !== 'Escape') return;
             if (e.code === 'KeyM' || (e.code === 'Escape' && worldMap?.isOpen)) {
               if (e.code === 'KeyM' && !worldMap!.isOpen && controls.pointerLocked) document.exitPointerLock();
               if (e.code === 'Escape') worldMap!.close();
@@ -451,7 +466,7 @@ connection = connect({
               return;
             }
             if (worldMap?.isOpen) return;
-            // Inventory: E opens and closes it (freeing the mouse to click), Esc closes it; 1-9 pick a hotbar slot.
+            // Inventory: E opens and closes it (freeing the mouse to click), Esc closes it; 1-9 and 0 pick a hotbar slot.
             if (e.code === 'KeyE' || (e.code === 'Escape' && inventoryUi.isOpen)) {
               if (e.code === 'KeyE' && !inventoryUi.isOpen && controls.pointerLocked) document.exitPointerLock();
               const closing = inventoryUi.isOpen;
@@ -461,8 +476,8 @@ connection = connect({
               if (closing && e.code === 'KeyE' && !inventoryUi.isOpen) controls.requestPointerLock();
               return;
             }
-            if (/^Digit[1-9]$/.test(e.code)) {
-              inventoryUi.select(Number(e.code.slice(5)) - 1);
+            if (/^Digit[0-9]$/.test(e.code)) {
+              inventoryUi.select((Number(e.code.slice(5)) + 9) % 10); // (1 is the first slot, 0 the tenth)
               return;
             }
             if (e.code === 'KeyI') {
@@ -501,12 +516,37 @@ connection = connect({
           entities = new EntityView(scene, w, () => camera.position.x * UNITS_PER_METER);
           editTool.pickEntity = (origin, dir, maxDist) => entities!.pick(origin, dir, maxDist);
           const modeTag = document.getElementById('mode')!;
-          editTool.onModeChange = (mode) => {
-            modeTag.textContent = mode.toUpperCase();
-            modeTag.dataset.mode = mode;
+          // The mode, and the size chosen (dig, place; hybrid while ⌘ is held: else it matches what's aimed at).
+          const showMode = () => {
+            const size = editTool!.chosenSize;
+            modeTag.textContent = editTool!.mode.toUpperCase() + (size !== null ? ` · ${sizeLabel(size)}` : '');
+            modeTag.dataset.mode = editTool!.mode;
+          };
+          editTool.onModeChange = () => {
+            showMode();
             updateHud();
           };
           editTool.onModeChange(editTool.mode);
+          // A size chosen: shown big under the crosshair (a square as big as it, near enough), for a moment.
+          const sizeBadge = document.getElementById('size-badge')!;
+          let sizeBadgeTimer: ReturnType<typeof setTimeout> | undefined;
+          editTool.onSizeChange = (size) => {
+            showMode();
+            updateHud();
+            clearTimeout(sizeBadgeTimer);
+            if (size === null) {
+              sizeBadge.classList.remove('shown');
+              return;
+            }
+            const box = sizeBadge.firstElementChild as HTMLElement, label = sizeBadge.lastElementChild as HTMLElement;
+            // 1/16 m: 4 px; 1 m: 24 px; more for big boxes (by halves), at most 44 px.
+            const px = Math.min(44, 4 + 5 * Math.log2(size));
+            box.style.width = box.style.height = `${px}px`;
+            label.textContent = sizeLabel(size);
+            sizeBadge.classList.add('shown');
+            // (In hybrid it's shown while ⌘ is held: it goes when ⌘ does. Otherwise, for a moment.)
+            if (editTool!.mode !== 'hybrid') sizeBadgeTimer = setTimeout(() => sizeBadge.classList.remove('shown'), 1200);
+          };
           controls.onClick = (button, mods) => editTool?.click(button, mods);
           controls.onRelease = (button) => editTool?.release(button);
           // Survival: a hard landing hurts (the server works out how much).
