@@ -4,6 +4,7 @@ import { isValidTileLevel } from './tile.js';
 import type { ColumnRange } from './chunk.js';
 import { HOTBAR_SLOTS, type GameMode } from './items.js';
 import { MAX_MATERIAL_ID } from './materials.js';
+import type { DebrisPiece } from './debris.js';
 import { isFacing, type Facing } from './objects.js';
 import type { EntityKind } from './mobs.js';
 import { UNITS_PER_METER } from './units.js';
@@ -109,6 +110,8 @@ export type ServerMessage =
   | { type: 'fuse'; x: number; y: number; z: number; size: number; ms: number }
   /** An explosion centred at (x, y, z) (units) of `radius` (units), for its flash, debris and sound (the chunks it changed come too). */
   | { type: 'explosion'; x: number; y: number; z: number; radius: number }
+  /** An explosion's debris: each piece's flight (see DebrisPiece), from now. */
+  | { type: 'debris'; pieces: DebrisPiece[] }
   /** The world's clock was changed (time set, stopped, or a new day length). */
   | { type: 'clock'; clock: DayClock; serverTime: number }
   /**

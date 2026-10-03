@@ -707,6 +707,34 @@ export class World {
     return result;
   }
 
+  /**
+   * The TNT touching `start` (sharing a face, directly or through others), `start` included: what
+   * goes off with it. At most `max` voxels.
+   */
+  tntCluster(start: { x: number; y: number; z: number; size: number }, max = 512): { x: number; y: number; z: number; size: number }[] {
+    const found = new Map<string, { x: number; y: number; z: number; size: number }>([[`${start.x},${start.y},${start.z}`, start]]);
+    const queue = [start];
+    while (queue.length && found.size < max) {
+      const t = queue.shift()!;
+      // Just outside each face: its middle and near its corners (neighbours may be smaller).
+      const s = t.size, q = Math.max(1, s / 4);
+      const probes: [number, number, number][] = [];
+      for (const [a, b] of [[q, q], [s - q, q], [q, s - q], [s - q, s - q], [s / 2, s / 2]] as const) {
+        probes.push([t.x - 1, t.y + a, t.z + b], [t.x + s, t.y + a, t.z + b], [t.x + a, t.y - 1, t.z + b], [t.x + a, t.y + s, t.z + b], [t.x + a, t.y + b, t.z - 1], [t.x + a, t.y + b, t.z + s]);
+      }
+      for (const [px, py, pz] of probes) {
+        const n = this.tntAt(Math.floor(px), Math.floor(py), Math.floor(pz));
+        if (!n) continue;
+        const key = `${n.x},${n.y},${n.z}`;
+        if (found.has(key)) continue;
+        found.set(key, n);
+        queue.push(n);
+        if (found.size >= max) break;
+      }
+    }
+    return [...found.values()];
+  }
+
   /** The TNT voxel covering unit (x, y, z) (its corner and size, units), or null if there's none. */
   tntAt(x: number, y: number, z: number): { x: number; y: number; z: number; size: number } | null {
     const n = CHUNK_SIZE, cx = Math.floor(x / n), cy = Math.floor(y / n), cz = Math.floor(z / n);
@@ -725,10 +753,15 @@ export class World {
    * Blows out a crater of `radius` (units) around (x, y, z): everything solid within it goes
    * (voxels cut by its edge broken down to 1/4 m, or 1/16 m for a small blast, so it's round),
    * placed objects in it too; water stays (and the sea flows into what's opened beside it). TNT in
-   * it stays, to be lit (returned: its voxels), except `self`, the TNT that blew. Null result if
-   * nothing changed.
+   * it stays, to be lit (returned: its voxels), except `blowing`, the TNT going off (corners,
+   * "x,y,z"). Null result if nothing changed.
    */
-  explode(x: number, y: number, z: number, radius: number, self: { x: number; y: number; z: number; size: number } | null = null): { result: EditResult | null; tnt: { x: number; y: number; z: number; size: number }[] } {
+  explode(x: number, y: number, z: number, radius: number, blowing: ReadonlySet<string> = new Set()): {
+    result: EditResult | null;
+    tnt: { x: number; y: number; z: number; size: number }[];
+    /** What it took out (voxels, corner and size in units, and material): for its debris. */
+    removed: { x: number; y: number; z: number; size: number; material: MaterialId }[];
+  } {
     const r2 = radius * radius, minPiece = radius >= 32 ? 4 : 1;
     const results: EditResult[] = [];
     // Objects in it: gone.
@@ -738,7 +771,8 @@ export class World {
       if (dx * dx + dy * dy + dz * dz <= r2) results.push(this.removeObject(o));
     }
     const tnt: { x: number; y: number; z: number; size: number }[] = [];
-    const next = new Map<string, Chunk>();
+    const removed: { x: number; y: number; z: number; size: number; material: MaterialId }[] = [];
+    const next = new Map<string, Chunk>(), seen = new Map<string, Chunk>();
     const touched: [number, number, number][] = [];
     const B = BLOCK_SIZE, n = BLOCKS_PER_CHUNK_AXIS;
     for (let by = Math.floor((y - radius) / B); by <= Math.floor((y + radius) / B); by++) {
@@ -750,7 +784,9 @@ export class World {
           const resolved = resolveChunk(this.config, { cx: Math.floor(bx / n), cy: Math.floor(by / n), cz: Math.floor(bz / n) });
           if (!resolved) continue;
           const key = chunkKey(resolved);
-          const chunk = next.get(key) ?? this.current(resolved);
+          let chunk = next.get(key) ?? seen.get(key);
+          // (Each chunk made once: generating one is costly.)
+          if (!chunk) seen.set(key, (chunk = this.current(resolved)));
           const i = blockIndex(((bx % n) + n) % n, ((by % n) + n) % n, ((bz % n) + n) % n);
           const block = chunk.blocks[i] ?? null;
           if (!block) continue;
@@ -760,7 +796,7 @@ export class World {
             const wx = bx * B + v.x, wy = by * B + v.y, wz = bz * B + v.z;
             if (isWater(v.material)) return void kept.push(v);
             const centre = (wx + v.size / 2 - x) ** 2 + (wy + v.size / 2 - y) ** 2 + (wz + v.size / 2 - z) ** 2;
-            if (v.material === Material.TNT && !(self && self.x === wx && self.y === wy && self.z === wz)) {
+            if (v.material === Material.TNT && !blowing.has(`${wx},${wy},${wz}`)) {
               if (centre <= r2) tnt.push({ x: wx, y: wy, z: wz, size: v.size });
               return void kept.push(v);
             }
@@ -772,7 +808,7 @@ export class World {
             }
             if (dmin >= r2) return void kept.push(v); // untouched
             changed = true;
-            if (dmax <= r2) return; // all inside: gone
+            if (dmax <= r2) return void removed.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material }); // all inside: gone
             if (v.size > minPiece) {
               // Cut by the edge: in eighths, each decided again.
               const h = v.size / 2;
@@ -780,6 +816,7 @@ export class World {
               return;
             }
             if (centre > r2) kept.push(v);
+            else removed.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material });
           };
           for (const v of blockVoxels(block)) visit(v);
           if (!changed) continue;
@@ -797,7 +834,7 @@ export class World {
       if (refill) results.push(refill);
       this.stats.edits++;
     }
-    return { result: results.length ? results.reduce(mergeResults) : null, tnt };
+    return { result: results.length ? results.reduce(mergeResults) : null, tnt, removed };
   }
 
   /** Opens or closes a gate or door; throws EditError for anything else. */

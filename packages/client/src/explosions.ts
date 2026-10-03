@@ -1,17 +1,19 @@
 import * as THREE from 'three';
-import { UNITS_PER_METER } from '@super-vox/shared';
+import { DEBRIS_FPS, UNITS_PER_METER, unpackDebris, type DebrisPiece } from '@super-vox/shared';
+import { materialColor } from './materials.js';
 
 /**
  * What explosions look and sound like (the server does the damage; see Explosives): lit TNT
- * blinking (faster as its fuse runs down), and for a blast, a fireball, debris flying out and
- * falling, the view shaking (more the nearer it is) and a boom (later the farther it is: sound
- * goes about 343 m a second).
+ * blinking (faster as its fuse runs down), and for a blast, a fireball, the view shaking (more
+ * the nearer it is), a boom (later the farther it is: sound goes about 343 m a second), and its
+ * debris: pieces of what it blew apart, flying the paths the server worked out, tumbling until
+ * they come to rest (where, in creative, the server leaves them: the piece gives way to the voxel).
  */
 export class ExplosionView {
   private readonly fuses = new Map<string, { mesh: THREE.Mesh; start: number; end: number }>();
   private readonly fireballs: { mesh: THREE.Mesh; start: number; radius: number }[] = [];
-  private readonly debris: THREE.InstancedMesh;
-  private readonly bits: { p: THREE.Vector3; v: THREE.Vector3; spin: THREE.Vector3; r: THREE.Euler; born: number; life: number; size: number }[] = [];
+  private readonly pieceMesh: THREE.InstancedMesh;
+  private readonly pieces: { path: [number, number, number][]; size: number; color: THREE.Color; start: number; spin: THREE.Vector3 }[] = [];
   private shakeAmount = 0;
   private audio: AudioContext | null = null;
   private readonly box = new THREE.BoxGeometry(1, 1, 1);
@@ -20,10 +22,10 @@ export class ExplosionView {
 
   constructor(private readonly scene: THREE.Scene, private readonly camera: THREE.Camera) {
     // (Unlit: the scene has no three.js lights; the voxels light themselves.)
-    this.debris = new THREE.InstancedMesh(this.box, new THREE.MeshBasicMaterial({ color: 0xffffff }), MAX_BITS);
-    this.debris.count = 0;
-    this.debris.frustumCulled = false;
-    scene.add(this.debris);
+    this.pieceMesh = new THREE.InstancedMesh(shadedBox(), new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true }), MAX_PIECES);
+    this.pieceMesh.count = 0;
+    this.pieceMesh.frustumCulled = false;
+    scene.add(this.pieceMesh);
   }
 
   /** TNT lit: the voxel at (x, y, z) (units, `size` across) blows in `ms`. */
@@ -54,25 +56,20 @@ export class ExplosionView {
     fire.position.copy(c);
     this.scene.add(fire);
     this.fireballs.push({ mesh: fire, start: now, radius: r });
-    // Debris: dirt, stone and sand coloured bits thrown up and out.
-    const n = Math.min(MAX_BITS - this.bits.length, Math.round(10 + r * 5));
-    for (let i = 0; i < n; i++) {
-      const dir = new THREE.Vector3(Math.random() * 2 - 1, Math.random() * 1.4 + 0.2, Math.random() * 2 - 1).normalize();
-      const speed = (4 + Math.random() * 10) * Math.sqrt(r);
-      this.bits.push({
-        p: c.clone().addScaledVector(dir, r * 0.3),
-        v: dir.multiplyScalar(speed),
-        spin: new THREE.Vector3(Math.random() * 10, Math.random() * 10, Math.random() * 10),
-        r: new THREE.Euler(),
-        born: now,
-        life: 1200 + Math.random() * 900,
-        size: (0.06 + Math.random() * 0.14) * Math.min(1.5, Math.sqrt(r / 2)),
-      });
-    }
     // Shake and sound, by distance.
     const d = this.camera.getWorldPosition(new THREE.Vector3()).distanceTo(c);
     this.shakeAmount = Math.max(this.shakeAmount, Math.min(0.6, (r * 0.6) / Math.max(1, d / 4)));
     this.boom(d, r);
+  }
+
+  /** A blast's debris (see DebrisPiece): each piece flies its path from now. */
+  debris(pieces: readonly DebrisPiece[]): void {
+    const now = performance.now();
+    for (const p of pieces) {
+      if (this.pieces.length >= MAX_PIECES) break;
+      const [r, g, b] = materialColor(p.m);
+      this.pieces.push({ path: unpackDebris(p), size: p.s, color: new THREE.Color(r, g, b), start: now, spin: new THREE.Vector3(Math.random() * 12 - 6, Math.random() * 12 - 6, Math.random() * 12 - 6) });
+    }
   }
 
   /** Each frame: fuses blink, fireballs grow and fade, debris flies and falls. */
@@ -103,26 +100,34 @@ export class ExplosionView {
     }
     const dt = Math.min(0.05, (now - this.lastFrame) / 1000);
     this.lastFrame = now;
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion();
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), pos = new THREE.Vector3(), scale = new THREE.Vector3();
     let k = 0;
-    for (let i = this.bits.length - 1; i >= 0; i--) {
-      const b = this.bits[i]!;
-      if (now - b.born > b.life) {
-        this.bits.splice(i, 1);
+    for (let i = this.pieces.length - 1; i >= 0; i--) {
+      const p = this.pieces[i]!, last = p.path.length - 1;
+      const t = ((now - p.start) / 1000) * DEBRIS_FPS;
+      // At rest: held a moment (in creative the voxel it becomes takes its place), then gone.
+      const rested = (t - last) / DEBRIS_FPS;
+      if (rested > REST_HOLD_S) {
+        this.pieces.splice(i, 1);
         continue;
       }
-      b.v.y -= 20 * dt;
-      b.p.addScaledVector(b.v, dt);
-      b.r.set(b.r.x + b.spin.x * dt, b.r.y + b.spin.y * dt, b.r.z + b.spin.z * dt);
-      const fade = 1 - Math.max(0, (now - b.born - b.life * 0.7) / (b.life * 0.3));
-      m.compose(b.p, q.setFromEuler(b.r), new THREE.Vector3().setScalar(b.size * fade));
-      this.debris.setMatrixAt(k, m);
-      this.debris.setColorAt(k, DEBRIS[i % DEBRIS.length]!);
+      const f = Math.min(t, last), j = Math.min(Math.floor(f), last - 1), u = last > 0 ? f - j : 0;
+      const a = p.path[Math.max(0, j)]!, b = p.path[Math.min(last, j + 1)]!;
+      const half = p.size / 2;
+      pos.set((a[0] + (b[0] - a[0]) * u + half) / UNITS_PER_METER, (a[1] + (b[1] - a[1]) * u + half) / UNITS_PER_METER, (a[2] + (b[2] - a[2]) * u + half) / UNITS_PER_METER);
+      // Tumbling while it flies, squaring up over its last few frames.
+      const spin = Math.min(1, Math.max(0, last - f) / 3) * (f / DEBRIS_FPS);
+      e.set(p.spin.x * spin, p.spin.y * spin, p.spin.z * spin);
+      const fade = rested > REST_HOLD_S - 0.3 ? Math.max(0, (REST_HOLD_S - rested) / 0.3) : 1;
+      scale.setScalar((p.size / UNITS_PER_METER) * 0.98 * fade);
+      m.compose(pos, q.setFromEuler(e), scale);
+      this.pieceMesh.setMatrixAt(k, m);
+      this.pieceMesh.setColorAt(k, p.color);
       k++;
     }
-    this.debris.count = k;
-    this.debris.instanceMatrix.needsUpdate = true;
-    if (this.debris.instanceColor) this.debris.instanceColor.needsUpdate = true;
+    this.pieceMesh.count = k;
+    this.pieceMesh.instanceMatrix.needsUpdate = true;
+    if (this.pieceMesh.instanceColor) this.pieceMesh.instanceColor.needsUpdate = true;
     this.shakeAmount *= Math.exp(-dt * 6);
     if (this.shakeAmount < 0.002) this.shakeAmount = 0;
   }
@@ -162,7 +167,19 @@ export class ExplosionView {
   }
 }
 
-const MAX_BITS = 400;
+const MAX_PIECES = 800;
+/** How long a piece stays once at rest (s), fading out over the last 0.3. */
+const REST_HOLD_S = 0.9;
 const FIREBALL_MS = 450;
 const ZERO = new THREE.Vector3();
-const DEBRIS = [0x6b4a2b, 0x8a6a42, 0x777777, 0x5d5d5d, 0xc2b280, 0x4f7a32].map((c) => new THREE.Color(c));
+/** A unit cube shaded by face (as the sun would: tops lit, sides less, undersides least), to tint by material. */
+function shadedBox(): THREE.BoxGeometry {
+  const g = new THREE.BoxGeometry(1, 1, 1);
+  const n = g.getAttribute('normal'), colors: number[] = [];
+  for (let i = 0; i < n.count; i++) {
+    const shade = n.getY(i) > 0.5 ? 1 : n.getY(i) < -0.5 ? 0.45 : n.getX(i) !== 0 ? 0.75 : 0.62;
+    colors.push(shade, shade, shade);
+  }
+  g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  return g;
+}

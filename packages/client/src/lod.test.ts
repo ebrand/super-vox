@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CHUNK_SIZE, FLAT_WORLD_16KM, tileSizeUnits } from '@super-vox/shared';
-import { DETAIL_GROW_MS, SpeedDetail, focusLead, selectLod } from './lod.js';
+import { DETAIL_GROW_MS, FLYING_STOPPED_SPEED, SpeedDetail, focusLead, selectLod } from './lod.js';
 
 const FAR = 2048 * 16;
 
@@ -131,7 +131,7 @@ describe('voxel chunks while moving fast', () => {
   it('shrinks the chunk radius in steps with speed at once, and grows it back only after a while', () => {
     const sd = new SpeedDetail(8, { full: 25, none: 60 });
     expect(sd.target(5)).toBe(8);
-    expect(sd.target(25)).toBe(8); // ordinary flying keeps full detail
+    expect(sd.target(25)).toBe(8); // ordinary speeds keep full detail
     expect(sd.target(26)).toBe(4);
     expect(sd.target(59)).toBe(4);
     expect(sd.target(60)).toBe(-1);
@@ -147,6 +147,20 @@ describe('voxel chunks while moving fast', () => {
     sd.update(5, 5100);
     sd.update(80, 5200);
     expect(sd.update(5, 5300 + DETAIL_GROW_MS - 1)).toBe(-1);
+  });
+
+  it('flying, has no voxel chunks on the move, only once stopped (unless detail at any speed was asked for)', () => {
+    const sd = new SpeedDetail(8, { full: 25, none: 60 });
+    expect(sd.target(0, true)).toBe(8);
+    expect(sd.target(FLYING_STOPPED_SPEED - 0.1, true)).toBe(8);
+    expect(sd.target(FLYING_STOPPED_SPEED, true)).toBe(-1);
+    expect(sd.target(15, true)).toBe(-1);
+    expect(sd.target(15, false)).toBe(8); // on foot: as before
+    expect(sd.update(15, 0, true)).toBe(-1); // at once
+    expect(sd.update(0, 100, true)).toBe(-1); // stopped: not yet
+    expect(sd.update(0, 100 + DETAIL_GROW_MS, true)).toBe(8);
+    const always = new SpeedDetail(8, { full: Infinity, none: Infinity });
+    expect(always.target(300, true)).toBe(8);
   });
 });
 

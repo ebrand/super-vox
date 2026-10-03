@@ -492,7 +492,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const now = Date.now();
     for (const [world, explosives] of explosivesOf) {
       if (explosives.count === 0) continue;
-      for (const b of explosives.tick(now)) {
+      const { blasts, debris, landed } = explosives.tick(now);
+      for (const r of landed) broadcast(world, r);
+      for (const b of blasts) {
         if (b.result) broadcast(world, b.result);
         toWorld(world, { type: 'explosion', x: b.x, y: b.y, z: b.z, radius: b.radius });
         for (const { tnt, ms } of b.lit) toWorld(world, { type: 'fuse', ...tnt, ms });
@@ -513,6 +515,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         }
         mobManagers.get(world)?.blast(b.x, b.y, b.z, b.radius, now);
       }
+      if (debris.length) toWorld(world, { type: 'debris', pieces: debris });
     }
   }, 50);
   app.addHook('onClose', async () => {
@@ -785,7 +788,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           const tnt = world.tntAt(msg.x, msg.y, msg.z);
           if (!tnt) return fail('no TNT there');
           let explosives = explosivesOf.get(world);
-          if (!explosives) explosivesOf.set(world, (explosives = new Explosives(world)));
+          // (In creative, debris stays where it lands.)
+          const name = clientWorld.get(socket);
+          if (!explosives) explosivesOf.set(world, (explosives = new Explosives(world, { keepDebris: () => catalog.play(name)?.mode === 'creative' })));
           const ms = explosives.light(tnt, Date.now());
           if (ms === null) return fail("it's already lit");
           send({ type: 'editResult', id: msg.id, ok: true });

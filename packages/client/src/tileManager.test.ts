@@ -146,5 +146,36 @@ describe('TileManager', () => {
     tm.retireCovered(covered, 30_000);
     expect(tm.staleCount).toBe(0);
   });
-});
 
+  it('asks first for ground with nothing drawn on it, then for finer or coarser tiles of ground already drawn', async () => {
+    const pool = {
+      run: async (job: { tile: Uint8Array }) => {
+        const m = meshTile(decodeTile(job.tile))!;
+        return { id: 0, ms: 0, buffers: packQuads(m.quads), baseY: m.baseY };
+      },
+    } as unknown as MeshWorkerPool;
+    const sent: ClientMessage[] = [];
+    const tm = new TileManager(new THREE.Scene(), new THREE.MeshBasicMaterial(), new THREE.MeshBasicMaterial(), (m) => sent.push(m), pool, 2, () => {});
+    const big: TileCoord = { level: 2, tx: 0, tz: 0 };
+    const quarters: TileCoord[] = [{ level: 1, tx: 0, tz: 0 }, { level: 1, tx: 1, tz: 0 }, { level: 1, tx: 0, tz: 1 }, { level: 1, tx: 1, tz: 1 }];
+    const edge: TileCoord[] = [{ level: 2, tx: 20, tz: 0 }, { level: 2, tx: 21, tz: 0 }];
+    tm.setTiles([big], 0, 0);
+    tm.onTileBytes(tileBytes(big));
+    await flush();
+    sent.length = 0;
+    // The big tile splits (its quarters nearest), and new ground comes into view far off: that first.
+    tm.setTiles([...quarters, ...edge], 0, 0);
+    expect(sent).toEqual(edge.map((t) => ({ type: 'requestTile', ...t })));
+    for (const t of edge) tm.onTileBytes(tileBytes(t));
+    await flush();
+    expect(sent.slice(2)).toEqual(quarters.slice(0, 2).map((t) => ({ type: 'requestTile', ...t })));
+    for (const t of quarters) tm.onTileBytes(tileBytes(t));
+    await flush();
+    sent.length = 0;
+    // The quarters merge back (drawn: they're still showing) while more new ground appears: that first.
+    const more: TileCoord = { level: 2, tx: 30, tz: 0 };
+    tm.setTiles([big, ...edge, more], 0, 0);
+    expect(sent[0]).toEqual({ type: 'requestTile', ...more });
+    expect(sent[1]).toEqual({ type: 'requestTile', ...big });
+  });
+});

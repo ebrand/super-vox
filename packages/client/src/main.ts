@@ -263,8 +263,8 @@ function trackVelocity(now: number): void {
 function updateLod(force = false): void {
   if (!world || !chunks || !tiles) return;
   // Stream terrain around the camera, centred a little ahead of it while moving; fewer voxel
-  // chunks (more 1 m tiles) the faster we go.
-  chunkRadius = speedDetail.update(Math.hypot(velocity.x, velocity.z) / UNITS_PER_METER, performance.now());
+  // chunks (more 1 m tiles) the faster we go, and flying, none until we stop (see SpeedDetail).
+  chunkRadius = speedDetail.update(Math.hypot(velocity.x, velocity.z) / UNITS_PER_METER, performance.now(), !controls.walking);
   const lead = focusLead(velocity.x, velocity.z, chunkRadius);
   const fx = camera.position.x * UNITS_PER_METER + lead.dx;
   const fz = camera.position.z * UNITS_PER_METER + lead.dz;
@@ -502,6 +502,9 @@ connection = connect({
       case 'explosion':
         explosions.explode(msg.x, msg.y, msg.z, msg.radius);
         break;
+      case 'debris':
+        explosions.debris(msg.pieces);
+        break;
       case 'respawn':
         // Died: back at the spawn point (standing on it).
         camera.position.set(unitsToMeters(msg.x), unitsToMeters(msg.y) + PLAYER.eye / UNITS_PER_METER + 0.5, unitsToMeters(msg.z));
@@ -605,7 +608,7 @@ function updateHud(): void {
     ` · M: map · L: lighting · I: hide info\n` +
     (editTool ? `${editTool.hudLines()}\n` : '') +
     (c && t
-      ? (chunkRadius < detail ? `moving fast: ${chunkRadius < 0 ? 'no voxel chunks, 1 m tiles only' : `voxel chunks within ${chunkRadius} of ${detail}`}\n` : '') +
+      ? (chunkRadius < detail ? `moving: ${chunkRadius < 0 ? 'no voxel chunks, 1 m tiles only' : `voxel chunks within ${chunkRadius} of ${detail}`}\n` : '') +
         `chunks ${c.loaded} loaded (${c.columns} columns), ${c.inFlight} in flight, ${c.queued} queued, ${c.meshing} meshing\n` +
         `tiles ${t.loaded}/${t.tiles}, ${t.inFlight} in flight, ${t.queued} queued, ${t.meshing} meshing\n` +
         (pool ? `meshing on ${pool.size} workers, ${pool.averageMs.toFixed(1)} ms per job\n` : '') +

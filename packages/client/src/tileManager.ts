@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {
   MAX_CANCEL,
+  MAX_TILE_LEVEL,
   readTileHeader,
   tileKey,
   tileSizeUnits,
@@ -107,7 +108,10 @@ export class TileManager {
       const s = tileSizeUnits(t.level);
       return Math.hypot((t.tx + 0.5) * s - focusX, (t.tz + 0.5) * s - focusZ);
     };
-    this.queue = tiles.filter((t) => !this.loaded.has(tileKey(t)) && !this.requested.has(tileKey(t))).sort((a, b) => d(a) - d(b));
+    // Ground with nothing drawn on it first (the edge we're flying into), then finer or coarser
+    // tiles for ground already drawn; each nearest first.
+    const order = new Map(tiles.filter((t) => !this.loaded.has(tileKey(t)) && !this.requested.has(tileKey(t))).map((t) => [t, (this.drawn(t) ? 1e12 : 0) + d(t)]));
+    this.queue = [...order.keys()].sort((a, b) => order.get(a)! - order.get(b)!);
     this.pump();
   }
 
@@ -156,6 +160,23 @@ export class TileManager {
       this.stale.delete(key);
       this.staleAt.delete(key);
     }
+  }
+
+  /**
+   * Whether something's drawn on tile `t`'s ground already (or nothing needs to be): it, a tile
+   * containing it, or one of the four it's made of (current or replaced but still showing).
+   */
+  private drawn(t: TileCoord): boolean {
+    const has = (k: string) => this.meshes.has(k) || this.stale.has(k);
+    if (has(tileKey(t))) return true;
+    for (let level = t.level + 1, tx = t.tx, tz = t.tz; level <= MAX_TILE_LEVEL; level++) {
+      tx = Math.floor(tx / 2);
+      tz = Math.floor(tz / 2);
+      if (has(tileKey({ level, tx, tz }))) return true;
+    }
+    if (t.level === 0) return false;
+    for (const [dx, dz] of [[0, 0], [1, 0], [0, 1], [1, 1]] as const) if (has(tileKey({ level: t.level - 1, tx: t.tx * 2 + dx, tz: t.tz * 2 + dz }))) return true;
+    return false;
   }
 
   /** Whether every selected tile on this ground is drawn (meshed). */
