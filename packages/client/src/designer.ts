@@ -842,6 +842,32 @@ function open(d: ObjectDesign | null): void {
 }
 $('new').onclick = () => open(null);
 
+// --- Folding the side panels (more room to build; remembered in this browser) --------------------
+
+const layoutEl = document.querySelector<HTMLElement>('.layout')!;
+const FOLD_KEY = 'super-vox.designer.folded';
+function setFolded(side: 'left' | 'right', folded: boolean): void {
+  layoutEl.classList.toggle(`no-${side}`, folded);
+  const btn = $<HTMLButtonElement>(`fold-${side}`);
+  const toward = side === 'left' ? folded : !folded;
+  btn.textContent = toward ? '›' : '‹';
+  btn.title = `${folded ? 'Show' : 'Hide'} the ${side === 'left' ? 'library' : 'object panel'}`;
+  try {
+    localStorage.setItem(FOLD_KEY, JSON.stringify({ left: layoutEl.classList.contains('no-left'), right: layoutEl.classList.contains('no-right') }));
+  } catch {
+    // (No storage: it just isn't remembered.)
+  }
+}
+for (const side of ['left', 'right'] as const) $(`fold-${side}`).onclick = () => setFolded(side, !layoutEl.classList.contains(`no-${side}`));
+try {
+  const saved = JSON.parse(localStorage.getItem(FOLD_KEY) ?? '{}') as { left?: boolean; right?: boolean };
+  setFolded('left', !!saved.left);
+  setFolded('right', !!saved.right);
+} catch {
+  setFolded('left', false);
+  setFolded('right', false);
+}
+
 // --- Export and import --------------------------------------------------------------------------
 
 /** A design as exported: without its item number (each server gives its own). */
