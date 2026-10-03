@@ -1,7 +1,7 @@
-import { BLOCK_SIZE, BLOCKS_PER_AXIS, DEBRIS_LIFT, GRAVITY, Material, UNITS_PER_METER, blockIndex, blockVoxelAt, isWater, type Block, type Chunk, type MaterialId } from '@super-vox/shared';
+import { BLOCK_SIZE, BLOCKS_PER_AXIS, DEBRIS_LIFT, GRAVITY, UNITS_PER_METER, isExplosive, blockIndex, blockVoxelAt, isWater, type Block, type Chunk, type MaterialId } from '@super-vox/shared';
 
 /**
- * A blast's dust: up to CLOUD_MAX pieces (CLOUD_PIECE cubes) of what it blew apart, made by each
+ * A blast's dust: up to CLOUD_MAX pieces (of CLOUD_SIZES) of what it blew apart, made by each
  * client from its own chunks (from the blast's seed, so everyone's are much alike), flown on simple
  * arcs to where they land on the ground as it is after the blast, then gone (see ExplosionView).
  * Just for show: the pieces everyone sees the same, and that stay, are the server's (see Explosives).
@@ -9,8 +9,15 @@ import { BLOCK_SIZE, BLOCKS_PER_AXIS, DEBRIS_LIFT, GRAVITY, Material, UNITS_PER_
 
 /** Most pieces in a blast's dust. */
 export const CLOUD_MAX = 100_000;
-/** Each piece's size (units): 1/4 m. */
+/** The cells (units: 1/4 m) a blast's dust is picked from: one piece each, of a size from CLOUD_SIZES. */
 export const CLOUD_PIECE = 4;
+/** The dust's piece sizes (units), and how many of them are each: mostly small, a few big. */
+export const CLOUD_SIZES: readonly { size: number; share: number }[] = [
+  { size: 1, share: 0.5 },
+  { size: 2, share: 0.3 },
+  { size: 4, share: 0.15 },
+  { size: 8, share: 0.05 },
+];
 /** Longest a piece flies (s) before it's gone, landed or not. */
 export const CLOUD_FLIGHT_S = 2.5;
 /** How long a piece stays (s) once it has landed, before it's gone. */
@@ -34,6 +41,8 @@ export interface Cloud {
   land: Float32Array;
   /** How fast it tumbles (rad/s about x, y, z), and when it's gone (s). */
   spin: Float32Array;
+  /** How big it is (m). */
+  size: Float32Array;
   material: Uint16Array;
   /** When the last of them is gone (s). */
   end: number;
@@ -85,6 +94,8 @@ export interface BlastSample {
   z: number;
   radius: number;
   seed: number;
+  /** Which way the blast goes (a unit vector; see openDirection). */
+  open: readonly [number, number, number];
   /** The pieces: each one's cell (corner, units) and material, 4 numbers a piece. */
   picked: Int32Array;
   /** The ground's height (units) on 1 m columns from block column (x0, z0), cols x cols; -Infinity where none. */
@@ -95,17 +106,17 @@ export interface BlastSample {
 }
 
 /** The dust of a blast centred at (x, y, z) of `radius` (units): sampleBlast, then flyCloud. */
-export function blastCloud(chunkAt: ChunkAt, x: number, y: number, z: number, radius: number, seed: number, max = CLOUD_MAX): Cloud {
-  return flyCloud(sampleBlast(chunkAt, x, y, z, radius, seed, max));
+export function blastCloud(chunkAt: ChunkAt, x: number, y: number, z: number, radius: number, seed: number, max = CLOUD_MAX, open: readonly [number, number, number] = [0, 1, 0]): Cloud {
+  return flyCloud(sampleBlast(chunkAt, x, y, z, radius, seed, max, open));
 }
 
 /**
  * What a blast centred at (x, y, z) of `radius` (units) blows apart, from the world as it is just
  * before (`chunkAt`; so this is done at once, before the crater's chunks): up to `max` pieces,
  * picked at random (from `seed`) among the solid cells it takes out (as World.explode: within the
- * sphere; not water, not TNT); and the ground around, for them to land on.
+ * sphere; not water, not explosives); and the ground around, for them to land on.
  */
-export function sampleBlast(chunkAt: ChunkAt, x: number, y: number, z: number, radius: number, seed: number, max = CLOUD_MAX): BlastSample {
+export function sampleBlast(chunkAt: ChunkAt, x: number, y: number, z: number, radius: number, seed: number, max = CLOUD_MAX, open: readonly [number, number, number] = [0, 1, 0]): BlastSample {
   const random = seeded(seed);
   const blockAt = blocks(chunkAt);
   const P = CLOUD_PIECE, B = BLOCK_SIZE, r2 = radius * radius;
@@ -124,7 +135,7 @@ export function sampleBlast(chunkAt: ChunkAt, x: number, y: number, z: number, r
           const cx = bx * B + lx, cy = by * B + ly, cz = bz * B + lz;
           if ((cx + P / 2 - x) ** 2 + (cy + P / 2 - y) ** 2 + (cz + P / 2 - z) ** 2 > r2) continue;
           const m: MaterialId = block.kind === 'uniform' ? block.material : (blockVoxelAt(block, lx + P / 2, ly + P / 2, lz + P / 2)?.material ?? 0);
-          if (m === 0 || isWater(m) || m === Material.TNT) continue;
+          if (m === 0 || isWater(m) || isExplosive(m)) continue;
           seen++;
           if (picked.length < max * 4) picked.push(cx, cy, cz, m);
           else {
@@ -160,7 +171,7 @@ export function sampleBlast(chunkAt: ChunkAt, x: number, y: number, z: number, r
       ground[i + cols * j] = h;
     }
   }
-  return { x, y, z, radius, seed, picked: Int32Array.from(picked), ground, x0, z0, cols };
+  return { x, y, z, radius, seed, open, picked: Int32Array.from(picked), ground, x0, z0, cols };
 }
 
 /**
@@ -169,7 +180,7 @@ export function sampleBlast(chunkAt: ChunkAt, x: number, y: number, z: number, r
  * the crater cut out. Plain arithmetic on arrays: a worker can do it (see blastCloud.worker.ts).
  */
 export function flyCloud(sample: BlastSample): Cloud {
-  const { x, y, z, radius, picked, ground, x0, z0, cols } = sample;
+  const { x, y, z, radius, picked, ground, x0, z0, cols, open } = sample;
   const B = BLOCK_SIZE, P = CLOUD_PIECE, r2 = radius * radius;
   const count = picked.length / 4;
   // (Its own random numbers: the same everywhere for the same blast.)
@@ -189,17 +200,29 @@ export function flyCloud(sample: BlastSample): Cloud {
   // Each piece: thrown out and up from the middle (a little scattered), and where it comes down.
   const M = UNITS_PER_METER, g = GRAVITY;
   const start = new Float32Array(count * 3), velocity = new Float32Array(count * 3), land = new Float32Array(count * 4), spin = new Float32Array(count * 4);
-  const material = new Uint16Array(count);
+  const material = new Uint16Array(count), size = new Float32Array(count);
   const speedScale = Math.sqrt(Math.min(2, radius / 64));
   let end = 0;
   for (let p = 0; p < count; p++) {
     const px = picked[p * 4]! + P / 2, py = picked[p * 4 + 1]! + P / 2, pz = picked[p * 4 + 2]! + P / 2;
     material[p] = picked[p * 4 + 3]!;
+    // Its size: one of CLOUD_SIZES, as often as its share.
+    let u = random(), s = CLOUD_SIZES[CLOUD_SIZES.length - 1]!.size;
+    for (const c of CLOUD_SIZES) {
+      if (u < c.share) {
+        s = c.size;
+        break;
+      }
+      u -= c.share;
+    }
+    size[p] = s / UNITS_PER_METER;
+    const half = s / 2 / UNITS_PER_METER;
     let dx = px - x, dy = py - y, dz = pz - z;
     const len = Math.hypot(dx, dy, dz) || 1;
-    dx = dx / len + (random() - 0.5) * 0.6;
-    dy = dy / len + DEBRIS_LIFT + (random() - 0.5) * 0.6;
-    dz = dz / len + (random() - 0.5) * 0.6;
+    // Out from the middle, and toward the open air (as the server's pieces), a little scattered.
+    dx = dx / len + DEBRIS_LIFT * open[0] + (random() - 0.5) * 0.6;
+    dy = dy / len + DEBRIS_LIFT * open[1] + (random() - 0.5) * 0.6;
+    dz = dz / len + DEBRIS_LIFT * open[2] + (random() - 0.5) * 0.6;
     const dl = Math.hypot(dx, dy, dz) || 1, speed = (5 + 7 * random()) * speedScale;
     const vx = (dx / dl) * speed, vy = (dy / dl) * speed, vz = (dz / dl) * speed;
     start.set([px / M, py / M, pz / M], p * 3);
@@ -208,7 +231,7 @@ export function flyCloud(sample: BlastSample): Cloud {
     const at = (t: number): [number, number, number] => [px / M + vx * t, py / M + vy * t - 0.5 * g * t * t, pz / M + vz * t];
     const hits = (t: number) => {
       const q = at(t);
-      return (vy - g * t < 0 || t > 0.1) && q[1] - P / 2 / M <= groundAt(q[0] * M, q[2] * M) / M;
+      return (vy - g * t < 0 || t > 0.1) && q[1] - half <= groundAt(q[0] * M, q[2] * M) / M;
     };
     let tl = Infinity;
     for (let t = STEP_S; t <= CLOUD_FLIGHT_S; t += STEP_S) {
@@ -226,11 +249,11 @@ export function flyCloud(sample: BlastSample): Cloud {
     if (tl === Infinity) land.set([0, 0, 0, 1e6], p * 4);
     else {
       // On top of the ground; or, run into the side of higher ground (well below its top), where it hit.
-      const q = at(tl), onTop = groundAt(q[0] * M, q[2] * M) / M + P / 2 / M;
+      const q = at(tl), onTop = groundAt(q[0] * M, q[2] * M) / M + half;
       land.set([q[0], onTop - q[1] > 0.1 ? q[1] : onTop, q[2], tl], p * 4);
     }
     spin.set([(random() - 0.5) * 16, (random() - 0.5) * 16, (random() - 0.5) * 16, gone], p * 4);
     end = Math.max(end, gone);
   }
-  return { count, start, velocity, land, spin, material, end };
+  return { count, start, velocity, land, spin, material, size, end };
 }

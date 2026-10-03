@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FLAT_WORLD_16KM, FlatGenerator, MAX_BLAST_RADIUS, Material, blastRadius, defaultFlatGen, CHAIN_FUSE_MS, FUSE_MS, unpackDebris } from '@super-vox/shared';
+import { FLAT_WORLD_16KM, FlatGenerator, MAX_BLAST_RADIUS, Material, blastRadius, tntEquivalent, defaultFlatGen, CHAIN_FUSE_MS, FUSE_MS, unpackDebris } from '@super-vox/shared';
 import { Explosives, MAX_PIECES, PIECE, pickPieces } from './explosives.js';
 import { World } from './world.js';
 
@@ -35,12 +35,12 @@ describe('World.explode', () => {
     const self = { x: 2000 * M, y: 0, z: 2000 * M, size: 16 }, other = { x: 2002 * M, y: 0, z: 2000 * M, size: 16 }, far = { x: 2010 * M, y: 0, z: 2000 * M, size: 16 };
     for (const t of [self, other, far]) w.applyEdit({ op: 'place', ...t, material: Material.TNT });
     w.placeObject('fence', 2000, 0, 2002, 'n');
-    expect(w.tntAt(self.x + 3, 5, self.z + 9)).toEqual(self);
+    expect(w.explosiveAt(self.x + 3, 5, self.z + 9)).toMatchObject(self);
     const { tnt } = w.explode(self.x + 8, 8, self.z + 8, blastRadius(16 ** 3), new Set([`${self.x},${self.y},${self.z}`]));
-    expect(tnt).toEqual([other]);
-    expect(w.tntAt(self.x + 3, 5, self.z + 9)).toBeNull();
-    expect(w.tntAt(other.x + 3, 5, other.z + 9)).toEqual(other);
-    expect(w.tntAt(far.x + 3, 5, far.z + 9)).toEqual(far);
+    expect(tnt).toEqual([{ ...other, material: Material.TNT }]);
+    expect(w.explosiveAt(self.x + 3, 5, self.z + 9)).toBeNull();
+    expect(w.explosiveAt(other.x + 3, 5, other.z + 9)).toMatchObject(other);
+    expect(w.explosiveAt(far.x + 3, 5, far.z + 9)).toMatchObject(far);
     expect(w.objectAt(2000, 0, 2002)).toBeUndefined();
   });
 });
@@ -55,8 +55,8 @@ describe('Explosives', () => {
     expect(e.light(a, 0)).toBeNull(); // already lit
     expect(e.tick(FUSE_MS - 1).blasts).toEqual([]);
     const [blast] = e.tick(FUSE_MS).blasts;
-    expect(blast).toMatchObject({ x: a.x + 8, y: 8, z: a.z + 8, radius: 64 });
-    expect(blast!.lit).toEqual([{ tnt: b, ms: (CHAIN_FUSE_MS[0] + CHAIN_FUSE_MS[1]) / 2 }]);
+    expect(blast).toMatchObject({ x: a.x + 8, y: 8, z: a.z + 8, radius: 128 }); // a 1 m TNT block: 8 m
+    expect(blast!.lit).toEqual([{ tnt: { ...b, material: Material.TNT }, ms: (CHAIN_FUSE_MS[0] + CHAIN_FUSE_MS[1]) / 2 }]);
     expect(blast!.result).not.toBeNull();
     // The chained one goes off after its short fuse.
     expect(e.tick(FUSE_MS + 1000).blasts.map((x) => x.x)).toEqual([b.x + 8]);
@@ -65,6 +65,35 @@ describe('Explosives', () => {
     w.applyEdit({ op: 'remove', x: c.x, y: c.y, z: c.z });
     expect(e.tick(FUSE_MS * 2).blasts).toEqual([]);
     expect(e.count).toBe(0);
+  });
+});
+
+describe('blast direction', () => {
+  it('goes up from the ground, and out of a wall for TNT dug into it, throwing its debris that way', () => {
+    // On the ground: up.
+    const g = flat();
+    const t = { x: 2000 * M, y: 0, z: 2000 * M, size: 16 };
+    g.applyEdit({ op: 'place', ...t, material: Material.TNT });
+    const e = new Explosives(g, { random: seededRandom(3), debrisBudgetMs: Infinity });
+    e.light(t, 0);
+    const up = e.tick(FUSE_MS).blasts[0]!;
+    expect(up.open[1]).toBeGreaterThan(0.95);
+    // A stone wall 16 m thick and high, its face (facing -x) at x = W; a 1/2 m TNT voxel (2.8 m) 1/2 m into it, 4 m up.
+    const w = flat();
+    const W = 2500 * M, Z = 2500 * M;
+    for (const dz of [-256, 0]) w.applyEdit({ op: 'fillBox', x: W, y: 0, z: Z + dz, size: 256, material: Material.Stone });
+    w.applyEdit({ op: 'removeBox', x: W, y: 64, z: Z, size: 16 });
+    const tnt = { x: W, y: 64, z: Z, size: 8 };
+    w.applyEdit({ op: 'place', ...tnt, material: Material.TNT });
+    const ex = new Explosives(w, { random: seededRandom(3), debrisBudgetMs: Infinity });
+    ex.light(tnt, 0);
+    const { blasts, debris } = ex.tick(FUSE_MS);
+    const out = blasts[0]!.open;
+    expect(out[0]).toBeLessThan(-0.9); // out of the face
+    // Most of the debris lands out in front of the wall, not back in its crater.
+    let outside = 0;
+    for (const p of debris) if (unpackDebris(p).at(-1)![0] < W) outside++;
+    expect(outside).toBeGreaterThan(debris.length * 0.6);
   });
 });
 
@@ -209,10 +238,38 @@ describe('touching TNT', () => {
     const touching = [at(0, 0, 0), at(1, 0, 0), at(1, 1, 0), at(1, 1, 1)], corner = at(2, 2, 2), apart = at(4, 0, 0);
     for (const t of [...touching, corner, apart]) w.applyEdit({ op: 'place', ...t, material: Material.TNT });
     const key = (t: { x: number; y: number; z: number }) => `${t.x},${t.y},${t.z}`;
-    expect(w.tntCluster(touching[0]!).map(key).sort()).toEqual(touching.map(key).sort());
+    expect(w.explosiveCluster({ ...touching[0]!, material: Material.TNT }).map(key).sort()).toEqual(touching.map(key).sort());
   });
 
-  it('blows a 2 x 2 x 1 block of TNT once, 8 m across, from its middle', () => {
+  it('has C4: a 1/8 m voxel blows 3.2 m, and C4 touching TNT goes off with it, adding up', () => {
+    const w = flat();
+    const c4 = { x: 7500 * M, y: 0, z: 7500 * M, size: 2 };
+    w.applyEdit({ op: 'place', ...c4, material: Material.C4 });
+    expect(w.explosiveAt(c4.x + 1, 1, c4.z + 1)).toEqual({ ...c4, material: Material.C4 });
+    const e = new Explosives(w, { random: seededRandom(2), debrisBudgetMs: Infinity });
+    expect(e.light(c4, 0)).toBe(FUSE_MS);
+    const { blasts, debris } = e.tick(FUSE_MS);
+    expect(blasts.length).toBe(1);
+    expect(blasts[0]!.radius).toBeCloseTo(3.2 * M, 9);
+    expect(blasts[0]!.x).toBe(c4.x + 1);
+    expect(debris.length).toBe(MAX_PIECES);
+    expect(debris.some((p) => p.m === Material.C4)).toBe(false);
+    expect(w.explosiveAt(c4.x + 1, 1, c4.z + 1)).toBeNull();
+    // A 1 m TNT block with a 1/8 m C4 voxel stuck to its side: their power added, from between them (by power).
+    const t = { x: 7600 * M, y: 0, z: 7600 * M, size: 16 }, stuck = { x: 7600 * M + 16, y: 0, z: 7600 * M, size: 2 };
+    w.applyEdit({ op: 'place', ...t, material: Material.TNT });
+    w.applyEdit({ op: 'place', ...stuck, material: Material.C4 });
+    e.light(t, 10_000);
+    const both = e.tick(10_000 + FUSE_MS).blasts;
+    expect(both.length).toBe(1);
+    const pt = tntEquivalent(Material.TNT, 16 ** 3), pc = tntEquivalent(Material.C4, 2 ** 3);
+    expect(both[0]!.radius).toBeCloseTo(blastRadius(pt + pc), 9);
+    expect(both[0]!.radius).toBeGreaterThan(8 * M); // more than the TNT alone
+    expect(both[0]!.x).toBeCloseTo(((t.x + 8) * pt + (stuck.x + 1) * pc) / (pt + pc), 9);
+    expect(w.explosiveAt(stuck.x + 1, 1, stuck.z + 1)).toBeNull();
+  });
+
+  it('blows a 2 x 2 x 1 block of TNT once, 16 m (the most), from its middle', () => {
     const w = flat();
     const at = (bx: number, bz: number) => ({ x: (8000 + bx) * M, y: 0, z: (8000 + bz) * M, size: 16 });
     const four = [at(0, 0), at(1, 0), at(0, 1), at(1, 1)];
@@ -221,11 +278,11 @@ describe('touching TNT', () => {
     e.light(four[0]!, 0);
     const { blasts } = e.tick(FUSE_MS);
     expect(blasts.length).toBe(1);
-    expect(blasts[0]).toMatchObject({ x: 8001 * M, y: 8, z: 8001 * M, radius: 128 });
+    expect(blasts[0]).toMatchObject({ x: 8001 * M, y: 8, z: 8001 * M, radius: MAX_BLAST_RADIUS });
     expect(blasts[0]!.lit).toEqual([]);
-    for (const t of four) expect(w.tntAt(t.x + 4, 4, t.z + 4)).toBeNull();
+    for (const t of four) expect(w.explosiveAt(t.x + 4, 4, t.z + 4)).toBeNull();
     expect(e.count).toBe(0);
-    // 8 m: well below where a single block's 4 m reaches.
-    expect(solid(w, 8001 * M, -6 * M, 8001 * M)).toBe(false);
+    // 16 m: well below where a single block's 8 m reaches.
+    expect(solid(w, 8001 * M, -12 * M, 8001 * M)).toBe(false);
   });
 });

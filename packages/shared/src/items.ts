@@ -87,6 +87,7 @@ export const PLACEABLE: readonly MaterialId[] = [
   Material.Cobblestone,
   Material.CraftingTable,
   Material.TNT,
+  Material.C4,
   Material.Water,
 ];
 

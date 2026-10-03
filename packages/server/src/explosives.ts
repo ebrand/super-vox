@@ -1,7 +1,7 @@
-import { CHAIN_FUSE_MS, DEBRIS_FPS, DEBRIS_LIFT, FUSE_MS, Material, blastRadius, isWater, packDebris, throwDebris, type DebrisPiece, type MaterialId } from '@super-vox/shared';
+import { CHAIN_FUSE_MS, DEBRIS_FPS, DEBRIS_LIFT, FUSE_MS, blastRadius, isExplosive, isWater, openDirection, packDebris, throwDebris, tntEquivalent, type DebrisPiece, type MaterialId } from '@super-vox/shared';
 import type { EditResult, World } from './world.js';
 
-/** A TNT voxel: its corner and size (units). */
+/** An explosive voxel (TNT, C4) to light: its corner and size (units). */
 export interface Tnt {
   x: number;
   y: number;
@@ -19,6 +19,8 @@ export interface Blast {
   z: number;
   radius: number;
   seed: number;
+  /** Which way it goes (a unit vector: toward the open air; see openDirection). */
+  open: [number, number, number];
   result: EditResult | null;
   lit: { tnt: Tnt; ms: number }[];
 }
@@ -46,7 +48,7 @@ export class Explosives {
   /** Debris on its way to rest, to be placed then (creative). */
   private readonly landing: { at: number; x: number; y: number; z: number; material: MaterialId }[] = [];
   /** Pieces blown out, still to be thrown: each from its cell, away from its blast's centre (units). */
-  private readonly throwing: { x: number; y: number; z: number; material: MaterialId; from: [number, number, number]; radius: number; at: number }[] = [];
+  private readonly throwing: { x: number; y: number; z: number; material: MaterialId; from: [number, number, number]; open: [number, number, number]; radius: number; at: number }[] = [];
 
   constructor(
     private readonly world: World,
@@ -82,13 +84,13 @@ export class Explosives {
       if (!this.lit.has(key)) continue; // (gone off with one it touched)
       this.lit.delete(key);
       // Still there? (Dug out or blown apart meanwhile: it doesn't go off.)
-      const here = this.world.tntAt(tnt.x, tnt.y, tnt.z);
+      const here = this.world.explosiveAt(tnt.x, tnt.y, tnt.z);
       if (!here || here.x !== tnt.x || here.y !== tnt.y || here.z !== tnt.z || here.size !== tnt.size) continue;
-      // Everything touching it goes off with it, as one: from their middle, as big as their volume makes it.
-      const cluster = this.world.tntCluster(tnt);
+      // Everything touching it goes off with it, as one: from their middle, as big as the TNT they equal makes it.
+      const cluster = this.world.explosiveCluster(here);
       let volume = 0, cx = 0, cy = 0, cz = 0;
       for (const t of cluster) {
-        const v = t.size ** 3, h = t.size / 2;
+        const v = tntEquivalent(t.material, t.size ** 3), h = t.size / 2;
         volume += v;
         cx += (t.x + h) * v;
         cy += (t.y + h) * v;
@@ -96,18 +98,20 @@ export class Explosives {
         this.lit.delete(`${t.x},${t.y},${t.z}`);
       }
       const x = cx / volume, y = cy / volume, z = cz / volume, radius = blastRadius(volume);
+      // Which way it'll go: toward the open air around (up from the ground, out of a wall).
+      const open = openDirection(this.world.solidAt, x, y, z, radius);
       const { result, tnt: caught, removed } = this.world.explode(x, y, z, radius, new Set(cluster.map((t) => `${t.x},${t.y},${t.z}`)));
       // Lit by it: TNT it caught, and any of the cluster out of its reach.
       const lit: Blast['lit'] = [];
-      const left = cluster.filter((t) => this.world.tntAt(t.x, t.y, t.z));
+      const left = cluster.filter((t) => this.world.explosiveAt(t.x, t.y, t.z));
       for (const t of [...caught, ...left]) {
         const ms = this.light(t, now, CHAIN_FUSE_MS[0] + random() * (CHAIN_FUSE_MS[1] - CHAIN_FUSE_MS[0]));
         if (ms !== null) lit.push({ tnt: t, ms });
       }
       // Debris: pieces of what it blew out, to be thrown up and away from the centre.
       const want = Math.min(MAX_WAITING_PIECES - this.throwing.length, MAX_PIECES);
-      for (const cell of pickPieces(removed, want, random)) this.throwing.push({ ...cell, from: [x, y, z], radius, at: now });
-      blasts.push({ x, y, z, radius, seed: Math.floor(random() * 2 ** 31), result, lit });
+      for (const cell of pickPieces(removed, want, random)) this.throwing.push({ ...cell, from: [x, y, z], open, radius, at: now });
+      blasts.push({ x, y, z, radius, seed: Math.floor(random() * 2 ** 31), open, result, lit });
     }
     return { blasts, debris: this.throw(now, random), landed: this.settle(now) };
   }
@@ -120,10 +124,10 @@ export class Explosives {
     const out: DebrisPiece[] = [];
     const started = performance.now(), budget = this.opts.debrisBudgetMs ?? DEBRIS_BUDGET_MS;
     while (this.throwing.length && (!out.length || performance.now() - started < budget)) {
-      const { x, y, z, material, from, radius, at } = this.throwing.shift()!;
+      const { x, y, z, material, from, open, radius, at } = this.throwing.shift()!;
       const c = [x + PIECE / 2 - from[0], y + PIECE / 2 - from[1], z + PIECE / 2 - from[2]];
       const len = Math.hypot(c[0]!, c[1]!, c[2]!) || 1;
-      const dir = [c[0]! / len, c[1]! / len + DEBRIS_LIFT, c[2]! / len];
+      const dir = [c[0]! / len + DEBRIS_LIFT * open[0], c[1]! / len + DEBRIS_LIFT * open[1], c[2]! / len + DEBRIS_LIFT * open[2]];
       const dl = Math.hypot(dir[0]!, dir[1]!, dir[2]!);
       const speed = (5 + 7 * random()) * Math.sqrt(Math.min(2, radius / 64));
       const flight = throwDebris([x, y, z], PIECE, [(dir[0]! / dl) * speed, (dir[1]! / dl) * speed, (dir[2]! / dl) * speed], this.world.solidAt);
@@ -152,10 +156,10 @@ export class Explosives {
 
 /**
  * Up to `want` pieces (PIECE-sized cells on the grid) from what a blast took out, chosen at random
- * by volume (without listing every cell: a big blast takes out hundreds of thousands), never TNT or water.
+ * by volume (without listing every cell: a big blast takes out hundreds of thousands), never explosives or water.
  */
 export function pickPieces(removed: readonly { x: number; y: number; z: number; size: number; material: MaterialId }[], want: number, random: () => number): { x: number; y: number; z: number; material: MaterialId }[] {
-  const solid = removed.filter((v) => !isWater(v.material) && v.material !== Material.TNT);
+  const solid = removed.filter((v) => !isWater(v.material) && !isExplosive(v.material));
   const cellsOf = (size: number) => (size <= PIECE ? 1 : (size / PIECE) ** 3);
   const count = solid.reduce((n, v) => n + cellsOf(v.size), 0);
   const cell = (v: (typeof solid)[number], k: number) => {

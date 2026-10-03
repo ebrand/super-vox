@@ -18,6 +18,7 @@ import {
   isObjectMaterial,
   isUsableMaterial,
   isFood,
+  isExplosive,
   itemName,
   materialName,
   objectKindOf,
@@ -337,8 +338,8 @@ export class EditTool {
           this.send({ type: 'attack', target: mob.id, weapon });
           return;
         }
-        // TNT lights; a sword cuts leaves (a sweep); otherwise left-click removes.
-        if (this.target && this.targetMaterial === Material.TNT) this.ignite();
+        // Explosives light; a sword cuts leaves (a sweep); otherwise left-click removes.
+        if (this.target && this.targetMaterial !== null && isExplosive(this.targetMaterial)) this.ignite();
         else if ((held === Item.WoodenSword || held === Item.StoneSword) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) this.cut(held);
         else if (this.survival) this.miningHeld = true; // (mined as it's held: see stepMining)
         else this.remove();
@@ -412,8 +413,8 @@ export class EditTool {
       ? 'nothing in reach'
       : this.targetMaterial !== null && isObjectMaterial(this.targetMaterial)
         ? `aiming at a ${materialName(this.targetMaterial)}${usable ? ' (right-click: open / close)' : ''} (left-click: take it down)`
-        : this.targetMaterial === Material.TNT
-          ? `aiming at ${sizeLabel(this.target.size)} of TNT${this.mode === 'hybrid' ? ' (click: light it, then stand back)' : ''}`
+        : this.targetMaterial !== null && isExplosive(this.targetMaterial)
+          ? `aiming at ${sizeLabel(this.target.size)} of ${materialName(this.targetMaterial)}${this.mode === 'hybrid' ? ' (click: light it, then stand back)' : ''}`
           : `aiming at a ${sizeLabel(this.target.size)} voxel`;
     const held = this.materialOf();
     const actions =
@@ -558,7 +559,7 @@ export class EditTool {
     if (this.target) this.submit({ op: 'remove', x: this.target.x, y: this.target.y, z: this.target.z }, 'remove');
   }
 
-  /** Lights the TNT aimed at (the server blows it after its fuse). */
+  /** Lights the explosive (TNT, C4) aimed at (the server blows it after its fuse). */
   private ignite(): void {
     if (!this.target) return;
     const id = this.nextId++;
@@ -577,7 +578,7 @@ export class EditTool {
   private aimedRemoval(): (Edit & { op: 'remove' | 'removeBox' }) | null {
     if (this.mode === 'dig' && this.dig) return { op: 'removeBox', x: this.dig.x, y: this.dig.y, z: this.dig.z, size: this.dig.size };
     if (this.mode === 'place' || !this.target) return null;
-    if (this.mode === 'hybrid' && this.targetMaterial === Material.TNT) return null; // (lit, not mined)
+    if (this.mode === 'hybrid' && this.targetMaterial !== null && isExplosive(this.targetMaterial)) return null; // (lit, not mined)
     const held = this.materialOf();
     if ((held === Item.WoodenSword || held === Item.StoneSword) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) return null;
     return { op: 'remove', x: this.target.x, y: this.target.y, z: this.target.z };

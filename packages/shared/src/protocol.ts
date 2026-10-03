@@ -12,7 +12,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 28;
+export const PROTOCOL_VERSION = 29;
 
 export type ClientMessage =
   | {
@@ -118,9 +118,10 @@ export type ServerMessage =
   | { type: 'fuse'; x: number; y: number; z: number; size: number; ms: number }
   /**
    * An explosion centred at (x, y, z) (units) of `radius` (units), for its flash, dust (from
-   * `seed`) and sound; sent before the chunks it changed, so clients can see what it blew apart.
+   * `seed`, thrown toward `open`: see openDirection) and sound; sent before the chunks it changed,
+   * so clients can see what it blew apart.
    */
-  | { type: 'explosion'; x: number; y: number; z: number; radius: number; seed: number }
+  | { type: 'explosion'; x: number; y: number; z: number; radius: number; seed: number; open: [number, number, number] }
   /** An explosion's debris: each piece's flight (see DebrisPiece), from now. */
   | { type: 'debris'; pieces: DebrisPiece[] }
   /** The world's clock was changed (time set, stopped, or a new day length). */

@@ -26,6 +26,7 @@ const COLORS: Record<number, readonly [number, number, number]> = {
   [Material.Cobblestone]: [0.22, 0.22, 0.23],
   [Material.CraftingTable]: [0.33, 0.17, 0.07],
   [Material.TNT]: [0.78, 0.12, 0.09],
+  [Material.C4]: [0.62, 0.6, 0.48],
   [Material.FenceWood]: [0.4, 0.26, 0.12],
   [Material.GateWood]: [0.36, 0.22, 0.1],
   [Material.DoorWood]: [0.3, 0.17, 0.07],

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { DEBRIS_FPS, GRAVITY, UNITS_PER_METER, unpackDebris, type DebrisPiece } from '@super-vox/shared';
-import { CLOUD_PIECE, type Cloud } from './blastCloud.js';
+import type { Cloud } from './blastCloud.js';
 import { materialColor } from './materials.js';
 
 /**
@@ -32,7 +32,7 @@ export class ExplosionView {
     scene.add(this.pieceMesh);
     // Dust's shader made now, with a piece nobody sees (gone from the start): not at the first blast, a stall.
     const one = (n: number, values: number[] = []) => Float32Array.from({ length: n }, (_, i) => values[i] ?? 0);
-    this.cloud({ count: 1, start: one(3), velocity: one(3), land: one(4, [0, 0, 0, 1e6]), spin: one(4), material: new Uint16Array([1]), end: 0.5 }, performance.now());
+    this.cloud({ count: 1, start: one(3), velocity: one(3), land: one(4, [0, 0, 0, 1e6]), spin: one(4), size: one(1, [0.25]), material: new Uint16Array([1]), end: 0.5 }, performance.now());
   }
 
   /** TNT lit: the voxel at (x, y, z) (units, `size` across) blows in `ms`. */
@@ -167,6 +167,7 @@ export class ExplosionView {
     geometry.setAttribute('aVel', new THREE.InstancedBufferAttribute(cloud.velocity, 3));
     geometry.setAttribute('aLand', new THREE.InstancedBufferAttribute(cloud.land, 4));
     geometry.setAttribute('aSpin', new THREE.InstancedBufferAttribute(cloud.spin, 4));
+    geometry.setAttribute('aSize', new THREE.InstancedBufferAttribute(cloud.size, 1));
     const colors = new Float32Array(cloud.count * 3);
     for (let i = 0; i < cloud.count; i++) colors.set(materialColor(cloud.material[i]!), i * 3);
     geometry.setAttribute('aColor', new THREE.InstancedBufferAttribute(colors, 3));
@@ -175,13 +176,13 @@ export class ExplosionView {
     const material = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true });
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = time;
-      shader.uniforms.uSize = { value: (CLOUD_PIECE / UNITS_PER_METER) * 0.98 };
       shader.uniforms.uG = { value: GRAVITY };
       shader.vertexShader = shader.vertexShader
         .replace(
           '#include <common>',
           `#include <common>
-uniform float uTime; uniform float uSize; uniform float uG;
+uniform float uTime; uniform float uG;
+attribute float aSize;
 attribute vec3 aStart; attribute vec3 aVel; attribute vec4 aLand; attribute vec4 aSpin; attribute vec3 aColor;`,
         )
         .replace(
@@ -193,7 +194,7 @@ vec3 a = aSpin.xyz * min(t, tl);
 float ca = cos(a.x), sa = sin(a.x), cb = cos(a.y), sb = sin(a.y), cc = cos(a.z), sc = sin(a.z);
 mat3 turn = mat3(cc, sc, 0.0, -sc, cc, 0.0, 0.0, 0.0, 1.0) * mat3(cb, 0.0, -sb, 0.0, 1.0, 0.0, sb, 0.0, cb) * mat3(1.0, 0.0, 0.0, 0.0, ca, sa, 0.0, -sa, ca);
 float life = clamp((aSpin.w - t) / 0.3, 0.0, 1.0);
-vec3 transformed = turn * (position * uSize * life) + at;`,
+vec3 transformed = turn * (position * aSize * 0.98 * life) + at;`,
         )
         .replace('#include <color_vertex>', '#include <color_vertex>\nvColor.rgb *= aColor;');
     };

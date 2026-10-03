@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BLOCKS_PER_CHUNK, GRAVITY, Material, emptyChunk, type Chunk } from '@super-vox/shared';
-import { CLOUD_FLIGHT_S, CLOUD_PIECE, CLOUD_REST_S, blastCloud, type ChunkAt } from './blastCloud.js';
+import { CLOUD_FLIGHT_S, CLOUD_PIECE, CLOUD_REST_S, CLOUD_SIZES, blastCloud, type ChunkAt } from './blastCloud.js';
 
 const M = 16;
 
@@ -86,7 +86,7 @@ describe('blastCloud', () => {
       const grounds = [d2 < R * R ? Math.min(0, 8 / M - Math.sqrt(R * R - d2)) : 0];
       // (Found to 1/30 s / 32: within a little of the arc.)
       expect(Math.abs(arcY - ly)).toBeLessThan(0.11);
-      const tops_ = grounds.map((g) => g + CLOUD_PIECE / M / 2);
+      const tops_ = grounds.map((g) => g + cl.size[i]! / 2);
       if (tops_.some((t) => Math.abs(ly - t) < 2e-3)) tops++; // (32-bit floats)
       else expect(ly).toBeLessThan(Math.max(...tops_)); // run into the side of higher ground: stays where it hit
       if (d2 >= R * R) outside++;
@@ -102,8 +102,27 @@ describe('blastCloud', () => {
     expect(water.count).toBe(0);
     const tnt = blastCloud(flatWorld(() => Material.TNT), x, 8, z, r, 1);
     expect(tnt.count).toBe(0);
+    expect(blastCloud(flatWorld(() => Material.C4), x, 8, z, r, 1).count).toBe(0);
     const none = blastCloud(() => undefined, x, 8, z, r, 1);
     expect(none.count).toBe(0);
     expect(none.end).toBe(0);
+  });
+
+  it('throws its dust toward the open air it is told of (out of a wall), not just up', () => {
+    const mean = (cl: ReturnType<typeof blastCloud>, axis: number) => cl.velocity.filter((_, i) => i % 3 === axis).reduce((a, v) => a + v, 0) / cl.count;
+    const up = blastCloud(flatWorld(), x, 8, z, r, 5);
+    const side = blastCloud(flatWorld(), x, 8, z, r, 5, undefined, [-1, 0, 0]);
+    expect(Math.abs(mean(up, 0))).toBeLessThan(0.5);
+    expect(mean(side, 0)).toBeLessThan(-3); // out toward -x
+    expect(mean(side, 1)).toBeLessThan(mean(up, 1)); // and less up
+  });
+
+  it('comes in sizes: half 1/16 m, 30% 1/8 m, 15% 1/4 m, 5% 1/2 m', () => {
+    const cl = blastCloud(flatWorld(), x, 8, z, r, 11);
+    for (const { size, share } of CLOUD_SIZES) {
+      const n = cl.size.filter((s) => Math.abs(s - size / M) < 1e-6).length;
+      expect(Math.abs(n / cl.count - share)).toBeLessThan(0.02);
+    }
+    expect(cl.size.every((s) => CLOUD_SIZES.some((c) => Math.abs(s - c.size / M) < 1e-6))).toBe(true);
   });
 });

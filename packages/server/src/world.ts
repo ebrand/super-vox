@@ -16,6 +16,7 @@ import {
   blockHasRoom,
   blockIndex,
   isWater,
+  isExplosive,
   setBlockWater,
   applyEdit,
   decodeChunk,
@@ -66,6 +67,15 @@ import {
   type Tile,
 } from '@super-vox/shared';
 import type { ChunkStore } from './chunkStore.js';
+
+/** An explosive voxel (TNT, C4): its corner and size (units), and material. */
+export interface Explosive {
+  x: number;
+  y: number;
+  z: number;
+  size: number;
+  material: MaterialId;
+}
 import type { DiskCache } from './diskCache.js';
 
 /** Running totals for monitoring a world. */
@@ -138,6 +148,18 @@ function mergeResults(a: EditResult, b: EditResult): EditResult {
 function editBounds(edit: Edit): { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } {
   const size = edit.op === 'place' || edit.op === 'removeBox' || edit.op === 'fillBox' ? edit.size : 1;
   return { x0: edit.x, y0: edit.y, z0: edit.z, x1: edit.x + size, y1: edit.y + size, z1: edit.z + size };
+}
+
+/** Whether two cubes (corner and size, units) share part of a face: touching on one axis, overlapping (not just at an edge) on the other two. */
+function sharesFace(a: { x: number; y: number; z: number; size: number }, b: { x: number; y: number; z: number; size: number }): boolean {
+  const lo = [a.x, a.y, a.z], blo = [b.x, b.y, b.z];
+  let touching = 0;
+  for (let k = 0; k < 3; k++) {
+    const a0 = lo[k]!, a1 = a0 + a.size, b0 = blo[k]!, b1 = b0 + b.size;
+    if (a1 === b0 || b1 === a0) touching++;
+    else if (Math.min(a1, b1) - Math.max(a0, b0) <= 0) return false;
+  }
+  return touching === 1;
 }
 
 /** What an edit changed: the new chunks, columns whose height range widened, and how much of each material (see volumeChange). */
@@ -747,35 +769,50 @@ export class World {
   }
 
   /**
-   * The TNT touching `start` (sharing a face, directly or through others), `start` included: what
-   * goes off with it. At most `max` voxels.
+   * The explosives (TNT, C4) touching `start` (sharing a face, directly or through others), `start`
+   * included: what goes off with it. At most `max` voxels.
    */
-  tntCluster(start: { x: number; y: number; z: number; size: number }, max = 512): { x: number; y: number; z: number; size: number }[] {
-    const found = new Map<string, { x: number; y: number; z: number; size: number }>([[`${start.x},${start.y},${start.z}`, start]]);
+  explosiveCluster(start: Explosive, max = 512): Explosive[] {
+    const key = (t: Explosive) => `${t.x},${t.y},${t.z}`;
+    const found = new Map<string, Explosive>([[key(start), start]]);
     const queue = [start];
     while (queue.length && found.size < max) {
       const t = queue.shift()!;
-      // Just outside each face: its middle and near its corners (neighbours may be smaller).
-      const s = t.size, q = Math.max(1, s / 4);
-      const probes: [number, number, number][] = [];
-      for (const [a, b] of [[q, q], [s - q, q], [q, s - q], [s - q, s - q], [s / 2, s / 2]] as const) {
-        probes.push([t.x - 1, t.y + a, t.z + b], [t.x + s, t.y + a, t.z + b], [t.x + a, t.y - 1, t.z + b], [t.x + a, t.y + s, t.z + b], [t.x + a, t.y + b, t.z - 1], [t.x + a, t.y + b, t.z + s]);
-      }
-      for (const [px, py, pz] of probes) {
-        const n = this.tntAt(Math.floor(px), Math.floor(py), Math.floor(pz));
-        if (!n) continue;
-        const key = `${n.x},${n.y},${n.z}`;
-        if (found.has(key)) continue;
-        found.set(key, n);
-        queue.push(n);
-        if (found.size >= max) break;
+      // The explosives in the 1 m blocks around it that share part of a face with it (any size: a
+      // 1/8 m voxel in the corner of a 1 m block's face counts).
+      const B = BLOCK_SIZE;
+      for (let by = Math.floor((t.y - 1) / B); by <= Math.floor((t.y + t.size) / B); by++) {
+        for (let bz = Math.floor((t.z - 1) / B); bz <= Math.floor((t.z + t.size) / B); bz++) {
+          for (let bx = Math.floor((t.x - 1) / B); bx <= Math.floor((t.x + t.size) / B); bx++) {
+            for (const v of this.explosivesInBlock(bx, by, bz)) {
+              if (found.has(key(v)) || !sharesFace(t, v)) continue;
+              found.set(key(v), v);
+              queue.push(v);
+              if (found.size >= max) return [...found.values()];
+            }
+          }
+        }
       }
     }
     return [...found.values()];
   }
 
-  /** The TNT voxel covering unit (x, y, z) (its corner and size, units), or null if there's none. */
-  tntAt(x: number, y: number, z: number): { x: number; y: number; z: number; size: number } | null {
+  /** The explosive voxels in 1 m block (bx, by, bz) (world block coordinates; corners in units). */
+  private explosivesInBlock(bx: number, by: number, bz: number): Explosive[] {
+    const n = BLOCKS_PER_CHUNK_AXIS;
+    const resolved = resolveChunk(this.config, { cx: Math.floor(bx / n), cy: Math.floor(by / n), cz: Math.floor(bz / n) });
+    if (!resolved) return [];
+    const block = this.current(resolved).blocks[blockIndex(((bx % n) + n) % n, ((by % n) + n) % n, ((bz % n) + n) % n)] ?? null;
+    if (!block || (block.kind === 'uniform' && !isExplosive(block.material))) return [];
+    const B = BLOCK_SIZE;
+    return blockVoxels(block)
+      .filter((v) => isExplosive(v.material))
+      .map((v) => ({ x: bx * B + v.x, y: by * B + v.y, z: bz * B + v.z, size: v.size, material: v.material }));
+  }
+
+
+  /** The explosive voxel (TNT, C4) covering unit (x, y, z) (its corner and size, units, and material), or null if there's none. */
+  explosiveAt(x: number, y: number, z: number): Explosive | null {
     const n = CHUNK_SIZE, cx = Math.floor(x / n), cy = Math.floor(y / n), cz = Math.floor(z / n);
     const resolved = resolveChunk(this.config, { cx, cy, cz });
     if (!resolved) return null;
@@ -783,9 +820,9 @@ export class World {
     const lx = x - cx * n, ly = y - cy * n, lz = z - cz * n;
     const block = chunk.blocks[blockIndex(Math.floor(lx / BLOCK_SIZE), Math.floor(ly / BLOCK_SIZE), Math.floor(lz / BLOCK_SIZE))] ?? null;
     const v = blockVoxelContaining(block, lx % BLOCK_SIZE, ly % BLOCK_SIZE, lz % BLOCK_SIZE);
-    if (!v || v.material !== Material.TNT) return null;
+    if (!v || !isExplosive(v.material)) return null;
     const ox = x - (lx % BLOCK_SIZE), oy = y - (ly % BLOCK_SIZE), oz = z - (lz % BLOCK_SIZE);
-    return { x: ox + v.x, y: oy + v.y, z: oz + v.z, size: v.size };
+    return { x: ox + v.x, y: oy + v.y, z: oz + v.z, size: v.size, material: v.material };
   }
 
   /**
@@ -797,7 +834,7 @@ export class World {
    */
   explode(x: number, y: number, z: number, radius: number, blowing: ReadonlySet<string> = new Set()): {
     result: EditResult | null;
-    tnt: { x: number; y: number; z: number; size: number }[];
+    tnt: Explosive[];
     /** What it took out (voxels, corner and size in units, and material): for its debris. */
     removed: { x: number; y: number; z: number; size: number; material: MaterialId }[];
   } {
@@ -809,7 +846,7 @@ export class World {
       const dx = deltaX(this.config, x, ox), dy = Math.max(0, Math.max(o.y * BLOCK_SIZE - y, y - (o.y + objectHeight(o.kind)) * BLOCK_SIZE)), dz = oz - z;
       if (dx * dx + dy * dy + dz * dz <= r2) results.push(this.removeObject(o));
     }
-    const tnt: { x: number; y: number; z: number; size: number }[] = [];
+    const tnt: Explosive[] = [];
     const removed: { x: number; y: number; z: number; size: number; material: MaterialId }[] = [];
     const next = new Map<string, Chunk>(), seen = new Map<string, Chunk>();
     const touched: [number, number, number][] = [];
@@ -835,8 +872,8 @@ export class World {
             const wx = bx * B + v.x, wy = by * B + v.y, wz = bz * B + v.z;
             if (isWater(v.material)) return void kept.push(v);
             const centre = (wx + v.size / 2 - x) ** 2 + (wy + v.size / 2 - y) ** 2 + (wz + v.size / 2 - z) ** 2;
-            if (v.material === Material.TNT && !blowing.has(`${wx},${wy},${wz}`)) {
-              if (centre <= r2) tnt.push({ x: wx, y: wy, z: wz, size: v.size });
+            if (isExplosive(v.material) && !blowing.has(`${wx},${wy},${wz}`)) {
+              if (centre <= r2) tnt.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material });
               return void kept.push(v);
             }
             // Nearest and farthest points of the voxel from the centre.

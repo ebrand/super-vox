@@ -508,7 +508,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       for (const r of landed) broadcast(world, r);
       for (const b of blasts) {
         // (The explosion first: clients make dust of what's there before the crater arrives.)
-        toWorld(world, { type: 'explosion', x: b.x, y: b.y, z: b.z, radius: b.radius, seed: b.seed });
+        toWorld(world, { type: 'explosion', x: b.x, y: b.y, z: b.z, radius: b.radius, seed: b.seed, open: b.open.map((v) => Math.round(v * 1000) / 1000) as [number, number, number] });
         if (b.result) broadcast(world, b.result);
         for (const { tnt, ms } of b.lit) toWorld(world, { type: 'fuse', ...tnt, ms });
         // Hurt: players (who can be) and mobs in reach.
@@ -812,8 +812,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (!greeted) return;
           const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
           if (!canEdit()) return fail('sign in to build');
-          const tnt = world.tntAt(msg.x, msg.y, msg.z);
-          if (!tnt) return fail('no TNT there');
+          const tnt = world.explosiveAt(msg.x, msg.y, msg.z);
+          if (!tnt) return fail('nothing to light there');
           let explosives = explosivesOf.get(world);
           // (In creative, debris stays where it lands.)
           const name = clientWorld.get(socket);

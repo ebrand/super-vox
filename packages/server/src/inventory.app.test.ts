@@ -222,7 +222,9 @@ describe('survival needs', () => {
     const hungry = healths(p.msgs).at(-1)!.food;
     p.ws.send(JSON.stringify({ type: 'eat', item: Item.Pork }));
     await p.until(() => healths(p.msgs).at(-1)!.food > hungry);
-    expect(healths(p.msgs).at(-1)!.food).toBe(hungry + 4);
+    // Four back (or three: a point may have gone meanwhile, to the last sprint or just living).
+    expect(healths(p.msgs).at(-1)!.food).toBeGreaterThanOrEqual(hungry + 3);
+    expect(healths(p.msgs).at(-1)!.food).toBeLessThanOrEqual(hungry + 4);
     await p.until(() => (p.inventory()!.items.find(([id]) => id === Item.Pork)?.[1] ?? 0) === pork - 1);
     p.ws.close();
   }, 15_000);
@@ -244,17 +246,16 @@ describe('TNT', () => {
     expect(await act(p, { type: 'ignite', x: tnt.x + 4, y: 4, z: tnt.z + 4 })).toMatchObject({ ok: true });
     expect(p.msgs.find((m) => m.type === 'fuse')).toMatchObject({ type: 'fuse', ...tnt, ms: FUSE_MS });
     expect(await act(p, { type: 'ignite', x: tnt.x + 4, y: 4, z: tnt.z + 4 })).toMatchObject({ ok: false, error: "it's already lit" });
-    expect(await act(p, { type: 'ignite', x: tnt.x + 40, y: 4, z: tnt.z + 4 })).toMatchObject({ ok: false, error: 'no TNT there' });
+    expect(await act(p, { type: 'ignite', x: tnt.x + 40, y: 4, z: tnt.z + 4 })).toMatchObject({ ok: false, error: 'nothing to light there' });
     await p.until(() => p.msgs.some((m) => m.type === 'explosion'), FUSE_MS + 2000);
-    expect(p.msgs.find((m) => m.type === 'explosion')).toEqual({ type: 'explosion', x: tnt.x + 8, y: 8, z: tnt.z + 8, radius: 64, seed: expect.any(Number) });
+    expect(p.msgs.find((m) => m.type === 'explosion')).toEqual({ type: 'explosion', x: tnt.x + 8, y: 8, z: tnt.z + 8, radius: 128, seed: expect.any(Number), open: expect.any(Array) });
     // The explosion before the crater's chunks (clients make its dust from the world as it was).
     await p.until(() => order.lastIndexOf('chunk') > order.indexOf('explosion'));
     expect(order.indexOf('explosion')).toBeGreaterThanOrEqual(0);
     expect(order.slice(0, order.indexOf('explosion')).filter((t) => t === 'chunk').length).toBe(0);
-    await p.until(() => p.msgs.some((m) => m.type === 'health'));
-    const h = p.msgs.filter((m) => m.type === 'health').at(-1) as { health: number };
-    expect(h.health).toBeLessThan(20);
-    expect(world.tntAt(tnt.x + 4, 4, tnt.z + 4)).toBeNull();
+    // Hurt (players are told their health on joining too: the blast's is the one below 20).
+    await p.until(() => p.msgs.some((m) => m.type === 'health' && m.health < 20));
+    expect(world.explosiveAt(tnt.x + 4, 4, tnt.z + 4)).toBeNull();
     p.ws.close();
   }, 15_000);
 });

@@ -36,8 +36,10 @@ export const Material = {
    * the sea, lakes and rivers (Water), which stay put and never run dry.
    */
   PouredWater: 32,
-  /** Explosive: lit with a click, it blows a crater after a fuse (see explosives.ts). */
+  /** Explosives: lit with a click, they blow a crater after a fuse (see explosives.ts). */
   TNT: 33,
+  /** As TNT, far stronger: a 1/8 m voxel blows as a 1 m TNT block (see EXPLOSIVE_POWER). */
+  C4: 34,
 } as const;
 
 /** Flowing water reaches this many blocks from its source. */
@@ -88,6 +90,7 @@ const MATERIAL_NAMES: Record<number, string> = {
   [Material.GateWood]: 'gate',
   [Material.DoorWood]: 'door',
   [Material.TNT]: 'TNT',
+  [Material.C4]: 'C4',
 };
 
 
