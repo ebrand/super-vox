@@ -1,3 +1,4 @@
+import './fullscreen.js';
 import { DEFAULT_SITE_SEARCH, SITE_LIMITS, WORLD_SHAPES, isWorldShape, validateSiteSearch, type CastleSite, type SiteSearch, type WorldShape } from '@super-vox/shared';
 import type { SitesRequest, SitesResponse } from './sites.worker.js';
 

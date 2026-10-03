@@ -1,3 +1,4 @@
+import './fullscreen.js';
 import './envBadge.js';
 import { SETTINGS_LIMITS, workersFor, defaultSettings, loadSettings, saveSettings, type Performance, type Settings } from './settings.js';
 

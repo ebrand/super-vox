@@ -18,7 +18,7 @@
       }
       #menu:hover { background: rgba(0, 0, 0, 0.8); }
       #mode {
-        position: fixed; left: 8px; bottom: 8px; padding: 4px 10px;
+        position: fixed; left: 42px; bottom: 8px; padding: 4px 10px;
         font: 600 12px/1.4 ui-monospace, monospace; letter-spacing: 0.08em;
         color: #e6e6e6; background: rgba(0, 0, 0, 0.55); border-radius: 4px;
         border-left: 4px solid #9aa4ad; pointer-events: none;
@@ -26,6 +26,14 @@
       #mode[data-mode="dig"] { border-left-color: #ff8a20; }
       #mode[data-mode="place"] { border-left-color: #40ff60; }
       #mode:empty { display: none; }
+      /* Fullscreen on and off (see main.ts), beside the mode. */
+      #fullscreen {
+        position: fixed; left: 8px; bottom: 8px; width: 28px; height: 25px; padding: 0;
+        display: flex; align-items: center; justify-content: center; cursor: pointer;
+        color: #e6e6e6; background: rgba(0, 0, 0, 0.55); border: 0; border-radius: 4px;
+      }
+      #fullscreen:hover { background: rgba(0, 0, 0, 0.75); }
+      #fullscreen[hidden] { display: none; }
       /* The size chosen (see main.ts): under the crosshair for a moment after it changes. */
       #size-badge {
         position: fixed; left: 50%; top: calc(50% + 34px); transform: translateX(-50%);
@@ -159,6 +167,7 @@
     <div id="size-badge"><span></span><span></span></div>
     <div id="mining" hidden></div>
     <div id="mode"></div>
+    <button id="fullscreen" type="button" title="Fullscreen" aria-label="Fullscreen" hidden></button>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
