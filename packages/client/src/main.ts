@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CHUNK_SIZE, UNITS_PER_METER, clockHours, decodeClimate, formatHours, isValidTolerance, normalizeX, unitsToMeters, type DayClock, type WorldConfig } from '@super-vox/shared';
+import { CHUNK_SIZE, MAX_AIR, MAX_FOOD, REGEN_FOOD, UNITS_PER_METER, clockHours, decodeClimate, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, type DayClock, type DeathCause, type WorldConfig } from '@super-vox/shared';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool } from './editTool.js';
@@ -190,7 +190,7 @@ const sessionStore = (): Storage | null => {
 /** Mobs and other players (see EntityView). */
 let entities: EntityView | null = null;
 
-/** Health (survival): hearts above the hotbar, a red flash when hurt. */
+/** Survival: hearts and food above the hotbar (breath too, under water), a red flash when hurt. */
 const healthEl = document.createElement('div');
 healthEl.id = 'health';
 healthEl.hidden = true;
@@ -198,7 +198,9 @@ const hurtEl = document.createElement('div');
 hurtEl.id = 'hurt';
 document.body.append(healthEl, hurtEl);
 let health: number | null = null;
-function showHealth(h: number, max: number): void {
+/** What to say when we died, by how. */
+const DEATHS: Record<DeathCause, string> = { fell: 'you fell to your death', drowned: 'you drowned', starved: 'you starved', mob: 'you were killed', blast: 'you were blown up' };
+function showHealth(h: number, max: number, food: number, air: number): void {
   if (health !== null && h < health) {
     hurtEl.classList.remove('flash');
     void hurtEl.offsetWidth; // restart the animation
@@ -206,9 +208,20 @@ function showHealth(h: number, max: number): void {
   }
   health = h;
   healthEl.hidden = false;
-  const hearts = max / 2;
-  healthEl.textContent = Array.from({ length: hearts }, (_, i) => (h >= (i + 1) * 2 ? '♥' : h >= i * 2 + 1 ? '❥' : '♡')).join('');
-  healthEl.title = `${h} / ${max}`;
+  // Two points a symbol: full, half, empty.
+  const row = (value: number, of: number, full: string, half: string, empty: string) =>
+    Array.from({ length: of / 2 }, (_, i) => (value >= (i + 1) * 2 ? full : value >= i * 2 + 1 ? half : empty)).join('');
+  const hearts = document.createElement('span'), meal = document.createElement('span'), breath = document.createElement('span');
+  hearts.className = 'hearts';
+  hearts.textContent = row(h, max, '♥', '❥', '♡');
+  hearts.title = `health ${h} / ${max}`;
+  meal.className = 'food';
+  meal.textContent = row(food, MAX_FOOD, '●', '◐', '○');
+  meal.title = `food ${food} / ${MAX_FOOD}${food === 0 ? ': starving' : food < REGEN_FOOD ? ": hungry (you don't heal)" : ''}`;
+  breath.className = 'air';
+  breath.textContent = air < MAX_AIR ? '◯'.repeat(air) : '';
+  breath.title = `breath ${air} / ${MAX_AIR}`;
+  healthEl.replaceChildren(breath, hearts, meal);
 }
 let connection: ReturnType<typeof connect> | null = null;
 /** Reconnection attempts since the last welcome (for backing off). */
@@ -322,10 +335,16 @@ connection = connect({
           world = w;
           if (msg.seaLevel !== null) addSea(msg.seaLevel);
           void loadTint(w.wrapX);
-          // Start above and behind the spawn point, looking at it.
+          // Start above and behind the spawn point, looking at it; in survival (no flying down: a fall
+          // that far would hurt), standing on it, looking ahead.
           const spawn = new THREE.Vector3(unitsToMeters(msg.spawn.x), unitsToMeters(msg.spawn.y), unitsToMeters(msg.spawn.z));
-          camera.position.set(spawn.x, spawn.y + 12, spawn.z + 24);
-          controls.lookAt(spawn);
+          if (msg.mode === 'survival' && msg.canEdit) {
+            camera.position.set(spawn.x, spawn.y + PLAYER.eye / UNITS_PER_METER + 0.5, spawn.z);
+            controls.lookAt(new THREE.Vector3(spawn.x, camera.position.y, spawn.z - 10));
+          } else {
+            camera.position.set(spawn.x, spawn.y + 12, spawn.z + 24);
+            controls.lookAt(spawn);
+          }
           controls.minY = unitsToMeters(w.minYUnits) + 1;
           const send = (m: Parameters<NonNullable<typeof connection>['send']>[0]) => connection?.send(m);
           pool = new MeshWorkerPool(workers);
@@ -349,8 +368,9 @@ connection = connect({
           controls.groundLoaded = () => {
             const [x, y, z] = eyeUnits();
             const feet = y - PLAYER.eye;
-            const at = (uy: number) => chunks!.chunkAt({ cx: Math.floor(x / CHUNK_SIZE), cy: Math.floor(uy / CHUNK_SIZE), cz: Math.floor(z / CHUNK_SIZE) });
-            return at(feet) !== undefined && at(feet - CHUNK_SIZE) !== undefined;
+            // (Known: arrived, or empty air above the ground there; so walking off a cliff falls.)
+            const known = (uy: number) => chunks!.known({ cx: Math.floor(x / CHUNK_SIZE), cy: Math.floor(uy / CHUNK_SIZE), cz: Math.floor(z / CHUNK_SIZE) });
+            return known(feet) && known(feet - CHUNK_SIZE);
           };
           const worldParam = worldName !== undefined ? `&world=${encodeURIComponent(worldName)}` : '';
           /** Goes to (x, z) (units), landing a little above `surfaceY` (walking settles onto it). */
@@ -456,6 +476,10 @@ connection = connect({
           editTool.onModeChange(editTool.mode);
           controls.onClick = (button, mods) => editTool?.click(button, mods);
           controls.onRelease = (button) => editTool?.release(button);
+          // Survival: a hard landing hurts (the server works out how much).
+          controls.onLand = (speed) => {
+            if (survivalMovement && fallDamage(speed) > 0) send({ type: 'fell', speed });
+          };
           controls.onModifiedWheel = (deltaY) => {
             editTool?.scrollSize(deltaY);
             updateHud();
@@ -494,7 +518,7 @@ connection = connect({
         entities?.update(msg.entities);
         break;
       case 'health':
-        showHealth(msg.health, msg.max);
+        showHealth(msg.health, msg.max, msg.food, msg.air);
         break;
       case 'fuse':
         explosions.fuse(msg.x, msg.y, msg.z, msg.size, msg.ms);
@@ -508,8 +532,9 @@ connection = connect({
       case 'respawn':
         // Died: back at the spawn point (standing on it).
         camera.position.set(unitsToMeters(msg.x), unitsToMeters(msg.y) + PLAYER.eye / UNITS_PER_METER + 0.5, unitsToMeters(msg.z));
+        controls.stopFalling(); // (no falling on from where we died)
         updateLod(true);
-        editTool?.say('you died: back at the spawn point');
+        editTool?.say(`${DEATHS[msg.cause ?? 'mob']}: back at the spawn point`);
         break;
       case 'inventory':
         inventoryUi.update(msg);
@@ -521,6 +546,10 @@ connection = connect({
       case 'error':
         if (msg.code === 'craft') {
           inventoryUi.say(msg.message);
+          break;
+        }
+        if (msg.code === 'eat') {
+          editTool?.say(msg.message);
           break;
         }
         console.error(`[super-vox] server error ${msg.code}: ${msg.message}`);

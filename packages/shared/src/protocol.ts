@@ -5,13 +5,14 @@ import type { ColumnRange } from './chunk.js';
 import { HOTBAR_SLOTS, type GameMode } from './items.js';
 import { MAX_MATERIAL_ID } from './materials.js';
 import type { DebrisPiece } from './debris.js';
+import type { DeathCause } from './survival.js';
 import { isFacing, type Facing } from './objects.js';
 import type { EntityKind } from './mobs.js';
 import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 26;
+export const PROTOCOL_VERSION = 27;
 
 export type ClientMessage =
   | {
@@ -63,6 +64,10 @@ export type ClientMessage =
   | { type: 'use'; id: number; x: number; y: number; z: number }
   /** Hit a mob (`target`, an entity id) with what's in hand (`weapon`: an item id, null for a bare hand). */
   | { type: 'attack'; target: number; weapon: number | null }
+  /** Survival: landed from a fall at `speed` (m/s, downward); see fallDamage. */
+  | { type: 'fell'; speed: number }
+  /** Survival: eat one of `item` (a food; see FOODS). */
+  | { type: 'eat'; item: number }
   /** Make something (a recipe id, see RECIPES); answered with the new inventory, or an error. */
   | { type: 'craft'; recipe: string }
   /** The player's hotbar arrangement (HOTBAR_SLOTS item ids, null for empty), kept with their inventory. */
@@ -102,10 +107,13 @@ export type ServerMessage =
    * sent a few times a second. Anything not listed has gone (out of range, or gone for good).
    */
   | { type: 'entities'; entities: EntitySnapshot[] }
-  /** The player's health (after it changes); at 0 they've died and come back (see `respawn`). */
-  | { type: 'health'; health: number; max: number }
-  /** The player died and comes back at (x, y, z) (feet, units). */
-  | { type: 'respawn'; x: number; y: number; z: number }
+  /**
+   * Survival: the player's health (of `max`), food (of MAX_FOOD) and breath (bubbles, of MAX_AIR),
+   * after any changes; at 0 health they've died and come back (see `respawn`).
+   */
+  | { type: 'health'; health: number; max: number; food: number; air: number }
+  /** The player died (how, if known) and comes back at (x, y, z) (feet, units). */
+  | { type: 'respawn'; x: number; y: number; z: number; cause?: DeathCause }
   /** TNT lit: the voxel at (x, y, z) of `size` (units) blows in `ms`. */
   | { type: 'fuse'; x: number; y: number; z: number; size: number; ms: number }
   /** An explosion centred at (x, y, z) (units) of `radius` (units), for its flash, debris and sound (the chunks it changed come too). */
@@ -306,6 +314,12 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   }
   if (msg.type === 'attack' && isId(msg.target) && (msg.weapon === null || isInt32(msg.weapon))) {
     return { type: 'attack', target: msg.target as number, weapon: msg.weapon as number | null };
+  }
+  if (msg.type === 'fell' && typeof msg.speed === 'number' && Number.isFinite(msg.speed) && msg.speed >= 0) {
+    return { type: 'fell', speed: msg.speed };
+  }
+  if (msg.type === 'eat' && isInt32(msg.item)) {
+    return { type: 'eat', item: msg.item };
   }
   if (msg.type === 'craft' && typeof msg.recipe === 'string' && /^[a-z0-9-]{1,64}$/.test(msg.recipe)) {
     return { type: 'craft', recipe: msg.recipe };

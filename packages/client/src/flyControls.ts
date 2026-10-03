@@ -84,6 +84,8 @@ export class FlyControls {
   onModifiedWheel: ((deltaY: number) => void) | null = null;
   /** Called when a mouse button is let go while the mouse is captured. */
   onRelease: ((button: number) => void) | null = null;
+  /** Called on foot when we hit the ground, with how fast (m/s; see fallDamage). */
+  onLand: ((speed: number) => void) | null = null;
   /** Called when the mouse is captured or released, with an error message if capture failed. */
   onPointerLockChange: ((locked: boolean, error?: string) => void) | null = null;
   private readonly listeners: [EventTarget, string, EventListener][] = [];
@@ -194,6 +196,7 @@ export class FlyControls {
       );
       this.walk = r.state;
       this.camera.position.add(new THREE.Vector3(...r.delta));
+      if (r.landed > 0) this.onLand?.(r.landed);
     } else {
       this.swimming = false;
       this.walk = { vy: 0, grounded: false };
@@ -202,6 +205,11 @@ export class FlyControls {
     }
     if (this.camera.position.y < this.minY) this.camera.position.y = this.minY;
     this.apply();
+  }
+
+  /** Stops any fall or jump under way (after being moved somewhere: no landing from where we were). */
+  stopFalling(): void {
+    this.walk = { vy: 0, grounded: false };
   }
 
   dispose(): void {

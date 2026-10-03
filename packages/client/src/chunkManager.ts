@@ -504,6 +504,17 @@ export class ChunkManager {
    * The decoded chunk for picking: a Chunk, null if known empty, or
    * undefined if it isn't loaded.
    */
+  /**
+   * Whether we know what's in chunk `coord`: it's here, or its column is known and it's above (or
+   * below) everything in it, so it's empty (never sent: nothing to send).
+   */
+  known(coord: ChunkCoord): boolean {
+    if (this.chunkAt(coord) !== undefined) return true;
+    const range = this.ranges.get(colKey(coord.cx, coord.cz));
+    if (range === undefined) return false;
+    return range === null || coord.cy * CHUNK_SIZE > range.maxY || (coord.cy + 1) * CHUNK_SIZE <= range.minY;
+  }
+
   chunkAt(coord: ChunkCoord): Chunk | null | undefined {
     const key = chunkKey(coord);
     if (this.decoded.has(key)) return this.decoded.get(key);

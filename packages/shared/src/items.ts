@@ -38,6 +38,8 @@ export const Item = {
   Gate: 1004,
   Door: 1005,
   Bucket: 1006,
+  /** Food (see FOODS): from pigs. */
+  Pork: 1007,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -50,6 +52,7 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.Gate]: 'gate',
   [Item.Door]: 'door',
   [Item.Bucket]: 'bucket',
+  [Item.Pork]: 'pork',
 };
 
 /** Whether an id is a block material (amounts are volumes) rather than an item (amounts are counts). */

@@ -258,3 +258,21 @@ describe('streaming', () => {
   });
 });
 
+describe('known', () => {
+  it('knows chunks that came, and empty air above or below everything in a known column; nothing of unknown columns', () => {
+    const { cm } = setup(FLAT_WORLD_16KM);
+    cm.setRegion([{ cx: 0, cz: 5 }, { cx: 1, cz: 5 }], 0, 5 * CHUNK_SIZE);
+    expect(cm.known({ cx: 0, cy: 3, cz: 5 })).toBe(false); // column not here yet
+    cm.onColumn({ cx: 0, cz: 5, minY: -CHUNK_SIZE, maxY: 2 * CHUNK_SIZE - 1 }); // chunks -1..1
+    expect(cm.known({ cx: 0, cy: 0, cz: 5 })).toBe(false); // in range: its chunk hasn't come
+    cm.onChunkBytes(chunkBytes(0, 0, 5));
+    expect(cm.known({ cx: 0, cy: 0, cz: 5 })).toBe(true);
+    expect(cm.known({ cx: 0, cy: 2, cz: 5 })).toBe(true); // above everything: air
+    expect(cm.known({ cx: 0, cy: 40, cz: 5 })).toBe(true);
+    expect(cm.known({ cx: 0, cy: -2, cz: 5 })).toBe(true); // below everything
+    expect(cm.known({ cx: 0, cy: 1, cz: 5 })).toBe(false);
+    cm.onColumn({ cx: 1, cz: 5, minY: null, maxY: null }); // nothing in it at all
+    expect(cm.known({ cx: 1, cy: 0, cz: 5 })).toBe(true);
+    expect(cm.known({ cx: 2, cy: 0, cz: 5 })).toBe(false); // not in the region
+  });
+});

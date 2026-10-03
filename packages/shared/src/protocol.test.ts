@@ -125,6 +125,11 @@ describe('protocol', () => {
   it('validates attacks', () => {
     expect(decodeClientMessage('{"type":"attack","target":12,"weapon":1001}')).toEqual({ type: 'attack', target: 12, weapon: 1001 });
     expect(decodeClientMessage('{"type":"attack","target":12,"weapon":null}')).toEqual({ type: 'attack', target: 12, weapon: null });
+    expect(decodeClientMessage('{"type":"fell","speed":17.5}')).toEqual({ type: 'fell', speed: 17.5 });
+    expect(decodeClientMessage('{"type":"fell","speed":-1}')).toBeNull();
+    expect(decodeClientMessage('{"type":"fell","speed":"fast"}')).toBeNull();
+    expect(decodeClientMessage('{"type":"eat","item":1007}')).toEqual({ type: 'eat', item: 1007 });
+    expect(decodeClientMessage('{"type":"eat","item":1.5}')).toBeNull();
     expect(decodeClientMessage('{"type":"attack","target":-1,"weapon":null}')).toBeNull();
     expect(decodeClientMessage('{"type":"attack","target":3}')).toBeNull();
   });

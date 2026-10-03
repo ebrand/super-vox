@@ -12,17 +12,20 @@ function world(...boxes: [number, number, number, number, number, number][]): So
 function walker(w: SolidAt, eye: [number, number, number]) {
   const pos = [...eye] as [number, number, number];
   let state: WalkState = { vy: 0, grounded: false };
+  const landings: number[] = [];
   const move: Mover = (d) => {
     const r = moveAabb(playerBox([pos[0] * 16, pos[1] * 16, pos[2] * 16]), [d[0] * 16, d[1] * 16, d[2] * 16], w);
     return { delta: [r.delta[0] / 16, r.delta[1] / 16, r.delta[2] / 16], blocked: r.blocked };
   };
   return {
     pos,
+    landings,
     get state() { return state; },
     step(dx: number, dz: number, jump = false, dt = 1 / 60, speed = 4, loaded = true) {
       const r = walkStep(state, { dx, dz, speed, jump }, dt, move, loaded);
       pos[0] += r.delta[0]; pos[1] += r.delta[1]; pos[2] += r.delta[2];
       state = r.state;
+      if (r.landed) landings.push(r.landed);
     },
     run(seconds: number, dx = 0, dz = 0, jump = false) {
       for (let t = 0; t < seconds; t += 1 / 60) this.step(dx, dz, jump);
@@ -33,6 +36,20 @@ function walker(w: SolidAt, eye: [number, number, number]) {
 const EYE = 1.62;
 
 describe('walkStep', () => {
+  it('says once how hard it landed: a fall from 10 m at about sqrt(2 g h); a jump softly; standing, never', () => {
+    const p = walker(world(), [0.5, 10 + EYE, 0.5]);
+    p.run(3);
+    expect(p.landings.length).toBe(1);
+    expect(p.landings[0]!).toBeGreaterThan(Math.sqrt(2 * GRAVITY * 10) * 0.97);
+    expect(p.landings[0]!).toBeLessThan(Math.sqrt(2 * GRAVITY * 10) * 1.03);
+    p.run(2);
+    expect(p.landings.length).toBe(1);
+    p.step(0, 0, true);
+    p.run(2);
+    expect(p.landings.length).toBe(2);
+    expect(p.landings[1]!).toBeLessThan(JUMP_SPEED * 1.05);
+  });
+
   it('falls under gravity and lands standing on the ground', () => {
     const p = walker(world(), [0.5, 10, 0.5]);
     p.run(0.5);

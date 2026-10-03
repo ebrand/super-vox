@@ -17,6 +17,7 @@ import {
   isWater,
   isObjectMaterial,
   isUsableMaterial,
+  isFood,
   itemName,
   materialName,
   objectKindOf,
@@ -346,6 +347,7 @@ export class EditTool {
         // doors; with a fence, gate or door in hand, places one.
         if (held === Item.Bucket) this.bucket();
         else if (this.targetMaterial !== null && isUsableMaterial(this.targetMaterial)) this.use();
+        else if (held !== null && isFood(held)) this.eat(held);
         else if (this.material && objectKindOf(this.material.id)) this.placeObject(this.material.id);
         else this.place();
       }
@@ -525,6 +527,12 @@ export class EditTool {
     const id = this.nextId++;
     this.pending.set(id, 'open');
     this.send({ type: 'use', id, x: this.target.x, y: this.target.y, z: this.target.z });
+  }
+
+  /** Eats one of `food` (survival; the server says if we can't). */
+  private eat(food: ItemId): void {
+    if (!this.survival) return this.say('creative: no need to eat');
+    this.send({ type: 'eat', item: food });
   }
 
   /** Places an object (fence, gate, door) in the 1 m block beside the face aimed at, facing the way we look. */

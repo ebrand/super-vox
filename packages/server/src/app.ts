@@ -13,8 +13,13 @@ import {
   columnSpans,
   ATTACK_REACH,
   PLAYER_HEALTH,
-  REGEN_AFTER_MS,
-  REGEN_MS,
+  EXHAUSTION,
+  Vitals,
+  fallDamage,
+  isFood,
+  isWater,
+  WALK_SPEED,
+  type DeathCause,
   UNITS_PER_METER,
   attackDamage,
   deltaX,
@@ -98,11 +103,11 @@ interface Player {
   tiles: number;
   edits: number;
   bytesOut: number;
-  /** Combat: health, whether mobs can hurt them (signed in, survival), when last hurt and healed, and last attacked (ms). */
-  health: number;
+  /** Survival: health, food and breath (see Vitals), and whether anything can hurt them (signed in, survival); what they were last told of them. */
+  vitals: Vitals;
   vulnerable: boolean;
-  lastHurt: number;
-  lastRegen: number;
+  vitalsSent: string;
+  /** When they last attacked (ms). */
   lastAttack: number;
 }
 
@@ -440,6 +445,20 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const sendTo = (client: WebSocket, msg: ServerMessage) => {
     if (client.readyState === client.OPEN) out(client, encodeMessage(msg));
   };
+  /** Tells a player their health, food and breath, if any changed since they were last told. */
+  const sendVitals = (client: WebSocket, p: Player, force = false) => {
+    const v = p.vitals, msg = { type: 'health' as const, health: v.health, max: PLAYER_HEALTH, food: v.food, air: v.bubbles };
+    const key = `${msg.health},${msg.food},${msg.air}`;
+    if (!force && key === p.vitalsSent) return;
+    p.vitalsSent = key;
+    sendTo(client, msg);
+  };
+  /** Hurts a player (if anything can): killed, they're back at the spawn point, whole again, everything kept. */
+  const harm = (client: WebSocket, p: Player, world: World, damage: number, cause: DeathCause, now: number) => {
+    if (!p.vulnerable || damage <= 0) return;
+    if (p.vitals.hurt(damage, now)) sendTo(client, { type: 'respawn', x: world.spawn.x, y: world.spawn.y, z: world.spawn.z, cause });
+    sendVitals(client, p);
+  };
   const mobbing = setInterval(() => {
     const now = Date.now();
     const byWorld = new Map<World, WebSocket[]>();
@@ -453,22 +472,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       const targets = here.map(({ p }) => ({ id: p.id, x: p.pose!.x, y: p.pose!.y - EYE, z: p.pose!.z, vulnerable: p.vulnerable }));
       for (const hit of mobs.step(0.1, now, targets, night)) {
         const e = here.find(({ p }) => p.id === hit.player);
-        if (!e || !e.p.vulnerable) continue;
-        e.p.health -= hit.damage;
-        e.p.lastHurt = now;
-        if (e.p.health <= 0) {
-          // Back at the spawn point, whole again, everything kept.
-          e.p.health = PLAYER_HEALTH;
-          sendTo(e.s, { type: 'respawn', x: world.spawn.x, y: world.spawn.y, z: world.spawn.z });
-        }
-        sendTo(e.s, { type: 'health', health: e.p.health, max: PLAYER_HEALTH });
+        if (e) harm(e.s, e.p, world, hit.damage, 'mob', now);
       }
       for (const { s, p } of here) {
-        // Healing: a point every REGEN_MS once unhurt for REGEN_AFTER_MS.
-        if (p.vulnerable && p.health < PLAYER_HEALTH && now - p.lastHurt >= REGEN_AFTER_MS && now - p.lastRegen >= REGEN_MS) {
-          p.health++;
-          p.lastRegen = now;
-          sendTo(s, { type: 'health', health: p.health, max: PLAYER_HEALTH });
+        // Breath, food, healing (see Vitals): the eye under water or not.
+        if (p.vulnerable) {
+          const eye = world.materialAtUnit(Math.floor(p.pose!.x), Math.floor(p.pose!.y), Math.floor(p.pose!.z));
+          const r = p.vitals.step(0.1, now, eye !== undefined && isWater(eye));
+          if (r.died) sendTo(s, { type: 'respawn', x: world.spawn.x, y: world.spawn.y, z: world.spawn.z, ...(r.cause ? { cause: r.cause } : {}) });
+          sendVitals(s, p);
         }
         // What this player sees: mobs, and other players.
         const entities = mobs.near(p.pose!.x, p.pose!.z, VIEW, now);
@@ -503,15 +515,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           const p = players.get(client);
           if (w !== world || !p?.pose || !p.vulnerable) continue;
           const d = Math.hypot(deltaX(world.config, b.x, p.pose.x), p.pose.y - EYE + 0.9 * UNITS_PER_METER - b.y, p.pose.z - b.z);
-          const damage = blastDamage(d, b.radius);
-          if (damage <= 0) continue;
-          p.health -= damage;
-          p.lastHurt = now;
-          if (p.health <= 0) {
-            p.health = PLAYER_HEALTH;
-            sendTo(client, { type: 'respawn', x: world.spawn.x, y: world.spawn.y, z: world.spawn.z });
-          }
-          sendTo(client, { type: 'health', health: p.health, max: PLAYER_HEALTH });
+          harm(client, p, world, blastDamage(d, b.radius), 'blast', now);
         }
         mobManagers.get(world)?.blast(b.x, b.y, b.z, b.radius, now);
       }
@@ -623,7 +627,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             players.set(socket, {
               id: nextPlayer++, world: msg.world ?? catalog.defaultName, connectedAt: Date.now(), tolerance: world.tolerance,
               name: who?.account.name ?? null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
-              health: PLAYER_HEALTH, vulnerable: false, lastHurt: 0, lastRegen: 0, lastAttack: 0,
+              vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0,
             });
             send({
               type: 'welcome',
@@ -657,7 +661,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
                 const p = players.get(socket);
                 if (p && play.mode === 'survival') {
                   p.vulnerable = true;
-                  send({ type: 'health', health: p.health, max: PLAYER_HEALTH });
+                  sendVitals(socket, p, true);
                 }
               })
               .catch((err: unknown) => {
@@ -705,9 +709,31 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           }
           break;
 
-        case 'mine':
+        case 'mine': {
           mining = { x: msg.x, y: msg.y, z: msg.z, at: Date.now() };
+          const p = players.get(socket);
+          if (p?.vulnerable) p.vitals.exert(EXHAUSTION.mine);
           break;
+        }
+
+        case 'fell': {
+          const p = players.get(socket);
+          if (greeted && p) harm(socket, p, world, fallDamage(msg.speed), 'fell', Date.now());
+          break;
+        }
+
+        case 'eat': {
+          const p = players.get(socket);
+          if (!greeted || !p?.vulnerable || !inventory) return;
+          if (!isFood(msg.item)) return send({ type: 'error', code: 'eat', message: `a ${itemName(msg.item)} isn't food` });
+          const why = inventory.refuseItem(msg.item);
+          if (why) return send({ type: 'error', code: 'eat', message: why });
+          if (!p.vitals.eat(msg.item)) return send({ type: 'error', code: 'eat', message: "you're not hungry" });
+          inventory.addItem(msg.item, -1);
+          send(inventory.message());
+          sendVitals(socket, p);
+          break;
+        }
 
         case 'cancel':
           for (const [cx, cy, cz] of msg.chunks ?? []) queue.cancel(`c:${cx},${cy},${cz}`);
@@ -870,8 +896,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             ? 'stone-sword'
             : msg.weapon === Item.WoodenSword && (inventory?.count(Item.WoodenSword) ?? 1) >= 1 ? 'wooden-sword' : 'hand';
           p.lastAttack = now;
+          if (p.vulnerable) p.vitals.exert(EXHAUSTION.attack);
           // (A little reach to spare: the pose is up to a tenth of a second old.)
-          mobManagers.get(world)?.attack(msg.target, p.pose.x, p.pose.y, p.pose.z, attackDamage(weapon), ATTACK_REACH + 1, now);
+          const r = mobManagers.get(world)?.attack(msg.target, p.pose.x, p.pose.y, p.pose.z, attackDamage(weapon), ATTACK_REACH + 1, now);
+          // A pig killed: pork (1 to 3).
+          if (r?.killed && r.kind === 'pig' && inventory && p.vulnerable) {
+            inventory.addItem(Item.Pork, 1 + Math.floor(Math.random() * 3));
+            send(inventory.message());
+          }
           break;
         }
 
@@ -900,7 +932,19 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         case 'pose': {
           const p = players.get(socket);
           // (Where in the world: on a round world the client's x keeps going past the seam.)
-          if (p) p.pose = { x: greeted ? normalizeX(world.config, msg.x) : msg.x, y: msg.y, z: msg.z, yaw: msg.yaw, at: Date.now() };
+          if (!p) break;
+          const now = Date.now(), before = p.pose;
+          p.pose = { x: greeted ? normalizeX(world.config, msg.x) : msg.x, y: msg.y, z: msg.z, yaw: msg.yaw, at: now };
+          // Survival: going places makes you hungry (sprinting more, swimming a little more).
+          if (greeted && p.vulnerable && before) {
+            const metres = Math.hypot(deltaX(world.config, before.x, p.pose.x), p.pose.z - before.z) / UNITS_PER_METER;
+            const seconds = (now - before.at) / 1000;
+            if (metres > 0 && metres < 30 && seconds > 0) {
+              const feet = world.materialAtUnit(Math.floor(p.pose.x), Math.floor(p.pose.y - EYE + 8), Math.floor(p.pose.z));
+              const rate = feet !== undefined && isWater(feet) ? EXHAUSTION.swim : metres / seconds > WALK_SPEED * 1.2 ? EXHAUSTION.sprint : EXHAUSTION.walk;
+              p.vitals.exert(rate * metres);
+            }
+          }
           break;
         }
       }

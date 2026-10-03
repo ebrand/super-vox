@@ -138,6 +138,96 @@ describe('big boxes (creative)', () => {
   });
 });
 
+describe('survival needs', () => {
+  type Health = Extract<ServerMessage, { type: 'health' }>;
+  const healths = (msgs: ServerMessage[]) => msgs.filter((m): m is Health => m.type === 'health');
+
+  it('a hard landing hurts (a point a metre past 3 m), a long enough fall kills; not in creative', async () => {
+    const { url, cookie } = await setup('survival');
+    const p = await player(url, cookie);
+    await p.until(() => healths(p.msgs).length > 0);
+    expect(healths(p.msgs).at(-1)).toMatchObject({ health: 20, max: 20, food: 20, air: 10 });
+    p.ws.send(JSON.stringify({ type: 'pose', x: 9000 * 16, y: 26, z: 9000 * 16, yaw: 0 }));
+    p.ws.send(JSON.stringify({ type: 'fell', speed: Math.sqrt(2 * 20 * 3) })); // 3 m: nothing
+    p.ws.send(JSON.stringify({ type: 'fell', speed: Math.sqrt(2 * 20 * 10) })); // 10 m: 7
+    await p.until(() => healths(p.msgs).at(-1)!.health < 20);
+    expect(healths(p.msgs).at(-1)!.health).toBe(13);
+    p.ws.send(JSON.stringify({ type: 'fell', speed: 50 }));
+    await p.until(() => p.msgs.some((m) => m.type === 'respawn'));
+    expect(p.msgs.find((m) => m.type === 'respawn')).toMatchObject({ cause: 'fell' });
+    await p.until(() => healths(p.msgs).at(-1)!.health === 20);
+    p.ws.close();
+
+    await app.close();
+    const c = await setup('creative');
+    const q = await player(c.url, c.cookie);
+    await q.until(() => !!q.inventory());
+    q.ws.send(JSON.stringify({ type: 'fell', speed: 50 }));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(healths(q.msgs)).toEqual([]);
+    expect(q.msgs.some((m) => m.type === 'respawn')).toBe(false);
+    q.ws.close();
+  });
+
+  it('breath runs out with your head under water, and comes back above it', async () => {
+    const { url, cookie, world } = await setup('survival');
+    const p = await player(url, cookie);
+    await p.until(() => healths(p.msgs).length > 0);
+    const x = 9100 * 16, z = 9100 * 16;
+    // A well 2 m deep (stone walls, so the water stays), full.
+    for (const y of [0, 16]) {
+      for (const [dx, dz] of [[-16, 0], [16, 0], [0, -16], [0, 16]]) world.applyEdit({ op: 'place', x: x + dx!, y, z: z + dz!, size: 16, material: Material.Stone });
+      world.applyEdit({ op: 'place', x, y, z, size: 16, material: Material.Water });
+    }
+    p.ws.send(JSON.stringify({ type: 'pose', x: x + 8, y: 26, z: z + 8, yaw: 0 })); // eye 1.62 m up: in the water
+    await p.until(() => healths(p.msgs).at(-1)!.air <= 8, 4000);
+    p.ws.send(JSON.stringify({ type: 'pose', x: x + 8 + 32, y: 26, z: z + 8, yaw: 0 })); // out of it
+    await p.until(() => healths(p.msgs).at(-1)!.air === 10, 3000);
+    expect(healths(p.msgs).every((h) => h.health === 20)).toBe(true);
+    p.ws.close();
+  }, 10_000);
+
+  it('pigs give pork; going places makes you hungry; eating pork fills you up (not past full)', async () => {
+    let manager: MobManager | null = null;
+    const { url, cookie, inventories, ann } = await setup('survival', (w) => (manager = new MobManager(w, () => 0.999)));
+    await inventories.save(ann.id, 'default@single', { items: new Map([[Item.StoneSword, 1]]), hotbar: Array(HOTBAR_SLOTS).fill(null) });
+    const p = await player(url, cookie);
+    await p.until(() => !!p.inventory() && healths(p.msgs).length > 0);
+    const errors = () => p.msgs.filter((m) => m.type === 'error' && m.code === 'eat').map((m) => (m as { message: string }).message);
+    const at = { x: 8000 * 16, z: 8000 * 16 };
+    p.ws.send(JSON.stringify({ type: 'pose', x: at.x, y: 26, z: at.z, yaw: 0 }));
+    p.ws.send(JSON.stringify({ type: 'eat', item: Item.Pork }));
+    await p.until(() => errors().length === 1);
+    expect(errors()[0]).toBe('no pork left');
+    // A pig: two stone-sword hits.
+    await p.until(() => manager !== null);
+    const pig = manager!.add('pig', at.x, 0, at.z - 2 * 16, Date.now());
+    p.ws.send(JSON.stringify({ type: 'attack', target: pig.id, weapon: Item.StoneSword }));
+    await new Promise((r) => setTimeout(r, 450));
+    p.ws.send(JSON.stringify({ type: 'attack', target: pig.id, weapon: Item.StoneSword }));
+    await p.until(() => (p.inventory()!.items.find(([id]) => id === Item.Pork)?.[1] ?? 0) > 0);
+    const pork = p.inventory()!.items.find(([id]) => id === Item.Pork)![1];
+    expect(pork).toBeGreaterThanOrEqual(1);
+    expect(pork).toBeLessThanOrEqual(3);
+    // Full: not hungry.
+    p.ws.send(JSON.stringify({ type: 'eat', item: Item.Pork }));
+    await p.until(() => errors().length === 2);
+    expect(errors()[1]).toBe("you're not hungry");
+    // Sprinting 25 m a tenth of a second for a second and a half: hungry.
+    for (let i = 1; i <= 15; i++) {
+      p.ws.send(JSON.stringify({ type: 'pose', x: at.x + i * 25 * 16, y: 26, z: at.z, yaw: 0 }));
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await p.until(() => healths(p.msgs).at(-1)!.food <= 12);
+    const hungry = healths(p.msgs).at(-1)!.food;
+    p.ws.send(JSON.stringify({ type: 'eat', item: Item.Pork }));
+    await p.until(() => healths(p.msgs).at(-1)!.food > hungry);
+    expect(healths(p.msgs).at(-1)!.food).toBe(hungry + 4);
+    await p.until(() => (p.inventory()!.items.find(([id]) => id === Item.Pork)?.[1] ?? 0) === pork - 1);
+    p.ws.close();
+  }, 15_000);
+});
+
 describe('TNT', () => {
   it('lights with a click, blows after its fuse (everyone told), and hurts a survival player nearby', async () => {
     const { url, cookie, world } = await setup('survival');

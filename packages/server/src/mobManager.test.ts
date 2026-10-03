@@ -58,11 +58,11 @@ describe('MobManager', () => {
     const { mobs, player } = setup();
     const pig = mobs.add('pig', player.x + 2 * M, 0, player.z, 0);
     const eye = { x: player.x, y: 1.62 * M, z: player.z };
-    expect(mobs.attack(pig.id, eye.x - 10 * M, eye.y, eye.z, 4, 4.5, 0)).toEqual({ hit: false, killed: false }); // 12 m away
-    expect(mobs.attack(pig.id, eye.x, eye.y, eye.z, 4, 4.5, 0)).toEqual({ hit: true, killed: false });
+    expect(mobs.attack(pig.id, eye.x - 10 * M, eye.y, eye.z, 4, 4.5, 0)).toEqual({ hit: false, killed: false, kind: 'pig' }); // 12 m away
+    expect(mobs.attack(pig.id, eye.x, eye.y, eye.z, 4, 4.5, 0)).toEqual({ hit: true, killed: false, kind: 'pig' });
     expect(pig.health).toBe(MOBS.pig.health - 4);
     expect(pig.pushX).toBeGreaterThan(0); // away from the player (east)
-    expect(mobs.attack(pig.id, eye.x, eye.y, eye.z, 10, 4.5, 100)).toEqual({ hit: true, killed: true });
+    expect(mobs.attack(pig.id, eye.x, eye.y, eye.z, 10, 4.5, 100)).toEqual({ hit: true, killed: true, kind: 'pig' });
     expect(mobs.get(pig.id)).toBeUndefined();
     expect(mobs.attack(pig.id, eye.x, eye.y, eye.z, 10, 4.5, 200)).toEqual({ hit: false, killed: false });
   });

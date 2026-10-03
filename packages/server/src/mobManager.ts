@@ -133,18 +133,18 @@ export class MobManager {
 
   /**
    * A player at eye (x, y, z) (units) hits mob `id` for `damage`: if it's within `reach` metres.
-   * Returns whether it was hit, and whether that killed it.
+   * Returns whether it was hit, whether that killed it, and what it was.
    */
-  attack(id: number, eyeX: number, eyeY: number, eyeZ: number, damage: number, reach: number, now: number): { hit: boolean; killed: boolean } {
+  attack(id: number, eyeX: number, eyeY: number, eyeZ: number, damage: number, reach: number, now: number): { hit: boolean; killed: boolean; kind?: MobKind } {
     const m = this.mobs.get(id);
     if (!m) return { hit: false, killed: false };
     const b = mobBox(m.kind, m.x, m.y, m.z);
     const x = m.x + deltaX(this.world.config, m.x, eyeX); // the eye's copy nearest the mob
     const gap = Math.hypot(Math.max(b.min[0] - x, 0, x - b.max[0]), Math.max(b.min[1] - eyeY, 0, eyeY - b.max[1]), Math.max(b.min[2] - eyeZ, 0, eyeZ - b.max[2])) / M;
-    if (gap > reach) return { hit: false, killed: false };
+    if (gap > reach) return { hit: false, killed: false, kind: m.kind };
     const killed = hurtMob(m, damage, x, eyeZ, now);
     if (killed) this.mobs.delete(id);
-    return { hit: true, killed };
+    return { hit: true, killed, kind: m.kind };
   }
 
   /** A blast at (x, y, z) (units) of `radius`: every mob in reach hurt (see blastDamage), knocked away from it. */

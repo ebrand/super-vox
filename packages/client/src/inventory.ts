@@ -43,6 +43,7 @@ const ITEM_LOOK: Record<number, { color: readonly [number, number, number]; glyp
   [Item.Gate]: { color: [0.45, 0.29, 0.13], glyph: 'H' },
   [Item.Door]: { color: [0.33, 0.17, 0.07], glyph: '▯' },
   [Item.Bucket]: { color: [0.45, 0.29, 0.13], glyph: 'U' },
+  [Item.Pork]: { color: [0.93, 0.6, 0.6], glyph: 'p' },
 };
 
 function colorOf(id: ItemId): string {

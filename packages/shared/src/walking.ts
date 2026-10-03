@@ -44,7 +44,8 @@ export type Mover = (delta: [number, number, number]) => { delta: [number, numbe
 /**
  * Advances walking by `dt` seconds. `groundLoaded` is false while the world
  * below the player hasn't arrived yet; gravity then pauses so the player
- * cannot fall through unloaded terrain.
+ * cannot fall through unloaded terrain. `landed`: the speed (m/s) it just
+ * hit the ground at, if it did (else 0).
  */
 export function walkStep(
   state: WalkState,
@@ -52,7 +53,7 @@ export function walkStep(
   dt: number,
   move: Mover,
   groundLoaded: boolean,
-): { delta: [number, number, number]; state: WalkState } {
+): { delta: [number, number, number]; state: WalkState; landed: number } {
   let vy = state.vy;
   if (input.swim) {
     // Drag pulls vertical speed toward the swimming speed.
@@ -71,5 +72,7 @@ export function walkStep(
   return {
     delta: r.delta,
     state: { vy: blockedDown || blockedUp ? 0 : vy, grounded: blockedDown },
+    // How hard it hit the ground (m/s), if it just landed (see fallDamage).
+    landed: blockedDown && !state.grounded ? -vy : 0,
   };
 }
