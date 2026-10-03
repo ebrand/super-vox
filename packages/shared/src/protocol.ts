@@ -13,7 +13,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 31;
+export const PROTOCOL_VERSION = 32;
 
 export type ClientMessage =
   | {
@@ -122,6 +122,11 @@ export type ServerMessage =
    * after any changes; at 0 health they've died and come back (see `respawn`).
    */
   | { type: 'health'; health: number; max: number; food: number; air: number }
+  /**
+   * Signed-in players coming back to a world: where they were when they last left it (eye, units;
+   * yaw, radians), sent once their inventory has loaded. Not sent the first time in a world.
+   */
+  | { type: 'returnTo'; x: number; y: number; z: number; yaw: number }
   /** The player died (how, if known) and comes back at (x, y, z) (feet, units). */
   | { type: 'respawn'; x: number; y: number; z: number; cause?: DeathCause }
   /** TNT lit: the voxel at (x, y, z) of `size` (units) blows in `ms`. */

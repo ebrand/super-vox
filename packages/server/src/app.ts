@@ -9,6 +9,7 @@ import { MobManager } from './mobManager.js';
 import {
   BinaryTag,
   CHUNK_SIZE,
+  resolveChunk,
   EditError,
   columnSpans,
   ATTACK_REACH,
@@ -121,6 +122,10 @@ interface Player {
 
 /** Time between water flow steps. */
 export const WATER_STEP_MS = 200;
+/** How often a signed-in player's place is saved while they play (and always when they leave). */
+export const PLACE_SAVE_MS = 30_000;
+/** After sending a player back where they were, poses from before this long are ignored (their client may still report the spawn). */
+export const PLACE_SETTLE_MS = 1500;
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
@@ -607,6 +612,23 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     /** The signed-in player's inventory here; null until loaded (or without accounts). */
     let inventory: PlayerInventory | null = null;
     let inventoryLoading = false;
+    /**
+     * Where a signed-in player is, kept to come back to (see Place): by account and world, once
+     * where they were has been loaded; and only poses from after they've been sent back there
+     * (`placeFrom`), so a quick visit doesn't save the spawn point over it.
+     */
+    let placeKey: { accountId: string; world: string } | null = null;
+    let placeFrom = Infinity;
+    let placeSaved = 0;
+    const savePlace = (now: boolean) => {
+      const pose = players.get(socket)?.pose, store = opts.inventories;
+      if (!placeKey || !store || !pose || pose.at < placeFrom) return;
+      if (!now && Date.now() - placeSaved < PLACE_SAVE_MS) return;
+      placeSaved = Date.now();
+      store.savePlace(placeKey.accountId, placeKey.world, { x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw }).catch((err: unknown) => {
+        metrics.error('place', err instanceof Error ? err.message : String(err), clientWorld.get(socket));
+      });
+    };
     const send = (msg: ServerMessage) => out(socket, encodeMessage(msg));
     const sendBinary = (tag: number, bytes: Uint8Array) => out(socket, frame(tag, bytes));
     let greeted = false;
@@ -635,6 +657,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     socket.on('close', () => {
       queue.close();
       void inventory?.flush();
+      savePlace(true);
       clients.delete(socket);
       clientWorld.delete(socket);
       players.delete(socket);
@@ -707,10 +730,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             if (!who || !store || !play) return;
             const accountId = who.account.id;
             inventoryLoading = true;
-            void store
-              .load(accountId, play.inventoryKey)
-              .then((saved) => {
+            void Promise.all([store.load(accountId, play.inventoryKey), store.loadPlace(accountId, play.inventoryKey).catch(() => null)])
+              .then(([saved, place]) => {
                 if (socket.readyState !== socket.OPEN) return;
+                // Back where they were last time (if it's still in the world); kept from now on.
+                const there = place && [place.x, place.y, place.z, place.yaw].every(Number.isFinite) && resolveChunk(world.config, { cx: Math.floor(place.x / CHUNK_SIZE), cy: 0, cz: Math.floor(place.z / CHUNK_SIZE) });
+                if (place && there) send({ type: 'returnTo', x: place.x, y: place.y, z: place.z, yaw: place.yaw });
+                placeKey = { accountId, world: play.inventoryKey };
+                placeFrom = Date.now() + (place && there ? PLACE_SETTLE_MS : 0);
                 inventory = new PlayerInventory(play.mode, saved ?? (play.mode === 'survival' ? starterInventory() : { items: new Map(), hotbar: creativeHotbar() }), (inv) =>
                   store.save(accountId, play.inventoryKey, inv).catch((err: unknown) => {
                     metrics.error('inventory', err instanceof Error ? err.message : String(err), clientWorld.get(socket));
@@ -1005,6 +1032,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (!p) break;
           const now = Date.now(), before = p.pose;
           p.pose = { x: greeted ? normalizeX(world.config, msg.x) : msg.x, y: msg.y, z: msg.z, yaw: msg.yaw, at: now };
+          savePlace(false);
           // Survival: going places makes you hungry (sprinting more, swimming a little more).
           if (greeted && p.vulnerable && before) {
             const metres = Math.hypot(deltaX(world.config, before.x, p.pose.x), p.pose.z - before.z) / UNITS_PER_METER;

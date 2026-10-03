@@ -40,7 +40,13 @@
       #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
       #stage canvas.relief { cursor: grab; } #stage canvas.diorama { cursor: grab; }
       #stage canvas:active { cursor: grabbing; }
+      #stage canvas.diorama.measuring, #stage canvas.diorama.measuring:active { cursor: crosshair; }
+      #measure[aria-pressed='true'] { border-color: #ffd34d; color: #ffd34d; }
+      .measure-label { position: absolute; transform: translate(-50%, -150%); padding: 2px 8px; border-radius: 4px; background: rgba(11, 13, 16, 0.85); border: 1px solid #ffd34d; color: #ffd34d; font: 600 12px/1.5 system-ui, sans-serif; white-space: nowrap; pointer-events: none; z-index: 2; }
       #hint { position: absolute; left: 12px; bottom: 10px; font: 12px ui-monospace, monospace; color: #e6e6e6; background: rgba(0,0,0,0.45); padding: 3px 8px; border-radius: 4px; pointer-events: none; }
+      body.no-panel #panel { display: none; }
+      #fold { position: absolute; left: 0; top: 50%; transform: translateY(-50%); z-index: 3; width: 16px; height: 48px; padding: 0; display: flex; align-items: center; justify-content: center; background: rgba(20, 24, 29, 0.9); border: 1px solid var(--line); border-left: 0; border-radius: 0 6px 6px 0; color: var(--dim, #8b949e); font-size: 14px; line-height: 1; cursor: pointer; }
+      #fold:hover { color: var(--text); }
       @media (max-width: 760px) { body { flex-direction: column; } #panel { width: 100%; height: auto; } #stage { min-height: 70vh; } }
     </style>
   </head>
@@ -78,6 +84,11 @@
         <p class="rivers"><button type="button" id="rivers">Update rivers and lakes</button></p>
         <p>Rivers and lakes follow your shaping when you update them, or when you go back to the world.</p>
         <label class="check"><input type="checkbox" id="miniature" checked> miniature</label>
+        <label class="check"><input type="checkbox" id="birds" checked> birds now and then</label>
+        <h2>Measure</h2>
+        <label class="check"><input type="checkbox" id="grid"> grid: 1 m, ½ km and 1 km lines (G)</label>
+        <p style="margin-top: 8px"><button type="button" id="measure" aria-pressed="false">Measure (M)</button></p>
+        <p id="measure-about">Then drag from one point of the ground to another: the distance, and how much it rises or falls. Esc clears it.</p>
         <h2>Light</h2>
         <div class="slider"><label for="l-height">Sun height</label><input type="range" id="l-height" min="3" max="90" step="1"><span id="l-height-v"></span></div>
         <div class="slider"><label for="l-from">Sun from</label><input type="range" id="l-from" min="0" max="360" step="5"><span id="l-from-v"></span></div>
@@ -103,7 +114,7 @@
       <div id="status"></div>
       <p>Shaping is a draft, kept in this browser: the world itself changes only when it's applied. Red squares are where players have built: shaping keeps clear of them.</p>
     </div>
-    <div id="stage"><div id="hint"></div></div>
+    <div id="stage"><div id="hint"></div><button id="fold" type="button" title="Hide the panel">‹</button></div>
     <script type="module" src="/src/terraform.ts"></script>
   </body>
 </html>

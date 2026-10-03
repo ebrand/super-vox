@@ -1,3 +1,4 @@
+import './fullscreen.js';
 import './envBadge.js';
 import { SETTINGS_LIMITS, workersFor, defaultSettings, loadSettings, saveSettings, type Performance, type Settings } from './settings.js';
 
@@ -76,6 +77,7 @@ async function loadWorlds(): Promise<void> {
   const pick = worlds.some((w) => w.name === settings.world) ? settings.world! : defaultWorld;
   if (worlds.some((w) => w.name === pick)) worldEl.value = pick;
   worldEl.disabled = false;
+  linkTerraformer();
   playEl.disabled = false;
   showWorld();
 }
@@ -84,7 +86,14 @@ worldEl.addEventListener('change', () => {
   settings = { ...settings, world: worldEl.value };
   saveSettings(settings);
   showWorld();
+  linkTerraformer();
 });
+
+/** The Terraformer button opens the world chosen here. */
+function linkTerraformer(): void {
+  const link = document.getElementById('terraformer') as HTMLAnchorElement;
+  link.href = worldEl.value ? `/terraform.html#world=${encodeURIComponent(worldEl.value)}` : '/terraform.html';
+}
 
 playEl.addEventListener('click', () => {
   settings = { ...settings, world: worldEl.value };

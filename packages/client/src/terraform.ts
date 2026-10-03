@@ -1,3 +1,4 @@
+import './fullscreen.js';
 import { STROKE_KINDS, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, strokesOverColumns, type ProtectedColumn, type StrokeKind, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT, parseDioramaLight, type DioramaLight } from './dioramaLight.js';
@@ -41,6 +42,66 @@ const detailAbout = document.getElementById('detail-about')!;
 const miniatureEl = document.getElementById('miniature') as HTMLInputElement;
 miniatureEl.addEventListener('change', () => {
   if (diorama) diorama.miniature = miniatureEl.checked;
+});
+const birdsEl = document.getElementById('birds') as HTMLInputElement;
+birdsEl.addEventListener('change', () => {
+  if (diorama) diorama.birdsOn = birdsEl.checked;
+});
+
+// ---- Folding the panel away for more room (remembered in this browser).
+const FOLD_KEY = 'super-vox-terraform-folded';
+const foldEl = document.getElementById('fold') as HTMLButtonElement;
+function setFolded(folded: boolean): void {
+  document.body.classList.toggle('no-panel', folded);
+  foldEl.textContent = folded ? '›' : '‹';
+  foldEl.title = folded ? 'Show the panel' : 'Hide the panel';
+  try {
+    localStorage.setItem(FOLD_KEY, folded ? '1' : '0');
+  } catch {
+    // (No storage: not remembered.)
+  }
+}
+foldEl.addEventListener('click', () => setFolded(!document.body.classList.contains('no-panel')));
+try {
+  setFolded(localStorage.getItem(FOLD_KEY) === '1');
+} catch {
+  setFolded(false);
+}
+
+// ---- Measuring up close: the map grid (remembered in this browser) and the measuring line.
+const GRID_KEY = 'super-vox-terraform-grid';
+const gridEl = document.getElementById('grid') as HTMLInputElement;
+const measureEl = document.getElementById('measure') as HTMLButtonElement;
+try {
+  gridEl.checked = localStorage.getItem(GRID_KEY) === '1';
+} catch {
+  // Not remembered: off.
+}
+function setGrid(on: boolean): void {
+  gridEl.checked = on;
+  if (diorama) diorama.grid = on;
+  try {
+    localStorage.setItem(GRID_KEY, on ? '1' : '0');
+  } catch {
+    // (No storage: not remembered.)
+  }
+}
+gridEl.addEventListener('change', () => setGrid(gridEl.checked));
+function setMeasuring(on: boolean): void {
+  measureEl.setAttribute('aria-pressed', String(on));
+  if (!diorama) return;
+  diorama.measuring = on;
+  diorama.canvas.classList.toggle('measuring', on);
+  hintEl.textContent = on ? 'measuring: drag from one point to another · Esc: clear · M: stop measuring · middle-drag: move · right-drag: turn · wheel: zoom' : HINT_DIORAMA;
+}
+measureEl.addEventListener('click', () => setMeasuring(!diorama?.measuring));
+window.addEventListener('keydown', (e) => {
+  if (showing !== 'diorama' || e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA') && (t as HTMLInputElement).type !== 'checkbox') return;
+  if (e.code === 'KeyG') setGrid(!gridEl.checked);
+  else if (e.code === 'KeyM') setMeasuring(!diorama?.measuring);
+  else if (e.code === 'Escape') diorama?.clearMeasure();
 });
 
 // ---- The diorama's light (remembered in this browser).
@@ -502,6 +563,8 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
     diorama.setLight(light);
     diorama.onPaint = paint;
     diorama.paintsAlt = brush.kind === 'plant';
+    diorama.grid = gridEl.checked;
+    diorama.birdsOn = birdsEl.checked;
     stage.prepend(diorama.canvas);
   }
   showing = 'diorama';
@@ -509,7 +572,7 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
   diorama.canvas.hidden = false;
   overviewControls.hidden = true;
   dioramaControls.hidden = false;
-  hintEl.textContent = HINT_DIORAMA;
+  setMeasuring(diorama.measuring); // (and the hint for it)
   const t0 = performance.now();
   const again = diorama.canvas.dataset.area === `${made.x0},${made.z0},${made.size},${made.step}`;
   diorama.show(made.parts, made, again);

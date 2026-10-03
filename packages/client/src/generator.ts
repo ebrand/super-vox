@@ -1,3 +1,4 @@
+import './fullscreen.js';
 import { BIOME_NAMES, Biome, DEFAULT_WORLD_SHAPE, PLATE_LIMITS, WORLD_SHAPES, defaultPlateCounts, defaultPlateTerrain, isValidWorldName, isWorldShape, validatePlateTerrain, type BiomeId, type PlateTerrainConfig, type WorldShape } from '@super-vox/shared';
 import type { PreviewRequest, PreviewResponse } from './generator.worker.js';
 import type { Preview } from './generatorPreview.js';

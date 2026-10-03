@@ -1,3 +1,4 @@
+import './fullscreen.js';
 import './envBadge.js';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -26,7 +27,7 @@ import {
   type MaterialId,
   type ObjectDesign,
 } from '@super-vox/shared';
-import { DesignEditor, cellsIn, clipRegion, draftOf, newDraft, placeAgainst, regionBetween, type Region } from './designEditor.js';
+import { DesignEditor, aimSurface, cellsIn, clipRegion, draftOf, newDraft, placeAgainst, regionBetween, type Region, type WorkPlane } from './designEditor.js';
 import { materialColor } from './materials.js';
 
 /**
@@ -89,7 +90,14 @@ const ghostEdges = new THREE.LineSegments(new THREE.EdgesGeometry(cube), new THR
 ghost.add(ghostEdges);
 ghost.visible = false;
 scene.add(ghost);
-const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+/**
+ * The working plane: what aiming finds in empty space (with the box's far walls), so lines and
+ * boxes can start in mid-air. Flat on the floor to begin with; raised, lowered and turned upright
+ * (see stepPlane, turnPlane).
+ */
+let plane: WorkPlane = { axis: 1, at: 0 };
+const planeGroup = new THREE.Group();
+scene.add(planeGroup);
 
 function resize(): void {
   const r = view.getBoundingClientRect();
@@ -120,11 +128,13 @@ function drawFrame(): void {
     c.traverse((o) => (o instanceof THREE.LineSegments || o instanceof THREE.Mesh) && o.geometry.dispose());
   }
   const [W, H, D] = editor.extent;
-  // The floor: the voxel size's grid faintly, metres plainly.
-  const fine: number[] = [], metres: number[] = [];
-  for (let x = 0; x <= W; x += voxelSize) (x % BLOCK_SIZE ? fine : metres).push(x, 0, 0, x, 0, D);
-  for (let z = 0; z <= D; z += voxelSize) (z % BLOCK_SIZE ? fine : metres).push(0, 0, z, W, 0, z);
-  frame.add(lines(fine, 0x8b949e, 0.18), lines(metres, 0x8b949e, 0.7));
+  // The floor: metres plainly, half metres lighter, and the voxel size's grid (when finer) faintly.
+  const fine: number[] = [], halves: number[] = [], metres: number[] = [];
+  const HALF = BLOCK_SIZE / 2, step = Math.min(voxelSize, HALF);
+  const tier = (v: number) => (v % BLOCK_SIZE === 0 ? metres : v % HALF === 0 ? halves : fine);
+  for (let x = 0; x <= W; x += step) tier(x).push(x, 0, 0, x, 0, D);
+  for (let z = 0; z <= D; z += step) tier(z).push(0, 0, z, W, 0, z);
+  frame.add(lines(fine, 0x8b949e, 0.15), lines(halves, 0x8b949e, 0.35), lines(metres, 0x8b949e, 0.75));
   // The box's edges, and its metre marks up its corners.
   const box = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(W, H, D)), new THREE.LineBasicMaterial({ color: 0x58a6ff, transparent: true, opacity: 0.5 }));
   box.position.set(W / 2, H / 2, D / 2);
@@ -141,6 +151,7 @@ function drawFrame(): void {
   arrow.position.set(W / 2, 0.05, D + 3);
   frame.add(arrow);
   frame.add(standIn(W / 2, -PLAYER.width));
+  drawPlane();
 }
 
 const standInMaterial = new THREE.MeshLambertMaterial({ color: 0x5a6f8c, transparent: true, opacity: 0.8 });
@@ -208,9 +219,10 @@ function aimAt(e: PointerEvent): void {
   if (hit && hit.instanceId !== undefined && hit.face) {
     aim = { index: hit.instanceId, point: hit.point.clone(), normal: hit.face.normal.clone() };
   } else {
-    const p = raycaster.ray.intersectPlane(floorPlane, new THREE.Vector3());
-    const [W, , D] = editor.extent;
-    if (p && p.x >= 0 && p.x <= W && p.z >= 0 && p.z <= D) aim = { index: null, point: p, normal: new THREE.Vector3(0, 1, 0) };
+    // Empty space: the working plane, or the box's far side.
+    const { origin, direction } = raycaster.ray;
+    const s = aimSurface(origin.toArray(), direction.toArray(), editor.extent, plane);
+    if (s) aim = { index: null, point: new THREE.Vector3(...s.point), normal: new THREE.Vector3(...s.normal) };
   }
   showAim();
 }
@@ -235,7 +247,8 @@ function buildVoxel(): BlockVoxel | null {
     n.forEach((d, a) => d !== 0 && (point[a] = d > 0 ? lo[a]! + v.size : lo[a]!));
     return { ...placeAgainst(point, n, voxelSize), size: voxelSize, material };
   }
-  return { ...placeAgainst(point, [0, 1, 0], voxelSize), size: voxelSize, material };
+  // On the plane or a wall: against it, on the side facing us.
+  return { ...placeAgainst(point, [aim.normal.x, aim.normal.y, aim.normal.z], voxelSize), size: voxelSize, material };
 }
 
 const hoverEl = $('hover');
@@ -303,7 +316,7 @@ type Cell = { x: number; y: number; z: number };
  * started from and the axis out of the face it started on; a line or a box's base is dragged out
  * (`end`), then a box is raised or lowered along that axis (`depth`, units) and clicked to finish.
  */
-let drawing: { kind: 'line' | 'box'; clear: boolean; start: Cell; axis: number; end: Cell; stage: 'drag' | 'raise'; depth: number } | null = null;
+let drawing: { kind: 'line' | 'box'; clear: boolean; start: Cell; axis: number; end: Cell; stage: 'drag' | 'raise'; depth: number; from: number } | null = null;
 
 /** Where a line or box would start: the cell a build would fill, or (clearing) the cell in what's aimed at. */
 function startCell(clear: boolean): { cell: Cell; normal: number[] } | null {
@@ -313,9 +326,14 @@ function startCell(clear: boolean): { cell: Cell; normal: number[] } | null {
     const v = buildVoxel();
     return v ? { cell: { x: v.x, y: v.y, z: v.z }, normal } : null;
   }
+  // (On the plane or a wall, nothing's there to clear: from the cell a build would fill.)
+  if (aim.index === null) {
+    const v = buildVoxel();
+    return v ? { cell: { x: v.x, y: v.y, z: v.z }, normal } : null;
+  }
   const p = [aim.point.x, aim.point.y, aim.point.z].map((c, a) => c - normal[a]! * 0.01);
   const [x, y, z] = p.map((c) => Math.floor(c / voxelSize) * voxelSize) as [number, number, number];
-  return { cell: { x, y: aim.index === null ? 0 : y, z }, normal };
+  return { cell: { x, y, z }, normal };
 }
 
 const AXES = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
@@ -350,8 +368,9 @@ function draw(): void {
   const d = drawing!;
   const o = centre(d.start);
   if (d.stage === 'raise') {
+    // (From where the pointer was when the base was let go: it starts as a slab.)
     const a = alongAxis(o, d.axis);
-    if (a) d.depth = snap(a.t);
+    if (a) d.depth = snap(a.t - d.from);
   } else if (d.kind === 'line') {
     let best: { axis: number; t: number; off: number } | null = null;
     for (let axis = 0; axis < 3; axis++) {
@@ -440,7 +459,7 @@ view.addEventListener(
       const s = startCell(clear);
       if (!s) return;
       const axis = Math.max(0, s.normal.findIndex((c) => c !== 0));
-      drawing = { kind: tool, clear, start: s.cell, axis, end: { ...s.cell }, stage: 'drag', depth: 0 };
+      drawing = { kind: tool, clear, start: s.cell, axis, end: { ...s.cell }, stage: 'drag', depth: 0, from: 0 };
       controls.enabled = false;
       draw();
     }
@@ -459,6 +478,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
     if (drawing.kind === 'line') finishDrawing();
     else {
       drawing.stage = 'raise';
+      drawing.from = alongAxis(centre(drawing.start), drawing.axis)?.t ?? 0;
       controls.enabled = true;
       draw();
     }
@@ -505,6 +525,70 @@ redoEl.onclick = () => {
   editor.redo();
   changed(true);
 };
+
+// --- The working plane --------------------------------------------------------------------------
+
+const PLANE_NAMES = ['upright (side)', 'flat', 'upright (front)'];
+const planeEl = $('plane-at');
+
+/** Draws the working plane (but not when it lies on the floor: the floor's grid is there). */
+function drawPlane(): void {
+  for (const c of [...planeGroup.children]) {
+    planeGroup.remove(c);
+    c.traverse((o) => (o instanceof THREE.LineSegments || o instanceof THREE.Mesh) && o.geometry.dispose());
+  }
+  const ext = editor.extent;
+  plane.at = Math.max(0, Math.min(ext[plane.axis]!, plane.at));
+  const m = (plane.at / BLOCK_SIZE).toFixed(3).replace(/\.?0+$/, '');
+  planeEl.textContent = plane.axis === 1 && plane.at === 0 ? 'plane: floor' : `${PLANE_NAMES[plane.axis]} ${m} m ${plane.axis === 1 ? 'up' : plane.axis === 2 ? 'from back' : 'from left'}`;
+  if (plane.axis === 1 && plane.at === 0) return;
+  // Its two in-plane axes (u, v) and the grid on it: metres plainly, the voxel size faintly.
+  const [u, v] = [0, 1, 2].filter((a) => a !== plane.axis) as [number, number];
+  const pt = (pu: number, pv: number) => {
+    const p = [0, 0, 0];
+    p[plane.axis] = plane.at;
+    p[u] = pu;
+    p[v] = pv;
+    return p;
+  };
+  const fine: number[] = [], metres: number[] = [];
+  const step = Math.min(voxelSize, BLOCK_SIZE / 2);
+  for (let a = 0; a <= ext[u]!; a += step) (a % BLOCK_SIZE ? fine : metres).push(...pt(a, 0), ...pt(a, ext[v]!));
+  for (let b = 0; b <= ext[v]!; b += step) (b % BLOCK_SIZE ? fine : metres).push(...pt(0, b), ...pt(ext[u]!, b));
+  planeGroup.add(lines(fine, 0x58a6ff, 0.18), lines(metres, 0x58a6ff, 0.5));
+  const quad = new THREE.Mesh(
+    new THREE.BufferGeometry().setFromPoints([pt(0, 0), pt(ext[u]!, 0), pt(ext[u]!, ext[v]!), pt(0, 0), pt(ext[u]!, ext[v]!), pt(0, ext[v]!)].map((p) => new THREE.Vector3(...p))),
+    new THREE.MeshBasicMaterial({ color: 0x58a6ff, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  planeGroup.add(quad);
+}
+
+/** Moves the working plane a voxel size along its axis (up, or back to front, or left to right). */
+function stepPlane(dir: 1 | -1): void {
+  plane.at = Math.round((plane.at + dir * voxelSize) / voxelSize) * voxelSize;
+  drawPlane();
+  showAim();
+}
+
+/** Turns the working plane: flat, upright facing the front, upright facing the side (each at the box's middle when upright). */
+function turnPlane(): void {
+  const next = ({ 1: 2, 2: 0, 0: 1 } as const)[plane.axis];
+  const mid = Math.floor(editor.extent[next]! / 2 / voxelSize) * voxelSize;
+  plane = { axis: next, at: next === 1 ? 0 : mid };
+  drawPlane();
+  showAim();
+}
+
+function resetPlane(): void {
+  plane = { axis: 1, at: 0 };
+  drawPlane();
+  showAim();
+}
+
+$('plane-down').onclick = () => stepPlane(-1);
+$('plane-up').onclick = () => stepPlane(1);
+$('plane-turn').onclick = () => turnPlane();
+$('plane-home').onclick = () => resetPlane();
 
 function setTool(t: Tool): void {
   stopDrawing();
@@ -567,10 +651,25 @@ roleEl.onchange = () => {
     if (role) d.role = role;
     else delete d.role;
   });
-  const other = role && library.find((d) => d.role === role && d.id !== editor.draft.id);
-  if (other) say(`once saved, this takes over from ${other.name} as the ${stationOf(role).name}`);
   changed();
 };
+
+/** The saved design (not this one) standing in for station `role`, if any. */
+const holderOf = (role: DesignRole) => library.find((d) => d.role === role && d.id !== editor.draft.id);
+
+/** The stations, each with who stands in for it now (so taking one from another design isn't a surprise). */
+function renderRoles(): void {
+  const saved = editor.draft.id ? library.find((d) => d.id === editor.draft.id)?.role : undefined;
+  for (const o of roleEl.options) {
+    if (!o.value) continue;
+    const role = o.value as DesignRole, holder = holderOf(role);
+    o.textContent = `the ${stationOf(role).name}${holder ? ` (now: ${holder.name})` : saved === role ? ' (this one)' : ' (none yet)'}`;
+  }
+  const role = editor.draft.role, holder = role && holderOf(role);
+  const warning = $('role-warning');
+  warning.hidden = !holder;
+  if (holder) warning.textContent = `Saving takes the ${stationOf(role).name} away from ${holder.name} (it then stands in for nothing).`;
+}
 
 /** How a station's made, for people: "8 cobblestone, at a crafting table". */
 function stationRecipe(role: DesignRole): string {
@@ -604,6 +703,7 @@ function ingredients(): number[] {
 
 function renderRecipe(): void {
   const role = editor.draft.role;
+  renderRoles();
   roleEl.value = role ?? '';
   $('role-note').hidden = $('recipe-station').hidden = !role;
   $('recipe-own').hidden = !!role;
@@ -759,6 +859,32 @@ function open(d: ObjectDesign | null): void {
 }
 $('new').onclick = () => open(null);
 
+// --- Folding the side panels (more room to build; remembered in this browser) --------------------
+
+const layoutEl = document.querySelector<HTMLElement>('.layout')!;
+const FOLD_KEY = 'super-vox.designer.folded';
+function setFolded(side: 'left' | 'right', folded: boolean): void {
+  layoutEl.classList.toggle(`no-${side}`, folded);
+  const btn = $<HTMLButtonElement>(`fold-${side}`);
+  const toward = side === 'left' ? folded : !folded;
+  btn.textContent = toward ? '›' : '‹';
+  btn.title = `${folded ? 'Show' : 'Hide'} the ${side === 'left' ? 'library' : 'object panel'}`;
+  try {
+    localStorage.setItem(FOLD_KEY, JSON.stringify({ left: layoutEl.classList.contains('no-left'), right: layoutEl.classList.contains('no-right') }));
+  } catch {
+    // (No storage: it just isn't remembered.)
+  }
+}
+for (const side of ['left', 'right'] as const) $(`fold-${side}`).onclick = () => setFolded(side, !layoutEl.classList.contains(`no-${side}`));
+try {
+  const saved = JSON.parse(localStorage.getItem(FOLD_KEY) ?? '{}') as { left?: boolean; right?: boolean };
+  setFolded('left', !!saved.left);
+  setFolded('right', !!saved.right);
+} catch {
+  setFolded('left', false);
+  setFolded('right', false);
+}
+
 // --- Export and import --------------------------------------------------------------------------
 
 /** A design as exported: without its item number (each server gives its own). */
@@ -889,6 +1015,10 @@ window.addEventListener('keydown', (e) => {
   const n = Number(e.key);
   if (n >= 1 && n <= GRID_SIZES.length) setVoxelSize(GRID_SIZES[n - 1]!);
   else if (e.code === 'Escape') stopDrawing();
+  else if (e.code === 'BracketRight' || e.code === 'PageUp') stepPlane(1);
+  else if (e.code === 'BracketLeft' || e.code === 'PageDown') stepPlane(-1);
+  else if (e.code === 'KeyV') turnPlane();
+  else if (e.code === 'Home') resetPlane();
   else if (e.code === 'KeyB') setTool('build');
   else if (e.code === 'KeyL') setTool('line');
   else if (e.code === 'KeyF') setTool('box');

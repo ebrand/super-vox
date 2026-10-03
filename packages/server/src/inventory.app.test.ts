@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import WebSocket from 'ws';
 import { BLOCK_VOLUME, FLAT_WORLD_16KM, FUSE_MS, FlatGenerator, HOTBAR_SLOTS, Item, Material, PROTOCOL_VERSION, defaultFlatGen, type GameMode, type ServerMessage } from '@super-vox/shared';
 import { MemoryAccountStore } from './accounts.js';
-import { buildApp } from './app.js';
+import { PLACE_SETTLE_MS, buildApp } from './app.js';
 import { Auth, SESSION_COOKIE, sessionToken } from './auth.js';
 import { MemoryInventoryStore } from './inventories.js';
 import { MobManager } from './mobManager.js';
@@ -483,6 +483,34 @@ describe('inventories', () => {
     expect(healths().at(-1)).toBe(20);
     p.ws.close();
   }, 30_000);
+
+  it('bring a signed-in player back where they left a world (not the first time; not after a quick visit)', async () => {
+    const { url, cookie, inventories, ann } = await setup('creative');
+    const visit = async (pose: object | null, wait = 0) => {
+      const p = await player(url, cookie);
+      await p.until(() => !!p.inventory());
+      await new Promise((r) => setTimeout(r, 50)); // (anything after the inventory)
+      const back = p.msgs.find((m) => m.type === 'returnTo');
+      if (wait) await new Promise((r) => setTimeout(r, wait));
+      if (pose) p.ws.send(JSON.stringify({ type: 'pose', ...pose }));
+      await new Promise((r) => setTimeout(r, 50));
+      p.ws.close();
+      await new Promise((r) => setTimeout(r, 100)); // (saved as it closes)
+      return back;
+    };
+    // First time: nowhere to go back to.
+    expect(await visit({ x: 5000, y: 40, z: 6000, yaw: 1.25 })).toBeUndefined();
+    expect(await inventories.loadPlace(ann.id, 'default@single')).toEqual({ x: 5000, y: 40, z: 6000, yaw: 1.25 });
+    // Back: sent there. A pose straight away (the client still at the spawn) isn't saved over it...
+    expect(await visit({ x: 1, y: 2, z: 3, yaw: 0 })).toEqual({ type: 'returnTo', x: 5000, y: 40, z: 6000, yaw: 1.25 });
+    expect(await inventories.loadPlace(ann.id, 'default@single')).toEqual({ x: 5000, y: 40, z: 6000, yaw: 1.25 });
+    // ...one after it's settled is.
+    expect(await visit({ x: 7000, y: 50, z: 7000, yaw: -2 }, PLACE_SETTLE_MS + 100)).toMatchObject({ x: 5000 });
+    expect(await inventories.loadPlace(ann.id, 'default@single')).toEqual({ x: 7000, y: 50, z: 7000, yaw: -2 });
+    // Somewhere no longer in the world: not sent.
+    await inventories.savePlace(ann.id, 'default@single', { x: -1e9, y: 0, z: 0, yaw: 0 });
+    expect(await visit(null)).toBeUndefined();
+  }, 15_000);
 
   it("don't exist for players who aren't signed in", async () => {
     const { url } = await setup('survival');
