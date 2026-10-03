@@ -88,6 +88,8 @@ export type AppOptions = (
   miningTimeScale?: number;
   /** The library of designed objects (see DesignLibrary); default: an empty one in memory. */
   designs?: DesignLibrary;
+  /** Which deployment this is (APP_ENV: production, staging, development), told by /api/health; default development. */
+  environment?: string;
 };
 
 /** `f` of a value, at once if it's to hand, else when its promise settles (a promise of that). */
@@ -131,7 +133,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   opts.auth?.register(app);
   const catalog = 'catalog' in opts ? opts.catalog : singleWorld(opts.world, opts.worldWithTolerance);
 
-  app.get('/api/health', async () => ({ ok: true, protocolVersion: PROTOCOL_VERSION }));
+  app.get('/api/health', async () => ({ ok: true, protocolVersion: PROTOCOL_VERSION, environment: opts.environment ?? 'development' }));
 
   // The pages and their bundles, from the same address as /api and /ws (production).
   if (opts.clientDir) {

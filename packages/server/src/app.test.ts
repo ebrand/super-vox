@@ -147,7 +147,7 @@ describe('HTTP', () => {
   it('reports health', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/health' });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ ok: true, protocolVersion: PROTOCOL_VERSION });
+    expect(res.json()).toEqual({ ok: true, protocolVersion: PROTOCOL_VERSION, environment: 'development' });
   });
 });
 

@@ -1,7 +1,15 @@
 import pg from 'pg';
 
-/** The schema every super-vox table lives in (quoted: it has a hyphen). */
-export const SCHEMA = '"super-vox"';
+/**
+ * The schema (quoted, for SQL) every table lives in: DB_SCHEMA, default "super-vox" (production);
+ * staging uses its own (e.g. "super-vox-staging"), so its players and inventories are apart.
+ */
+export function schemaFrom(env: NodeJS.ProcessEnv): string {
+  const name = env.DB_SCHEMA || 'super-vox';
+  if (!/^[a-z][a-z0-9_-]{0,62}$/.test(name)) throw new RangeError(`DB_SCHEMA must be lower case letters, digits, - and _; got "${name}"`);
+  return `"${name}"`;
+}
+export const SCHEMA = schemaFrom(process.env);
 
 /** Migrations, applied in order once each (see openDatabase). Never edit one that has shipped. */
 const MIGRATIONS: { name: string; sql: string }[] = [
@@ -31,7 +39,7 @@ const MIGRATIONS: { name: string; sql: string }[] = [
   },
 ];
 
-/** Connects to Postgres (Supabase) and brings the "super-vox" schema up to date. */
+/** Connects to Postgres (Supabase) and brings the schema (SCHEMA) up to date. */
 export async function openDatabase(connectionString: string): Promise<pg.Pool> {
   const pool = new pg.Pool({ connectionString, max: 4, ssl: sslFor(connectionString) });
   const client = await pool.connect();

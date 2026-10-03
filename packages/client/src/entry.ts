@@ -1,3 +1,4 @@
+import './envBadge.js';
 import { SETTINGS_LIMITS, workersFor, defaultSettings, loadSettings, saveSettings, type Performance, type Settings } from './settings.js';
 
 /** The entry page: pick a world, play it, change settings, or open the world generator. */

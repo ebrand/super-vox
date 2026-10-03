@@ -151,7 +151,9 @@ if (authConfig) {
 const auth = authConfig && accounts ? new Auth(authConfig, accounts) : undefined;
 // Designed objects (see DesignLibrary): one library for every world, beside them.
 const designs = new DesignLibrary(join(dataRoot, 'designs.json'));
-const app = await buildApp({ catalog, designs, logger: true, ...(clientDir ? { clientDir } : {}), ...(auth ? { auth } : {}), ...(inventories ? { inventories } : {}) });
+// Which deployment this is: APP_ENV (staging sets it), else production or development by NODE_ENV.
+const environment = process.env.APP_ENV || (production ? 'production' : 'development');
+const app = await buildApp({ catalog, designs, environment, logger: true, ...(clientDir ? { clientDir } : {}), ...(auth ? { auth } : {}), ...(inventories ? { inventories } : {}) });
 app.addHook('onClose', async () => pool?.end());
 app.log.info(
   { signIn: !!auth, accounts: accounts ? (pool ? 'postgres' : 'memory') : null, fromAuthDir },
