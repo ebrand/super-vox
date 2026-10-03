@@ -650,10 +650,25 @@ roleEl.onchange = () => {
     if (role) d.role = role;
     else delete d.role;
   });
-  const other = role && library.find((d) => d.role === role && d.id !== editor.draft.id);
-  if (other) say(`once saved, this takes over from ${other.name} as the ${stationOf(role).name}`);
   changed();
 };
+
+/** The saved design (not this one) standing in for station `role`, if any. */
+const holderOf = (role: DesignRole) => library.find((d) => d.role === role && d.id !== editor.draft.id);
+
+/** The stations, each with who stands in for it now (so taking one from another design isn't a surprise). */
+function renderRoles(): void {
+  const saved = editor.draft.id ? library.find((d) => d.id === editor.draft.id)?.role : undefined;
+  for (const o of roleEl.options) {
+    if (!o.value) continue;
+    const role = o.value as DesignRole, holder = holderOf(role);
+    o.textContent = `the ${stationOf(role).name}${holder ? ` (now: ${holder.name})` : saved === role ? ' (this one)' : ' (none yet)'}`;
+  }
+  const role = editor.draft.role, holder = role && holderOf(role);
+  const warning = $('role-warning');
+  warning.hidden = !holder;
+  if (holder) warning.textContent = `Saving takes the ${stationOf(role).name} away from ${holder.name} (it then stands in for nothing).`;
+}
 
 /** How a station's made, for people: "8 cobblestone, at a crafting table". */
 function stationRecipe(role: DesignRole): string {
@@ -687,6 +702,7 @@ function ingredients(): number[] {
 
 function renderRecipe(): void {
   const role = editor.draft.role;
+  renderRoles();
   roleEl.value = role ?? '';
   $('role-note').hidden = $('recipe-station').hidden = !role;
   $('recipe-own').hidden = !!role;
