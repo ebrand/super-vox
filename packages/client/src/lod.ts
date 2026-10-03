@@ -24,8 +24,10 @@ export interface LodSelection {
  * chunks, the rest of the full-detail area being 32 m tiles (1 m samples); below 0, no chunks.
  * `farRadius` (default `radius`) sets how fine the rings beyond the full-detail area are, as if
  * the full-detail radius were that: a bigger full-detail area needn't make far hills finer too.
+ * `keep` says which columns are drawn as voxel chunks already: within the full-detail area, a 32 m
+ * tile whose four columns all are stays those columns (detail isn't given up, only not added).
  */
-export function selectLod(world: WorldConfig, focusX: number, focusZ: number, radius: number, far: number, chunkRadius = radius, farRadius = radius): LodSelection {
+export function selectLod(world: WorldConfig, focusX: number, focusZ: number, radius: number, far: number, chunkRadius = radius, farRadius = radius, keep?: (cx: number, cz: number) => boolean): LodSelection {
   const out: LodSelection = { columns: [], tiles: [] };
   const splitDistance = (level: number) => Math.max(radius * CHUNK_SIZE, farRadius * CHUNK_SIZE * 2 ** (level - 1));
   const distance = (x0: number, z0: number, size: number) =>
@@ -41,7 +43,8 @@ export function selectLod(world: WorldConfig, focusX: number, focusZ: number, ra
       return;
     }
     if (level === 1) {
-      if (chunkRadius < 0 || d > chunkRadius * CHUNK_SIZE) {
+      const kept = keep && d <= radius * CHUNK_SIZE && keep(tx * 2, tz * 2) && keep(tx * 2 + 1, tz * 2) && keep(tx * 2, tz * 2 + 1) && keep(tx * 2 + 1, tz * 2 + 1);
+      if (!kept && (chunkRadius < 0 || d > chunkRadius * CHUNK_SIZE)) {
         out.tiles.push({ level, tx, tz });
         return;
       }
@@ -83,14 +86,20 @@ export function focusLead(vx: number, vz: number, radius: number): { dx: number;
 
 /** Speeds (m/s) between which voxel chunks give way to tiles while moving fast (see SpeedDetail). */
 export const DETAIL_SPEEDS = { full: 25, none: 60 };
+/**
+ * Flying speeds (m/s) up to which voxel chunks are loaded all round, or half as far; none beyond
+ * (faster, they'd only arrive once we'd passed: measured locally, half kept up to 100 m/s, not 120).
+ * Those already drawn stay (see selectLod's `keep`).
+ */
+export const FLY_SPEEDS = { full: 60, half: 100 };
 /** How long (ms) a lower speed must last before more voxel chunks come back. */
 export const DETAIL_GROW_MS = 300;
 
 /**
  * Voxel-chunk radius for the current speed, in three steps (few, so ordinary speed changes don't
  * keep rebuilding terrain): the full `detail` up to `full` m/s, half of it up to `none` m/s, none
- * (-1) beyond. Flying, no half-way step: full detail up to `full` m/s (flying about, building), none
- * beyond (so loading goes to the edge of the view, not to voxel chunks we're about to leave). It
+ * (-1) beyond. Flying (faster), in three steps (FLY_SPEEDS): all, half, none (so loading keeps up with
+ * the edge of the view, not voxel chunks we're about to leave; those already drawn stay). It
  * shrinks at once but grows back only after the lower speed has lasted DETAIL_GROW_MS, so speed
  * wobbles don't rebuild terrain.
  */
@@ -110,7 +119,11 @@ export class SpeedDetail {
   target(speed: number, flying = false): number {
     const { full, none } = this.speeds;
     // (Unless detail at any speed was asked for.)
-    if (flying && Number.isFinite(none)) return speed <= full ? this.detail : -1;
+    if (flying && Number.isFinite(none)) {
+      if (speed <= FLY_SPEEDS.full) return this.detail;
+      if (speed <= FLY_SPEEDS.half) return Math.ceil(this.detail / 2);
+      return -1;
+    }
     if (speed <= full) return this.detail;
     if (speed < none) return Math.ceil(this.detail / 2);
     return -1;

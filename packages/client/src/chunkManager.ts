@@ -344,6 +344,14 @@ export class ChunkManager {
     }
   }
 
+  /** Whether column (cx, cz) is drawn as voxel chunks now: in the region, known, its chunks all meshed. */
+  drawnColumn(cx: number, cz: number): boolean {
+    const key = colKey(cx, cz);
+    if (!this.region.has(key) || !this.ranges.has(key)) return false;
+    for (const chunk of this.renderByColumn.get(key) ?? []) if (!this.meshes.has(chunk)) return false;
+    return true;
+  }
+
   /** Whether every region column on this ground is drawn (its chunks all meshed). */
   covers(f: Footprint): boolean {
     for (const key of this.region) {

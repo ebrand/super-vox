@@ -300,7 +300,9 @@ function updateLod(force = false): void {
   const column = `${Math.floor(fx / CHUNK_SIZE)},${Math.floor(fz / CHUNK_SIZE)},${chunkRadius}`;
   if (!force && column === lodColumn) return;
   lodColumn = column;
-  const sel = selectLod(world, fx, fz, detail, view * UNITS_PER_METER, chunkRadius, farDetail);
+  // (Moving fast: no more voxel chunks, but those already drawn stay; see selectLod.)
+  const keep = chunkRadius < detail ? (cx: number, cz: number) => chunks!.drawnColumn(cx, cz) : undefined;
+  const sel = selectLod(world, fx, fz, detail, view * UNITS_PER_METER, chunkRadius, farDetail, keep);
   // Everything within `chunkRadius` chunks (Chebyshev) of the focus is voxel chunks; one chunk in
   // from that, they were loaded from the last position too.
   seaMaterial?.setNear(fx / UNITS_PER_METER, fz / UNITS_PER_METER, (Math.max(0, chunkRadius - 1) * CHUNK_SIZE) / UNITS_PER_METER);

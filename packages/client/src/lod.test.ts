@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CHUNK_SIZE, FLAT_WORLD_16KM, tileSizeUnits } from '@super-vox/shared';
-import { DETAIL_GROW_MS, SpeedDetail, focusLead, selectLod } from './lod.js';
+import { DETAIL_GROW_MS, FLY_SPEEDS, SpeedDetail, focusLead, selectLod } from './lod.js';
 
 const FAR = 2048 * 16;
 
@@ -10,6 +10,32 @@ function rng(seed: number): () => number {
 }
 
 describe('selectLod', () => {
+  it('keeps columns already drawn as voxel chunks (whole 32 m tiles of them) within the full-detail area, when chunks shrink', () => {
+    const [x, z] = [500 * CHUNK_SIZE + 8, 300 * CHUNK_SIZE + 8];
+    const full = selectLod(FLAT_WORLD_16KM, x, z, 8, FAR);
+    const drawn = new Set(full.columns.map((c) => `${c.cx},${c.cz}`));
+    // Moving fast: no chunks wanted; but all those drawn stay, and no tile covers them.
+    const none = selectLod(FLAT_WORLD_16KM, x, z, 8, FAR, -1);
+    expect(none.columns).toEqual([]);
+    const kept = selectLod(FLAT_WORLD_16KM, x, z, 8, FAR, -1, 8, (cx, cz) => drawn.has(`${cx},${cz}`));
+    expect(new Set(kept.columns.map((c) => `${c.cx},${c.cz}`))).toEqual(drawn);
+    expect(kept.tiles).toEqual(full.tiles);
+    // Only some drawn (a corner of one 32 m tile missing): that tile is a tile, the rest stay chunks.
+    const [first] = full.columns, tx = Math.floor(first!.cx / 2), tz = Math.floor(first!.cz / 2);
+    drawn.delete(`${tx * 2 + 1},${tz * 2 + 1}`);
+    const partly = selectLod(FLAT_WORLD_16KM, x, z, 8, FAR, -1, 8, (cx, cz) => drawn.has(`${cx},${cz}`));
+    expect(partly.tiles).toContainEqual({ level: 1, tx, tz });
+    expect(partly.columns.length).toBe(full.columns.length - 4);
+    // Beyond the full-detail area, drawn or not, nothing's kept (they'd be past the tiles' rings).
+    const moved = selectLod(FLAT_WORLD_16KM, x + 40 * CHUNK_SIZE, z, 8, FAR, -1, 8, () => true);
+    expect(moved.columns.length).toBeGreaterThan(0);
+    for (const c of moved.columns) {
+      // (Whole 32 m tiles within 8 chunks: their columns up to a tile further.)
+      const d = Math.max(Math.abs((c.cx + 0.5) * CHUNK_SIZE - (x + 40 * CHUNK_SIZE)), Math.abs((c.cz + 0.5) * CHUNK_SIZE - z));
+      expect(d).toBeLessThan((8 + 2) * CHUNK_SIZE);
+    }
+  });
+
   const fx = 9440 * 16, fz = 7968 * 16;
   const sel = selectLod(FLAT_WORLD_16KM, fx, fz, 4, FAR);
 
@@ -149,14 +175,16 @@ describe('voxel chunks while moving fast', () => {
     expect(sd.update(5, 5300 + DETAIL_GROW_MS - 1)).toBe(-1);
   });
 
-  it('flying, keeps full detail at ordinary speeds and has none fast, with no half-way step (unless detail at any speed was asked for)', () => {
+  it('flying, loads detail as it speeds up, less of it, then none (unless detail at any speed was asked for)', () => {
     const sd = new SpeedDetail(8, { full: 25, none: 60 });
     expect(sd.target(0, true)).toBe(8);
     expect(sd.target(15, true)).toBe(8); // the usual flying speed: everything as built
-    expect(sd.target(25, true)).toBe(8);
-    expect(sd.target(26, true)).toBe(-1); // not half: none
+    expect(sd.target(FLY_SPEEDS.full, true)).toBe(8);
+    expect(sd.target(75, true)).toBe(4); // (Shift)
+    expect(sd.target(FLY_SPEEDS.half, true)).toBe(4);
+    expect(sd.target(FLY_SPEEDS.half + 1, true)).toBe(-1);
     expect(sd.target(40, false)).toBe(4); // on foot: as before
-    expect(sd.update(75, 0, true)).toBe(-1); // at once
+    expect(sd.update(750, 0, true)).toBe(-1); // at once
     expect(sd.update(15, 100, true)).toBe(-1); // slowed down: not yet
     expect(sd.update(15, 100 + DETAIL_GROW_MS, true)).toBe(8);
     const always = new SpeedDetail(8, { full: Infinity, none: Infinity });
