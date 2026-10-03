@@ -47,6 +47,26 @@ birdsEl.addEventListener('change', () => {
   if (diorama) diorama.birdsOn = birdsEl.checked;
 });
 
+// ---- Folding the panel away for more room (remembered in this browser).
+const FOLD_KEY = 'super-vox-terraform-folded';
+const foldEl = document.getElementById('fold') as HTMLButtonElement;
+function setFolded(folded: boolean): void {
+  document.body.classList.toggle('no-panel', folded);
+  foldEl.textContent = folded ? '›' : '‹';
+  foldEl.title = folded ? 'Show the panel' : 'Hide the panel';
+  try {
+    localStorage.setItem(FOLD_KEY, folded ? '1' : '0');
+  } catch {
+    // (No storage: not remembered.)
+  }
+}
+foldEl.addEventListener('click', () => setFolded(!document.body.classList.contains('no-panel')));
+try {
+  setFolded(localStorage.getItem(FOLD_KEY) === '1');
+} catch {
+  setFolded(false);
+}
+
 // ---- Measuring up close: the map grid (remembered in this browser) and the measuring line.
 const GRID_KEY = 'super-vox-terraform-grid';
 const gridEl = document.getElementById('grid') as HTMLInputElement;
