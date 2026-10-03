@@ -83,16 +83,14 @@ export function focusLead(vx: number, vz: number, radius: number): { dx: number;
 
 /** Speeds (m/s) between which voxel chunks give way to tiles while moving fast (see SpeedDetail). */
 export const DETAIL_SPEEDS = { full: 25, none: 60 };
-/** Flying slower than this (m/s) is stopped: full detail; any faster, none (see SpeedDetail). */
-export const FLYING_STOPPED_SPEED = 2;
 /** How long (ms) a lower speed must last before more voxel chunks come back. */
 export const DETAIL_GROW_MS = 300;
 
 /**
  * Voxel-chunk radius for the current speed, in three steps (few, so ordinary speed changes don't
  * keep rebuilding terrain): the full `detail` up to `full` m/s, half of it up to `none` m/s, none
- * (-1) beyond. Flying, there's no detailing on the move at all (so loading goes to the edge of the
- * view, not to voxel chunks we're about to leave): none until stopped (FLYING_STOPPED_SPEED). It
+ * (-1) beyond. Flying, no half-way step: full detail up to `full` m/s (flying about, building), none
+ * beyond (so loading goes to the edge of the view, not to voxel chunks we're about to leave). It
  * shrinks at once but grows back only after the lower speed has lasted DETAIL_GROW_MS, so speed
  * wobbles don't rebuild terrain.
  */
@@ -112,7 +110,7 @@ export class SpeedDetail {
   target(speed: number, flying = false): number {
     const { full, none } = this.speeds;
     // (Unless detail at any speed was asked for.)
-    if (flying && Number.isFinite(none)) return speed < FLYING_STOPPED_SPEED ? this.detail : -1;
+    if (flying && Number.isFinite(none)) return speed <= full ? this.detail : -1;
     if (speed <= full) return this.detail;
     if (speed < none) return Math.ceil(this.detail / 2);
     return -1;

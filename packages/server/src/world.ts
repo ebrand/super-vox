@@ -337,6 +337,40 @@ export class World {
   }
 
   /**
+   * Places small voxels (debris come to rest; each inside one 1 m block) all at once: each where it
+   * is, else one step (its size) up, else not at all. One commit for the lot (placing them one by
+   * one re-encodes a chunk for each); null if none went in.
+   */
+  placeMany(voxels: readonly { x: number; y: number; z: number; size: number; material: MaterialId }[]): EditResult | null {
+    const next = new Map<string, Chunk>();
+    const touched = new Map<string, [number, number, number]>();
+    for (const v of voxels) {
+      for (const y of [v.y, v.y + v.size]) {
+        const e: Edit = { op: 'place', x: normalizeX(this.config, v.x), y, z: v.z, size: v.size, material: v.material };
+        if (this.objectIn(editBounds(e))) continue;
+        const resolved = resolveChunk(this.config, editChunk(e));
+        if (!resolved) break;
+        const key = chunkKey(resolved);
+        try {
+          next.set(key, applyEdit(next.get(key) ?? this.current(resolved), e));
+        } catch (err) {
+          if (err instanceof EditError) continue; // taken (or not a valid place): a step up, or not at all
+          throw err;
+        }
+        const b: [number, number, number] = [e.x >> 4, y >> 4, e.z >> 4];
+        touched.set(b.join(), b);
+        break;
+      }
+    }
+    if (next.size === 0) return null;
+    this.stats.edits++;
+    for (const [bx, by, bz] of touched.values()) this.flow.touch(bx, by, bz);
+    const result = this.commit([...next.values()]);
+    const refill = this.refillFromNatural([...touched.values()]);
+    return refill ? mergeResults(result, refill) : result;
+  }
+
+  /**
    * Natural water (the sea, lakes, rivers) fills open space opened beside it, at once: dry,
    * open blocks among `seeds` (and, from those, connected open blocks) next to natural water
    * (beside it: up to its surface; under it: all the way) fill with it. Natural water never runs
@@ -490,7 +524,12 @@ export class World {
   }
 
   private current(coord: ChunkCoord): Chunk {
-    return this.edited.get(chunkKey(coord)) ?? this.generator.generateChunk(coord);
+    const key = chunkKey(coord);
+    const edited = this.edited.get(key);
+    if (edited) return edited;
+    // Already made (sent to someone): decoding it is about ten times quicker than making it again.
+    const bytes = this.cache.get(key);
+    return bytes ? decodeChunk(bytes) : this.generator.generateChunk(coord);
   }
 
   /** Stores, caches, and saves edited chunks; reports widened column ranges. */

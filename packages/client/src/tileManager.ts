@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import {
   MAX_CANCEL,
   MAX_TILE_LEVEL,
+  MIN_TILE_LEVEL,
+  NO_GROUND,
+  TILE_SAMPLES,
+  decodeTile,
   readTileHeader,
   tileKey,
   tileSizeUnits,
@@ -12,6 +16,9 @@ import { createPackedMesh, disposePackedMesh, meshGpuBytes, meshQuads } from './
 import { WATER_LAYER } from './water.js';
 import type { MeshWorkerPool } from './workerPool.js';
 import { overlaps, staleToRetire, type Footprint } from './coverage.js';
+
+/** Tiles whose ground heights are kept for groundAt (about 2 KB each). */
+const MAX_GROUNDS = 2048;
 
 export interface TileStats {
   tiles: number;
@@ -34,6 +41,10 @@ export class TileManager {
   private readonly loaded = new Set<string>();
   private readonly requested = new Set<string>();
   private queue: TileCoord[] = [];
+  /** Recent tiles' ground heights (see groundAt), oldest first; and the last one looked in. */
+  private readonly grounds = new Map<string, Int16Array>();
+  private lastGround: { x0: number; z0: number; size: number; heights: Int16Array } | null = null;
+  private lastCell: { cx: number; cz: number } | null = null;
   private inFlight = 0;
   private readonly meshes = new Map<string, THREE.Object3D | null>();
   private readonly jobs = new Map<string, number>();
@@ -122,6 +133,7 @@ export class TileManager {
     if (this.wanted.has(key) && !this.loaded.has(key)) {
       this.loaded.add(key);
       this.mesh(key, t, bytes);
+      this.keepGround(key, bytes);
     }
     this.pump();
     this.onChange();
@@ -177,6 +189,46 @@ export class TileManager {
     if (t.level === 0) return false;
     for (const [dx, dz] of [[0, 0], [1, 0], [0, 1], [1, 1]] as const) if (has(tileKey({ level: t.level - 1, tx: t.tx * 2 + dx, tz: t.tz * 2 + dz }))) return true;
     return false;
+  }
+
+  /**
+   * The ground's height (units) at unit column (x, z), as the finest tile here has it (what's drawn
+   * where there are no voxel chunks), or undefined if no tile here has it.
+   */
+  groundAt(x: number, z: number): number | undefined {
+    // (Looked up again only in another of the finest tiles' squares: within one, the same tile has it.)
+    const cell = tileSizeUnits(MIN_TILE_LEVEL), cx = Math.floor(x / cell), cz = Math.floor(z / cell);
+    if (this.lastCell?.cx !== cx || this.lastCell.cz !== cz) {
+      this.lastCell = { cx, cz };
+      this.lastGround = null;
+      for (let level = MIN_TILE_LEVEL; level <= MAX_TILE_LEVEL; level++) {
+        const size = tileSizeUnits(level), tx = Math.floor(x / size), tz = Math.floor(z / size);
+        const heights = this.grounds.get(tileKey({ level, tx, tz }));
+        if (heights) {
+          this.lastGround = { x0: tx * size, z0: tz * size, size, heights };
+          break;
+        }
+      }
+    }
+    const g = this.lastGround;
+    if (!g) return undefined;
+    const step = g.size / TILE_SAMPLES;
+    const h = g.heights[Math.floor((x - g.x0) / step) + TILE_SAMPLES * Math.floor((z - g.z0) / step)]!;
+    return h === NO_GROUND ? undefined : h;
+  }
+
+  /** Remembers a tile's ground heights (the most recent MAX_GROUNDS tiles'). */
+  private keepGround(key: string, bytes: Uint8Array): void {
+    let heights: Int16Array;
+    try {
+      heights = decodeTile(bytes).heights;
+    } catch {
+      return; // (meshing says why)
+    }
+    this.grounds.delete(key);
+    this.grounds.set(key, heights);
+    if (this.grounds.size > MAX_GROUNDS) this.grounds.delete(this.grounds.keys().next().value!);
+    this.lastCell = null;
   }
 
   /** Whether every selected tile on this ground is drawn (meshed). */

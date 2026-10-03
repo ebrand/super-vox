@@ -75,6 +75,8 @@ export interface DebrisPiece {
   s: number;
   /** x, y, z of the start, then dx, dy, dz for each frame after (whole units, rounded). */
   p: number[];
+  /** How long (ms) it had been flying when sent (worked out a little after its blast), if at all. */
+  a?: number;
 }
 
 /** A flight packed as a DebrisPiece. */

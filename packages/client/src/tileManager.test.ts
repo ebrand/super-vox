@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { decodeTile, encodeTile, TILE_SAMPLES, type ClientMessage, type TileCoord } from '@super-vox/shared';
+import { NO_GROUND, decodeTile, encodeTile, TILE_SAMPLES, type ClientMessage, type TileCoord } from '@super-vox/shared';
 import { packQuads } from './mesher.js';
 import { meshTile } from './tileMesher.js';
 import { TileManager } from './tileManager.js';
@@ -177,5 +177,22 @@ describe('TileManager', () => {
     tm.setTiles([big, ...edge, more], 0, 0);
     expect(sent[0]).toEqual({ type: 'requestTile', ...more });
     expect(sent[1]).toEqual({ type: 'requestTile', ...big });
+  });
+
+  it("knows the ground's height from its tiles, the finest there is, for things to bump into", () => {
+    const { tm } = setup();
+    // A level-2 tile (64 m, 2 m samples) at 5 m everywhere; a level-1 tile (32 m, 1 m samples) inside it
+    // rising 1 unit a sample eastward, with no ground in its last row.
+    const coarse = new Int16Array(N).fill(80);
+    const fine = new Int16Array(N).map((_, i) => (Math.floor(i / TILE_SAMPLES) === TILE_SAMPLES - 1 ? NO_GROUND : i % TILE_SAMPLES));
+    tm.setTiles([{ level: 2, tx: 0, tz: 0 }, { level: 1, tx: 1, tz: 0 }], 0, 0);
+    tm.onTileBytes(encodeTile({ level: 2, tx: 0, tz: 0, heights: coarse, materials: new Uint16Array(N) }));
+    tm.onTileBytes(encodeTile({ level: 1, tx: 1, tz: 0, heights: fine, materials: new Uint16Array(N) }));
+    expect(tm.groundAt(10, 10)).toBe(80); // only the coarse tile here
+    expect(tm.groundAt(512 + 3 * 16 + 5, 7)).toBe(3); // the fine one: sample 3 east
+    expect(tm.groundAt(512 + 31 * 16, 0)).toBe(31);
+    expect(tm.groundAt(512 + 4, 31 * 16 + 2)).toBeUndefined(); // no ground there
+    expect(tm.groundAt(5000, 5000)).toBeUndefined(); // no tile there
+    expect(tm.groundAt(10, 10)).toBe(80); // (and back again)
   });
 });

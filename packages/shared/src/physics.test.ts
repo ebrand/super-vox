@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PLAYER, intersectsSolid, moveAabb, playerBox, sweepAxis, type Aabb } from './physics.js';
+import { PLAYER, intersectsSolid, liftOut, moveAabb, playerBox, sweepAxis, type Aabb } from './physics.js';
 import type { SolidAt } from './physics.js';
 
 /** Flat ground: every cell with y < 0 is solid. Plus extra solid boxes. */
@@ -102,5 +102,16 @@ describe('moveAabb', () => {
       b = { min: [b.min[0] + r.delta[0], b.min[1] + r.delta[1], b.min[2] + r.delta[2]], max: [b.max[0] + r.delta[0], b.max[1] + r.delta[1], b.max[2] + r.delta[2]] };
       expect(intersectsSolid(b, w)).toBe(false);
     }
+  });
+});
+
+describe('liftOut', () => {
+  it('finds the least lift out of what a box is in, up to a limit', () => {
+    const ground: SolidAt = (_x, y) => y < 10; // solid below y = 10
+    const box = { min: [0, 4, 0] as [number, number, number], max: [10, 30, 10] as [number, number, number] };
+    expect(liftOut(box, ground)).toBe(6);
+    expect(liftOut({ min: [0, 10, 0], max: [10, 36, 10] }, ground)).toBe(0); // not in anything
+    expect(liftOut({ min: [0, -100, 0], max: [10, -74, 10] }, ground)).toBeNull(); // too deep
+    expect(liftOut({ min: [0, -100, 0], max: [10, -74, 10] }, ground, 200)).toBe(110);
   });
 });

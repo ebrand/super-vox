@@ -31,3 +31,6 @@ export function blastDamage(distance: number, radius: number): number {
 
 /** Health a 1 m TNT takes from someone right at it (players have 20). */
 export const BLAST_DAMAGE = 16;
+
+/** How much more up than out a blast throws its debris (added to the way out from its middle, before scaling to its speed). */
+export const DEBRIS_LIFT = 1.4;

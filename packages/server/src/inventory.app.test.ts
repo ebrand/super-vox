@@ -238,12 +238,19 @@ describe('TNT', () => {
     // Standing 3 m off (the pose is the eye, units).
     p.ws.send(JSON.stringify({ type: 'pose', x: tnt.x + 8 + 48, y: 26, z: tnt.z + 8, yaw: 0 }));
     await new Promise((r) => setTimeout(r, 300));
+    // What arrives from now on, in order (text by type; chunks as 'chunk').
+    const order: string[] = [];
+    p.ws.on('message', (d, bin) => order.push(bin ? 'chunk' : (JSON.parse(String(d)) as ServerMessage).type));
     expect(await act(p, { type: 'ignite', x: tnt.x + 4, y: 4, z: tnt.z + 4 })).toMatchObject({ ok: true });
     expect(p.msgs.find((m) => m.type === 'fuse')).toMatchObject({ type: 'fuse', ...tnt, ms: FUSE_MS });
     expect(await act(p, { type: 'ignite', x: tnt.x + 4, y: 4, z: tnt.z + 4 })).toMatchObject({ ok: false, error: "it's already lit" });
     expect(await act(p, { type: 'ignite', x: tnt.x + 40, y: 4, z: tnt.z + 4 })).toMatchObject({ ok: false, error: 'no TNT there' });
     await p.until(() => p.msgs.some((m) => m.type === 'explosion'), FUSE_MS + 2000);
-    expect(p.msgs.find((m) => m.type === 'explosion')).toEqual({ type: 'explosion', x: tnt.x + 8, y: 8, z: tnt.z + 8, radius: 64 });
+    expect(p.msgs.find((m) => m.type === 'explosion')).toEqual({ type: 'explosion', x: tnt.x + 8, y: 8, z: tnt.z + 8, radius: 64, seed: expect.any(Number) });
+    // The explosion before the crater's chunks (clients make its dust from the world as it was).
+    await p.until(() => order.lastIndexOf('chunk') > order.indexOf('explosion'));
+    expect(order.indexOf('explosion')).toBeGreaterThanOrEqual(0);
+    expect(order.slice(0, order.indexOf('explosion')).filter((t) => t === 'chunk').length).toBe(0);
     await p.until(() => p.msgs.some((m) => m.type === 'health'));
     const h = p.msgs.filter((m) => m.type === 'health').at(-1) as { health: number };
     expect(h.health).toBeLessThan(20);

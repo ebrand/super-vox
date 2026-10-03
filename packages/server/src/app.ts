@@ -507,8 +507,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       const { blasts, debris, landed } = explosives.tick(now);
       for (const r of landed) broadcast(world, r);
       for (const b of blasts) {
+        // (The explosion first: clients make dust of what's there before the crater arrives.)
+        toWorld(world, { type: 'explosion', x: b.x, y: b.y, z: b.z, radius: b.radius, seed: b.seed });
         if (b.result) broadcast(world, b.result);
-        toWorld(world, { type: 'explosion', x: b.x, y: b.y, z: b.z, radius: b.radius });
         for (const { tnt, ms } of b.lit) toWorld(world, { type: 'fuse', ...tnt, ms });
         // Hurt: players (who can be) and mobs in reach.
         for (const [client, w] of clients) {

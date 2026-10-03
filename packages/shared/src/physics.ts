@@ -40,6 +40,14 @@ export function intersectsSolid(box: Aabb, solidAt: SolidAt): boolean {
   return false;
 }
 
+/** The least lift (units, whole, up to `max`: 3 m) that takes a box out of anything solid it's in; null if none does. */
+export function liftOut(box: Aabb, solidAt: SolidAt, max = 48): number | null {
+  for (let up = 0; up <= max; up++) {
+    if (!intersectsSolid({ min: [box.min[0], box.min[1] + up, box.min[2]], max: [box.max[0], box.max[1] + up, box.max[2]] }, solidAt)) return up;
+  }
+  return null;
+}
+
 /**
  * How far the box can move along `axis` by up to `d` units before touching a
  * solid cell. Sweeps every cell layer on the way, so fast movement cannot

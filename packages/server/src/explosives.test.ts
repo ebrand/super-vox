@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { FLAT_WORLD_16KM, FlatGenerator, MAX_BLAST_RADIUS, Material, blastRadius, defaultFlatGen, CHAIN_FUSE_MS, FUSE_MS, unpackDebris } from '@super-vox/shared';
-import { Explosives, MAX_PIECES, pickPieces } from './explosives.js';
+import { Explosives, MAX_PIECES, PIECE, pickPieces } from './explosives.js';
 import { World } from './world.js';
 
 /** A flat world (ground at 0: grass over dirt over stone, in 1/4 m voxels). */
 const flat = () => new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4)));
 const M = 16;
+/** A seeded random number generator (an LCG: enough for tests). */
+const seededRandom = (seed = 1) => () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
 /** Whether there's something solid at unit (x, y, z). */
 const solid = (w: World, x: number, y: number, z: number) => {
   const m = w.materialAtUnit(x, y, z);
@@ -66,25 +68,51 @@ describe('Explosives', () => {
   });
 });
 
+describe('World.placeMany', () => {
+  it('places voxels all at once: where each is, else a step up, else not; one change a chunk', () => {
+    const w = flat();
+    const x = 3000 * M, z = 3000 * M;
+    w.applyEdit({ op: 'place', x: x + 8, y: 4, z, size: 4, material: Material.Stone }); // in the way, two high
+    w.applyEdit({ op: 'place', x: x + 8, y: 0, z, size: 4, material: Material.Stone });
+    const result = w.placeMany([
+      { x, y: 0, z, size: 4, material: Material.Dirt }, // free
+      { x: x + 4, y: -4, z, size: 4, material: Material.Sand }, // in the ground: a step up
+      { x: x + 8, y: 0, z, size: 4, material: Material.Grass }, // taken, and above it too: not at all
+    ])!;
+    expect(result.changes.length).toBe(1);
+    expect(w.materialAtUnit(x + 1, 1, z + 1)).toBe(Material.Dirt);
+    expect(w.materialAtUnit(x + 5, 1, z + 1)).toBe(Material.Sand);
+    expect(w.materialAtUnit(x + 9, 9, z + 1)).toBe(0);
+    expect(w.materialAtUnit(x + 9, 1, z + 1)).toBe(Material.Stone);
+    expect(result.change.get(Material.Dirt)).toBe(64);
+    expect(result.change.get(Material.Sand)).toBe(64);
+    expect(result.change.get(Material.Grass)).toBeUndefined();
+    // Nothing that fits: null.
+    expect(w.placeMany([{ x: x + 8, y: 0, z, size: 4, material: Material.Grass }])).toBeNull();
+  });
+});
+
 describe('debris', () => {
   it('throws pieces of what a blast took out, which stay where they land in creative', () => {
     const w = flat();
     const t = { x: 5000 * M, y: 0, z: 5000 * M, size: 16 };
     w.applyEdit({ op: 'place', ...t, material: Material.TNT });
-    const e = new Explosives(w, { random: () => 0.37, keepDebris: () => true, debrisBudgetMs: Infinity });
+    const e = new Explosives(w, { random: seededRandom(), keepDebris: () => true, debrisBudgetMs: Infinity });
     e.light(t, 0);
     const { debris } = e.tick(FUSE_MS);
     expect(debris.length).toBe(MAX_PIECES);
+    expect(debris.every((p) => p.s === PIECE && p.a === undefined)).toBe(true); // all thrown at once: none late
     // Of the ground: grass, dirt, stone; never TNT.
     for (const p of debris) expect([Material.Grass, Material.Dirt, Material.Stone]).toContain(p.m);
-    // Some time later they've all landed and are there.
+    // Some time later they've all landed and are there (placed together: one result).
     const { landed } = e.tick(FUSE_MS + 6000);
-    expect(landed.length).toBeGreaterThan(MAX_PIECES / 2);
+    expect(landed.length).toBe(1);
     expect(e.count).toBe(0);
     let found = 0;
     for (const p of debris) {
       const path = unpackDebris(p), end = path.at(-1)!;
-      const m = w.materialAtUnit(Math.round(end[0] / 8) * 8 + 4, Math.round(end[1] / 8) * 8 + 4, Math.round(end[2] / 8) * 8 + 4);
+      const at = (c: number) => Math.round(c / PIECE) * PIECE + PIECE / 2;
+      const m = w.materialAtUnit(at(end[0]), at(end[1]), at(end[2]));
       if (m === p.m) found++;
     }
     expect(found).toBeGreaterThan(MAX_PIECES / 2);
@@ -94,15 +122,19 @@ describe('debris', () => {
     const w = flat();
     const t = { x: 7000 * M, y: 0, z: 7000 * M, size: 16 };
     w.applyEdit({ op: 'place', ...t, material: Material.TNT });
-    const e = new Explosives(w, { random: () => 0.37, debrisBudgetMs: 0 });
+    const e = new Explosives(w, { random: seededRandom(), debrisBudgetMs: 0 });
     e.light(t, 0);
     const first = e.tick(FUSE_MS);
     expect(first.blasts.length).toBe(1);
     expect(first.debris.length).toBe(1);
+    expect(first.debris[0]!.a).toBeUndefined();
     let thrown = 1, ticks = 1;
-    while (e.count && ticks < 1000) {
-      const r = e.tick(FUSE_MS + 50 * ticks++);
+    while (e.count && ticks < 2000) {
+      const now = FUSE_MS + 50 * ticks++;
+      const r = e.tick(now);
       expect(r.debris.length).toBe(1);
+      // Thrown late: it says how long it's been flying (since its blast).
+      expect(r.debris[0]!.a).toBe(now - FUSE_MS);
       thrown += r.debris.length;
     }
     expect(thrown).toBe(MAX_PIECES);
@@ -127,11 +159,38 @@ describe('debris', () => {
       { x: 32, y: 0, z: 0, size: 16, material: Material.TNT },
       { x: 48, y: 0, z: 0, size: 16, material: Material.Water },
     ];
-    const all = pickPieces(removed, 100, () => 0);
-    expect(all.length).toBe(9);
-    expect(all.every((p) => p.x % 8 === 0 && p.y % 8 === 0 && p.z % 8 === 0)).toBe(true);
-    expect(all.filter((p) => p.material === Material.Dirt)).toEqual([{ x: 16, y: 0, z: 0, material: Material.Dirt }]);
-    expect(pickPieces(removed, 3, Math.random).length).toBe(3);
+    // Few (66 cells: 64 of the stone, 2 of dirt): all of them.
+    const all = pickPieces(removed, 100, seededRandom());
+    expect(all.length).toBe(66);
+    expect(all.every((p) => p.x % PIECE === 0 && p.y % PIECE === 0 && p.z % PIECE === 0)).toBe(true);
+    expect(all.filter((p) => p.material === Material.Dirt).sort((a, b) => a.x - b.x)).toEqual([{ x: 16, y: 0, z: 0, material: Material.Dirt }, { x: 20, y: 0, z: 0, material: Material.Dirt }]);
+    expect(new Set(all.map((p) => `${p.x},${p.y},${p.z}`)).size).toBe(66);
+    expect(pickPieces(removed, 3, seededRandom()).length).toBe(3);
+  });
+
+  it('picks from a big blast by volume, without listing every cell', () => {
+    // 1000 whole 1 m voxels (64 000 cells), and a hundred 1/16 m ones: 500 asked for.
+    const removed = [
+      ...Array.from({ length: 1000 }, (_, i) => ({ x: (i % 10) * 16, y: Math.floor(i / 100) * 16, z: (Math.floor(i / 10) % 10) * 16, size: 16, material: i % 2 ? Material.Stone : Material.Dirt })),
+      ...Array.from({ length: 100 }, (_, i) => ({ x: 400 + i, y: 0, z: 0, size: 1, material: Material.Sand })),
+      { x: 800, y: 0, z: 0, size: 16, material: Material.TNT },
+    ];
+    const picked = pickPieces(removed, 500, seededRandom(7));
+    expect(picked.length).toBe(500);
+    expect(new Set(picked.map((p) => `${p.x},${p.y},${p.z}`)).size).toBe(500);
+    expect(picked.every((p) => p.x % PIECE === 0 && p.y % PIECE === 0 && p.z % PIECE === 0)).toBe(true);
+    expect(picked.some((p) => p.material === Material.TNT)).toBe(false);
+    // Each where its voxel was, of its material.
+    const whole = new Map(removed.filter((v) => v.size === 16).map((v) => [`${v.x},${v.y},${v.z}`, v.material]));
+    for (const p of picked) {
+      if (p.material === Material.Sand) expect(p.x >= 400 && p.x < 500 && p.y === 0 && p.z === 0).toBe(true);
+      else expect(whole.get(`${Math.floor(p.x / 16) * 16},${Math.floor(p.y / 16) * 16},${Math.floor(p.z / 16) * 16}`)).toBe(p.material);
+    }
+    // By volume: stone and dirt about half each; the sand (a 25-cell sliver) hardly at all.
+    const stone = picked.filter((p) => p.material === Material.Stone).length;
+    expect(stone).toBeGreaterThan(200);
+    expect(stone).toBeLessThan(300);
+    expect(picked.filter((p) => p.material === Material.Sand).length).toBeLessThan(5);
   });
 });
 

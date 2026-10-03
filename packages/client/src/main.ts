@@ -5,6 +5,8 @@ import { connect } from './connection.js';
 import { EditTool } from './editTool.js';
 import { FlyControls } from './flyControls.js';
 import { ExplosionView } from './explosions.js';
+import { sampleBlast } from './blastCloud.js';
+import type { CloudRequest, CloudResponse } from './blastCloud.worker.js';
 import { DETAIL_SPEEDS, SpeedDetail, focusLead, selectLod } from './lod.js';
 import { TileManager } from './tileManager.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
@@ -13,7 +15,7 @@ import { WATER_LAYER, WaterRenderer, createSeaMaterial, createVoxelWaterMaterial
 import { createTint } from './tint.js';
 import { applyLighting, loadLighting, saveLighting } from './lighting.js';
 import { LightingPanel } from './lightingPanel.js';
-import { PLAYER, moveAabb, playerBox } from './physics.js';
+import { PLAYER, intersectsSolid, liftOut, moveAabb, playerBox, type SolidAt } from './physics.js';
 import { farDetailFor, loadSettings, workersFor } from './settings.js';
 import { MeshWorkerPool } from './workerPool.js';
 import { WorldMapOverlay, decodeWorldMap } from './worldMap.js';
@@ -190,6 +192,20 @@ const sessionStore = (): Storage | null => {
 /** Mobs and other players (see EntityView). */
 let entities: EntityView | null = null;
 
+/** Blasts' dust, flown in a worker (see blastCloud): when each blast was. */
+let cloudWorker: Worker | null = null;
+let cloudsAsked = 0;
+const cloudStarts = new Map<number, number>();
+function newCloudWorker(): Worker {
+  const w = new Worker(new URL('./blastCloud.worker.ts', import.meta.url), { type: 'module' });
+  w.onmessage = (ev: MessageEvent<CloudResponse>) => {
+    const startedAt = cloudStarts.get(ev.data.id);
+    cloudStarts.delete(ev.data.id);
+    if (startedAt !== undefined) explosions.cloud(ev.data.cloud, startedAt);
+  };
+  return w;
+}
+
 /** Survival: hearts and food above the hotbar (breath too, under water), a red flash when hurt. */
 const healthEl = document.createElement('div');
 healthEl.id = 'health';
@@ -354,9 +370,24 @@ connection = connect({
           controls.inWater = (x, y, z) => inWaterAt(x, y, z);
           tiles = new TileManager(scene, material, voxelWater, send, pool, 32, onProgress);
           const solidAt = solidAtFor(chunks);
+          // What we bump into: voxels where their chunks are here; elsewhere (flying fast, or ahead of
+          // loading) the ground as the tiles have it, so the ground's solid at any speed.
+          const solidOrGround: SolidAt = (x, y, z) => {
+            const s = solidAt(x, y, z);
+            if (s !== undefined) return s;
+            const ground = tiles!.groundAt(x, z);
+            return ground !== undefined && y < ground;
+          };
           const eyeUnits = () => [camera.position.x * UNITS_PER_METER, camera.position.y * UNITS_PER_METER, camera.position.z * UNITS_PER_METER] as const;
           const collide = (d: [number, number, number]) => {
-            const r = moveAabb(playerBox(eyeUnits()), [d[0] * UNITS_PER_METER, d[1] * UNITS_PER_METER, d[2] * UNITS_PER_METER], solidAt);
+            // Inside something (the voxels came after we'd stopped on the tiles' ground, which can be a
+            // little lower; or it was built around us): up out of it, not free to move through it.
+            const box = playerBox(eyeUnits());
+            if (intersectsSolid(box, solidOrGround)) {
+              const up = liftOut(box, solidOrGround);
+              if (up !== null) return { delta: [0, up / UNITS_PER_METER, 0] as [number, number, number], blocked: [false, false, false] as [boolean, boolean, boolean] };
+            }
+            const r = moveAabb(box, [d[0] * UNITS_PER_METER, d[1] * UNITS_PER_METER, d[2] * UNITS_PER_METER], solidOrGround);
             return {
               delta: [r.delta[0] / UNITS_PER_METER, r.delta[1] / UNITS_PER_METER, r.delta[2] / UNITS_PER_METER] as [number, number, number],
               blocked: r.blocked,
@@ -489,7 +520,7 @@ connection = connect({
             if (error) editTool?.say(error);
             updateHud();
           };
-          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool, water, compassRose, inventoryUi, entities };
+          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool, water, compassRose, inventoryUi, entities, explosions };
           // Start loading now rather than on the first frame (frames pause in hidden tabs).
           updateLod(true);
         } else {
@@ -523,9 +554,24 @@ connection = connect({
       case 'fuse':
         explosions.fuse(msg.x, msg.y, msg.z, msg.size, msg.ms);
         break;
-      case 'explosion':
-        explosions.explode(msg.x, msg.y, msg.z, msg.radius);
+      case 'explosion': {
+        // Its dust, from the world as it is now (the crater's chunks come next); on a round world,
+        // at the copy of the blast nearest us.
+        const here = camera.position.x * UNITS_PER_METER;
+        const x = world?.wrapX ? msg.x + Math.round((here - msg.x) / world.widthUnits) * world.widthUnits : msg.x;
+        explosions.explode(x, msg.y, msg.z, msg.radius);
+        if (chunks) {
+          const sample = sampleBlast((cx, cy, cz) => chunks!.chunkAt({ cx, cy, cz }), x, msg.y, msg.z, msg.radius, msg.seed);
+          if (sample.picked.length) {
+            // Flown in a worker (the arithmetic of a big blast's would hold up a few frames).
+            const id = ++cloudsAsked;
+            cloudStarts.set(id, performance.now());
+            cloudWorker ??= newCloudWorker();
+            cloudWorker.postMessage({ id, sample } satisfies CloudRequest, [sample.picked.buffer, sample.ground.buffer]);
+          }
+        }
         break;
+      }
       case 'debris':
         explosions.debris(msg.pieces);
         break;

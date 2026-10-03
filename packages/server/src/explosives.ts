@@ -1,4 +1,4 @@
-import { CHAIN_FUSE_MS, DEBRIS_FPS, EditError, FUSE_MS, Material, blastRadius, isWater, packDebris, throwDebris, type DebrisPiece, type MaterialId } from '@super-vox/shared';
+import { CHAIN_FUSE_MS, DEBRIS_FPS, DEBRIS_LIFT, FUSE_MS, Material, blastRadius, isWater, packDebris, throwDebris, type DebrisPiece, type MaterialId } from '@super-vox/shared';
 import type { EditResult, World } from './world.js';
 
 /** A TNT voxel: its corner and size (units). */
@@ -9,26 +9,30 @@ export interface Tnt {
   size: number;
 }
 
-/** An explosion that happened: where (its centre, units), how big, what it changed, and the TNT it lit (with their fuses, ms). */
+/**
+ * An explosion that happened: where (its centre, units), how big, what it changed, the TNT it lit
+ * (with their fuses, ms), and a seed for the dust clients make of it themselves (see ExplosionView).
+ */
 export interface Blast {
   x: number;
   y: number;
   z: number;
   radius: number;
+  seed: number;
   result: EditResult | null;
   lit: { tnt: Tnt; ms: number }[];
 }
 
-/** Debris pieces' size (units): 1/2 m. */
-export const PIECE = 8;
-/** Most pieces from a 1 m TNT's blast (fewer for smaller ones). */
-export const MAX_PIECES = 60;
+/** Debris pieces' size (units): 1/4 m. */
+export const PIECE = 4;
+/** Most pieces a blast throws that everyone sees the same (and that stay, in creative); clients add their own dust. */
+export const MAX_PIECES = 1000;
 /** Longest a tick spends blowing things up (ms), after its first blast: more wait for the next. */
 const TICK_BUDGET_MS = 100;
 /** Longest a tick spends working out debris's flights (ms): the rest are thrown on later ticks. */
 const DEBRIS_BUDGET_MS = 25;
 /** Most pieces waiting to be thrown: a big chain's beyond that go without. */
-export const MAX_WAITING_PIECES = 600;
+export const MAX_WAITING_PIECES = 3000;
 
 /**
  * A world's lit TNT: each blows when its fuse runs out (see World.explode), lighting TNT its blast
@@ -42,7 +46,7 @@ export class Explosives {
   /** Debris on its way to rest, to be placed then (creative). */
   private readonly landing: { at: number; x: number; y: number; z: number; material: MaterialId }[] = [];
   /** Pieces blown out, still to be thrown: each from its cell, away from its blast's centre (units). */
-  private readonly throwing: { x: number; y: number; z: number; material: MaterialId; from: [number, number, number]; radius: number }[] = [];
+  private readonly throwing: { x: number; y: number; z: number; material: MaterialId; from: [number, number, number]; radius: number; at: number }[] = [];
 
   constructor(
     private readonly world: World,
@@ -101,77 +105,94 @@ export class Explosives {
         if (ms !== null) lit.push({ tnt: t, ms });
       }
       // Debris: pieces of what it blew out, to be thrown up and away from the centre.
-      const want = Math.min(MAX_WAITING_PIECES - this.throwing.length, Math.max(4, Math.round(MAX_PIECES * Math.min(2.5, radius / 64))));
-      for (const cell of pickPieces(removed, want, random)) this.throwing.push({ ...cell, from: [x, y, z], radius });
-      blasts.push({ x, y, z, radius, result, lit });
+      const want = Math.min(MAX_WAITING_PIECES - this.throwing.length, MAX_PIECES);
+      for (const cell of pickPieces(removed, want, random)) this.throwing.push({ ...cell, from: [x, y, z], radius, at: now });
+      blasts.push({ x, y, z, radius, seed: Math.floor(random() * 2 ** 31), result, lit });
     }
     return { blasts, debris: this.throw(now, random), landed: this.settle(now) };
   }
 
-  /** Works out the flights of waiting debris (as many as there's time for; at least one), from now. */
+  /**
+   * Works out the flights of waiting debris (as many as there's time for; at least one), each from
+   * its blast: those worked out later are sent part way through (`a`, ms flown already).
+   */
   private throw(now: number, random: () => number): DebrisPiece[] {
     const out: DebrisPiece[] = [];
     const started = performance.now(), budget = this.opts.debrisBudgetMs ?? DEBRIS_BUDGET_MS;
     while (this.throwing.length && (!out.length || performance.now() - started < budget)) {
-      const { x, y, z, material, from, radius } = this.throwing.shift()!;
+      const { x, y, z, material, from, radius, at } = this.throwing.shift()!;
       const c = [x + PIECE / 2 - from[0], y + PIECE / 2 - from[1], z + PIECE / 2 - from[2]];
       const len = Math.hypot(c[0]!, c[1]!, c[2]!) || 1;
-      const dir = [c[0]! / len, c[1]! / len + 0.9, c[2]! / len];
+      const dir = [c[0]! / len, c[1]! / len + DEBRIS_LIFT, c[2]! / len];
       const dl = Math.hypot(dir[0]!, dir[1]!, dir[2]!);
       const speed = (5 + 7 * random()) * Math.sqrt(Math.min(2, radius / 64));
       const flight = throwDebris([x, y, z], PIECE, [(dir[0]! / dl) * speed, (dir[1]! / dl) * speed, (dir[2]! / dl) * speed], this.world.solidAt);
-      out.push(packDebris(material, PIECE, flight));
+      out.push({ ...packDebris(material, PIECE, flight), ...(now > at ? { a: now - at } : {}) });
       if (flight.rested && this.opts.keepDebris?.()) {
         const end = flight.path.at(-1)!;
-        this.landing.push({ at: now + ((flight.path.length - 1) / DEBRIS_FPS) * 1000, x: end[0], y: end[1], z: end[2], material });
+        this.landing.push({ at: at + ((flight.path.length - 1) / DEBRIS_FPS) * 1000, x: end[0], y: end[1], z: end[2], material });
       }
     }
     return out;
   }
 
-  /** Places debris that's come to rest by now (on the 1/2 m grid where it lies; a step up if that's taken; else not). */
+  /** Places debris that's come to rest by now, all at once (on the PIECE grid where it lies; a step up if that's taken; else not). */
   private settle(now: number): EditResult[] {
-    const out: EditResult[] = [];
+    const due: { x: number; y: number; z: number; size: number; material: MaterialId }[] = [];
     for (let i = this.landing.length - 1; i >= 0; i--) {
       const l = this.landing[i]!;
       if (l.at > now) continue;
       this.landing.splice(i, 1);
-      const x = Math.round(l.x / PIECE) * PIECE, z = Math.round(l.z / PIECE) * PIECE, y = Math.round(l.y / PIECE) * PIECE;
-      for (const yy of [y, y + PIECE]) {
-        try {
-          out.push(this.world.applyEdit({ op: 'place', x, y: yy, z, size: PIECE, material: l.material }));
-          break;
-        } catch (err) {
-          if (!(err instanceof EditError)) throw err;
-        }
-      }
+      due.push({ x: Math.round(l.x / PIECE) * PIECE, y: Math.round(l.y / PIECE) * PIECE, z: Math.round(l.z / PIECE) * PIECE, size: PIECE, material: l.material });
     }
-    return out;
+    const result = due.length ? this.world.placeMany(due) : null;
+    return result ? [result] : [];
   }
 }
 
 /**
- * Up to `want` pieces (1/2 m cells on the grid, each of the material most of it was) from what a
- * blast took out, chosen at random.
+ * Up to `want` pieces (PIECE-sized cells on the grid) from what a blast took out, chosen at random
+ * by volume (without listing every cell: a big blast takes out hundreds of thousands), never TNT or water.
  */
 export function pickPieces(removed: readonly { x: number; y: number; z: number; size: number; material: MaterialId }[], want: number, random: () => number): { x: number; y: number; z: number; material: MaterialId }[] {
-  const cells = new Map<string, { x: number; y: number; z: number; material: MaterialId; volume: number }>();
-  const add = (x: number, y: number, z: number, material: MaterialId, volume: number) => {
-    const cx = Math.floor(x / PIECE) * PIECE, cy = Math.floor(y / PIECE) * PIECE, cz = Math.floor(z / PIECE) * PIECE;
-    const key = `${cx},${cy},${cz}`, c = cells.get(key);
-    if (!c) cells.set(key, { x: cx, y: cy, z: cz, material, volume });
-    else if (volume > c.volume) Object.assign(c, { material, volume });
+  const solid = removed.filter((v) => !isWater(v.material) && v.material !== Material.TNT);
+  const cellsOf = (size: number) => (size <= PIECE ? 1 : (size / PIECE) ** 3);
+  const count = solid.reduce((n, v) => n + cellsOf(v.size), 0);
+  const cell = (v: (typeof solid)[number], k: number) => {
+    // Cell k of voxel v (a voxel smaller than a cell: the cell it's in).
+    if (v.size <= PIECE) return { x: Math.floor(v.x / PIECE) * PIECE, y: Math.floor(v.y / PIECE) * PIECE, z: Math.floor(v.z / PIECE) * PIECE, material: v.material };
+    const n = v.size / PIECE;
+    return { x: v.x + (k % n) * PIECE, y: v.y + Math.floor(k / (n * n)) * PIECE, z: v.z + (Math.floor(k / n) % n) * PIECE, material: v.material };
   };
-  for (const v of removed) {
-    if (isWater(v.material) || v.material === Material.TNT) continue;
-    if (v.size <= PIECE) add(v.x, v.y, v.z, v.material, v.size ** 3);
-    else for (let dy = 0; dy < v.size; dy += PIECE) for (let dz = 0; dz < v.size; dz += PIECE) for (let dx = 0; dx < v.size; dx += PIECE) add(v.x + dx, v.y + dy, v.z + dz, v.material, PIECE ** 3);
+  const picked = new Map<string, { x: number; y: number; z: number; material: MaterialId }>();
+  const add = (c: { x: number; y: number; z: number; material: MaterialId }) => {
+    const key = `${c.x},${c.y},${c.z}`;
+    if (!picked.has(key)) picked.set(key, c);
+  };
+  if (count <= want * 2) {
+    // Few: all of them, then a random few of those (Fisher-Yates, as far as needed).
+    for (const v of solid) for (let k = 0; k < cellsOf(v.size); k++) add(cell(v, k));
+    const all = [...picked.values()];
+    for (let i = 0; i < Math.min(want, all.length); i++) {
+      const j = i + Math.floor(random() * (all.length - i));
+      [all[i], all[j]] = [all[j]!, all[i]!];
+    }
+    return all.slice(0, want);
   }
-  const all = [...cells.values()];
-  // A random few (Fisher-Yates, as far as needed).
-  for (let i = 0; i < Math.min(want, all.length); i++) {
-    const j = i + Math.floor(random() * (all.length - i));
-    [all[i], all[j]] = [all[j]!, all[i]!];
+  // Many: cells at random, each voxel as likely as its share of the volume (a few tries at most).
+  const cumulative = new Float64Array(solid.length);
+  let total = 0;
+  solid.forEach((v, i) => (cumulative[i] = total += cellsOf(v.size)));
+  for (let tries = 0; picked.size < want && tries < want * 6; tries++) {
+    const r = random() * total;
+    let lo = 0, hi = solid.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (cumulative[mid]! > r) hi = mid;
+      else lo = mid + 1;
+    }
+    const v = solid[lo]!;
+    add(cell(v, Math.floor(random() * cellsOf(v.size))));
   }
-  return all.slice(0, want).map(({ x, y, z, material }) => ({ x, y, z, material }));
+  return [...picked.values()];
 }
