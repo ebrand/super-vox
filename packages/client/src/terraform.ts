@@ -42,6 +42,10 @@ const miniatureEl = document.getElementById('miniature') as HTMLInputElement;
 miniatureEl.addEventListener('change', () => {
   if (diorama) diorama.miniature = miniatureEl.checked;
 });
+const birdsEl = document.getElementById('birds') as HTMLInputElement;
+birdsEl.addEventListener('change', () => {
+  if (diorama) diorama.birdsOn = birdsEl.checked;
+});
 
 // ---- Measuring up close: the map grid (remembered in this browser) and the measuring line.
 const GRID_KEY = 'super-vox-terraform-grid';
@@ -539,6 +543,7 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
     diorama.onPaint = paint;
     diorama.paintsAlt = brush.kind === 'plant';
     diorama.grid = gridEl.checked;
+    diorama.birdsOn = birdsEl.checked;
     stage.prepend(diorama.canvas);
   }
   showing = 'diorama';

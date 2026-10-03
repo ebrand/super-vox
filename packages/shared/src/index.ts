@@ -24,6 +24,7 @@ export * from './recipes.js';
 export * from './designs.js';
 export * from './objects.js';
 export * from './physics.js';
+export * from './flocking.js';
 export * from './walking.js';
 export * from './mobs.js';
 export * from './mining.js';

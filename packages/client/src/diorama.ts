@@ -12,6 +12,7 @@ import { DEFAULT_DIORAMA_LIGHT, dioramaLighting, type DioramaLight } from './dio
 import { createPackedMesh, disposePackedMesh, meshQuads } from './meshFactory.js';
 import { MiniatureEffect } from './miniature.js';
 import { createTint } from './tint.js';
+import { Birds } from './birds.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
 import { WATER_LAYER, WaterRenderer, createVoxelWaterMaterial } from './water.js';
 import type { DioramaPart } from './terraformArea.js';
@@ -66,6 +67,11 @@ export class Diorama {
   private readonly measureLine: Line2;
   private readonly measureShade: Line2;
   private readonly measureLabel: HTMLDivElement;
+  /** Flocks of birds crossing the view now and then (see Birds). */
+  private readonly birds: Birds;
+  /** The area's size (metres), for the birds. */
+  private areaSize = 512;
+  private lastFrame = performance.now();
 
   constructor(climate: Uint8Array | null, wrapX: boolean, seaLevel: number | null) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
@@ -123,6 +129,14 @@ export class Diorama {
     this.measureLabel = document.createElement('div');
     this.measureLabel.className = 'measure-label';
     this.measureLabel.hidden = true;
+    this.birds = new Birds({
+      groundAt: (x, z) => this.groundAt(x, z),
+      sunDir: () => this.atmosphere.uniforms.sunDir.value.clone(),
+      target: () => this.controls.target.clone(),
+      distance: () => this.camera.position.distanceTo(this.controls.target),
+      areaSize: () => this.areaSize,
+    });
+    this.scene.add(this.birds.group);
     this.wireInput();
     // The scene (water and all, see WaterRenderer) into the effect's buffer, then the effect.
     const water = this.water, scene = this.scene, camera = this.camera;
@@ -157,6 +171,7 @@ export class Diorama {
   show(parts: readonly DioramaPart[], area: { x0: number; z0: number; size: number; base: number; top: number }, keepView = false): void {
     this.clear();
     this.update(parts);
+    this.areaSize = area.size / UNITS_PER_METER;
     if (keepView) return;
     // Look at the middle of the area from the south and above, all of it in view.
     const m = UNITS_PER_METER, size = area.size / m;
@@ -347,6 +362,11 @@ export class Diorama {
     this.showMeasure();
   }
 
+  /** Whether flocks of birds come by. */
+  set birdsOn(on: boolean) {
+    this.birds.enabled = on;
+  }
+
   /** The map grid on the ground: 1 m, 1/2 km and 1 km lines (see the voxel material's gridOn). */
   set grid(on: boolean) {
     this.material.uniforms.gridOn!.value = on ? 1 : 0;
@@ -428,6 +448,9 @@ export class Diorama {
     }
     this.controls.update();
     this.placeMeasureLabel();
+    const now = performance.now();
+    this.birds.update((now - this.lastFrame) / 1000);
+    this.lastFrame = now;
     this.water.uniforms.waveScale.value = waveScaleAt(this.camera.position.distanceTo(this.controls.target));
     this.miniatureFx.render(this.miniature ? 1 : 0);
   }
@@ -456,6 +479,7 @@ export class Diorama {
 
   dispose(): void {
     this.measureLabel.remove();
+    this.birds.dispose();
     this.clear();
     this.controls.dispose();
     this.miniatureFx.dispose();
