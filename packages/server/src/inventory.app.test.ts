@@ -250,14 +250,14 @@ describe('TNT', () => {
     await p.until(() => p.msgs.some((m) => m.type === 'explosion'), FUSE_MS + 2000);
     expect(p.msgs.find((m) => m.type === 'explosion')).toEqual({ type: 'explosion', x: tnt.x + 8, y: 8, z: tnt.z + 8, radius: 128, seed: expect.any(Number), open: expect.any(Array) });
     // The explosion before the crater's chunks (clients make its dust from the world as it was).
-    await p.until(() => order.lastIndexOf('chunk') > order.indexOf('explosion'));
+    await p.until(() => order.lastIndexOf('chunk') > order.indexOf('explosion'), 8000);
     expect(order.indexOf('explosion')).toBeGreaterThanOrEqual(0);
     expect(order.slice(0, order.indexOf('explosion')).filter((t) => t === 'chunk').length).toBe(0);
     // Hurt (players are told their health on joining too: the blast's is the one below 20).
-    await p.until(() => p.msgs.some((m) => m.type === 'health' && m.health < 20));
+    await p.until(() => p.msgs.some((m) => m.type === 'health' && m.health < 20), 8000);
     expect(world.explosiveAt(tnt.x + 4, 4, tnt.z + 4)).toBeNull();
     p.ws.close();
-  }, 15_000);
+  }, 25_000);
 });
 
 /** Sends a message with an id and waits for its editResult. */

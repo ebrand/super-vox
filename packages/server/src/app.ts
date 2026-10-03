@@ -500,18 +500,31 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const bytes = encodeMessage(msg);
     for (const [client, w] of clients) if (w === world && client.readyState === client.OPEN) out(client, bytes);
   };
-  const blasting = setInterval(() => {
+  // (Each tick 50 ms after the last one's done, not on a fixed beat: after a long one, a pause before
+  // the next, for what it sent to go out. An announced blast's news would otherwise wait for its carving.)
+  let blasting: ReturnType<typeof setTimeout>;
+  const blastTick = () => {
+    try {
+      blastStep();
+    } finally {
+      blasting = setTimeout(blastTick, 50); // (whatever happened: the next one's still due)
+    }
+  };
+  const blastStep = () => {
     const now = Date.now();
     for (const [world, explosives] of explosivesOf) {
       if (explosives.count === 0) continue;
-      const { blasts, debris, landed } = explosives.tick(now);
+      const { announced, blasts, debris, landed } = explosives.tick(now);
       for (const r of landed) broadcast(world, r);
+      // Craters of blasts announced before: their chunks, and the TNT they lit.
       for (const b of blasts) {
-        // (The explosion first: clients make dust of what's there before the crater arrives.)
-        toWorld(world, { type: 'explosion', x: b.x, y: b.y, z: b.z, radius: b.radius, seed: b.seed, open: b.open.map((v) => Math.round(v * 1000) / 1000) as [number, number, number] });
         if (b.result) broadcast(world, b.result);
         for (const { tnt, ms } of b.lit) toWorld(world, { type: 'fuse', ...tnt, ms });
-        // Hurt: players (who can be) and mobs in reach.
+      }
+      // Blasts going off now: told at once (flash, sound, dust: clients make it of what's there,
+      // before the crater comes on the next tick), and who's in reach hurt.
+      for (const b of announced) {
+        toWorld(world, { type: 'explosion', x: b.x, y: b.y, z: b.z, radius: b.radius, seed: b.seed, open: b.open.map((v) => Math.round(v * 1000) / 1000) as [number, number, number] });
         for (const [client, w] of clients) {
           const p = players.get(client);
           if (w !== world || !p?.pose || !p.vulnerable) continue;
@@ -522,9 +535,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       }
       if (debris.length) toWorld(world, { type: 'debris', pieces: debris });
     }
-  }, 50);
+  };
+  blasting = setTimeout(blastTick, 50);
   app.addHook('onClose', async () => {
-    clearInterval(blasting);
+    clearTimeout(blasting);
     clearInterval(flowing);
     clearInterval(mobbing);
     clearInterval(sampling);

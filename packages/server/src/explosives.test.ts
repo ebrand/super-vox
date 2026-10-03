@@ -6,6 +6,12 @@ import { World } from './world.js';
 /** A flat world (ground at 0: grass over dirt over stone, in 1/4 m voxels). */
 const flat = () => new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4)));
 const M = 16;
+/** A blast going off and its crater carved: the tick that announces it, then the one that carves it (their results together). */
+function blow(e: Explosives, now: number) {
+  const a = e.tick(now), b = e.tick(now);
+  return { announced: a.announced, blasts: [...a.blasts, ...b.blasts], debris: [...a.debris, ...b.debris], landed: [...a.landed, ...b.landed] };
+}
+
 /** A seeded random number generator (an LCG: enough for tests). */
 const seededRandom = (seed = 1) => () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
 /** Whether there's something solid at unit (x, y, z). */
@@ -46,6 +52,28 @@ describe('World.explode', () => {
 });
 
 describe('Explosives', () => {
+  it('announces a blast as its fuse runs out, and carves its crater on the next tick', () => {
+    const w = flat();
+    const t = { x: 3500 * M, y: 0, z: 3500 * M, size: 16 };
+    w.applyEdit({ op: 'place', ...t, material: Material.TNT });
+    const e = new Explosives(w, { random: seededRandom(4), debrisBudgetMs: Infinity });
+    e.light(t, 0);
+    const first = e.tick(FUSE_MS);
+    expect(first.announced).toEqual([expect.objectContaining({ x: t.x + 8, y: 8, z: t.z + 8, radius: 128 })]);
+    expect(first.blasts).toEqual([]);
+    expect(w.explosiveAt(t.x + 4, 4, t.z + 4)).not.toBeNull(); // (not carved yet)
+    expect(e.count).toBeGreaterThan(0);
+    const second = e.tick(FUSE_MS + 50);
+    expect(second.announced).toEqual([]);
+    expect(second.blasts.length).toBe(1);
+    expect(second.blasts[0]).toMatchObject({ seed: first.announced[0]!.seed, radius: 128 });
+    expect(second.blasts[0]!.result).not.toBeNull();
+    expect(w.explosiveAt(t.x + 4, 4, t.z + 4)).toBeNull();
+    // Its debris thrown from when it went off: 50 ms in already.
+    expect(second.debris.length).toBe(MAX_PIECES);
+    expect(second.debris.every((p) => p.a === 50)).toBe(true);
+  });
+
   it('blows lit TNT when its fuse runs out, lights what it catches, and not TNT taken away', () => {
     const w = flat();
     const a = { x: 3000 * M, y: 0, z: 3000 * M, size: 16 }, b = { x: 3002 * M, y: 0, z: 3000 * M, size: 16 }, c = { x: 3100 * M, y: 0, z: 3000 * M, size: 16 };
@@ -54,12 +82,12 @@ describe('Explosives', () => {
     expect(e.light(a, 0)).toBe(FUSE_MS);
     expect(e.light(a, 0)).toBeNull(); // already lit
     expect(e.tick(FUSE_MS - 1).blasts).toEqual([]);
-    const [blast] = e.tick(FUSE_MS).blasts;
+    const [blast] = blow(e, FUSE_MS).blasts;
     expect(blast).toMatchObject({ x: a.x + 8, y: 8, z: a.z + 8, radius: 128 }); // a 1 m TNT block: 8 m
     expect(blast!.lit).toEqual([{ tnt: { ...b, material: Material.TNT }, ms: (CHAIN_FUSE_MS[0] + CHAIN_FUSE_MS[1]) / 2 }]);
     expect(blast!.result).not.toBeNull();
     // The chained one goes off after its short fuse.
-    expect(e.tick(FUSE_MS + 1000).blasts.map((x) => x.x)).toEqual([b.x + 8]);
+    expect(blow(e, FUSE_MS + 1000).blasts.map((x) => x.x)).toEqual([b.x + 8]);
     // Lit, then dug out before it blows: nothing.
     e.light(c, 0);
     w.applyEdit({ op: 'remove', x: c.x, y: c.y, z: c.z });
@@ -76,7 +104,7 @@ describe('blast direction', () => {
     g.applyEdit({ op: 'place', ...t, material: Material.TNT });
     const e = new Explosives(g, { random: seededRandom(3), debrisBudgetMs: Infinity });
     e.light(t, 0);
-    const up = e.tick(FUSE_MS).blasts[0]!;
+    const up = blow(e, FUSE_MS).blasts[0]!;
     expect(up.open[1]).toBeGreaterThan(0.95);
     // A stone wall 16 m thick and high, its face (facing -x) at x = W; a 1/2 m TNT voxel (2.8 m) 1/2 m into it, 4 m up.
     const w = flat();
@@ -87,7 +115,7 @@ describe('blast direction', () => {
     w.applyEdit({ op: 'place', ...tnt, material: Material.TNT });
     const ex = new Explosives(w, { random: seededRandom(3), debrisBudgetMs: Infinity });
     ex.light(tnt, 0);
-    const { blasts, debris } = ex.tick(FUSE_MS);
+    const { blasts, debris } = blow(ex, FUSE_MS);
     const out = blasts[0]!.open;
     expect(out[0]).toBeLessThan(-0.9); // out of the face
     // Most of the debris lands out in front of the wall, not back in its crater.
@@ -150,7 +178,7 @@ describe('debris', () => {
     w.applyEdit({ op: 'place', ...t, material: Material.TNT });
     const e = new Explosives(w, { random: seededRandom(), keepDebris: () => true, debrisBudgetMs: Infinity });
     e.light(t, 0);
-    const { debris } = e.tick(FUSE_MS);
+    const { debris } = blow(e, FUSE_MS);
     expect(debris.length).toBe(MAX_PIECES);
     expect(debris.every((p) => p.s === PIECE && p.a === undefined)).toBe(true); // all thrown at once: none late
     // Of the ground: grass, dirt, stone; never TNT.
@@ -175,6 +203,7 @@ describe('debris', () => {
     w.applyEdit({ op: 'place', ...t, material: Material.TNT });
     const e = new Explosives(w, { random: seededRandom(), debrisBudgetMs: 0 });
     e.light(t, 0);
+    expect(e.tick(FUSE_MS).announced.length).toBe(1); // (carved, and its debris thrown, from the next)
     const first = e.tick(FUSE_MS);
     expect(first.blasts.length).toBe(1);
     expect(first.debris.length).toBe(1);
@@ -198,7 +227,7 @@ describe('debris', () => {
     w.applyEdit({ op: 'place', ...t, material: Material.TNT });
     const e = new Explosives(w, { keepDebris: () => false });
     e.light(t, 0);
-    expect(e.tick(FUSE_MS).debris.length).toBeGreaterThan(0);
+    expect(blow(e, FUSE_MS).debris.length).toBeGreaterThan(0);
     expect(e.tick(FUSE_MS + 6000).landed).toEqual([]);
   });
 
@@ -270,7 +299,7 @@ describe('touching TNT', () => {
     expect(w.explosiveAt(c4.x + 1, 1, c4.z + 1)).toEqual({ ...c4, material: Material.C4 });
     const e = new Explosives(w, { random: seededRandom(2), debrisBudgetMs: Infinity });
     expect(e.light(c4, 0)).toBe(FUSE_MS);
-    const { blasts, debris } = e.tick(FUSE_MS);
+    const { blasts, debris } = blow(e, FUSE_MS);
     expect(blasts.length).toBe(1);
     expect(blasts[0]!.radius).toBeCloseTo(64 * Math.sqrt(0.32), 9); // 2.26 m
     expect(blasts[0]!.x).toBe(c4.x + 1);
@@ -282,7 +311,7 @@ describe('touching TNT', () => {
     w.applyEdit({ op: 'place', ...t, material: Material.TNT });
     w.applyEdit({ op: 'place', ...stuck, material: Material.C4 });
     e.light(t, 10_000);
-    const both = e.tick(10_000 + FUSE_MS).blasts;
+    const both = blow(e, 10_000 + FUSE_MS).blasts;
     expect(both.length).toBe(1);
     const pt = tntEquivalent(Material.TNT, 16 ** 3), pc = tntEquivalent(Material.C4, 2 ** 3);
     expect(both[0]!.radius).toBeCloseTo(blastRadius(pt + pc), 9);
@@ -298,7 +327,7 @@ describe('touching TNT', () => {
     for (const t of four) w.applyEdit({ op: 'place', ...t, material: Material.TNT });
     const e = new Explosives(w, { random: () => 0.5, debrisBudgetMs: Infinity });
     e.light(four[0]!, 0);
-    const { blasts } = e.tick(FUSE_MS);
+    const { blasts } = blow(e, FUSE_MS);
     expect(blasts.length).toBe(1);
     expect(blasts[0]).toMatchObject({ x: 8001 * M, y: 8, z: 8001 * M, radius: MAX_BLAST_RADIUS });
     expect(blasts[0]!.lit).toEqual([]);

@@ -289,6 +289,31 @@ export class World {
     });
   }
 
+  /**
+   * Gets ready the chunks within `reach` (units) of (x, y, z) that aren't to hand: made off the main
+   * thread (or read from disk) and cached, so what then reads them (a blast that's coming: see
+   * Explosives.light) only decodes them. Nothing where there's no other thread or disk to do it.
+   */
+  prefetch(x: number, y: number, z: number, reach: number): number {
+    if (!this.remote && !this.disk) return 0;
+    let asked = 0;
+    const n = CHUNK_SIZE;
+    for (let cy = Math.floor((y - reach) / n); cy <= Math.floor((y + reach) / n); cy++) {
+      for (let cz = Math.floor((z - reach) / n); cz <= Math.floor((z + reach) / n); cz++) {
+        for (let cx = Math.floor((x - reach) / n); cx <= Math.floor((x + reach) / n); cx++) {
+          const resolved = resolveChunk(this.config, { cx, cy, cz });
+          if (!resolved) continue;
+          const key = chunkKey(resolved);
+          if (this.cache.has(key) || this.edited.has(key)) continue;
+          const got = this.encodedChunk(resolved);
+          if (got instanceof Promise) got.catch(() => {}); // (if it fails, the blast makes it itself)
+          asked++;
+        }
+      }
+    }
+    return asked;
+  }
+
   /** As getEncodedTile, from the disk cache or made off the main thread (as encodedChunk). */
   encodedTile(t: TileCoord): Uint8Array | null | Promise<Uint8Array | null> {
     if (!tileInWorld(this.config, t) || (!this.remote && !this.disk)) return this.getEncodedTile(t);
@@ -863,36 +888,43 @@ export class World {
           if (!resolved) continue;
           const key = chunkKey(resolved);
           let chunk = next.get(key) ?? seen.get(key);
-          // (Each chunk made once: generating one is costly.)
-          if (!chunk) seen.set(key, (chunk = this.current(resolved)));
+          // (Each chunk made once: generating one is costly. Those just looked at are decoded already.)
+          if (!chunk) seen.set(key, (chunk = this.decoded.get(key) ?? this.current(resolved)));
           const i = blockIndex(((bx % n) + n) % n, ((by % n) + n) % n, ((bz % n) + n) % n);
           const block = chunk.blocks[i] ?? null;
           if (!block) continue;
           const kept: BlockVoxel[] = [];
-          let changed = false;
-          const visit = (v: BlockVoxel) => {
+          const gone: { x: number; y: number; z: number; size: number; material: MaterialId }[] = [];
+          /** Decides a voxel: what of it stays (`into.kept`) and goes (`into.gone`), whole where it can. */
+          const visit = (v: BlockVoxel, into: { kept: BlockVoxel[]; gone: typeof gone }) => {
             const wx = bx * B + v.x, wy = by * B + v.y, wz = bz * B + v.z;
-            if (isWater(v.material)) return void kept.push(v);
+            if (isWater(v.material)) return void into.kept.push(v);
             const inside = () => shape.contains(wx + v.size / 2 - x, wy + v.size / 2 - y, wz + v.size / 2 - z);
             if (isExplosive(v.material) && !blowing.has(`${wx},${wy},${wz}`)) {
               if (inside()) tnt.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material });
-              return void kept.push(v);
+              return void into.kept.push(v);
             }
             const where = shape.classify(wx - x, wy - y, wz - z, v.size);
-            if (where === -1) return void kept.push(v); // untouched
-            changed = true;
-            if (where === 1) return void removed.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material }); // all inside: gone
+            if (where === -1) return void into.kept.push(v); // untouched
+            if (where === 1) return void into.gone.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material }); // all inside: gone
             if (v.size > minPiece) {
-              // Cut by the edge: in eighths, each decided again.
-              const h = v.size / 2;
-              for (let k = 0; k < 8; k++) visit({ x: v.x + (k & 1) * h, y: v.y + ((k >> 1) & 1) * h, z: v.z + ((k >> 2) & 1) * h, size: h, material: v.material });
+              // Maybe cut by the edge: in eighths, each decided again; if they all go (or all stay), it does whole.
+              const h = v.size / 2, parts = { kept: [] as BlockVoxel[], gone: [] as typeof gone };
+              for (let k = 0; k < 8; k++) visit({ x: v.x + (k & 1) * h, y: v.y + ((k >> 1) & 1) * h, z: v.z + ((k >> 2) & 1) * h, size: h, material: v.material }, parts);
+              if (parts.kept.length === 0) into.gone.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material });
+              else if (parts.gone.length === 0) into.kept.push(v);
+              else {
+                into.kept.push(...parts.kept);
+                into.gone.push(...parts.gone);
+              }
               return;
             }
-            if (!inside()) kept.push(v);
-            else removed.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material });
+            if (!inside()) into.kept.push(v);
+            else into.gone.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material });
           };
-          for (const v of blockVoxels(block)) visit(v);
-          if (!changed) continue;
+          for (const v of blockVoxels(block)) visit(v, { kept, gone });
+          if (gone.length === 0) continue;
+          removed.push(...gone);
           const blocks = chunk.blocks.slice();
           blocks[i] = blockFromVoxels(kept);
           next.set(key, { cx: chunk.cx, cy: chunk.cy, cz: chunk.cz, blocks });

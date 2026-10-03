@@ -1,5 +1,5 @@
-import { CHAIN_FUSE_MS, DEBRIS_FPS, DEBRIS_LIFT, FUSE_MS, blastRadius, isExplosive, isWater, openDirection, packDebris, throwDebris, tntEquivalent, type DebrisPiece, type MaterialId } from '@super-vox/shared';
-import type { EditResult, World } from './world.js';
+import { CHAIN_FUSE_MS, CHUNK_SIZE, DEBRIS_FPS, DEBRIS_LIFT, FUSE_MS, blastRadius, isExplosive, isWater, openDirection, packDebris, throwDebris, tntEquivalent, type DebrisPiece, type MaterialId } from '@super-vox/shared';
+import type { EditResult, Explosive, World } from './world.js';
 
 /** An explosive voxel (TNT, C4) to light: its corner and size (units). */
 export interface Tnt {
@@ -10,17 +10,21 @@ export interface Tnt {
 }
 
 /**
- * An explosion that happened: where (its centre, units), how big, what it changed, the TNT it lit
- * (with their fuses, ms), and a seed for the dust clients make of it themselves (see ExplosionView).
+ * An explosion going off: where (its centre, units), how big, which way (a unit vector: toward the
+ * open air; see openDirection), and a seed (its crater's shape, and the dust clients make).
+ * Announced at once (for its flash, sound, dust and damage); its crater's carved a tick later.
  */
-export interface Blast {
+export interface BlastStart {
   x: number;
   y: number;
   z: number;
   radius: number;
   seed: number;
-  /** Which way it goes (a unit vector: toward the open air; see openDirection). */
   open: [number, number, number];
+}
+
+/** A blast whose crater's been carved: what it changed, and the TNT it lit (with their fuses, ms). */
+export interface Blast extends BlastStart {
   result: EditResult | null;
   lit: { tnt: Tnt; ms: number }[];
 }
@@ -45,6 +49,8 @@ export const MAX_WAITING_PIECES = 3000;
  */
 export class Explosives {
   private readonly lit = new Map<string, { tnt: Tnt; at: number }>();
+  /** Blasts announced, their craters still to carve (the next tick: their news goes out first). */
+  private readonly pending: (BlastStart & { cluster: Explosive[]; at: number })[] = [];
   /** Debris on its way to rest, to be placed then (creative). */
   private readonly landing: { at: number; x: number; y: number; z: number; material: MaterialId }[] = [];
   /** Pieces blown out, still to be thrown: each from its cell, away from its blast's centre (units). */
@@ -55,9 +61,9 @@ export class Explosives {
     private readonly opts: { perTick?: number; random?: () => number; keepDebris?: () => boolean; debrisBudgetMs?: number } = {},
   ) {}
 
-  /** TNT burning, and debris yet to be thrown or still flying to where it'll stay. */
+  /** TNT burning, blasts to carve, and debris yet to be thrown or still flying to where it'll stay. */
   get count(): number {
-    return this.lit.size + this.throwing.length + this.landing.length;
+    return this.lit.size + this.pending.length + this.throwing.length + this.landing.length;
   }
 
   /** Lights TNT, if it isn't already: its fuse (ms), or null. */
@@ -65,28 +71,48 @@ export class Explosives {
     const key = `${tnt.x},${tnt.y},${tnt.z}`;
     if (this.lit.has(key)) return null;
     this.lit.set(key, { tnt, at: now + fuse });
+    this.prepare(tnt);
     return fuse;
   }
 
   /**
-   * Blows the TNT whose fuses have run out (the soonest first, `perTick` at most), throws what
-   * debris there's time for (`debris`: each piece's flight, for clients to show), and settles
+   * While its fuse burns: the terrain its blast will look at (see openDirection) and carve made
+   * ready off the main thread (see World.prefetch), so when it goes off there's only decoding to do.
+   */
+  private prepare(tnt: Tnt): void {
+    const here = this.world.explosiveAt(tnt.x, tnt.y, tnt.z);
+    if (!here) return;
+    let volume = 0;
+    for (const t of this.world.explosiveCluster(here)) volume += tntEquivalent(t.material, t.size ** 3);
+    this.world.prefetch(tnt.x + tnt.size / 2, tnt.y + tnt.size / 2, tnt.z + tnt.size / 2, blastRadius(volume) * 1.9 + CHUNK_SIZE);
+  }
+
+  /**
+   * Carves the craters of blasts announced before (as many as there's time for; at least one):
+   * `blasts`, lighting TNT they catch and throwing their debris. Then announces the blasts of TNT
+   * whose fuses have run out (the soonest first, `perTick` at most): `announced`, to be told of at
+   * once (their craters come on the next tick, so the news isn't held up by the carving). Throws
+   * what debris there's time for (`debris`: each piece's flight, for clients to show), and settles
    * debris that's come to rest (`landed`: what that changed).
    */
-  tick(now: number): { blasts: Blast[]; debris: DebrisPiece[]; landed: EditResult[] } {
+  tick(now: number): { announced: BlastStart[]; blasts: Blast[]; debris: DebrisPiece[]; landed: EditResult[] } {
     const random = this.opts.random ?? Math.random;
-    const due = [...this.lit.entries()].filter(([, l]) => l.at <= now).sort((a, b) => a[1].at - b[1].at).slice(0, this.opts.perTick ?? 6);
     const blasts: Blast[] = [];
     const started = performance.now();
-    for (const [key, { tnt }] of due) {
+    while (this.pending.length) {
       // (A big blast takes a while: the rest wait for the next tick.)
       if (blasts.length && performance.now() - started > TICK_BUDGET_MS) break;
+      blasts.push(this.carve(this.pending.shift()!, now, random));
+    }
+    const announced: BlastStart[] = [];
+    const due = [...this.lit.entries()].filter(([, l]) => l.at <= now).sort((a, b) => a[1].at - b[1].at).slice(0, this.opts.perTick ?? 6);
+    for (const [key, { tnt }] of due) {
       if (!this.lit.has(key)) continue; // (gone off with one it touched)
       this.lit.delete(key);
       // Still there? (Dug out or blown apart meanwhile: it doesn't go off.)
       const here = this.world.explosiveAt(tnt.x, tnt.y, tnt.z);
       if (!here || here.x !== tnt.x || here.y !== tnt.y || here.z !== tnt.z || here.size !== tnt.size) continue;
-      // Everything touching it goes off with it, as one: from their middle, as big as the TNT they equal makes it.
+      // Everything touching it goes off with it, as one: from their middle, as big as the power they add up to.
       const cluster = this.world.explosiveCluster(here);
       let volume = 0, cx = 0, cy = 0, cz = 0;
       for (const t of cluster) {
@@ -102,20 +128,28 @@ export class Explosives {
       const open = openDirection(this.world.solidAt, x, y, z, radius);
       // (Its seed shapes the crater, and the dust clients make: the same everywhere.)
       const seed = Math.floor(random() * 2 ** 31);
-      const { result, tnt: caught, removed } = this.world.explode(x, y, z, radius, new Set(cluster.map((t) => `${t.x},${t.y},${t.z}`)), seed);
-      // Lit by it: TNT it caught, and any of the cluster out of its reach.
-      const lit: Blast['lit'] = [];
-      const left = cluster.filter((t) => this.world.explosiveAt(t.x, t.y, t.z));
-      for (const t of [...caught, ...left]) {
-        const ms = this.light(t, now, CHAIN_FUSE_MS[0] + random() * (CHAIN_FUSE_MS[1] - CHAIN_FUSE_MS[0]));
-        if (ms !== null) lit.push({ tnt: t, ms });
-      }
-      // Debris: pieces of what it blew out, to be thrown up and away from the centre.
-      const want = Math.min(MAX_WAITING_PIECES - this.throwing.length, MAX_PIECES);
-      for (const cell of pickPieces(removed, want, random)) this.throwing.push({ ...cell, from: [x, y, z], open, radius, at: now });
-      blasts.push({ x, y, z, radius, seed, open, result, lit });
+      const start = { x, y, z, radius, seed, open };
+      announced.push(start);
+      this.pending.push({ ...start, cluster, at: now });
     }
-    return { blasts, debris: this.throw(now, random), landed: this.settle(now) };
+    return { announced, blasts, debris: this.throw(now, random), landed: this.settle(now) };
+  }
+
+  /** Carves a blast's crater (see World.explode): the TNT it catches lit, its debris to be thrown. */
+  private carve(b: BlastStart & { cluster: Explosive[]; at: number }, now: number, random: () => number): Blast {
+    const { x, y, z, radius, seed, open, cluster } = b;
+    const { result, tnt: caught, removed } = this.world.explode(x, y, z, radius, new Set(cluster.map((t) => `${t.x},${t.y},${t.z}`)), seed);
+    // Lit by it: TNT it caught, and any of the cluster out of its reach.
+    const lit: Blast['lit'] = [];
+    const left = cluster.filter((t) => this.world.explosiveAt(t.x, t.y, t.z));
+    for (const t of [...caught, ...left]) {
+      const ms = this.light(t, now, CHAIN_FUSE_MS[0] + random() * (CHAIN_FUSE_MS[1] - CHAIN_FUSE_MS[0]));
+      if (ms !== null) lit.push({ tnt: t, ms });
+    }
+    // Debris: pieces of what it blew out, to be thrown up and away from the centre (from when it went off).
+    const want = Math.min(MAX_WAITING_PIECES - this.throwing.length, MAX_PIECES);
+    for (const cell of pickPieces(removed, want, random)) this.throwing.push({ ...cell, from: [x, y, z], open, radius, at: b.at });
+    return { x, y, z, radius, seed, open, result, lit };
   }
 
   /**
