@@ -97,6 +97,28 @@ describe('blast direction', () => {
   });
 });
 
+describe('crater shape', () => {
+  it('with a seed, blows a lobed, rough crater (not the sphere), the same for the same seed', () => {
+    const [x, y, z, r] = [1500 * M + 8, -4 * M, 1500 * M + 8, 6 * M];
+    const dig = (seed?: number) => {
+      const w = flat();
+      w.explode(x, y, z, r, new Set(), seed);
+      // Which cells (1/4 m, the ground's voxels) are gone, on a 1 m grid through it.
+      const gone: boolean[] = [];
+      for (let dy = -10; dy <= 0; dy++) for (let dz = -10; dz <= 10; dz++) for (let dx = -10; dx <= 10; dx++) gone.push(!solid(w, x + dx * M + 2, y + dy * M + 2 + 3 * M, z + dz * M + 2));
+      return gone;
+    };
+    const sphere = dig(), a = dig(42), b = dig(42), c = dig(43);
+    expect(a).toEqual(b);
+    const differ = (p: boolean[], q: boolean[]) => p.filter((v, i) => v !== q[i]).length;
+    expect(differ(a, sphere)).toBeGreaterThan(sphere.filter(Boolean).length * 0.1); // not the sphere
+    expect(differ(a, c)).toBeGreaterThan(0); // another seed, another shape
+    // About as much taken out as the sphere would (within a third).
+    const n = (p: boolean[]) => p.filter(Boolean).length;
+    expect(Math.abs(n(a) - n(sphere))).toBeLessThan(n(sphere) / 3);
+  });
+});
+
 describe('World.placeMany', () => {
   it('places voxels all at once: where each is, else a step up, else not; one change a chunk', () => {
     const w = flat();
@@ -241,7 +263,7 @@ describe('touching TNT', () => {
     expect(w.explosiveCluster({ ...touching[0]!, material: Material.TNT }).map(key).sort()).toEqual(touching.map(key).sort());
   });
 
-  it('has C4: a 1/8 m voxel blows 3.2 m, and C4 touching TNT goes off with it, adding up', () => {
+  it('has C4: a 1/8 m voxel blows 2.3 m, and C4 touching TNT goes off with it, adding up', () => {
     const w = flat();
     const c4 = { x: 7500 * M, y: 0, z: 7500 * M, size: 2 };
     w.applyEdit({ op: 'place', ...c4, material: Material.C4 });
@@ -250,7 +272,7 @@ describe('touching TNT', () => {
     expect(e.light(c4, 0)).toBe(FUSE_MS);
     const { blasts, debris } = e.tick(FUSE_MS);
     expect(blasts.length).toBe(1);
-    expect(blasts[0]!.radius).toBeCloseTo(3.2 * M, 9);
+    expect(blasts[0]!.radius).toBeCloseTo(64 * Math.sqrt(0.32), 9); // 2.26 m
     expect(blasts[0]!.x).toBe(c4.x + 1);
     expect(debris.length).toBe(MAX_PIECES);
     expect(debris.some((p) => p.m === Material.C4)).toBe(false);

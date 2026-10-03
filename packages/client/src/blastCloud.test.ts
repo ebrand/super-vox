@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLOCKS_PER_CHUNK, GRAVITY, Material, emptyChunk, type Chunk } from '@super-vox/shared';
+import { BLOCKS_PER_CHUNK, GRAVITY, Material, craterShape, emptyChunk, type Chunk } from '@super-vox/shared';
 import { CLOUD_FLIGHT_S, CLOUD_PIECE, CLOUD_REST_S, CLOUD_SIZES, blastCloud, type ChunkAt } from './blastCloud.js';
 
 const M = 16;
@@ -124,5 +124,19 @@ describe('blastCloud', () => {
       expect(Math.abs(n / cl.count - share)).toBeLessThan(0.02);
     }
     expect(cl.size.every((s) => CLOUD_SIZES.some((c) => Math.abs(s - c.size / M) < 1e-6))).toBe(true);
+  });
+
+  it("with the crater's seed, takes exactly the cells the shaped crater takes out (as the server carves it)", () => {
+    const shape = craterShape(r, 77);
+    const cl = blastCloud(flatWorld(), x, 8, z, r, 5, undefined, [0, 1, 0], 77);
+    let expected = 0;
+    const P = CLOUD_PIECE, o = Math.ceil(shape.outer / P) * P + P;
+    for (let cy = -o; cy < 0; cy += P)
+      for (let cz = Math.floor((z - o) / P) * P; cz <= z + o; cz += P)
+        for (let cx = Math.floor((x - o) / P) * P; cx <= x + o; cx += P)
+          if (shape.contains(cx + P / 2 - x, cy + P / 2 - 8, cz + P / 2 - z)) expected++;
+    expect(cl.count).toBe(expected);
+    expect(cl.count).not.toBe(cellsBelow(x, 8, z, r)); // not the sphere's
+    for (let i = 0; i < cl.count; i++) expect(shape.contains(cl.start[i * 3]! * M - x, cl.start[i * 3 + 1]! * M - 8, cl.start[i * 3 + 2]! * M - z)).toBe(true);
   });
 });

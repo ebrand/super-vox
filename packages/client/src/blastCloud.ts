@@ -1,4 +1,4 @@
-import { BLOCK_SIZE, BLOCKS_PER_AXIS, DEBRIS_LIFT, GRAVITY, UNITS_PER_METER, isExplosive, blockIndex, blockVoxelAt, isWater, type Block, type Chunk, type MaterialId } from '@super-vox/shared';
+import { BLOCK_SIZE, BLOCKS_PER_AXIS, DEBRIS_LIFT, GRAVITY, UNITS_PER_METER, craterShape, isExplosive, blockIndex, blockVoxelAt, isWater, type Block, type Chunk, type MaterialId } from '@super-vox/shared';
 
 /**
  * A blast's dust: up to CLOUD_MAX pieces (of CLOUD_SIZES) of what it blew apart, made by each
@@ -96,6 +96,8 @@ export interface BlastSample {
   seed: number;
   /** Which way the blast goes (a unit vector; see openDirection). */
   open: readonly [number, number, number];
+  /** The crater's shape's seed (see craterShape; as the server's), or none: the sphere. */
+  craterSeed?: number;
   /** The pieces: each one's cell (corner, units) and material, 4 numbers a piece. */
   picked: Int32Array;
   /** The ground's height (units) on 1 m columns from block column (x0, z0), cols x cols; -Infinity where none. */
@@ -106,34 +108,42 @@ export interface BlastSample {
 }
 
 /** The dust of a blast centred at (x, y, z) of `radius` (units): sampleBlast, then flyCloud. */
-export function blastCloud(chunkAt: ChunkAt, x: number, y: number, z: number, radius: number, seed: number, max = CLOUD_MAX, open: readonly [number, number, number] = [0, 1, 0]): Cloud {
-  return flyCloud(sampleBlast(chunkAt, x, y, z, radius, seed, max, open));
+export function blastCloud(chunkAt: ChunkAt, x: number, y: number, z: number, radius: number, seed: number, max = CLOUD_MAX, open: readonly [number, number, number] = [0, 1, 0], craterSeed?: number): Cloud {
+  return flyCloud(sampleBlast(chunkAt, x, y, z, radius, seed, max, open, craterSeed));
 }
 
 /**
  * What a blast centred at (x, y, z) of `radius` (units) blows apart, from the world as it is just
  * before (`chunkAt`; so this is done at once, before the crater's chunks): up to `max` pieces,
- * picked at random (from `seed`) among the solid cells it takes out (as World.explode: within the
- * sphere; not water, not explosives); and the ground around, for them to land on.
+ * picked at random (from `seed`) among the solid cells it takes out (as World.explode: within its
+ * crater, shaped by `craterSeed`, or the sphere; not water, not explosives); and the ground around,
+ * for them to land on.
  */
-export function sampleBlast(chunkAt: ChunkAt, x: number, y: number, z: number, radius: number, seed: number, max = CLOUD_MAX, open: readonly [number, number, number] = [0, 1, 0]): BlastSample {
+export function sampleBlast(chunkAt: ChunkAt, x: number, y: number, z: number, radius: number, seed: number, max = CLOUD_MAX, open: readonly [number, number, number] = [0, 1, 0], craterSeed?: number): BlastSample {
   const random = seeded(seed);
   const blockAt = blocks(chunkAt);
-  const P = CLOUD_PIECE, B = BLOCK_SIZE, r2 = radius * radius;
+  const shape = craterShape(radius, craterSeed), reach = shape.outer;
+  const P = CLOUD_PIECE, B = BLOCK_SIZE;
   // Cells taken out: a fair random `max` of them (reservoir sampling), without listing them all.
   const picked: number[] = []; // x, y, z (units, the cell's corner), material
   let seen = 0;
-  for (let by = Math.floor((y - radius) / B); by <= Math.floor((y + radius) / B); by++) {
-    for (let bz = Math.floor((z - radius) / B); bz <= Math.floor((z + radius) / B); bz++) {
-      for (let bx = Math.floor((x - radius) / B); bx <= Math.floor((x + radius) / B); bx++) {
-        const near = (c: number, lo: number) => Math.max(lo - c, 0, c - (lo + B));
-        if (near(x, bx * B) ** 2 + near(y, by * B) ** 2 + near(z, bz * B) ** 2 > r2) continue;
+  for (let by = Math.floor((y - reach) / B); by <= Math.floor((y + reach) / B); by++) {
+    for (let bz = Math.floor((z - reach) / B); bz <= Math.floor((z + reach) / B); bz++) {
+      for (let bx = Math.floor((x - reach) / B); bx <= Math.floor((x + reach) / B); bx++) {
+        // (Blocks all in the crater, or all out, decided at once; only those on its edge cell by cell.)
+        const where = shape.classify(bx * B - x, by * B - y, bz * B - z, B);
+        if (where === -1) continue;
         const block = blockAt(bx, by, bz);
         if (!block) continue;
+        // On the edge: its eight half-metre octants decided the same way, and only those on the edge cell by cell.
+        const octants = where === 0 ? Array.from({ length: 8 }, (_, o) => shape.classify(bx * B + (o & 1) * 8 - x, by * B + ((o >> 1) & 1) * 8 - y, bz * B + ((o >> 2) & 1) * 8 - z, 8)) : null;
         for (let k = 0; k < (B / P) ** 3; k++) {
           const lx = (k % 4) * P, ly = (k >> 4) * P, lz = ((k >> 2) % 4) * P;
           const cx = bx * B + lx, cy = by * B + ly, cz = bz * B + lz;
-          if ((cx + P / 2 - x) ** 2 + (cy + P / 2 - y) ** 2 + (cz + P / 2 - z) ** 2 > r2) continue;
+          if (octants) {
+            const o = octants[(lx >> 3) | ((ly >> 3) << 1) | ((lz >> 3) << 2)]!;
+            if (o === -1 || (o === 0 && !shape.contains(cx + P / 2 - x, cy + P / 2 - y, cz + P / 2 - z))) continue;
+          }
           const m: MaterialId = block.kind === 'uniform' ? block.material : (blockVoxelAt(block, lx + P / 2, ly + P / 2, lz + P / 2)?.material ?? 0);
           if (m === 0 || isWater(m) || isExplosive(m)) continue;
           seen++;
@@ -171,7 +181,7 @@ export function sampleBlast(chunkAt: ChunkAt, x: number, y: number, z: number, r
       ground[i + cols * j] = h;
     }
   }
-  return { x, y, z, radius, seed, open, picked: Int32Array.from(picked), ground, x0, z0, cols };
+  return { x, y, z, radius, seed, open, ...(craterSeed !== undefined ? { craterSeed } : {}), picked: Int32Array.from(picked), ground, x0, z0, cols };
 }
 
 /**
@@ -181,18 +191,24 @@ export function sampleBlast(chunkAt: ChunkAt, x: number, y: number, z: number, r
  */
 export function flyCloud(sample: BlastSample): Cloud {
   const { x, y, z, radius, picked, ground, x0, z0, cols, open } = sample;
-  const B = BLOCK_SIZE, P = CLOUD_PIECE, r2 = radius * radius;
+  const B = BLOCK_SIZE, P = CLOUD_PIECE;
+  const shape = craterShape(radius, sample.craterSeed);
   const count = picked.length / 4;
   // (Its own random numbers: the same everywhere for the same blast.)
   const random = seeded(sample.seed ^ 0x5bd1e995);
   const groundAt = (ux: number, uz: number) => {
     const i = Math.floor(ux / B) - x0, j = Math.floor(uz / B) - z0;
     let h = i < 0 || j < 0 || i >= cols || j >= cols ? -Infinity : ground[i + cols * j]!;
-    // The crater (exactly, not by the metre): where the sphere reaches up through the ground, its bottom.
+    // The crater (exactly, not by the metre): where it reaches up through the ground, its bottom
+    // (straight down from the middle as far as it goes there: its reach that way, found again once).
     const dx = ux - x, dz = uz - z, d2 = dx * dx + dz * dz;
-    if (d2 < r2) {
-      const s = Math.sqrt(r2 - d2);
-      if (h <= y + s) h = Math.min(h, y - s);
+    if (d2 < shape.outer ** 2) {
+      let r = shape.reach(dx, -Math.sqrt(Math.max(0, radius * radius - d2)), dz);
+      r = shape.reach(dx, -Math.sqrt(Math.max(0, r * r - d2)), dz);
+      if (d2 < r * r) {
+        const s = Math.sqrt(r * r - d2);
+        if (h <= y + s) h = Math.min(h, y - s);
+      }
     }
     return h;
   };

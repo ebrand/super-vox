@@ -100,7 +100,9 @@ export class Explosives {
       const x = cx / volume, y = cy / volume, z = cz / volume, radius = blastRadius(volume);
       // Which way it'll go: toward the open air around (up from the ground, out of a wall).
       const open = openDirection(this.world.solidAt, x, y, z, radius);
-      const { result, tnt: caught, removed } = this.world.explode(x, y, z, radius, new Set(cluster.map((t) => `${t.x},${t.y},${t.z}`)));
+      // (Its seed shapes the crater, and the dust clients make: the same everywhere.)
+      const seed = Math.floor(random() * 2 ** 31);
+      const { result, tnt: caught, removed } = this.world.explode(x, y, z, radius, new Set(cluster.map((t) => `${t.x},${t.y},${t.z}`)), seed);
       // Lit by it: TNT it caught, and any of the cluster out of its reach.
       const lit: Blast['lit'] = [];
       const left = cluster.filter((t) => this.world.explosiveAt(t.x, t.y, t.z));
@@ -111,7 +113,7 @@ export class Explosives {
       // Debris: pieces of what it blew out, to be thrown up and away from the centre.
       const want = Math.min(MAX_WAITING_PIECES - this.throwing.length, MAX_PIECES);
       for (const cell of pickPieces(removed, want, random)) this.throwing.push({ ...cell, from: [x, y, z], open, radius, at: now });
-      blasts.push({ x, y, z, radius, seed: Math.floor(random() * 2 ** 31), open, result, lit });
+      blasts.push({ x, y, z, radius, seed, open, result, lit });
     }
     return { blasts, debris: this.throw(now, random), landed: this.settle(now) };
   }

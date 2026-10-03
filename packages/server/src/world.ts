@@ -17,6 +17,7 @@ import {
   blockIndex,
   isWater,
   isExplosive,
+  craterShape,
   setBlockWater,
   applyEdit,
   decodeChunk,
@@ -832,12 +833,14 @@ export class World {
    * it stays, to be lit (returned: its voxels), except `blowing`, the TNT going off (corners,
    * "x,y,z"). Null result if nothing changed.
    */
-  explode(x: number, y: number, z: number, radius: number, blowing: ReadonlySet<string> = new Set()): {
+  explode(x: number, y: number, z: number, radius: number, blowing: ReadonlySet<string> = new Set(), seed?: number): {
     result: EditResult | null;
     tnt: Explosive[];
     /** What it took out (voxels, corner and size in units, and material): for its debris. */
     removed: { x: number; y: number; z: number; size: number; material: MaterialId }[];
   } {
+    // Its shape: from `seed`, lobed and rough (see craterShape); without one, the sphere.
+    const shape = craterShape(radius, seed), reach = shape.outer;
     const r2 = radius * radius, minPiece = radius >= 32 ? 4 : 1;
     const results: EditResult[] = [];
     // Objects in it: gone.
@@ -851,12 +854,11 @@ export class World {
     const next = new Map<string, Chunk>(), seen = new Map<string, Chunk>();
     const touched: [number, number, number][] = [];
     const B = BLOCK_SIZE, n = BLOCKS_PER_CHUNK_AXIS;
-    for (let by = Math.floor((y - radius) / B); by <= Math.floor((y + radius) / B); by++) {
-      for (let bz = Math.floor((z - radius) / B); bz <= Math.floor((z + radius) / B); bz++) {
-        for (let bx = Math.floor((x - radius) / B); bx <= Math.floor((x + radius) / B); bx++) {
-          // (Quickly past blocks the sphere misses.)
-          const near = (c: number, lo: number) => Math.max(lo - c, 0, c - (lo + B));
-          if (near(x, bx * B) ** 2 + near(y, by * B) ** 2 + near(z, bz * B) ** 2 > r2) continue;
+    for (let by = Math.floor((y - reach) / B); by <= Math.floor((y + reach) / B); by++) {
+      for (let bz = Math.floor((z - reach) / B); bz <= Math.floor((z + reach) / B); bz++) {
+        for (let bx = Math.floor((x - reach) / B); bx <= Math.floor((x + reach) / B); bx++) {
+          // (Quickly past blocks the crater misses.)
+          if (shape.classify(bx * B - x, by * B - y, bz * B - z, B) === -1) continue;
           const resolved = resolveChunk(this.config, { cx: Math.floor(bx / n), cy: Math.floor(by / n), cz: Math.floor(bz / n) });
           if (!resolved) continue;
           const key = chunkKey(resolved);
@@ -871,27 +873,22 @@ export class World {
           const visit = (v: BlockVoxel) => {
             const wx = bx * B + v.x, wy = by * B + v.y, wz = bz * B + v.z;
             if (isWater(v.material)) return void kept.push(v);
-            const centre = (wx + v.size / 2 - x) ** 2 + (wy + v.size / 2 - y) ** 2 + (wz + v.size / 2 - z) ** 2;
+            const inside = () => shape.contains(wx + v.size / 2 - x, wy + v.size / 2 - y, wz + v.size / 2 - z);
             if (isExplosive(v.material) && !blowing.has(`${wx},${wy},${wz}`)) {
-              if (centre <= r2) tnt.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material });
+              if (inside()) tnt.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material });
               return void kept.push(v);
             }
-            // Nearest and farthest points of the voxel from the centre.
-            let dmin = 0, dmax = 0;
-            for (const [c, lo] of [[x, wx], [y, wy], [z, wz]] as const) {
-              dmin += Math.max(lo - c, 0, c - (lo + v.size)) ** 2;
-              dmax += Math.max((c - lo) ** 2, (c - lo - v.size) ** 2);
-            }
-            if (dmin >= r2) return void kept.push(v); // untouched
+            const where = shape.classify(wx - x, wy - y, wz - z, v.size);
+            if (where === -1) return void kept.push(v); // untouched
             changed = true;
-            if (dmax <= r2) return void removed.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material }); // all inside: gone
+            if (where === 1) return void removed.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material }); // all inside: gone
             if (v.size > minPiece) {
               // Cut by the edge: in eighths, each decided again.
               const h = v.size / 2;
               for (let k = 0; k < 8; k++) visit({ x: v.x + (k & 1) * h, y: v.y + ((k >> 1) & 1) * h, z: v.z + ((k >> 2) & 1) * h, size: h, material: v.material });
               return;
             }
-            if (centre > r2) kept.push(v);
+            if (!inside()) kept.push(v);
             else removed.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material });
           };
           for (const v of blockVoxels(block)) visit(v);

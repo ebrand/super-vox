@@ -563,7 +563,8 @@ connection = connect({
         const x = world?.wrapX ? msg.x + Math.round((here - msg.x) / world.widthUnits) * world.widthUnits : msg.x;
         explosions.explode(x, msg.y, msg.z, msg.radius);
         if (chunks) {
-          const sample = sampleBlast((cx, cy, cz) => chunks!.chunkAt({ cx, cy, cz }), x, msg.y, msg.z, msg.radius, msg.seed, undefined, msg.open);
+          // (Its crater shaped from its seed, as the server's: see craterShape.)
+          const sample = sampleBlast((cx, cy, cz) => chunks!.chunkAt({ cx, cy, cz }), x, msg.y, msg.z, msg.radius, msg.seed, undefined, msg.open, msg.seed);
           if (sample.picked.length) {
             // Flown in a worker (the arithmetic of a big blast's would hold up a few frames).
             const id = ++cloudsAsked;
