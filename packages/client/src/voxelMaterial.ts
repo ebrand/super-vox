@@ -43,6 +43,8 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       climateCooling: { value: 0 },
       aoStrength: { value: 0.2 },
       exposure: { value: 1 },
+      // A map grid on the ground (the terraformer's close-up; off in the game): see gridOn.
+      gridOn: { value: 0 },
     },
     vertexShader: /* glsl */ `
       attribute vec4 face;
@@ -91,6 +93,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       uniform float climateCooling;
       uniform float aoStrength;
       uniform float exposure;
+      uniform float gridOn;
       varying vec3 vColor;
       varying vec3 vNormal;
       varying vec3 vUnits;
@@ -100,6 +103,22 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       varying float vAo;
       varying float vTinted;
       #include <logdepthbuf_pars_fragment>
+      // Lines every "spacing" (world units of vWorld: metres) across x and z, "widthPx" pixels wide
+      // (x: the lines across x, at constant x; y: those at constant z); fading out once they're
+      // under about ten pixels apart (no moire, no solid wash).
+      vec2 gridLines(vec2 p, float spacing, float widthPx) {
+        vec2 fw = max(fwidth(p), vec2(1e-6));
+        vec2 d = abs(fract(p / spacing + 0.5) - 0.5) * spacing / fw;
+        vec2 l = 1.0 - smoothstep(vec2(widthPx * 0.5), vec2(widthPx * 0.5 + 1.0), d);
+        return l * smoothstep(3.0, 10.0, spacing / max(fw.x, fw.y));
+      }
+      // Dashes along a line ("t" along it), "period" long, half on and half off; solid once the
+      // dashes would be too small to see (no shimmer far off).
+      float dashes(float t, float period, float fw) {
+        float u = abs(fract(t / period) - 0.5) * period;
+        float on = clamp((u - period * 0.25) / max(fw, 1e-6) + 0.5, 0.0, 1.0);
+        return mix(1.0, on, smoothstep(6.0, 12.0, period / max(fw, 1e-6)));
+      }
       void main() {
         #include <logdepthbuf_fragment>
         vec3 n = vNormal;
@@ -130,6 +149,18 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
         vec3 rgb = base * light * exposure * (1.0 - 0.35 * line);
         // Night vision: colour fades and shifts blue in the dark.
         rgb = mix(rgb, vec3(dot(rgb, vec3(0.3, 0.5, 0.2))) * vec3(0.75, 0.9, 1.25), 0.7 * stars);
+        if (gridOn > 0.5) {
+          // Metres faintly dark, half kilometres white, kilometres yellow (seen from above: on
+          // every face, by where it is across the ground).
+          vec2 g = vWorld.xz, fw = fwidth(g);
+          vec2 metre = gridLines(g, 1.0, 1.0);
+          rgb = mix(rgb, vec3(0.0), 0.3 * max(metre.x, metre.y));
+          // Half kilometres dashed (20 m on, 20 m off), kilometres solid; both partly see-through.
+          vec2 halfKm = gridLines(g, 500.0, 1.5);
+          rgb = mix(rgb, vec3(1.0), 0.4 * max(halfKm.x * dashes(g.y, 40.0, fw.y), halfKm.y * dashes(g.x, 40.0, fw.x)));
+          vec2 km = gridLines(g, 1000.0, 2.5);
+          rgb = mix(rgb, vec3(1.0, 0.86, 0.35), 0.6 * max(km.x, km.y));
+        }
         gl_FragColor = vec4(applyHaze(rgb, vWorld), 1.0);
         #include <colorspace_fragment>
       }

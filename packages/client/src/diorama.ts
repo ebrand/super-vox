@@ -59,6 +59,13 @@ export class Diorama {
   onPaint: ((phase: 'start' | 'move' | 'end', at: { x: number; y: number; z: number } | null, alt: boolean) => void) | null = null;
   /** Whether a ⌘-right-drag paints (the brush's other way: see onPaint) rather than turning the view. */
   paintsAlt = false;
+  /** Measuring: a left-drag draws a line between two points of the ground, its length shown (see measure). */
+  private measuringOn = false;
+  /** The measurement shown (metres), if any. */
+  private measured: { a: { x: number; y: number; z: number }; b: { x: number; y: number; z: number } } | null = null;
+  private readonly measureLine: Line2;
+  private readonly measureShade: Line2;
+  private readonly measureLabel: HTMLDivElement;
 
   constructor(climate: Uint8Array | null, wrapX: boolean, seaLevel: number | null) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
@@ -103,6 +110,19 @@ export class Diorama {
       line.visible = false;
       this.scene.add(line);
     }
+    // The measuring line: yellow over a dark shade, over everything; its length in a label at its middle.
+    this.measureLine = new Line2(new LineGeometry(), new LineMaterial({ color: 0xffd34d, linewidth: 3, depthTest: false, transparent: true }));
+    this.measureShade = new Line2(this.measureLine.geometry, new LineMaterial({ color: 0x000000, linewidth: 6, depthTest: false, transparent: true, opacity: 0.6 }));
+    for (const [line, order] of [[this.measureShade, 12], [this.measureLine, 13]] as const) {
+      line.layers.set(OVERLAY_LAYER);
+      line.renderOrder = order;
+      line.frustumCulled = false;
+      line.visible = false;
+      this.scene.add(line);
+    }
+    this.measureLabel = document.createElement('div');
+    this.measureLabel.className = 'measure-label';
+    this.measureLabel.hidden = true;
     this.wireInput();
     // The scene (water and all, see WaterRenderer) into the effect's buffer, then the effect.
     const water = this.water, scene = this.scene, camera = this.camera;
@@ -238,6 +258,37 @@ export class Diorama {
       const r = c.getBoundingClientRect();
       return this.pick(e.clientX - r.left, e.clientY - r.top);
     };
+    // Measuring: a left-drag from one point of the ground to another (the view stays still).
+    let measuring = false;
+    c.addEventListener('pointerdown', (e) => {
+      if (!this.measuringOn || e.button !== 0 || e.metaKey || e.ctrlKey) return;
+      const p = at(e);
+      if (!p) return;
+      measuring = true;
+      this.controls.enabled = false;
+      try {
+        c.setPointerCapture(e.pointerId);
+      } catch {
+        // (Not a real pointer: fine.)
+      }
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.measured = { a: p, b: p };
+      this.showMeasure();
+    }, { capture: true });
+    c.addEventListener('pointermove', (e) => {
+      if (!measuring || !this.measured) return;
+      const p = at(e);
+      if (p) this.measured.b = p;
+      this.showMeasure();
+    });
+    const endMeasure = () => {
+      if (!measuring) return;
+      measuring = false;
+      this.controls.enabled = true;
+    };
+    c.addEventListener('pointerup', endMeasure);
+    c.addEventListener('pointercancel', endMeasure);
     // (Capture: before the controls see it, so they stay still while painting.)
     c.addEventListener('pointerdown', (e) => {
       const alt = e.button === 2 && this.paintsAlt;
@@ -279,10 +330,60 @@ export class Diorama {
     });
   }
 
+  /** Measuring on or off (off: the line goes). */
+  set measuring(on: boolean) {
+    this.measuringOn = on;
+    if (!on) this.clearMeasure();
+    this.placeBrush();
+  }
+
+  get measuring(): boolean {
+    return this.measuringOn;
+  }
+
+  /** Takes the measuring line away. */
+  clearMeasure(): void {
+    this.measured = null;
+    this.showMeasure();
+  }
+
+  /** The map grid on the ground: 1 m, 1/2 km and 1 km lines (see the voxel material's gridOn). */
+  set grid(on: boolean) {
+    this.material.uniforms.gridOn!.value = on ? 1 : 0;
+  }
+
+  /** Draws the measuring line, and puts its label at its middle (where the view now shows it). */
+  private showMeasure(): void {
+    const m = this.measured;
+    this.measureLine.visible = this.measureShade.visible = !!m;
+    if (!m) {
+      this.measureLabel.hidden = true;
+      return;
+    }
+    // (A hair above the ground at each end, so it's never inside it.)
+    this.measureLine.geometry.dispose();
+    this.measureLine.geometry = this.measureShade.geometry = new LineGeometry().setPositions([m.a.x, m.a.y + 0.3, m.a.z, m.b.x, m.b.y + 0.3, m.b.z]);
+    if (!this.measureLabel.parentElement && this.canvas.parentElement) this.canvas.parentElement.append(this.measureLabel);
+    this.measureLabel.hidden = false;
+    this.measureLabel.textContent = describeMeasure(m.a, m.b);
+    this.placeMeasureLabel();
+  }
+
+  private placeMeasureLabel(): void {
+    const m = this.measured;
+    if (!m || this.measureLabel.hidden) return;
+    const mid = new THREE.Vector3((m.a.x + m.b.x) / 2, (m.a.y + m.b.y) / 2 + 0.3, (m.a.z + m.b.z) / 2).project(this.camera);
+    const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
+    this.measureLabel.style.left = `${this.canvas.offsetLeft + ((mid.x + 1) / 2) * w}px`;
+    this.measureLabel.style.top = `${this.canvas.offsetTop + ((1 - mid.y) / 2) * h}px`;
+    this.measureLabel.style.visibility = mid.z < 1 ? 'visible' : 'hidden';
+  }
+
   /** The brush ring, draped over the ground around the pointer. */
   private placeBrush(): void {
     const r = this.brushRadius, a = this.brushAt;
-    this.brushRing.visible = this.brushShade.visible = r !== null && a !== null && this.field !== null;
+    // (Not while measuring: the brush isn't what a drag does then.)
+    this.brushRing.visible = this.brushShade.visible = r !== null && a !== null && this.field !== null && !this.measuringOn;
     if (!this.brushRing.visible) return;
     const pts: number[] = [];
     const n = Math.max(24, Math.min(160, Math.round(r! / 2)));
@@ -326,6 +427,7 @@ export class Diorama {
       this.camera.updateProjectionMatrix();
     }
     this.controls.update();
+    this.placeMeasureLabel();
     this.water.uniforms.waveScale.value = waveScaleAt(this.camera.position.distanceTo(this.controls.target));
     this.miniatureFx.render(this.miniature ? 1 : 0);
   }
@@ -353,6 +455,7 @@ export class Diorama {
   }
 
   dispose(): void {
+    this.measureLabel.remove();
     this.clear();
     this.controls.dispose();
     this.miniatureFx.dispose();
@@ -367,4 +470,21 @@ export class Diorama {
  */
 export function waveScaleAt(distance: number): number {
   return Math.max(1, Math.min(40, distance / 60));
+}
+
+/** A distance for people: "84.5 m", "1.23 km". */
+function distance(m: number): string {
+  return m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${m.toFixed(1)} m`;
+}
+
+/**
+ * A measurement between two points (metres) for people: the distance across the ground, and the
+ * rise or fall and its slope ("184.5 m · rise +12.3 m (6.7%)").
+ */
+export function describeMeasure(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): string {
+  const across = Math.hypot(b.x - a.x, b.z - a.z), rise = b.y - a.y;
+  if (across < 0.05 && Math.abs(rise) < 0.05) return '0 m';
+  const height = Math.abs(rise) < 0.05 ? 'level' : `${rise > 0 ? 'rise +' : 'fall '}${rise.toFixed(1)} m`.replace('fall -', 'fall −');
+  const slope = across >= 0.05 && Math.abs(rise) >= 0.05 ? ` (${((Math.abs(rise) / across) * 100).toFixed(1)}%)` : '';
+  return `${distance(across)} · ${height}${slope}`;
 }

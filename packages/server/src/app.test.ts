@@ -305,7 +305,7 @@ describe('tiles and columns', () => {
     ws.send(JSON.stringify({ type: 'requestColumn', cx: 3, cz: 4 }));
     ws.send(JSON.stringify({ type: 'requestColumn', cx: -3, cz: 4 }));
     ws.send(JSON.stringify({ type: 'requestColumn', cx: 5, cz: 4 }));
-    await until(() => frames.length >= 10);
+    await until(() => frames.length >= 11); // (all of them: the 11 below)
     const seen = frames.map((f) => ('text' in f ? f.text : (({ cx, cy, cz }) => ({ chunk: [cx, cy, cz] }))(decodeChunk(f.binary.subarray(1)))));
     // Flat ground at 0: rendered layers -1..0, and one more either side to mesh against. Each
     // column's chunks come before the next column.
