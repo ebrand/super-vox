@@ -98,15 +98,16 @@ export class GenPool {
 }
 
 /**
- * A generation worker. Production runs the build; development and tests, the TypeScript sources,
- * through tsx (registered in the worker first: flags for it don't reach worker threads here).
+ * A worker thread running module `name` (a generation worker by default). Production runs the
+ * build; development and tests, the TypeScript sources, through tsx (registered in the worker
+ * first: flags for it don't reach worker threads here).
  */
-function startWorker(): Worker {
-  if (!import.meta.url.endsWith('.ts')) return new Worker(new URL('./genWorker.js', import.meta.url));
+export function startWorker(name = 'genWorker', workerData?: unknown): Worker {
+  if (!import.meta.url.endsWith('.ts')) return new Worker(new URL(`./${name}.js`, import.meta.url), { workerData });
   // (Its ES module: the CommonJS one doesn't load in a worker.)
   const tsx = pathToFileURL(join(dirname(createRequire(import.meta.url).resolve('tsx/package.json')), 'dist/esm/api/index.mjs')).href;
-  const main = new URL('./genWorker.ts', import.meta.url).href;
-  return new Worker(`import(${JSON.stringify(tsx)}).then((m) => { m.register(); return import(${JSON.stringify(main)}); });`, { eval: true, execArgv: ['--conditions=source'] });
+  const main = new URL(`./${name}.ts`, import.meta.url).href;
+  return new Worker(`import(${JSON.stringify(tsx)}).then((m) => { m.register(); return import(${JSON.stringify(main)}); });`, { eval: true, execArgv: ['--conditions=source'], workerData });
 }
 
 /** The worker for a chunk column: always the same one, where its column is cached. */
