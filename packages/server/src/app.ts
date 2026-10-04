@@ -1145,7 +1145,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             put(st.state, msg.slot, msg.item, msg.amount);
             inventory?.addItem(msg.item, -msg.amount);
           } else {
-            const got = take(st.state, msg.slot);
+            const got = take(st.state, msg.slot, msg.amount);
             if (!got) return fail('nothing there');
             inventory?.addItem(got.item, got.amount);
           }

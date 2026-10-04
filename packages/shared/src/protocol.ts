@@ -69,12 +69,12 @@ export type ClientMessage =
   /**
    * A furnace or stove (see stations.ts), the one taking block (x, y, z): open it (answered with
    * `station`, and again whenever it changes, until closed); put `amount` of `item` (stored terms:
-   * blocks by volume, items by count) from the inventory in a slot; take a slot's contents into the
-   * inventory. Refusals come as an `error` with code 'station'.
+   * blocks by volume, items by count) from the inventory in a slot; take `amount` of a slot's
+   * contents (default: all of it) into the inventory. Refusals come as an `error` with code 'station'.
    */
   | { type: 'stationOpen'; x: number; y: number; z: number }
   | { type: 'stationPut'; x: number; y: number; z: number; slot: 'fuel' | 'input'; item: number; amount: number }
-  | { type: 'stationTake'; x: number; y: number; z: number; slot: 'fuel' | 'input' | 'output' }
+  | { type: 'stationTake'; x: number; y: number; z: number; slot: 'fuel' | 'input' | 'output'; amount?: number }
   | { type: 'stationClose' }
   /** Hit a mob (`target`, an entity id) with what's in hand (`weapon`: an item id, null for a bare hand). */
   | { type: 'attack'; target: number; weapon: number | null }
@@ -356,7 +356,9 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   if ((msg.type === 'stationOpen' || msg.type === 'stationPut' || msg.type === 'stationTake') && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
     const at = { x: msg.x as number, y: msg.y as number, z: msg.z as number };
     if (msg.type === 'stationOpen') return { type: 'stationOpen', ...at };
-    if (msg.type === 'stationTake' && (msg.slot === 'fuel' || msg.slot === 'input' || msg.slot === 'output')) return { type: 'stationTake', ...at, slot: msg.slot };
+    if (msg.type === 'stationTake' && (msg.slot === 'fuel' || msg.slot === 'input' || msg.slot === 'output') && (msg.amount === undefined || (Number.isSafeInteger(msg.amount) && (msg.amount as number) > 0))) {
+      return { type: 'stationTake', ...at, slot: msg.slot, ...(msg.amount !== undefined ? { amount: msg.amount as number } : {}) };
+    }
     if (msg.type === 'stationPut' && (msg.slot === 'fuel' || msg.slot === 'input') && isInt32(msg.item) && Number.isSafeInteger(msg.amount) && (msg.amount as number) > 0) {
       return { type: 'stationPut', ...at, slot: msg.slot, item: msg.item as number, amount: msg.amount as number };
     }

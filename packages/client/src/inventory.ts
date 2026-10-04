@@ -15,8 +15,9 @@ import {
   itemName,
   stored,
   FUELS,
-  STATION_RECIPES,
   stackLabel,
+  stationPiece,
+  isFood,
   stationRecipe,
   stationWorking,
   type StationSlot,
@@ -144,9 +145,11 @@ export class InventoryUi {
     private readonly nearTable: () => boolean = () => false,
     /** The open furnace or stove (block x, y, z): put an amount of something in a slot, take a slot's contents, or close it. */
     private readonly onStation: (
-      act: { put: 'fuel' | 'input'; item: ItemId; amount: number } | { take: StationSlot } | 'close',
+      act: { put: 'fuel' | 'input'; item: ItemId; amount: number } | { take: StationSlot; amount?: number } | 'close',
       at: { x: number; y: number; z: number },
     ) => void = () => {},
+    /** Eat one of a food (survival; the server says if not). */
+    private readonly onEat: (item: ItemId) => void = () => {},
   ) {
     this.bar = document.createElement('div');
     this.bar.id = 'hotbar';
@@ -409,6 +412,17 @@ export class InventoryUi {
       e.dataTransfer?.setData(DRAG_TYPE, what);
       e.dataTransfer?.setData('text/plain', what);
     });
+    // Dropped outside the window (nowhere that takes it): thrown away, once they say yes (the bin asks).
+    el.addEventListener('dragend', (e) => {
+      if (this.mode !== 'survival' || e.dataTransfer?.dropEffect !== 'none') return;
+      const r = this.panel.getBoundingClientRect();
+      if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) return;
+      const id = what.startsWith('item:') ? Number(what.slice(5)) : what.startsWith('slot:') ? this.hotbar[Number(what.slice(5))] : null;
+      if (id === null || id === undefined || (this.items.get(id) ?? 0) <= 0) return;
+      this.discarding = id;
+      this.tab = 'inventory';
+      this.render();
+    });
   }
 
   private dropTarget(el: HTMLElement, drop: (what: string) => void): void {
@@ -491,6 +505,16 @@ export class InventoryUi {
     const { msg } = this.station!;
     const s = msg.state, kind = msg.kind, at = { x: msg.x, y: msg.y, z: msg.z };
     const making = kind === 'furnace' ? 'smelt' : 'cook';
+    // Where something goes in: as fuel, or to be made into something (or nowhere).
+    const slotFor = (id: ItemId): 'fuel' | 'input' | null => (stationRecipe(kind, id) ? 'input' : FUELS[id] ? 'fuel' : null);
+    const owned = (id: ItemId) => (this.mode === 'creative' ? Infinity : (this.items.get(id) ?? 0));
+    const put = (slot: 'fuel' | 'input', id: ItemId, all: boolean) => {
+      const there = s[slot];
+      if (there && there.item !== id) return this.say("there's something else in it: take that out first");
+      const piece = stationPiece(kind, slot, id), have = owned(id);
+      const amount = all && this.mode === 'survival' ? have : Math.min(piece, have);
+      if (amount > 0) this.onStation({ put: slot, item: id, amount }, at);
+    };
     const gauge = (name: string, title: string) => {
       const g = document.createElement('div');
       g.className = `gauge ${name}`;
@@ -498,76 +522,111 @@ export class InventoryUi {
       g.append(document.createElement('i'));
       return g;
     };
-    const box = (slot: StationSlot, title: string, stack: Stack | null, g: HTMLElement | null) => {
+    // A slot, as the crafting table's: what's in it and how much; click takes a piece out,
+    // shift-click all of it, the wheel puts in or takes out a piece; things dropped on it go in.
+    const slotEl = (slot: StationSlot, title: string, stack: Stack | null) => {
       const el = document.createElement('div');
-      el.className = 'station-slot';
+      el.className = 'sslot';
       const h = document.createElement('h4');
       h.textContent = title;
-      const what = document.createElement('div');
-      what.className = 'what';
-      if (stack) what.append(this.swatch(stack.item, ''), `${itemName(stack.item)} ${stackLabel(stack)}`);
-      else what.textContent = 'empty';
-      el.append(h, what);
-      if (g) el.append(g);
-      if (stack && this.mode === 'survival') {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.textContent = slot === 'output' ? 'Take' : 'Take out';
-        b.addEventListener('click', () => this.onStation({ take: slot }, at));
-        el.append(b);
+      const box = document.createElement('div');
+      box.className = 'tslot' + (stack ? '' : ' free');
+      if (stack) {
+        box.append(this.swatch(stack.item, stackLabel(stack).replace(' m³', '')));
+        const piece = stationPiece(kind, slot, stack.item);
+        box.title = `${itemName(stack.item)} ${stackLabel(stack)} · click: ${slot === 'output' ? 'take it' : `a ${isBlock(stack.item) ? '1/8 m³' : 'piece'} out`} · shift-click: all of it` + (slot === 'output' ? '' : ' · wheel: more or less');
+        box.addEventListener('click', (e) => this.onStation({ take: slot, ...(slot === 'output' || e.shiftKey ? {} : { amount: piece }) }, at));
+        if (slot !== 'output') {
+          box.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            if (e.deltaY < 0) put(slot, stack.item, false);
+            else this.onStation({ take: slot, amount: piece }, at);
+          });
+        }
+      } else box.title = slot === 'output' ? `what's ${making}ed comes out here` : `drop ${slot === 'fuel' ? 'fuel' : `something to ${making}`} here, or click it below`;
+      if (slot !== 'output') {
+        this.dropTarget(box, (what) => {
+          const id = what.startsWith('item:') ? Number(what.slice(5)) : what.startsWith('slot:') ? this.hotbar[Number(what.slice(5))] : null;
+          if (id === null || id === undefined) return;
+          if (slotFor(id) !== slot) return this.say(slot === 'fuel' ? "that doesn't burn: coal, wood, planks or sticks" : kind === 'furnace' ? 'a furnace smelts raw iron' : 'a stove cooks pork');
+          put(slot, id, false);
+        });
+      }
+      el.append(h, box);
+      if (stack) {
+        const what = document.createElement('div');
+        what.className = 'what';
+        what.textContent = `${itemName(stack.item)} ${stackLabel(stack)}`;
+        el.append(what);
+      }
+      // Food out of a stove: eaten straight away.
+      if (slot === 'output' && stack && isFood(stack.item) && this.mode === 'survival') {
+        const eat = document.createElement('button');
+        eat.type = 'button';
+        eat.textContent = 'Eat one';
+        eat.addEventListener('click', () => {
+          this.onStation({ take: 'output', amount: 1 }, at);
+          this.onEat(stack.item);
+        });
+        el.append(eat);
       }
       return el;
     };
+    const fuel = slotEl('fuel', 'Fuel', s.fuel);
+    fuel.append(gauge('burn', 'fuel burning'));
+    const input = slotEl('input', kind === 'furnace' ? 'To smelt' : 'To cook', s.input);
+    const arrow = document.createElement('div');
+    arrow.className = 'sarrow';
+    arrow.append(gauge('progress', `${making}ing`));
+    const output = slotEl('output', kind === 'furnace' ? 'Smelted' : 'Cooked', s.output);
     const row = document.createElement('div');
     row.className = 'station-row';
-    row.append(
-      box('fuel', 'Fuel', s.fuel, gauge('burn', 'fuel burning')),
-      box('input', kind === 'furnace' ? 'To smelt' : 'To cook', s.input, gauge('progress', `${making}ing`)),
-      box('output', kind === 'furnace' ? 'Smelted' : 'Cooked', s.output, null),
-    );
-    // What they have that goes in: fuels, and what this station makes something from.
-    const adds = document.createElement('div');
-    adds.className = 'station-adds';
-    const offer = (slot: 'fuel' | 'input', title: string, ids: readonly ItemId[], unit: (id: ItemId) => number) => {
-      const h = document.createElement('h4');
-      h.textContent = title;
-      adds.append(h);
-      // (What there is, any amount: not whole blocks, as recipes count.)
-      const have = ids.filter((id) => this.mode === 'creative' || (this.items.get(id) ?? 0) > 0);
-      if (!have.length) {
-        const p = document.createElement('p');
-        p.className = 'hint';
-        p.textContent = slot === 'fuel' ? 'No fuel: coal, wood, planks or sticks burn.' : kind === 'furnace' ? 'Nothing to smelt: mine iron ore (with a stone pickaxe) for raw iron.' : 'Nothing to cook: pork, from pigs.';
-        adds.append(p);
-        return;
-      }
-      for (const id of have) {
-        const line = document.createElement('div');
-        line.className = 'station-add';
-        const n = this.mode === 'creative' ? Infinity : (this.items.get(id) ?? 0);
-        line.append(this.swatch(id, ''), `${itemName(id)} ${this.amountText(id)}`);
-        const button = (label: string, amount: number) => {
-          const b = document.createElement('button');
-          b.type = 'button';
-          b.textContent = label;
-          b.disabled = amount <= 0;
-          b.addEventListener('click', () => this.onStation({ put: slot, item: id, amount }, at));
-          line.append(b);
-        };
-        const u = unit(id);
-        button(isBlock(id) ? '+ 1/8 m³' : '+ 1', Math.min(u, n));
-        if (this.mode === 'survival') button('+ all', n);
-        else button('+ 1 m³', isBlock(id) ? 8 * u : 8);
-        adds.append(line);
-      }
-    };
-    offer('fuel', 'Add fuel', Object.keys(FUELS).map(Number), (id) => FUELS[id]!.unit);
-    offer('input', kind === 'furnace' ? 'Add to smelt' : 'Add to cook', STATION_RECIPES[kind].map((r) => r.input), (id) => stationRecipe(kind, id)!.unit);
-    const name = document.createElement('p');
-    name.className = 'hint';
-    name.textContent = `${msg.name}: it keeps going with the window closed, and for everyone (what's in it is shared).`;
+    row.append(fuel, input, arrow, output);
+    const box = document.createElement('div');
+    box.className = 'station stone';
+    const caption = document.createElement('div');
+    caption.className = 'caption';
+    caption.textContent = msg.name;
+    box.append(row, caption);
+    const about = document.createElement('p');
+    about.className = 'could';
+    about.textContent = `${kind === 'furnace' ? 'Raw iron smelts into ingots' : 'Pork cooks'} as long as there's fuel (coal, wood, planks or sticks), with the window closed too; what's in it is everyone's.`;
+
+    // Below: your things; those that go in, first (click: a piece in; shift-click: all; or drag).
+    const things = document.createElement('div');
+    const title = document.createElement('h3');
+    title.textContent = 'Your things';
+    const grid = document.createElement('div');
+    grid.className = 'grid small';
+    const listed = this.listed().sort((a, b) => Number(slotFor(a) === null) - Number(slotFor(b) === null));
+    for (const m of listed) {
+      const slot = slotFor(m);
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'item' + (slot ? '' : ' used');
+      const label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = itemName(m);
+      const count = document.createElement('div');
+      count.className = 'count';
+      count.textContent = this.mode === 'creative' ? (slot === 'fuel' ? 'fuel' : slot ? making : '') : `${this.amountText(m)}${slot === 'fuel' ? ' · fuel' : slot ? ` · ${making}s` : ''}`;
+      card.append(this.swatch(m, ''), label, count);
+      if (slot) {
+        card.title = `click: a ${isBlock(m) ? '1/8 m³' : 'piece'} into the ${slot === 'fuel' ? 'fuel' : `${making}ing`} · shift-click: all of it · or drag it`;
+        card.addEventListener('click', (e) => put(slot, m, e.shiftKey));
+      } else card.title = kind === 'furnace' ? "doesn't go in a furnace" : "doesn't go on a stove";
+      this.draggable(card, `item:${m}`);
+      grid.append(card);
+    }
+    if (!listed.length) {
+      const none = document.createElement('p');
+      none.className = 'hint';
+      none.textContent = 'Nothing yet: mine something.';
+      grid.append(none);
+    }
+    things.append(title, grid);
     queueMicrotask(() => this.moveGauges());
-    return [name, row, adds];
+    return [box, about, things];
   }
 
   // ---- The inventory tab.
@@ -606,10 +665,21 @@ export class InventoryUi {
         count.className = 'count';
         count.textContent = this.amountText(m);
         card.append(this.swatch(m, ''), label, count);
-        card.title = 'click: into the selected hotbar slot · shift-click: into a free one · or drag it';
+        card.title = 'click: into the selected hotbar slot · shift-click: into a free one · or drag it (out of the window: throw it away)';
         card.addEventListener('click', (e) => this.toSlot(m, e.shiftKey ? this.freeSlot() : this.selected));
         this.draggable(card, `item:${m}`);
-        return card;
+        // Food: eaten from here too.
+        if (this.mode !== 'survival' || !isFood(m)) return card;
+        const wrap = document.createElement('div');
+        wrap.className = 'itemwrap';
+        const eat = document.createElement('button');
+        eat.type = 'button';
+        eat.className = 'eat';
+        eat.textContent = 'Eat';
+        eat.title = `eat one ${itemName(m)}`;
+        eat.addEventListener('click', () => this.onEat(m));
+        wrap.append(card, eat);
+        return wrap;
       }),
     );
     if (!listed.length) {

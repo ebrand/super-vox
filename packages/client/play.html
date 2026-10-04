@@ -93,23 +93,10 @@
       #inventory .tab:hover:not(:disabled) { color: #e6e6e6; }
       #inventory .tab.on { color: #fff; border-bottom-color: #58a6ff; }
       #inventory .tab:disabled { opacity: 0.4; cursor: not-allowed; }
-      #inventory .station-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 10px 0 16px; }
-      #inventory .station-slot { border: 1px solid #333a44; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
-      #inventory .station-slot h4, #inventory .station-adds h4 { margin: 0; font: 600 12px system-ui, sans-serif; color: #8b949e; text-transform: uppercase; letter-spacing: 0.04em; }
-      #inventory .station-slot .what { display: flex; align-items: center; gap: 8px; min-height: 40px; color: #c9d1d9; }
-      #inventory .station-slot .what .swatch, #inventory .station-add .swatch { width: 32px; height: 32px; flex: none; }
       #inventory .gauge { height: 8px; border-radius: 4px; background: #21262d; overflow: hidden; }
       #inventory .gauge i { display: block; height: 100%; width: 0; transition: width 0.2s linear; }
       #inventory .gauge.burn i { background: #f0883e; }
       #inventory .gauge.progress i { background: #58a6ff; }
-      #inventory .station-slot button, #inventory .station-add button { align-self: flex-start; background: #21262d; color: #e6e6e6; border: 1px solid #3d444d; border-radius: 6px; padding: 4px 10px; cursor: pointer; font: 12px system-ui, sans-serif; }
-      #inventory .station-slot button:hover, #inventory .station-add button:hover:not(:disabled) { border-color: #8b949e; }
-      #inventory .station-add button:disabled { opacity: 0.4; cursor: not-allowed; }
-      #inventory .station-adds { display: flex; flex-direction: column; gap: 6px; }
-      #inventory .station-adds h4 { margin-top: 8px; }
-      #inventory .station-add { display: flex; align-items: center; gap: 8px; }
-      #inventory .station-add button:first-of-type { margin-left: auto; }
-      @media (max-width: 560px) { #inventory .station-row { grid-template-columns: 1fr; } }
       #inventory .window-bar { display: flex; gap: 4px; justify-content: center; margin: 12px 0 4px; }
       #inventory h3 { margin: 14px 0 6px; font-size: 13px; color: #c9d1d9; }
       #inventory .hint { color: #8b949e; margin: 10px 0 0; font-size: 12px; text-align: center; }
@@ -146,6 +133,23 @@
       #inventory .tslot { width: 52px; height: 52px; border: 1px solid #484f58; border-radius: 6px; padding: 3px; cursor: pointer; }
       #inventory .tslot.free { border-style: dashed; cursor: default; }
       #inventory .caption { text-align: center; color: #8b949e; font-size: 12px; margin-top: 6px; }
+      #inventory .station.stone { border: 1px solid #3d444d; background: linear-gradient(#2a2d31, #1f2226); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05); }
+      #inventory .station.stone .tslot { background: rgba(0, 0, 0, 0.3); border-color: #57606a; }
+      #inventory .station.stone .caption { color: #d0d7de; font-weight: 600; letter-spacing: 0.04em; }
+      #inventory .station-row { display: flex; gap: 18px; justify-content: center; align-items: flex-start; }
+      #inventory .sslot { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 120px; }
+      #inventory .sslot h4 { margin: 0; font: 600 11px system-ui, sans-serif; color: #8b949e; text-transform: uppercase; letter-spacing: 0.04em; }
+      #inventory .sslot .what { font-size: 11px; color: #c9d1d9; text-align: center; }
+      #inventory .sslot button { background: #21262d; color: #e6e6e6; border: 1px solid #3d444d; border-radius: 6px; padding: 3px 10px; cursor: pointer; font: 12px system-ui, sans-serif; }
+      #inventory .sslot button:hover { border-color: #8b949e; }
+      #inventory .sslot .gauge { width: 100%; }
+      #inventory .sarrow { width: 70px; padding-top: 40px; position: relative; }
+      #inventory .sarrow::after { content: '→'; position: absolute; left: 50%; top: 14px; transform: translateX(-50%); color: #8b949e; font-size: 18px; }
+      #inventory .tslot.over, #inventory .table.over { outline: 2px solid #58a6ff; }
+      #inventory .itemwrap { position: relative; display: flex; }
+      #inventory .itemwrap > .item { flex: 1; }
+      #inventory .itemwrap .eat { position: absolute; right: 6px; bottom: 6px; background: #238636; color: #fff; border: 0; border-radius: 4px; padding: 2px 8px; font: 600 11px system-ui, sans-serif; cursor: pointer; }
+      #inventory .itemwrap .eat:hover { background: #2ea043; }
       #inventory .could { text-align: center; color: #8b949e; font-size: 12px; min-height: 1.4em; margin: 8px 0; }
       #inventory .result { display: flex; gap: 8px; justify-content: center; align-items: center; flex-wrap: wrap; min-height: 84px; } /* (room kept: what's below doesn't move as it fills) */
       #inventory .result .item { width: 120px; }

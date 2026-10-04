@@ -142,9 +142,10 @@ const inventoryUi = new InventoryUi(
   // The furnace or stove open (see stations.ts).
   (act, at) => {
     if (act === 'close') connection?.send({ type: 'stationClose' });
-    else if ('take' in act) connection?.send({ type: 'stationTake', ...at, slot: act.take });
+    else if ('take' in act) connection?.send({ type: 'stationTake', ...at, slot: act.take, ...(act.amount !== undefined ? { amount: act.amount } : {}) });
     else connection?.send({ type: 'stationPut', ...at, slot: act.put, item: act.item, amount: act.amount });
   },
+  (item) => connection?.send({ type: 'eat', item }),
 );
 // The wheel steps through the hotbar (while it's there: players who can build).
 controls.onWheel = (deltaY) => {
@@ -686,7 +687,8 @@ connection = connect({
           break;
         }
         if (msg.code === 'eat') {
-          editTool?.say(msg.message);
+          if (inventoryUi.isOpen) inventoryUi.say(msg.message);
+          else editTool?.say(msg.message);
           break;
         }
         console.error(`[super-vox] server error ${msg.code}: ${msg.message}`);

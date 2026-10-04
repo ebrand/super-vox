@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { BLOCK_VOLUME, Item } from './items.js';
 import { Material } from './materials.js';
 import { RECIPES } from './recipes.js';
-import { STATION_OUTPUT_MAX, advance, emptyStation, isStationState, put, refusePut, stationWorking, take } from './stations.js';
+import { STATION_OUTPUT_MAX, advance, emptyStation, isStationState, put, refusePut, stationPiece, stationWorking, take } from './stations.js';
 import { FOODS } from './survival.js';
 import { attackDamage } from './mobs.js';
 import { SWORDS, TOOLS, canHarvest } from './tools.js';
@@ -87,6 +87,14 @@ describe('furnaces and stoves', () => {
     expect(st.output).toEqual({ item: Item.CookedPork, amount: 1 });
     expect(st.fuel).toBeNull(); // (two sticks: 10 s)
     expect(isStationState(JSON.parse(JSON.stringify(st)))).toBe(true);
+    // Some taken out (of what's left), or all.
+    expect(take(st, 'input', 1)).toEqual({ item: Item.Pork, amount: 1 });
+    expect(st.input).toEqual({ item: Item.Pork, amount: 1 });
+    expect(take(st, 'input', 5)).toEqual({ item: Item.Pork, amount: 1 });
+    expect(st.input).toBeNull();
+    expect(take(st, 'input', 1)).toBeNull();
+    expect(stationPiece('furnace', 'fuel', Material.Coal)).toBe(PIECE);
+    expect(stationPiece('stove', 'input', Item.Pork)).toBe(1);
     expect(isStationState({ fuel: 3 })).toBe(false);
   });
 });

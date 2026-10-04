@@ -148,12 +148,23 @@ export function put(s: StationState, slot: 'fuel' | 'input', item: ItemId, amoun
   s[slot] = { item, amount: (there?.amount ?? 0) + amount };
 }
 
-/** Takes everything out of `slot` (what was making stops: see advance). */
-export function take(s: StationState, slot: StationSlot): Stack | null {
-  const got = s[slot];
-  s[slot] = null;
-  if (slot === 'input') s.progress = 0;
-  return got;
+/** Takes `amount` (default: everything) out of `slot`; what was making stops if its input all goes (see advance). */
+export function take(s: StationState, slot: StationSlot, amount?: number): Stack | null {
+  const there = s[slot];
+  if (!there) return null;
+  const n = amount === undefined ? there.amount : Math.min(amount, there.amount);
+  if (n <= 0) return null;
+  const left = there.amount - n;
+  s[slot] = left > 0 ? { item: there.item, amount: left } : null;
+  if (slot === 'input' && left <= 0) s.progress = 0;
+  return { item: there.item, amount: n };
+}
+
+/** How much of `item` is one piece for `slot` of a `kind`: a fuel's or a recipe's unit (an eighth of a block, or one); 1 for what comes out. */
+export function stationPiece(kind: StationKind, slot: StationSlot, item: ItemId): number {
+  if (slot === 'fuel') return FUELS[item]?.unit ?? 1;
+  if (slot === 'input') return stationRecipe(kind, item)?.unit ?? 1;
+  return 1;
 }
 
 /** An amount in a slot for people: blocks to a 1/8, items counted. */
