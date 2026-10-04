@@ -52,6 +52,8 @@ export class DesignEditor {
   state = 0;
   /** Changes made mirrored across the box's middle (left to right, as it faces). */
   mirror = false;
+  /** The selected region (units; see move), if any: undone and redone with the changes, so it stays with what it holds. */
+  selection: Region | null = null;
   private readonly undos: string[] = [];
   private redos: string[] = [];
   /** Changed since it was saved (or opened). */
@@ -154,6 +156,55 @@ export class DesignEditor {
     });
   }
 
+  /** The voxels wholly inside the selection (by index), and how many more are only partly inside it. */
+  selected(): { inside: number[]; partly: number } {
+    const r = this.selection;
+    const inside: number[] = [];
+    let partly = 0;
+    if (!r) return { inside, partly };
+    this.voxels.forEach((v, i) => {
+      if (v.x >= r.x0 && v.x + v.size <= r.x1 && v.y >= r.y0 && v.y + v.size <= r.y1 && v.z >= r.z0 && v.z + v.size <= r.z1) inside.push(i);
+      else if (v.x < r.x1 && r.x0 < v.x + v.size && v.y < r.y1 && r.y0 < v.y + v.size && v.z < r.z1 && r.z0 < v.z + v.size) partly++;
+    });
+    return { inside, partly };
+  }
+
+  /**
+   * How far a move of the selection goes with `size` chosen: that, or the biggest voxel in it if
+   * that's bigger (so every voxel stays on its own grid).
+   */
+  moveStep(size: number): number {
+    return Math.max(size, ...this.selected().inside.map((i) => this.voxels[i]!.size));
+  }
+
+  /**
+   * Moves what's wholly inside the selection, and the selection with it, one step (see moveStep)
+   * along axis `axis` (0 x, 1 y, 2 z) in direction `dir` (1 or -1), as one change. Why not, if it
+   * can't: nothing selected, it would leave the box, or something not selected is in the way.
+   * (Not mirrored.)
+   */
+  move(axis: 0 | 1 | 2, dir: 1 | -1, size: number): string | null {
+    const r = this.selection;
+    if (!r) return 'nothing selected';
+    const { inside } = this.selected();
+    if (!inside.length) return 'nothing wholly inside the selection to move';
+    const step = this.moveStep(size) * dir;
+    const key = (['x', 'y', 'z'] as const)[axis];
+    const moved = inside.map((i) => ({ ...this.voxels[i]!, [key]: this.voxels[i]![key] + step }));
+    const ext = this.extent;
+    if (moved.some((v) => v[key] < 0 || v[key] + v.size > ext[axis])) return "it would leave the object's box";
+    const picked = new Set(inside);
+    const others = this.voxels.filter((_, i) => !picked.has(i));
+    if (moved.some((v) => others.some((o) => overlaps(o, v)))) return 'something is in the way';
+    const lo = (['x0', 'y0', 'z0'] as const)[axis], hi = (['x1', 'y1', 'z1'] as const)[axis];
+    this.change(() => {
+      this.draft.states[this.state]!.voxels = [...others, ...moved];
+      // (The selection with it, kept inside the box.)
+      this.selection = { ...r, [lo]: Math.max(0, r[lo] + step), [hi]: Math.min(ext[axis], r[hi] + step) };
+    });
+    return null;
+  }
+
   /**
    * Resizes the box (blocks: 1 to DESIGN_MAX_BLOCKS each way); voxels left outside it go (in every
    * state). Returns how many went.
@@ -169,6 +220,7 @@ export class DesignEditor {
         dropped += s.voxels.length - kept.length;
         s.voxels = kept;
       }
+      this.selection = this.selection && clipRegion(this.selection, this.extent);
     });
     return dropped;
   }
@@ -252,13 +304,14 @@ export class DesignEditor {
   }
 
   private snapshot(): string {
-    return JSON.stringify({ draft: this.draft, state: this.state });
+    return JSON.stringify({ draft: this.draft, state: this.state, selection: this.selection });
   }
 
   private restore(s: string): void {
-    const { draft, state } = JSON.parse(s) as { draft: Draft; state: number };
+    const { draft, state, selection } = JSON.parse(s) as { draft: Draft; state: number; selection: Region | null };
     this.draft = draft;
     this.state = state;
+    this.selection = selection;
     this.dirty = true;
   }
 

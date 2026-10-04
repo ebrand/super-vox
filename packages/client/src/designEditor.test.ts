@@ -122,6 +122,60 @@ describe('lines and boxes', () => {
   });
 });
 
+describe('moving a selection', () => {
+  it('moves what is wholly inside, and the selection with it, a step at a time as one change each', () => {
+    const e = new DesignEditor();
+    e.resize([2, 2, 1]);
+    e.place({ x: 0, y: 0, z: 0, size: 4, material: P });
+    e.place({ x: 4, y: 0, z: 0, size: 4, material: S });
+    e.place({ x: 24, y: 0, z: 0, size: 8, material: S }); // outside the selection
+    e.place({ x: 8, y: 8, z: 0, size: 8, material: P }); // only partly inside
+    e.selection = { x0: 0, y0: 0, z0: 0, x1: 12, y1: 12, z1: 4 };
+    expect(e.selected()).toEqual({ inside: [0, 1], partly: 1 });
+    expect(e.moveStep(1)).toBe(4); // (the biggest voxel in it)
+    expect(e.moveStep(8)).toBe(8);
+    // Up 1/4 m: both, and the selection.
+    expect(e.move(1, 1, 4)).toBeNull();
+    const at = () => e.voxels.filter((v) => v.size === 4).map((v) => [v.x, v.y, v.z]).sort();
+    expect(at()).toEqual([[0, 4, 0], [4, 4, 0]]);
+    expect(e.selection).toEqual({ x0: 0, y0: 4, z0: 0, x1: 12, y1: 16, z1: 4 });
+    // Right by 1/2 m (the size chosen): two steps' worth in one.
+    expect(e.move(0, 1, 8)).toBeNull();
+    expect(at()).toEqual([[12, 4, 0], [8, 4, 0]].sort());
+    // Undone: back, the selection too.
+    e.undo();
+    expect(at()).toEqual([[0, 4, 0], [4, 4, 0]]);
+    expect(e.selection).toEqual({ x0: 0, y0: 4, z0: 0, x1: 12, y1: 16, z1: 4 });
+    e.redo();
+    expect(e.selection).toEqual({ x0: 8, y0: 4, z0: 0, x1: 20, y1: 16, z1: 4 });
+  });
+
+  it("won't leave the box or go through what isn't selected, and changes nothing trying", () => {
+    const e = new DesignEditor();
+    e.resize([2, 1, 1]);
+    e.place({ x: 0, y: 0, z: 0, size: 8, material: P });
+    e.place({ x: 16, y: 0, z: 0, size: 8, material: S });
+    e.selection = { x0: 0, y0: 0, z0: 0, x1: 8, y1: 8, z1: 8 };
+    expect(e.move(0, -1, 4)).toBe("it would leave the object's box");
+    expect(e.move(2, -1, 4)).toBe("it would leave the object's box");
+    expect(e.move(0, 1, 4)).toBeNull(); // (a 1/2 m step: the voxel's size)
+    expect(e.move(0, 1, 4)).toBe('something is in the way');
+    expect(e.voxels.map((v) => v.x).sort((a, b) => a - b)).toEqual([8, 16]);
+    e.undo();
+    expect(e.voxels.map((v) => v.x).sort((a, b) => a - b)).toEqual([0, 16]);
+    expect(e.canUndo).toBe(true); // (the placements; the refused moves added nothing)
+    // Nothing selected, or nothing wholly in it.
+    e.selection = null;
+    expect(e.move(0, 1, 4)).toBe('nothing selected');
+    e.selection = { x0: 0, y0: 0, z0: 0, x1: 4, y1: 4, z1: 4 };
+    expect(e.move(0, 1, 4)).toBe('nothing wholly inside the selection to move');
+    // A smaller box: the selection is clipped to it.
+    e.selection = { x0: 8, y0: 0, z0: 0, x1: 32, y1: 8, z1: 8 };
+    e.resize([1, 1, 1]);
+    expect(e.selection).toEqual({ x0: 8, y0: 0, z0: 0, x1: 16, y1: 8, z1: 8 });
+  });
+});
+
 describe('placeAgainst', () => {
   it('puts a voxel against the face clicked, on its grid', () => {
     // The floor at (5.3, 0, 9.9): a 4-unit voxel at (4, 0, 8).
