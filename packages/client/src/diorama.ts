@@ -24,6 +24,8 @@ import type { DioramaPart } from './terraformArea.js';
  * by position). Controls as the 3D map's.
  */
 const WHITE = new THREE.Color(0xffffff);
+/** Trees' opacity when drawn see-through (see seeThroughTrees). */
+const TREE_ALPHA = 0.75;
 /** The brush ring's layer: drawn last, over the water (which is drawn over everything else). */
 const OVERLAY_LAYER = 2;
 
@@ -34,6 +36,9 @@ export class Diorama {
   private readonly camera: THREE.PerspectiveCamera;
   private readonly controls: MapControls;
   private readonly material: ReturnType<typeof createVoxelMaterial>;
+  private readonly treeMaterial: ReturnType<typeof createVoxelMaterial>;
+  /** Whether trees are drawn see-through (see seeThroughTrees). */
+  private treesSeeThrough = false;
   private readonly water: WaterRenderer;
   private readonly waterMaterial: THREE.Material;
   private readonly meshes = new THREE.Group();
@@ -82,7 +87,12 @@ export class Diorama {
     const atmosphere = (this.atmosphere = createAtmosphere(60_000, seaLevel === null ? 0 : seaLevel / UNITS_PER_METER));
     this.setLight(DEFAULT_DIORAMA_LIGHT);
     this.material = createVoxelMaterial(atmosphere);
-    if (climate) this.material.setTint(createTint(decodeClimate(climate), wrapX));
+    // The trees' see-through pass (see seeThroughTrees): drawn after everything solid, blended.
+    this.treeMaterial = createVoxelMaterial(atmosphere);
+    Object.assign(this.treeMaterial, { transparent: true, depthWrite: true });
+    this.treeMaterial.uniforms.treePass!.value = 2;
+    this.treeMaterial.uniforms.treeAlpha!.value = TREE_ALPHA;
+    if (climate) for (const m of [this.material, this.treeMaterial]) m.setTint(createTint(decodeClimate(climate), wrapX));
     this.water = new WaterRenderer(this.renderer, atmosphere);
     this.waterMaterial = createVoxelWaterMaterial(this.water.uniforms);
     this.scene.background = new THREE.Color(0x0b0d10);
@@ -166,7 +176,8 @@ export class Diorama {
 
   /** Tints the ground by `climate` (see encodeClimate; null: no tint), as the world's settings have it now. */
   setClimate(climate: Uint8Array | null, wrapX: boolean): void {
-    this.material.setTint(climate ? createTint(decodeClimate(climate), wrapX) : null);
+    const tint = climate ? createTint(decodeClimate(climate), wrapX) : null;
+    for (const m of [this.material, this.treeMaterial]) m.setTint(tint);
   }
 
   /**
@@ -376,7 +387,16 @@ export class Diorama {
 
   /** The map grid on the ground: 1 m, 1/2 km and 1 km lines (see the voxel material's gridOn). */
   set grid(on: boolean) {
-    this.material.uniforms.gridOn!.value = on ? 1 : 0;
+    for (const m of [this.material, this.treeMaterial]) m.uniforms.gridOn!.value = on ? 1 : 0;
+  }
+
+  /** Trees drawn at TREE_ALPHA, the ground (and the grid on it) showing through them. */
+  set seeThroughTrees(on: boolean) {
+    this.treesSeeThrough = on;
+    this.material.uniforms.treePass!.value = on ? 1 : 0;
+    this.meshes.traverse((o) => {
+      if (o.userData.trees) o.visible = on;
+    });
   }
 
   /** Draws the measuring line, and puts its label at its middle (where the view now shows it). */
@@ -471,7 +491,15 @@ export class Diorama {
         mesh.userData.part = p.key;
         this.meshes.add(mesh);
       };
-      if (p.ground) add(createPackedMesh(p.ground, origin, this.material, 'diorama ground'));
+      if (p.ground) {
+        const ground = createPackedMesh(p.ground, origin, this.material, 'diorama ground');
+        // (Its trees again, see-through, for when they're asked for: the same geometry.)
+        const trees = new THREE.Mesh(ground.geometry, this.treeMaterial);
+        Object.assign(trees, { name: 'diorama trees', visible: this.treesSeeThrough, frustumCulled: ground.frustumCulled });
+        trees.userData.trees = true;
+        ground.add(trees);
+        add(ground);
+      }
       if (p.water) {
         const w = createPackedMesh(p.water, origin, this.waterMaterial, 'diorama water');
         w.layers.set(WATER_LAYER);

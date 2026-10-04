@@ -43,6 +43,10 @@ const miniatureEl = document.getElementById('miniature') as HTMLInputElement;
 miniatureEl.addEventListener('change', () => {
   if (diorama) diorama.miniature = miniatureEl.checked;
 });
+const seeThroughEl = document.getElementById('see-through') as HTMLInputElement;
+seeThroughEl.addEventListener('change', () => {
+  if (diorama) diorama.seeThroughTrees = seeThroughEl.checked;
+});
 const birdsEl = document.getElementById('birds') as HTMLInputElement;
 birdsEl.addEventListener('change', () => {
   if (diorama) diorama.birdsOn = birdsEl.checked;
@@ -565,6 +569,7 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
     diorama.paintsAlt = brush.kind === 'plant';
     diorama.grid = gridEl.checked;
     diorama.birdsOn = birdsEl.checked;
+    diorama.seeThroughTrees = seeThroughEl.checked;
     stage.prepend(diorama.canvas);
   }
   showing = 'diorama';

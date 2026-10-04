@@ -49,6 +49,10 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       exposure: { value: 1 },
       // A map grid on the ground (the terraformer's close-up; off in the game): see gridOn.
       gridOn: { value: 0 },
+      // Trees see-through (the terraformer's close-up): 0 everything, 1 all but trees, 2 trees
+      // only, at treeAlpha (a second, transparent pass).
+      treePass: { value: 0 },
+      treeAlpha: { value: 1 },
     },
     vertexShader: /* glsl */ `
       attribute vec4 face;
@@ -101,6 +105,8 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       uniform float aoStrength;
       uniform float exposure;
       uniform float gridOn;
+      uniform float treePass;
+      uniform float treeAlpha;
       varying vec3 vColor;
       varying vec3 vNormal;
       varying vec3 vUnits;
@@ -129,6 +135,8 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       }
       void main() {
         #include <logdepthbuf_fragment>
+        // (Trees see-through: the opaque pass leaves them out, their own pass draws only them.)
+        if (treePass > 0.5 && (treePass < 1.5) == (vTree > 0.5)) discard;
         vec3 n = vNormal;
         vec2 p = abs(n.x) > 0.5 ? vUnits.yz : (abs(n.y) > 0.5 ? vUnits.xz : vUnits.xy);
         // Voxels never cross 1 m blocks, so each voxel's grid starts at its
@@ -169,7 +177,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
           vec2 km = gridLines(g, 1000.0, 2.5);
           rgb = mix(rgb, vec3(1.0, 0.86, 0.35), 0.6 * max(km.x, km.y));
         }
-        gl_FragColor = vec4(applyHaze(rgb, vWorld), 1.0);
+        gl_FragColor = vec4(applyHaze(rgb, vWorld), treePass > 1.5 ? treeAlpha : 1.0);
         #include <colorspace_fragment>
       }
     `,
