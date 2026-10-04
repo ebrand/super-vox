@@ -870,14 +870,66 @@ export class PlateHeights implements HeightSource {
       };
       // Once placed, minors join the majors in one power diagram, so every border is a straight
       // line (before warping) and minors are polygons like the majors, only smaller.
-      const owner = (x: number, z: number, withMinors: boolean) => {
-        let best = 0, bestD = Infinity;
-        const count = withMinors ? plates.length : majorCount;
-        for (let k = 0; k < count; k++) {
-          const d = power(plates[k]!, x, z);
-          if (d < bestD) [best, bestD] = [k, d];
+      // A cell's plate: the first of the lowest power. Worked out for many cells at once (owners),
+      // by blocks of cells: only plates that could be lowest anywhere in a block's box are tried.
+      /** Cells (indices) in blocks of `size` x `size` grid cells, with the box their warped positions lie in. */
+      type Block = { cells: Int32Array; x0: number; x1: number; z0: number; z1: number };
+      const blocksOf = (cells: ArrayLike<number>, size: number): Block[] => {
+        const bc = Math.ceil(cols / size), byBlock = new Map<number, number[]>();
+        for (let k = 0; k < cells.length; k++) {
+          const i = cells[k]!, c = i % cols, r = (i - c) / cols;
+          const b = Math.floor(c / size) + bc * Math.floor(r / size);
+          let list = byBlock.get(b);
+          if (!list) byBlock.set(b, (list = []));
+          list.push(i);
         }
-        return best;
+        return [...byBlock.values()].map((list) => {
+          let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+          for (const i of list) {
+            x0 = Math.min(x0, posX[i]!); x1 = Math.max(x1, posX[i]!);
+            z0 = Math.min(z0, posZ[i]!); z1 = Math.max(z1, posZ[i]!);
+          }
+          return { cells: Int32Array.from(list), x0, x1, z0, z1 };
+        });
+      };
+      // (Wrapping worlds: a plate's copies a world's width east and west, as `dx` finds the nearest.)
+      const shifts = this.wrap ? [-W, 0, W] : [0];
+      const cand = new Int32Array(plates.length + config.minorPlates);
+      /** Calls `found(cell, plate)` for every cell in `blocks`: exactly what a scan of every plate (the first of the lowest power, in order) finds. */
+      const owners = (blocks: Block[], withMinors: boolean, found: (i: number, k: number) => void) => {
+        const count = withMinors ? plates.length : majorCount;
+        const lo = new Float64Array(count), hi = new Float64Array(count);
+        for (const b of blocks) {
+          // Bounds on each plate's power over the box: no point in it can be nearer than `lo` nor
+          // further than `hi`; a plate whose lowest is above some plate's highest never wins there.
+          let lowestHi = Infinity;
+          for (let k = 0; k < count; k++) {
+            const p = plates[k]!;
+            let gx = Infinity, fx = Infinity;
+            for (const s of shifts) {
+              const px = p.x + s;
+              gx = Math.min(gx, Math.max(0, b.x0 - px, px - b.x1));
+              fx = Math.min(fx, Math.max(Math.abs(b.x0 - px), Math.abs(b.x1 - px)));
+            }
+            const gz = Math.max(0, b.z0 - p.z, p.z - b.z1), fz = Math.max(Math.abs(b.z0 - p.z), Math.abs(b.z1 - p.z));
+            lo[k] = gx * gx + gz * gz - p.weight;
+            hi[k] = fx * fx + fz * fz - p.weight;
+            if (hi[k]! < lowestHi) lowestHi = hi[k]!;
+          }
+          // (A margin far beyond rounding: the bounds needn't be tight, only never wrong.)
+          const limit = lowestHi + 1 + Math.abs(lowestHi) * 1e-9;
+          let m = 0;
+          for (let k = 0; k < count; k++) if (lo[k]! - 1 - Math.abs(lo[k]!) * 1e-9 <= limit) cand[m++] = k;
+          for (const i of b.cells) {
+            const x = posX[i]!, z = posZ[i]!;
+            let best = 0, bestD = Infinity;
+            for (let j = 0; j < m; j++) {
+              const k = cand[j]!, d = power(plates[k]!, x, z);
+              if (d < bestD) [best, bestD] = [k, d];
+            }
+            found(i, best);
+          }
+        }
       };
 
       // Plate sizes are tuned on a coarse grid. Each round measures every plate's area and moves
@@ -888,6 +940,8 @@ export class PlateHeights implements HeightSource {
       const S = Math.max(4, Math.round(4 * Math.sqrt(n / 250_000)));
       const sample: number[] = [];
       for (let r = S >> 1; r < rows; r += S) for (let c = S >> 1; c < cols; c += S) sample.push(c + cols * r);
+      // (About 36 samples a block: the bounds cost a block as much as a sample costs without them.)
+      const sampleBlocks = blocksOf(sample, 6 * S);
       const cellArea = (S * PLATE_CELL) ** 2;
       const balance = (target: number[], rounds: number, withMinors: boolean) => {
         const count = target.length;
@@ -896,7 +950,7 @@ export class PlateHeights implements HeightSource {
         const lastErr = new Float64Array(count);
         for (let iter = 0; iter < rounds; iter++) {
           area.fill(0);
-          for (const i of sample) area[owner(posX[i]!, posZ[i]!, withMinors)]!++;
+          owners(sampleBlocks, withMinors, (_, k) => area[k]!++);
           let mean = 0;
           for (let k = 0; k < count; k++) {
             const err = target[k]! - area[k]!;
@@ -948,7 +1002,7 @@ export class PlateHeights implements HeightSource {
       const unit = sample.length / (majorCount * config.plateSizeRatio + config.minorPlates);
       balance(plates.map((p) => (p.major ? config.plateSizeRatio : 1) * unit), 80, true);
       const plateOf = new Uint16Array(n);
-      for (let i = 0; i < n; i++) plateOf[i] = owner(posX[i]!, posZ[i]!, true);
+      owners(blocksOf(Array.from({ length: n }, (_, i) => i), 16), true, (i, k) => (plateOf[i] = k));
 
       // For step 5 (below, which depends on the land share): each major's area with its minors,
       // and the random order they're tried in.
@@ -2208,21 +2262,23 @@ function inlandLakes(wet: (i: number) => boolean, minSize: number, reach: number
     const cells: number[] = [];
     const stack = [s];
     body[s] = bodies.length;
+    const visit = (j: number) => {
+      if (body[j] === -1 && wet(j)) {
+        body[j] = bodies.length;
+        stack.push(j);
+      }
+    };
     while (stack.length > 0) {
       const i = stack.pop()!;
       cells.push(i);
-      const c = i % cols, r = (i - c) / cols;
-      for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-        let cc = c + a;
-        const rr = r + b;
-        if (wrap) cc = ((cc % cols) + cols) % cols;
-        if (cc < 0 || cc >= cols || rr < 0 || rr >= rows) continue;
-        const j = cc + cols * rr;
-        if (body[j] === -1 && wet(j)) {
-          body[j] = bodies.length;
-          stack.push(j);
-        }
-      }
+      const c = i % cols, r = (i - c) / cols, o = i - c;
+      // East, west, south, north (X wrapping if asked).
+      if (c < cols - 1) visit(i + 1);
+      else if (wrap) visit(o);
+      if (c > 0) visit(i - 1);
+      else if (wrap) visit(o + cols - 1);
+      if (r < rows - 1) visit(i + cols);
+      if (r > 0) visit(i - cols);
     }
     bodies.push(cells);
   }
@@ -2267,26 +2323,40 @@ function chamferLabel(dist: Float32Array, label: Int32Array, cols: number, rows:
   }
 }
 
-/** In-place two-pass chamfer distance transform (cells): zeros are sources, others start at Infinity. */
+/**
+ * In-place two-pass chamfer distance transform (cells): zeros are sources, others start at Infinity.
+ * (Each cell looks at its four neighbours behind it in a pass, in a fixed order, taking each as it
+ * stands then, rounded to float32 as it's stored: written out longhand, as it runs on every build.)
+ */
 function chamfer(dist: Float32Array, cols: number, rows: number, wrap: boolean): void {
-  const at = (c: number, r: number) => {
-    if (wrap) c = ((c % cols) + cols) % cols;
-    return c < 0 || c >= cols || r < 0 || r >= rows ? -1 : c + cols * r;
-  };
-  const relax = (i: number, j: number, w: number) => {
-    if (j >= 0 && dist[j]! + w < dist[i]!) dist[i] = dist[j]! + w;
-  };
+  const D = Math.SQRT2;
   for (let pass = 0; pass < (wrap ? 2 : 1); pass++) {
     for (let r = 0; r < rows; r++) {
+      const o = cols * r, u = o - cols;
       for (let c = 0; c < cols; c++) {
-        const i = c + cols * r;
-        relax(i, at(c - 1, r), 1); relax(i, at(c, r - 1), 1); relax(i, at(c - 1, r - 1), Math.SQRT2); relax(i, at(c + 1, r - 1), Math.SQRT2);
+        const i = o + c;
+        const cl = c > 0 ? c - 1 : wrap ? cols - 1 : -1, cr = c < cols - 1 ? c + 1 : wrap ? 0 : -1;
+        let d = dist[i]!, v: number;
+        if (cl >= 0 && (v = dist[o + cl]! + 1) < d) d = dist[i] = v;
+        if (r > 0) {
+          if ((v = dist[u + c]! + 1) < (d = dist[i]!)) dist[i] = v;
+          if (cl >= 0 && (v = dist[u + cl]! + D) < (d = dist[i]!)) dist[i] = v;
+          if (cr >= 0 && (v = dist[u + cr]! + D) < (d = dist[i]!)) dist[i] = v;
+        }
       }
     }
     for (let r = rows - 1; r >= 0; r--) {
+      const o = cols * r, b = o + cols;
       for (let c = cols - 1; c >= 0; c--) {
-        const i = c + cols * r;
-        relax(i, at(c + 1, r), 1); relax(i, at(c, r + 1), 1); relax(i, at(c + 1, r + 1), Math.SQRT2); relax(i, at(c - 1, r + 1), Math.SQRT2);
+        const i = o + c;
+        const cl = c > 0 ? c - 1 : wrap ? cols - 1 : -1, cr = c < cols - 1 ? c + 1 : wrap ? 0 : -1;
+        let d = dist[i]!, v: number;
+        if (cr >= 0 && (v = dist[o + cr]! + 1) < d) d = dist[i] = v;
+        if (r < rows - 1) {
+          if ((v = dist[b + c]! + 1) < (d = dist[i]!)) dist[i] = v;
+          if (cr >= 0 && (v = dist[b + cr]! + D) < (d = dist[i]!)) dist[i] = v;
+          if (cl >= 0 && (v = dist[b + cl]! + D) < (d = dist[i]!)) dist[i] = v;
+        }
       }
     }
   }

@@ -1089,6 +1089,41 @@ describe('TerrainGenerator on plate heights', () => {
   });
 });
 
+describe('plate builds stay the same', () => {
+  /** FNV-1a over a stage's value: arrays' bytes, everything else as JSON (keys sorted). */
+  const fingerprint = (v: unknown) => {
+    let h = 0x811c9dc5;
+    const bytes = (b: Uint8Array) => {
+      for (let k = 0; k < b.length; k++) h = Math.imul(h ^ b[k]!, 0x01000193);
+    };
+    const text = (t: string) => {
+      for (let k = 0; k < t.length; k++) h = Math.imul(h ^ t.charCodeAt(k), 0x01000193);
+    };
+    const walk = (x: unknown): void => {
+      if (x === null || x === undefined || typeof x !== 'object') return text(JSON.stringify(x) ?? 'u');
+      if (ArrayBuffer.isView(x)) return bytes(new Uint8Array(x.buffer, x.byteOffset, x.byteLength));
+      if (Array.isArray(x)) return text('['), x.forEach(walk), text(']');
+      for (const k of Object.keys(x).sort()) text(k), walk((x as Record<string, unknown>)[k]);
+    };
+    walk(v);
+    return (h >>> 0).toString(16);
+  };
+  const stages = (config: PlateTerrainConfig) => {
+    const cache = new PlateStageCache();
+    new PlateHeights(FLAT_WORLD_16KM, config, cache);
+    return Object.fromEntries(cache.share().map((s) => [s.stage, fingerprint(s.value)]));
+  };
+
+  // Worlds are made from their settings alone: a change to how they're built (to make it faster,
+  // say) mustn't change what's built, or every world's unedited ground changes under its players.
+  // If one of these changes on purpose, say so (and think about existing worlds) before updating it.
+  it('makes exactly what it always has, stage by stage', () => {
+    expect(stages(defaultPlateTerrain(3))).toEqual(PINNED.defaults);
+    expect(stages({ ...defaultPlateTerrain(7), majorPlates: 80, minorPlates: 200, plateSizeRatio: 2 })).toEqual(PINNED.manyPlates);
+    expect(stages({ ...defaultPlateTerrain(8), landPercent: 15, islandArcs: 80, hotspots: 30 })).toEqual(PINNED.islands);
+  });
+});
+
 describe('PlateStageCache.share and from (one build for every generation thread)', () => {
   it('gives another thread a world just as built, without building it again', () => {
     const config = { ...defaultPlateTerrain(21), rivers: 60, lakes: 60, mountains: 50 };
@@ -1172,3 +1207,10 @@ describe('PlateStageCache', () => {
     }
   }, 60_000);
 });
+
+/** Fingerprints of plate builds (see 'plate builds stay the same'). */
+const PINNED: Record<'defaults' | 'manyPlates' | 'islands', Record<string, string>> = {
+  defaults: { layout: '503e671e', mountains: '677624d1', relief: 'c287459', coast: '7ae017c8', heights: '7e46bc36', strokes: '6fec2b2c', climate: 'c4e6e3a2', hydrology: 'e7d937cf' },
+  manyPlates: { layout: 'f4a608b0', mountains: 'd0ba00aa', relief: '4b6d7689', coast: '9ccdcf51', heights: '1dd86c46', strokes: '756dafe9', climate: '562d1213', hydrology: 'f9e46d3b' },
+  islands: { layout: '9b0f6607', mountains: '52ef197b', relief: '123642f', coast: 'b018e53a', heights: 'b32bf87a', strokes: 'f54038cf', climate: '68dbad72', hydrology: '59665a32' },
+};
