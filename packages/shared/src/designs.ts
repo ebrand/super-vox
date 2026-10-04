@@ -64,7 +64,7 @@ export const STATIONS: readonly { role: DesignRole; name: string; item: ItemId; 
   { role: 'stove', name: 'stove', item: Item.Stove, use: 'cooking (coming)', recipe: { inputs: [[Material.Cobblestone, 6], [Material.Planks, 2]], table: true } },
   { role: 'anvil', name: 'anvil', item: Item.Anvil, use: 'repairing and naming (coming with metals)', recipe: null },
   { role: 'smithing-table', name: 'smithing table', item: Item.SmithingTable, use: 'metal tools and armour (coming with metals)', recipe: null },
-  { role: 'bed', name: 'bed', item: Item.Bed, use: 'coming back to after dying (right-click it to make it yours)', recipe: { inputs: [[Material.Planks, 3], [Material.Leaves, 3]], table: true } },
+  { role: 'bed', name: 'bed', item: Item.Bed, use: 'coming back to after dying (right-click it to make it yours)', recipe: { inputs: [[Material.Planks, 6]], table: true } },
 ];
 export const DESIGN_ROLES: readonly DesignRole[] = STATIONS.map((s) => s.role);
 

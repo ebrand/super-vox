@@ -43,6 +43,12 @@ export const Material = {
   /** Metal on things players make (a crafting table's hammer and square, see objects.ts): dark and light. */
   DarkMetal: 35,
   LightMetal: 36,
+  /** Ores in the rock, deep down (see ores.ts): mined with a pickaxe, they give coal and raw iron (see dropOf). */
+  CoalOre: 37,
+  IronOre: 38,
+  /** What ores give: kept by volume as blocks are, but never placed (see PLACEABLE). */
+  Coal: 39,
+  RawIron: 40,
 } as const;
 
 /** Flowing water reaches this many blocks from its source. */
@@ -96,6 +102,10 @@ const MATERIAL_NAMES: Record<number, string> = {
   [Material.C4]: 'C4',
   [Material.DarkMetal]: 'dark metal',
   [Material.LightMetal]: 'light metal',
+  [Material.CoalOre]: 'coal ore',
+  [Material.IronOre]: 'iron ore',
+  [Material.Coal]: 'coal',
+  [Material.RawIron]: 'raw iron',
 };
 
 

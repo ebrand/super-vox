@@ -157,7 +157,7 @@ describe('saving the player', () => {
 describe('beds', () => {
   it('are made by their recipe once a design is the bed', async () => {
     await setup('survival');
-    expect(recipeById('bed')).toMatchObject({ inputs: [[P, 3], [Material.Leaves, 3]], output: [Item.Bed, 1], table: true });
+    expect(recipeById('bed')).toMatchObject({ inputs: [[P, 6]], output: [Item.Bed, 1], table: true });
   });
 
   it('right-clicked, are where their owner comes back to after dying: kept between visits; built over or taken down, the spawn point', async () => {

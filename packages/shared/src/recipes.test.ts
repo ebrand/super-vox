@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { blockIndex, emptyChunk } from './chunk.js';
-import { ALL_ITEMS, BLOCK_VOLUME, Item, dropOf, formatAmount, isBlock, itemName } from './items.js';
+import { ALL_ITEMS, BLOCK_VOLUME, Item, formatAmount, isBlock, itemName } from './items.js';
+import { dropOf } from './tools.js';
 import { Material } from './materials.js';
 import { RECIPES, TABLE_REACH, cannotCraft, craft, describeRecipe, materialNearIn, recipeById } from './recipes.js';
 
@@ -50,9 +51,9 @@ describe('recipes', () => {
     expect(itemName(Material.CraftingTable)).toBe('crafting table');
   });
 
-  it('make mined stone cobblestone', () => {
-    expect(dropOf(Material.Stone)).toBe(Material.Cobblestone);
-    expect(dropOf(Material.Cobblestone)).toBe(Material.Cobblestone);
+  it('make mined stone cobblestone (with a pickaxe)', () => {
+    expect(dropOf(Material.Stone, Item.WoodenPickaxe)).toBe(Material.Cobblestone);
+    expect(dropOf(Material.Cobblestone, Item.StonePickaxe)).toBe(Material.Cobblestone);
   });
 });
 

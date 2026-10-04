@@ -96,7 +96,7 @@ export interface WorldCatalog {
 }
 
 /** Bumped when what the disk cache holds changes form. */
-const CACHE_FORMAT = 1;
+const CACHE_FORMAT = 2;
 
 /**
  * Which version of a world's terrain a disk cache holds: its settings and terraforming, and (so

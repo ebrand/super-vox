@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
-import { Material, blockFromVoxels, blockIndex, emptyChunk } from '@super-vox/shared';
+import { Item, Material, blockFromVoxels, blockIndex, emptyChunk } from '@super-vox/shared';
 import { EditTool, sizeLabel } from './editTool.js';
 import type { ChunkManager } from './chunkManager.js';
 
@@ -82,6 +82,8 @@ describe('EditTool mining (survival)', () => {
   let tool: EditTool;
   let sent: { type: string; [k: string]: unknown }[];
   let now = 0;
+  /** What's in hand. */
+  let held: number | null = Material.Stone;
   const stone = emptyChunk({ cx: 0, cy: 0, cz: 0 });
   stone.blocks[blockIndex(0, 0, 0)] = { kind: 'uniform', size: 16, material: Material.Stone };
 
@@ -95,7 +97,8 @@ describe('EditTool mining (survival)', () => {
     camera.lookAt(0.5, 0, 0.5);
     camera.updateMatrixWorld();
     sent = [];
-    tool = new EditTool(new THREE.Scene(), camera, chunks, (m) => sent.push(m as never), () => Material.Stone);
+    held = Material.Stone;
+    tool = new EditTool(new THREE.Scene(), camera, chunks, (m) => sent.push(m as never), () => held);
     tool.survival = true;
   });
   afterEach(() => {
@@ -112,19 +115,19 @@ describe('EditTool mining (survival)', () => {
     tool.click(0, { meta: false, alt: false });
     tool.update();
     expect(sent.filter((m) => m.type === 'mine')).toEqual([{ type: 'mine', x: 0, y: 0, z: 0 }]);
-    // Stone: 3 s for a 1 m block.
-    now = 3900;
+    // Stone by hand: 9 s for a 1 m block (three times its hardness: it needs a pickaxe).
+    now = 9900;
     tool.update();
     expect(edits()).toEqual([]);
-    expect(progress.at(-1)).toBeCloseTo(0.9667, 3);
-    now = 4000;
+    expect(progress.at(-1)).toBeCloseTo(8.9 / 9, 3);
+    now = 10000;
     tool.update();
     expect(edits()).toMatchObject([{ type: 'edit', edit: { op: 'remove', x: 0, y: 0, z: 0 } }]);
     expect(progress.at(-1)).toBeNull();
     // Still held, still aimed at it (the server's reply isn't in yet): not mined again, however
     // long it's held (let go and press again to retry).
     const mines = sent.filter((m) => m.type === 'mine').length;
-    for (now = 4100; now <= 12000; now += 500) tool.update();
+    for (now = 10100; now <= 20000; now += 500) tool.update();
     expect(edits().length).toBe(1);
     expect(sent.filter((m) => m.type === 'mine').length).toBe(mines);
   });
@@ -141,10 +144,29 @@ describe('EditTool mining (survival)', () => {
     expect(edits()).toEqual([]);
     tool.click(0, { meta: false, alt: false });
     tool.update();
-    now = 6000;
+    now = 12000;
     tool.update();
     expect(edits()).toEqual([]);
-    now = 6600;
+    now = 12600;
+    tool.update();
+    expect(edits().length).toBe(1);
+  });
+
+  it('mines with the tool in hand (telling the server), and starts again when it changes', () => {
+    held = Item.StonePickaxe;
+    now = 0;
+    tool.click(0, { meta: false, alt: false });
+    tool.update();
+    expect(sent.filter((m) => m.type === 'mine')).toEqual([{ type: 'mine', x: 0, y: 0, z: 0, tool: Item.StonePickaxe }]);
+    // A wooden one instead, part way: from nothing, at its pace (stone: 1.5 s).
+    now = 500;
+    held = Item.WoodenPickaxe;
+    tool.update();
+    expect(sent.filter((m) => m.type === 'mine').at(-1)).toEqual({ type: 'mine', x: 0, y: 0, z: 0, tool: Item.WoodenPickaxe });
+    now = 1900;
+    tool.update();
+    expect(edits()).toEqual([]);
+    now = 2000;
     tool.update();
     expect(edits().length).toBe(1);
   });

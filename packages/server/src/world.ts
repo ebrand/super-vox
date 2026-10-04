@@ -73,6 +73,7 @@ import {
   type ObjectDesign,
   withoutWater,
   type MaterialId,
+  type ItemId,
   volumeChange,
   type Edit,
   type TileCoord,
@@ -580,13 +581,17 @@ export class World {
 
   /**
    * Seconds a survival player takes to mine what an edit removes (see mining.ts): the voxel at a
-   * point, or everything in a box; 0 for nothing there (or outside the world).
+   * point, or everything in a box, with `tool` (null: by hand); 0 for nothing there (or outside the world).
    */
-  miningTime(edit: { op: 'remove'; x: number; y: number; z: number } | { op: 'removeBox'; x: number; y: number; z: number; size: number }): number {
-    return editMiningTime(edit, (cx, cy, cz) => {
-      const resolved = resolveChunk(this.config, { cx, cy, cz });
-      return resolved ? this.current(resolved) : null;
-    });
+  miningTime(edit: { op: 'remove'; x: number; y: number; z: number } | { op: 'removeBox'; x: number; y: number; z: number; size: number }, tool: ItemId | null = null): number {
+    return editMiningTime(
+      edit,
+      (cx, cy, cz) => {
+        const resolved = resolveChunk(this.config, { cx, cy, cz });
+        return resolved ? this.current(resolved) : null;
+      },
+      tool,
+    );
   }
 
   private current(coord: ChunkCoord): Chunk {
