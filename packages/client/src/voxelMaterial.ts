@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { ATMOSPHERE_GLSL, type Atmosphere } from './atmosphere.js';
 import { PALETTE_SIZE, TINTED, paletteColors } from './materials.js';
 import { LUT_H, LUT_T_MAX, LUT_T_MIN, LUT_W } from './tintColors.js';
+import { Material } from '@super-vox/shared';
+
+/** What trees are made of: the map grid (gridOn) isn't drawn on them, only on the ground they hide. */
+const TREE_MATERIALS = [Material.Wood, Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves];
 
 /**
  * Biome colour blending: the world's climate grid as a texture (temperature and moisture per
@@ -58,6 +62,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       varying vec2 vPhase;
       varying float vAo;
       varying float vTinted;
+      varying float vTree;
       #include <common>
       #include <logdepthbuf_pars_vertex>
       const vec3 NORMALS[6] = vec3[6](
@@ -76,6 +81,8 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
         int material = int(face.z + mod(b3, 64.0) * 256.0 + 0.5);
         vColor = material < PALETTE_SIZE ? palette[material] : vec3(1.0, 0.0, 1.0);
         vTinted = material < PALETTE_SIZE ? tinted[material] : 0.0;
+        // Trees (trunks and leaves): the map grid is on the ground only.
+        vTree = ${TREE_MATERIALS.map((m) => `material == ${m}`).join(' || ')} ? 1.0 : 0.0;
         vUnits = position;
         vec4 world = modelMatrix * vec4(position, 1.0);
         vWorld = world.xyz;
@@ -102,6 +109,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       varying vec2 vPhase;
       varying float vAo;
       varying float vTinted;
+      varying float vTree;
       #include <logdepthbuf_pars_fragment>
       // Lines every "spacing" (world units of vWorld: metres) across x and z, "widthPx" pixels wide
       // (x: the lines across x, at constant x; y: those at constant z); fading out once they're
@@ -149,9 +157,9 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
         vec3 rgb = base * light * exposure * (1.0 - 0.35 * line);
         // Night vision: colour fades and shifts blue in the dark.
         rgb = mix(rgb, vec3(dot(rgb, vec3(0.3, 0.5, 0.2))) * vec3(0.75, 0.9, 1.25), 0.7 * stars);
-        if (gridOn > 0.5) {
+        if (gridOn > 0.5 && vTree < 0.5) {
           // Metres faintly dark, half kilometres white, kilometres yellow (seen from above: on
-          // every face, by where it is across the ground).
+          // every face of the ground, by where it is across it; not on trees, which hide it).
           vec2 g = vWorld.xz, fw = fwidth(g);
           vec2 metre = gridLines(g, 1.0, 1.0);
           rgb = mix(rgb, vec3(0.0), 0.3 * max(metre.x, metre.y));
