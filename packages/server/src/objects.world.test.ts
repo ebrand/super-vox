@@ -114,6 +114,22 @@ describe('placed objects', () => {
     expect(() => w.placeObject('torch', 404, 0, 400, 'n', true)).toThrow(/doesn't fit/);
   });
 
+  it("know the light anywhere: the sky over open ground, a torch's light by how far off it is, none under a roof", () => {
+    const w = flat();
+    expect(w.lightAt(500, 0, 500)).toEqual({ sky: 15, block: 0 });
+    w.placeObject('torch', 500, 0, 500, 'n');
+    expect(w.lightAt(500, 0, 500).block).toBe(14);
+    expect(w.lightAt(503, 0, 500).block).toBe(11);
+    expect(w.lightAt(500, 0, 520).block).toBe(0);
+    // A stone block over (510, 0, 510): no longer open to the sky; light from beside it, one less.
+    w.applyEdit({ op: 'place', x: 510 * 16, y: 2 * 16, z: 510 * 16, size: 16, material: Material.Stone });
+    expect(w.skyOpenAt(510, 0, 510)).toBe(false);
+    expect(w.skyOpenAt(511, 0, 510)).toBe(true);
+    expect(w.lightAt(510, 0, 510).sky).toBe(14);
+    // In the rock: none.
+    expect(w.lightAt(510, -3, 510)).toEqual({ sky: 0, block: 0 });
+  });
+
   it('need empty room, and keep ordinary edits out of them', () => {
     const w = flat();
     expect(() => w.placeObject('fence', 50, -1, 50, 'n')).toThrow(/empty block/); // the ground

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type * as THREE from 'three';
-import { CHUNK_SIZE, FLAT_WORLD_16KM, Material, ROUND_WORLD_16x8KM, emptyChunk, encodeChunk, packVoxel, type ClientMessage, type WorldConfig } from '@super-vox/shared';
+import { CHUNK_SIZE, FLAT_WORLD_16KM, Material, ROUND_WORLD_16x8KM, emptyChunk, encodeChunk, lightAt, packVoxel, type ClientMessage, type WorldConfig } from '@super-vox/shared';
 import { aroundIndex } from './skyLight.js';
 import { ChunkManager } from './chunkManager.js';
 import type { MeshWorkerPool } from './workerPool.js';
@@ -316,6 +316,24 @@ describe('sky light', () => {
     const cm = new ChunkManager(FLAT_WORLD_16KM, scene, {} as THREE.Material, {} as THREE.Material, () => {}, pool, 64, () => {});
     return { cm, finishAll, runs: (k: string) => runs.get(k) ?? 0, last: (k: string) => last.get(k) };
   }
+
+  it('tells the light anywhere in what it has (for shading mobs): the sky above ground, none in a sealed cave, a torch by it', async () => {
+    const { cm, finishAll } = lit();
+    cm.setRegion([{ cx: 0, cz: 5 }], 0, 5 * CHUNK_SIZE);
+    cm.onColumn({ cx: 0, cz: 5, minY: -3 * CHUNK_SIZE, maxY: CHUNK_SIZE - 1, sent: [{ lo: -5, hi: 2 }] });
+    for (let cy = -5; cy <= 2; cy++) cm.onChunkBytes(cy >= 1 ? encodeChunk(emptyChunk({ cx: 0, cy, cz: 5 })) : rockBytes(cy, cy === -3 ? cave : undefined));
+    await finishAll();
+    const w = cm.lightWorld();
+    // Above the ground (layer 1, block y 16 on), and in the cave (layer -3, block 4..8 up in it).
+    expect(lightAt(w, 3, 17, 5 * 16 + 3)).toEqual({ sky: 15, block: 0 });
+    expect(lightAt(w, 3, -3 * 16 + 6, 5 * 16 + 3)).toEqual({ sky: 0, block: 0 });
+    // A torch in the cave.
+    const c = emptyChunk({ cx: 0, cy: -3, cz: 5 });
+    for (let by = 0; by < 16; by++) for (let bz = 0; bz < 16; bz++) for (let bx = 0; bx < 16; bx++) if (!cave(bx, by)) c.blocks[bx + 16 * (bz + 16 * by)] = rock;
+    c.blocks[3 + 16 * (3 + 16 * 4)] = { kind: 'voxels', packed: Uint16Array.of(packVoxel(6, 8, 6, 2)), materials: Uint16Array.of(Material.TorchFlame) };
+    cm.onChunkBytes(encodeChunk(c));
+    expect(lightAt(cm.lightWorld(), 6, -3 * 16 + 4, 5 * 16 + 3).block).toBe(11);
+  });
 
   it('redoes everything a torch can reach when one is put up, sending where it is', async () => {
     const { cm, finishAll, runs, last } = lit();

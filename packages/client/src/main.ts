@@ -1,7 +1,7 @@
 import './fullscreen.js';
 import './envBadge.js';
 import * as THREE from 'three';
-import { BLOCK_SIZE, CHUNK_SIZE, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
+import { BLOCK_SIZE, CHUNK_SIZE, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, lightAt, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool, sizeLabel } from './editTool.js';
@@ -533,7 +533,14 @@ connection = connect({
             miningRing.hidden = f === null;
             if (f !== null) miningRing.style.setProperty('--p', String(f));
           };
-          entities = new EntityView(scene, w, () => camera.position.x * UNITS_PER_METER);
+          entities = new EntityView(
+            scene,
+            w,
+            () => camera.position.x * UNITS_PER_METER,
+            (x, y, z) => (chunks ? lightAt(chunks.lightWorld(), Math.floor(x / BLOCK_SIZE), Math.floor(y / BLOCK_SIZE), Math.floor(z / BLOCK_SIZE)) : null),
+            // (Stars come out as daylight goes: the night's light is a sliver of the day's.)
+            () => 1 - 0.85 * atmosphere.uniforms.stars.value,
+          );
           editTool.pickEntity = (origin, dir, maxDist) => entities!.pick(origin, dir, maxDist);
           const modeTag = document.getElementById('mode')!;
           // The mode, and the size chosen (dig, place; hybrid while ⌘ is held: else it matches what's aimed at).

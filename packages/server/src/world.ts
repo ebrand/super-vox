@@ -53,6 +53,11 @@ import {
   blockFromVoxels,
   blockVoxelContaining,
   deltaX,
+  blocksLight,
+  LIGHT_LEVEL,
+  lightAt,
+  SKY_LIGHT_LEVEL,
+  type LightWorld,
   type BlockVoxel,
   blockVoxels,
   editMiningTime,
@@ -810,6 +815,71 @@ export class World {
     const resolved = resolveChunk(this.config, { cx: Math.floor(bx / n), cy: Math.floor(by / n), cz: Math.floor(bz / n) });
     if (!resolved) return undefined;
     return this.current(resolved).blocks[blockIndex(mod(bx, n), mod(by, n), mod(bz, n))] ?? null;
+  }
+
+  /**
+   * The light (sky and block, 0..15, see lightAt) in block (bx, by, bz), as players see it drawn.
+   * `want`: only what's needed (torchlight is only looked for with a torch near).
+   */
+  lightAt(bx: number, by: number, bz: number, want: { sky?: boolean; block?: boolean; reach?: number } = { sky: true, block: true }): { sky: number; block: number } {
+    const block = want.block && this.torchNear(bx, by, bz, SKY_LIGHT_LEVEL);
+    if (!want.sky && !block) return { sky: 0, block: 0 };
+    const tops = new Map<string, number>();
+    const world: LightWorld = {
+      opaque: (x, y, z) => {
+        const b = this.blockAt(x, y, z);
+        return b === undefined || (b !== null && b.kind === 'uniform' && blocksLight(b.material));
+      },
+      glow: (x, y, z) => {
+        const b = this.blockAt(x, y, z);
+        if (!b) return 0;
+        if (b.kind === 'uniform') return LIGHT_LEVEL[b.material] ?? 0;
+        let l = 0;
+        for (const m of b.materials) l = Math.max(l, LIGHT_LEVEL[m] ?? 0);
+        return l;
+      },
+      skyOpen: (x, y, z) => y > this.lightTop(x, z, tops),
+    };
+    return lightAt(world, bx, by, bz, { sky: want.sky ?? false, block: !!block, ...(want.reach !== undefined ? { reach: want.reach } : {}) });
+  }
+
+  /** Whether block (bx, by, bz) is open to the sky (nothing above it stops light). */
+  skyOpenAt(bx: number, by: number, bz: number): boolean {
+    return by > this.lightTop(bx, bz, new Map());
+  }
+
+  /** The highest block (y) stopping light in column (bx, bz), memoized in `tops`; -Infinity for none. */
+  private lightTop(bx: number, bz: number, tops: Map<string, number>): number {
+    const k = `${bx},${bz}`;
+    const known = tops.get(k);
+    if (known !== undefined) return known;
+    const n = BLOCKS_PER_CHUNK_AXIS;
+    const range = this.columnRange(Math.floor(bx / n), Math.floor(bz / n));
+    let top = -Infinity;
+    if (range) {
+      const bottom = Math.floor(range.minY / BLOCK_SIZE) - 1;
+      for (let y = Math.floor(range.maxY / BLOCK_SIZE); y >= bottom; y--) {
+        const b = this.blockAt(bx, y, bz);
+        if (b === undefined || (b !== null && b.kind === 'uniform' && blocksLight(b.material))) {
+          top = y;
+          break;
+        }
+      }
+      // (Nothing in the column's range: rock below it.)
+      if (top === -Infinity) top = bottom;
+    }
+    tops.set(k, top);
+    return top;
+  }
+
+  /** Whether a torch is within `reach` blocks (each way) of block (bx, by, bz). */
+  private torchNear(bx: number, by: number, bz: number, reach: number): boolean {
+    for (const o of this.objects.values()) {
+      if (o.kind !== 'torch') continue;
+      const dx = Math.abs(deltaX(this.config, bx * BLOCK_SIZE, o.x * BLOCK_SIZE)) / BLOCK_SIZE;
+      if (dx <= reach && Math.abs(o.y - by) <= reach + 1 && Math.abs(o.z - bz) <= reach) return true;
+    }
+    return false;
   }
 
   /** Replaces whole blocks (1 m block coordinates) and commits the chunks they're in. */

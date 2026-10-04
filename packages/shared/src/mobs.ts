@@ -34,6 +34,16 @@ export const MOBS: Record<MobKind, MobSpec> = {
   zombie: { health: 20, width: 0.6, height: 1.95, walk: 1, hurry: 2.6, hostile: true, damage: 3, reach: 1.2, attackMs: 1000, sight: 24 },
 };
 
+/**
+ * Where zombies appear: in the dark. No torchlight at all (torches keep them away), and by day
+ * only where the sky's light is this low or lower (caves, deep under things); at night anywhere.
+ */
+export const ZOMBIE_DARK = 7;
+
+export function darkEnoughForZombies(light: { sky: number; block: number }, night: boolean): boolean {
+  return light.block === 0 && (night || light.sky <= ZOMBIE_DARK);
+}
+
 /** A player's health, and how fast it comes back (1 point every REGEN_MS once unhurt for REGEN_AFTER_MS). */
 export const PLAYER_HEALTH = 20;
 export const REGEN_MS = 4000;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { interpolate, rayBox } from './entities.js';
+import { entityBrightness, interpolate, rayBox } from './entities.js';
 
 const snap = (x: number, yaw: number) => ({ id: 1, kind: 'pig' as const, x, y: 0, z: 0, yaw });
 
@@ -17,5 +17,17 @@ describe('entities', () => {
     expect(rayBox([0, 5, 0], [-1, 0, 0], min, max)).toBeNull(); // behind
     expect(rayBox([0, 50, 0], [1, 0, 0], min, max)).toBeNull(); // above
     expect(rayBox([15, 5, 0], [1, 0, 0], min, max)).toBe(0); // inside
+  });
+});
+
+describe('entityBrightness', () => {
+  it('is full in daylight under the sky, dark in a cave, lit by a torch, and dim at night', () => {
+    expect(entityBrightness(15, 0, 1)).toBe(1);
+    expect(entityBrightness(0, 0, 1)).toBeLessThan(0.01);
+    expect(entityBrightness(0, 14, 1)).toBeCloseTo(0.7);
+    expect(entityBrightness(15, 0, 0.15)).toBeCloseTo(0.15);
+    expect(entityBrightness(15, 14, 0.15)).toBeCloseTo(0.7);
+    // Further from the torch, darker.
+    expect(entityBrightness(0, 8, 1)).toBeLessThan(entityBrightness(0, 12, 1));
   });
 });

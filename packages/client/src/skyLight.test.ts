@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLOCK_SIZE, BLOCKS_PER_AXIS, BLOCKS_PER_CHUNK, Material, blockIndex, emptyChunk, type Chunk } from '@super-vox/shared';
+import { BLOCK_SIZE, BLOCKS_PER_AXIS, BLOCKS_PER_CHUNK, Material, blockIndex, emptyChunk, lightAt, type Chunk } from '@super-vox/shared';
 import { BOX, SKY_LIGHT, aroundIndex, faceLight, lightFields, skyLight, type LightInput } from './skyLight.js';
 import { packQuads, visibleFaces } from './mesher.js';
 
@@ -167,5 +167,50 @@ describe('block light', () => {
     const packed = packQuads(quads);
     const glows = packed.shade!.filter((_, i) => i % 2 === 1);
     expect(Math.max(...glows)).toBeGreaterThan(200);
+  });
+});
+
+describe("the server's light probe (lightAt)", () => {
+  /** The probe's view of a box's input: outside the box, rock. */
+  function probeWorld(input: LightInput) {
+    const opaqueAt = (x: number, y: number, z: number) => {
+      if (x < 0 || y < 0 || z < 0 || x >= BOX || y >= BOX || z >= BOX) return true;
+      const o = input.opaque[aroundIndex(Math.floor(x / N) - 1, Math.floor(y / N) - 1, Math.floor(z / N) - 1)]!;
+      return o === 1 || (o !== 0 && o[blockIndex(x % N, y % N, z % N)] === 1);
+    };
+    return {
+      opaque: opaqueAt,
+      glow: (x: number, y: number, z: number) => {
+        const g = input.glow?.[aroundIndex(Math.floor(x / N) - 1, Math.floor(y / N) - 1, Math.floor(z / N) - 1)];
+        const b = blockIndex(x % N, y % N, z % N);
+        return g ? Math.max(0, ...[...g].filter((v) => v >> 4 === b).map((v) => v & 15)) : 0;
+      },
+      skyOpen: (x: number, y: number, z: number) => {
+        if (input.above[x + BOX * z]) return false;
+        for (let yy = y + 1; yy < BOX; yy++) if (opaqueAt(x, yy, z)) return false;
+        return true;
+      },
+    };
+  }
+
+  it('finds the same light as the client works out, sky and torchlight', () => {
+    // The tunnel and shaft, with a torch partway along the tunnel.
+    const input = rockBut(shaftAndTunnel);
+    input.glow = new Array(27).fill(null);
+    input.glow[aroundIndex(0, 0, 0)] = Uint16Array.of(blockIndex(30 - N, 24 - N, 20 - N) * 16 + 14);
+    const fields = lightFields(input);
+    const w = probeWorld(input);
+    // Every open block in the chunk (the probe can't see past the box, so only blocks well in it).
+    let checked = 0;
+    for (let y = N; y < 2 * N; y++)
+      for (let z = N; z < 2 * N; z++)
+        for (let x = N; x < 2 * N; x++) {
+          if (w.opaque(x, y, z)) continue;
+          const l = lightAt(w, x, y, z);
+          expect(l.sky).toBe(at(fields.sky!, x, y, z));
+          expect(l.block).toBe(at(fields.block!, x, y, z));
+          checked++;
+        }
+    expect(checked).toBeGreaterThan(10);
   });
 });

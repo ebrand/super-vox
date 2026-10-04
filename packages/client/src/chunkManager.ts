@@ -24,6 +24,7 @@ import { WATER_LAYER } from './water.js';
 import { DIRS } from './mesher.js';
 import type { MeshWorkerPool } from './workerPool.js';
 import { BOX, aroundIndex, type LightInput } from './skyLight.js';
+import type { LightWorld } from '@super-vox/shared';
 
 export interface ChunkStats {
   columns: number;
@@ -577,6 +578,44 @@ export class ChunkManager {
     // Those waiting for it for their light (around it, and below it in the columns around).
     for (const k of this.lightWaiters(coord)) this.tryMesh(k);
     for (const k of relit) this.tryMesh(k);
+  }
+
+  /**
+   * The loaded world as light sees it (see lightAt): for shading what isn't meshed (mobs). Chunks
+   * not here: above everything in their column, open; otherwise rock.
+   */
+  lightWorld(): LightWorld {
+    const n = BLOCKS_PER_AXIS;
+    const chunkOf = (bx: number, by: number, bz: number) => ({ cx: Math.floor(bx / n), cy: Math.floor(by / n), cz: Math.floor(bz / n) });
+    const local = (bx: number, by: number, bz: number) => (((bx % n) + n) % n) + n * ((((bz % n) + n) % n) + n * (((by % n) + n) % n));
+    const opaque = (bx: number, by: number, bz: number) => {
+      const c = chunkOf(bx, by, bz), k = chunkKey(c);
+      if (this.data.has(k)) return this.opacity.get(k)?.[local(bx, by, bz)] === 1;
+      const range = this.ranges.get(colKey(c.cx, c.cz));
+      return !(range === null || (range && c.cy * CHUNK_SIZE > range.maxY));
+    };
+    return {
+      opaque,
+      glow: (bx, by, bz) => {
+        const g = this.glow.get(chunkKey(chunkOf(bx, by, bz)));
+        if (!g) return 0;
+        const i = local(bx, by, bz);
+        for (const v of g) if (v >> 4 === i) return v & 15;
+        return 0;
+      },
+      skyOpen: (bx, by, bz) => {
+        const c = chunkOf(bx, by, bz), range = this.ranges.get(colKey(c.cx, c.cz));
+        if (!range) return true;
+        const i = local(bx, 0, bz), ly = by - c.cy * n;
+        for (let cy = c.cy; cy * CHUNK_SIZE <= range.maxY; cy++) {
+          const k = chunkKey({ cx: c.cx, cy, cz: c.cz });
+          if (!this.data.has(k)) continue;
+          const t = this.tops.get(k)?.[i] ?? -1;
+          if (cy === c.cy ? t > ly : t >= 0) return false;
+        }
+        return true;
+      },
+    };
   }
 
   /** Rendered chunks whose light this one is part of: around it (3 x 3 x 3), and below it in the columns around. */

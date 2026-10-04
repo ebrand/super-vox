@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FLAT_WORLD_16KM, FlatGenerator, MOBS, defaultFlatGen } from '@super-vox/shared';
+import { FLAT_WORLD_16KM, FlatGenerator, MOBS, Material, darkEnoughForZombies, defaultFlatGen, lightAt } from '@super-vox/shared';
 import { MobManager } from './mobManager.js';
 import { World } from './world.js';
 
@@ -65,5 +65,55 @@ describe('MobManager', () => {
     expect(mobs.attack(pig.id, eye.x, eye.y, eye.z, 10, 4.5, 100)).toEqual({ hit: true, killed: true, kind: 'pig' });
     expect(mobs.get(pig.id)).toBeUndefined();
     expect(mobs.attack(pig.id, eye.x, eye.y, eye.z, 10, 4.5, 200)).toEqual({ hit: false, killed: false });
+  });
+});
+
+describe('zombies in the dark', () => {
+  /**
+   * A stand-in world: grassy ground at y = 0, and (`roof`) rock over everything at 4..5 m, so it's
+   * dark under it by day; `lit`: torchlight everywhere.
+   */
+  function fake(opts: { roof: boolean; lit?: boolean }) {
+    const solidBlock = (by: number) => by < 0 || (opts.roof && by === 4);
+    const lightWorld = { opaque: (_x: number, y: number) => solidBlock(y), glow: () => (opts.lit ? 14 : 0), skyOpen: (_x: number, y: number) => (opts.roof ? y > 4 : y >= 0) };
+    const world = {
+      config: FLAT_WORLD_16KM,
+      solidAt: (_x: number, y: number) => solidBlock(Math.floor(y / M)),
+      materialAtUnit: (_x: number, y: number) => (y < 0 ? Material.Grass : solidBlock(Math.floor(y / M)) ? Material.Stone : 0),
+      lightAt: (bx: number, by: number, bz: number, want: { sky?: boolean; block?: boolean; reach?: number }) => lightAt(lightWorld, bx, by, bz, want),
+      skyOpenAt: (bx: number, by: number) => lightWorld.skyOpen(bx, by),
+    } as unknown as World;
+    let r = 0.37;
+    const mobs = new MobManager(world, () => (r = ((r * 9301 + 49297) % 233280) / 233280));
+    return { mobs, player: { id: 1, x: 8000 * M, y: 0, z: 8000 * M, vulnerable: true } };
+  }
+  const zombies = (mobs: MobManager, p: { x: number; z: number }) => mobs.near(p.x, p.z, 96 * M, 0).filter((e) => e.kind === 'zombie');
+
+  it('come by day where it is dark (under a roof, as in a cave), and do not burn there', () => {
+    const { mobs, player } = fake({ roof: true });
+    run(mobs, [player], 30, false);
+    expect(zombies(mobs, player).length).toBeGreaterThan(0);
+    const z = zombies(mobs, player)[0]!;
+    expect(z.health).toBe(MOBS.zombie.health);
+  });
+
+  it('come by day nowhere in daylight, and pigs still do', () => {
+    const { mobs, player } = fake({ roof: false });
+    run(mobs, [player], 15, false);
+    expect(zombies(mobs, player)).toHaveLength(0);
+    expect(mobs.near(player.x, player.z, 96 * M, 0).some((e) => e.kind === 'pig')).toBe(true);
+  });
+
+  it('never come where torchlight reaches, even at night', () => {
+    const { mobs, player } = fake({ roof: false, lit: true });
+    run(mobs, [player], 20, true);
+    expect(zombies(mobs, player)).toHaveLength(0);
+  });
+
+  it('say what dark enough is', () => {
+    expect(darkEnoughForZombies({ sky: 15, block: 0 }, true)).toBe(true);
+    expect(darkEnoughForZombies({ sky: 15, block: 1 }, true)).toBe(false);
+    expect(darkEnoughForZombies({ sky: 7, block: 0 }, false)).toBe(true);
+    expect(darkEnoughForZombies({ sky: 8, block: 0 }, false)).toBe(false);
   });
 });

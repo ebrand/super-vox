@@ -1,5 +1,7 @@
 import {
+  ZOMBIE_DARK,
   blastDamage,
+  darkEnoughForZombies,
   MOBS,
   Material,
   UNITS_PER_METER,
@@ -19,9 +21,14 @@ import type { World } from './world.js';
 
 const M = UNITS_PER_METER;
 
-/** Mobs kept around each player (within KEEP), by kind, and where new ones appear (SPAWN_MIN..SPAWN_MAX from them). */
-const AROUND_PLAYER: Record<MobKind, { day: number; night: number }> = { pig: { day: 4, night: 2 }, zombie: { day: 0, night: 5 } };
+/**
+ * Mobs kept around each player (within KEEP), by kind, and where new ones appear (SPAWN_MIN..SPAWN_MAX
+ * from them). Zombies by day: only in the dark (caves), so only where there's some near.
+ */
+const AROUND_PLAYER: Record<MobKind, { day: number; night: number }> = { pig: { day: 4, night: 2 }, zombie: { day: 3, night: 5 } };
 const SPAWN_MIN = 24 * M, SPAWN_MAX = 48 * M;
+/** How far (blocks) a daytime check for dark looks for the sky: light from further off is under ZOMBIE_DARK. */
+const SKY_REACH = 15 - ZOMBIE_DARK;
 /** Mobs further than this from every player go away. */
 const KEEP = 96 * M;
 /** Most mobs in a world at once. */
@@ -35,9 +42,9 @@ const GRASSY = new Set<number>([Material.Grass, Material.Meadow, Material.DryGra
 export type MobPlayer = MobTarget;
 
 /**
- * A world's mobs: they appear near players (pigs on grass by day, zombies at night), act (see
- * stepMob), burn away in daylight (zombies), and go when nobody's near. The server steps it a
- * few times a second.
+ * A world's mobs: they appear near players (pigs on grass by day; zombies in the dark: at night,
+ * or in caves, never where a torch lights), act (see stepMob), burn away in daylight (zombies
+ * under the open sky), and go when nobody's near. The server steps it a few times a second.
  */
 export class MobManager {
   private readonly mobs = new Map<number, Mob>();
@@ -85,11 +92,14 @@ export class MobManager {
       // Fell out of the world.
       if (m.y < cfg.minYUnits) this.mobs.delete(m.id);
     }
-    // Zombies burn in daylight: a point a second.
+    // Zombies burn in daylight, under the open sky (not in caves, or under a roof): a point a second.
     if (!night && now >= this.nextBurn) {
       this.nextBurn = now + 1000;
       for (const m of this.mobs.values()) {
-        if (m.kind === 'zombie' && hurtMob(m, 1, m.x, m.z, now)) this.mobs.delete(m.id);
+        if (m.kind !== 'zombie') continue;
+        const head = Math.floor((m.y + MOBS.zombie.height * M - 1) / M);
+        if (!this.world.skyOpenAt(Math.floor(m.x / M), head, Math.floor(m.z / M))) continue;
+        if (hurtMob(m, 1, m.x, m.z, now)) this.mobs.delete(m.id);
       }
     }
     if (now >= this.nextSpawn) {
@@ -99,7 +109,7 @@ export class MobManager {
     return hits;
   }
 
-  /** Tops up the mobs around a player: one at a time, somewhere suitable 24..48 m away. */
+  /** Tops up the mobs around a player: one at a time (a second), somewhere suitable 24..48 m away. */
   private spawnNear(p: MobPlayer, night: boolean, now: number): void {
     if (this.mobs.size >= MAX_MOBS) return;
     const cfg = this.world.config;
@@ -110,23 +120,38 @@ export class MobManager {
       if (have >= want) continue;
       const a = this.random() * Math.PI * 2, r = SPAWN_MIN + this.random() * (SPAWN_MAX - SPAWN_MIN);
       const x = Math.floor(p.x + Math.sin(a) * r), z = Math.floor(p.z + Math.cos(a) * r);
-      const y = this.groundAt(x, p.y, z, kind);
-      if (y !== null) this.add(kind, x + 0.5, y, z + 0.5, now);
-      return; // one a second per player
+      const y = this.groundAt(x, p.y, z, kind, night);
+      if (y !== null) {
+        this.add(kind, x + 0.5, y, z + 0.5, now);
+        return; // one a second per player
+      }
+      // (None there, as when zombies want the dark by day and it's all daylight: pigs may.)
     }
   }
 
-  /** Where a mob could stand at column (x, z) near height `nearY` (units): on something solid, with room for it; pigs only on grass. */
-  private groundAt(x: number, nearY: number, z: number, kind: MobKind): number | null {
+  /**
+   * Where a mob could stand at column (x, z) near height `nearY` (units): on something solid, with
+   * room for it, not in water; pigs on grass, the highest such place; zombies in the dark (see
+   * darkEnoughForZombies), any such place (in a cave as much as on top).
+   */
+  private groundAt(x: number, nearY: number, z: number, kind: MobKind, night: boolean): number | null {
     const solid = this.world.solidAt;
-    const height = Math.ceil(MOBS[kind].height * M);
+    const spots: number[] = [];
     for (let y = Math.floor(nearY + 16 * M); y > nearY - 24 * M; y--) {
       if (!solid(x, y - 1, z) || solid(x, y, z)) continue;
       // Room for the whole body, and not under water; pigs only on grass.
-      if (intersectsSolid(mobBox(kind, x + 0.5, y, z + 0.5), solid)) return null;
-      if (kind === 'pig' && !GRASSY.has(this.world.materialAtUnit(x, y - 1, z) ?? 0)) return null;
-      if (this.world.materialAtUnit(x, y, z) !== 0) return null; // water
-      return y;
+      const fits = !intersectsSolid(mobBox(kind, x + 0.5, y, z + 0.5), solid) && this.world.materialAtUnit(x, y, z) === 0;
+      if (kind === 'pig') return fits && GRASSY.has(this.world.materialAtUnit(x, y - 1, z) ?? 0) ? y : null;
+      if (fits) spots.push(y);
+    }
+    // Zombies: a few of the places, at random, until one's dark.
+    for (let tries = 0; tries < 4 && spots.length; tries++) {
+      const y = spots.splice(Math.floor(this.random() * spots.length), 1)[0]!;
+      const bx = Math.floor(x / M), by = Math.floor(y / M), bz = Math.floor(z / M);
+      const block = this.world.lightAt(bx, by, bz, { block: true }).block;
+      // (By day, only whether there's sky light above ZOMBIE_DARK matters: looked for that near.)
+      const sky = night ? 0 : this.world.lightAt(bx, by, bz, { sky: true, reach: SKY_REACH }).sky;
+      if (darkEnoughForZombies({ sky, block }, night)) return y;
     }
     return null;
   }

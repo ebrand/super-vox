@@ -1,6 +1,17 @@
 import * as THREE from 'three';
 import { MOBS, UNITS_PER_METER, deltaX, type EntityKind, type EntitySnapshot, type WorldConfig } from '@super-vox/shared';
 
+/**
+ * How bright something is (0..1) with sky light `sky` and torchlight `block` (0..15) where it
+ * stands, by `daylight` (1 day .. small at night). Each step down 70% as bright: steeper than
+ * the world's shading (80%), since mobs are drawn at full colour where the ground is lit by the
+ * sky's ambient light, a third of that; so in the dark a mob is about as dark as the rock.
+ */
+export function entityBrightness(sky: number, block: number, daylight: number): number {
+  const torch = block > 0 ? 0.7 ** (15 - block) : 0;
+  return Math.max(0.004, Math.min(1, Math.max(0.7 ** (15 - sky) * daylight, torch)));
+}
+
 /** Placeholder looks: a box per kind (metres) and its colour; players 0.6 x 1.8 m, blue. */
 const LOOK: Record<EntityKind, { w: number; h: number; long: number; color: number }> = {
   player: { w: 0.6, h: 1.8, long: 0.6, color: 0x3b82f6 },
@@ -15,6 +26,10 @@ interface Tracked {
   kind: EntityKind;
   group: THREE.Group;
   body: THREE.MeshBasicMaterial;
+  face: THREE.MeshBasicMaterial;
+  /** How bright it's drawn (see entityBrightness), and when that was last worked out (ms). */
+  brightness: number;
+  litAt: number;
   from: EntitySnapshot;
   to: EntitySnapshot;
   /** When `to` arrived (ms). */
@@ -63,6 +78,9 @@ export class EntityView {
     private readonly world: WorldConfig,
     /** The camera's x (units), to draw things at their copy nearest it on round worlds. */
     private readonly cameraX: () => number,
+    /** The light (sky and torchlight, 0..15) at a point (units), if known, and how much daylight there is (0..1). */
+    private readonly light: (x: number, y: number, z: number) => { sky: number; block: number } | null = () => null,
+    private readonly daylight: () => number = () => 1,
   ) {}
 
   /** Takes a snapshot: new things appear, gone things go. */
@@ -72,7 +90,7 @@ export class EntityView {
       seen.add(e.id);
       const t = this.tracked.get(e.id);
       if (!t) {
-        this.tracked.set(e.id, { ...this.make(e), from: e, to: e, at: now, hurtUntil: e.hurt ? now + 300 : 0 });
+        this.tracked.set(e.id, { ...this.make(e), from: e, to: e, at: now, hurtUntil: e.hurt ? now + 300 : 0, brightness: 1, litAt: -Infinity });
         continue;
       }
       // From wherever it's drawn now to the new snapshot.
@@ -103,7 +121,14 @@ export class EntityView {
       const x = camX + deltaX(this.world, camX, p.x);
       t.group.position.set(x / UNITS_PER_METER, p.y / UNITS_PER_METER, p.z / UNITS_PER_METER);
       t.group.rotation.y = p.yaw;
-      t.body.color.setHex(now < t.hurtUntil ? 0xff3030 : LOOK[t.kind].color);
+      // Shaded by the light where it stands (looked at a few times a second): dark in caves and at night.
+      if (now - t.litAt > 250) {
+        t.litAt = now;
+        const l = this.light(p.x, p.y + 8, p.z);
+        t.brightness = l ? entityBrightness(l.sky, l.block, this.daylight()) : 1;
+      }
+      t.body.color.setHex(now < t.hurtUntil ? 0xff3030 : LOOK[t.kind].color).multiplyScalar(t.brightness);
+      t.face.color.setHex(0x1b1b1b).multiplyScalar(t.brightness);
     }
   }
 
@@ -126,7 +151,7 @@ export class EntityView {
     return this.tracked.size;
   }
 
-  private make(e: EntitySnapshot): { kind: EntityKind; group: THREE.Group; body: THREE.MeshBasicMaterial } {
+  private make(e: EntitySnapshot): { kind: EntityKind; group: THREE.Group; body: THREE.MeshBasicMaterial; face: THREE.MeshBasicMaterial } {
     const look = LOOK[e.kind];
     const group = new THREE.Group();
     group.name = `${e.kind} ${e.id}`;
@@ -135,12 +160,13 @@ export class EntityView {
     const box = new THREE.Mesh(new THREE.BoxGeometry(look.w, look.h, look.long), body);
     box.position.y = look.h / 2;
     // A darker block at the front, to see which way it faces.
-    const face = new THREE.Mesh(new THREE.BoxGeometry(look.w * 0.6, Math.min(0.3, look.h * 0.3), 0.08), new THREE.MeshBasicMaterial({ color: 0x1b1b1b }));
+    const faceMaterial = new THREE.MeshBasicMaterial({ color: 0x1b1b1b });
+    const face = new THREE.Mesh(new THREE.BoxGeometry(look.w * 0.6, Math.min(0.3, look.h * 0.3), 0.08), faceMaterial);
     face.position.set(0, look.h * 0.82, -look.long / 2 - 0.04);
     group.add(box, face);
     if (e.kind === 'player' && e.name) group.add(nameTag(e.name, look.h + 0.35));
     this.scene.add(group);
-    return { kind: e.kind, group, body };
+    return { kind: e.kind, group, body, face: faceMaterial };
   }
 }
 
