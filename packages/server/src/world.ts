@@ -61,6 +61,10 @@ import {
   objectHeight,
   objectCells,
   objectStation,
+  isBed,
+  liftOut,
+  playerBox,
+  PLAYER,
   type DesignRole,
   objectName,
   designById,
@@ -716,6 +720,21 @@ export class World {
   /** The object occupying block (bx, by, bz) (1 m block coordinates), if any (doors: either block; designs: any in their box). */
   objectAt(bx: number, by: number, bz: number): PlacedObject | undefined {
     return this.cells.get(objectKey(this.wrapBlockX(bx), by, bz));
+  }
+
+  /**
+   * Where a player whose bed is at block (bx, by, bz) (1 m block coordinates) comes back after
+   * dying (feet, units: on top of it, in the middle), or why they can't: it isn't a bed there any
+   * more ('gone'), or there's no room above it ('blocked').
+   */
+  bedSpot(bx: number, by: number, bz: number): { x: number; y: number; z: number } | 'gone' | 'blocked' {
+    const o = this.objectAt(bx, by, bz);
+    if (!o || !isBed(o) || this.wrapBlockX(o.x) !== this.wrapBlockX(bx) || o.y !== by || o.z !== bz) return 'gone';
+    const [w, h, d] = o.span ?? [1, 1, 1];
+    const x = (o.x + w / 2) * BLOCK_SIZE, z = (o.z + d / 2) * BLOCK_SIZE, top = (o.y + h) * BLOCK_SIZE;
+    // (The client stands them half a metre above where they're sent: room for them there, or a little higher.)
+    const lift = liftOut(playerBox([x, top + BLOCK_SIZE / 2 + PLAYER.eye, z]), this.solidAt, BLOCK_SIZE);
+    return lift === null ? 'blocked' : { x, y: top + lift, z };
   }
 
   /** The blocks an object takes, in world block coordinates (X in the world's range). */

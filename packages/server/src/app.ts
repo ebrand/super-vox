@@ -32,6 +32,7 @@ import {
   itemName,
   objectKindOf,
   usable,
+  isBed,
   Material,
   TABLE_REACH,
   recipeById,
@@ -53,6 +54,7 @@ import {
   validateStrokes,
   isGameMode,
   type GameMode,
+  type SavedVitals,
   type ServerMessage,
   type WorldShape,
 } from '@super-vox/shared';
@@ -118,13 +120,19 @@ interface Player {
   vitalsSent: string;
   /** When they last attacked (ms). */
   lastAttack: number;
+  /** Their bed (its block, 1 m block coordinates), if they've made one theirs: where they come back to after dying. */
+  bed: { x: number; y: number; z: number } | null;
+  /** Poses reported before this (ms) aren't kept as where they are (they've just been sent somewhere: see PLACE_SETTLE_MS). */
+  settleUntil: number;
+  /** Signed in: keeps their vitals and bed (see PlayerState), once they've been loaded. */
+  saveState: (() => void) | null;
 }
 
 /** Time between water flow steps. */
 export const WATER_STEP_MS = 200;
 /** How often a signed-in player's place is saved while they play (and always when they leave). */
 export const PLACE_SAVE_MS = 30_000;
-/** After sending a player back where they were, poses from before this long are ignored (their client may still report the spawn). */
+/** After sending a player back where they were (or back after dying), poses from before this long are ignored (their client may still report where it was). */
 export const PLACE_SETTLE_MS = 1500;
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
@@ -496,10 +504,22 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     p.vitalsSent = key;
     sendTo(client, msg);
   };
-  /** Hurts a player (if anything can): killed, they're back at the spawn point, whole again, everything kept. */
+  /**
+   * A player died: back at their bed (if it's still there, with room above it; a bed taken down is
+   * forgotten) or the spawn point, whole again, everything kept.
+   */
+  const respawn = (client: WebSocket, p: Player, world: World, cause: DeathCause | null) => {
+    const spot = p.bed ? world.bedSpot(p.bed.x, p.bed.y, p.bed.z) : null;
+    if (spot === 'gone') p.bed = null;
+    const at = spot && typeof spot === 'object' ? spot : world.spawn;
+    sendTo(client, { type: 'respawn', x: at.x, y: at.y, z: at.z, ...(cause ? { cause } : {}), ...(spot ? { bed: typeof spot === 'object' ? 'here' : spot } : {}) });
+    p.settleUntil = Date.now() + PLACE_SETTLE_MS;
+    p.saveState?.();
+  };
+  /** Hurts a player (if anything can): killed, they come back (see respawn). */
   const harm = (client: WebSocket, p: Player, world: World, damage: number, cause: DeathCause, now: number) => {
     if (!p.vulnerable || damage <= 0) return;
-    if (p.vitals.hurt(damage, now)) sendTo(client, { type: 'respawn', x: world.spawn.x, y: world.spawn.y, z: world.spawn.z, cause });
+    if (p.vitals.hurt(damage, now)) respawn(client, p, world, cause);
     sendVitals(client, p);
   };
   const mobbing = setInterval(() => {
@@ -522,7 +542,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         if (p.vulnerable) {
           const eye = world.materialAtUnit(Math.floor(p.pose!.x), Math.floor(p.pose!.y), Math.floor(p.pose!.z));
           const r = p.vitals.step(0.1, now, eye !== undefined && isWater(eye));
-          if (r.died) sendTo(s, { type: 'respawn', x: world.spawn.x, y: world.spawn.y, z: world.spawn.z, ...(r.cause ? { cause: r.cause } : {}) });
+          if (r.died) respawn(s, p, world, r.cause);
           sendVitals(s, p);
         }
         // What this player sees: mobs, and other players.
@@ -615,14 +635,26 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     /**
      * Where a signed-in player is, kept to come back to (see Place): by account and world, once
      * where they were has been loaded; and only poses from after they've been sent back there
-     * (`placeFrom`), so a quick visit doesn't save the spawn point over it.
+     * (Player.settleUntil), so a quick visit doesn't save the spawn point over it.
      */
     let placeKey: { accountId: string; world: string } | null = null;
-    let placeFrom = Infinity;
     let placeSaved = 0;
+    /** The rest of them (see PlayerState), kept likewise once loaded; their vitals as loaded (kept as they were outside survival). */
+    let stateKey: { accountId: string; world: string } | null = null;
+    let stateSaved = 0;
+    let loadedVitals: SavedVitals | null = null;
+    const saveState = () => {
+      const p = players.get(socket), store = opts.inventories;
+      if (!stateKey || !store || !p) return;
+      stateSaved = Date.now();
+      store.saveState(stateKey.accountId, stateKey.world, { vitals: p.vulnerable ? p.vitals.saved() : loadedVitals, bed: p.bed }).catch((err: unknown) => {
+        metrics.error('player_state', err instanceof Error ? err.message : String(err), clientWorld.get(socket));
+      });
+    };
     const savePlace = (now: boolean) => {
-      const pose = players.get(socket)?.pose, store = opts.inventories;
-      if (!placeKey || !store || !pose || pose.at < placeFrom) return;
+      const p = players.get(socket), pose = p?.pose, store = opts.inventories;
+      if (stateKey && (now || Date.now() - stateSaved >= PLACE_SAVE_MS)) saveState();
+      if (!placeKey || !store || !pose || pose.at < p.settleUntil) return;
       if (!now && Date.now() - placeSaved < PLACE_SAVE_MS) return;
       placeSaved = Date.now();
       store.savePlace(placeKey.accountId, placeKey.world, { x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw }).catch((err: unknown) => {
@@ -703,7 +735,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             players.set(socket, {
               id: nextPlayer++, world: msg.world ?? catalog.defaultName, connectedAt: Date.now(), tolerance: world.tolerance,
               name: who?.account.name ?? null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
-              vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0,
+              vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0, bed: null, settleUntil: Infinity, saveState: null,
             });
             // Designs (named: some may be in their inventory) before the inventory, and where they're placed.
             const sendWelcome = (welcome: ServerMessage) => {
@@ -730,14 +762,30 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             if (!who || !store || !play) return;
             const accountId = who.account.id;
             inventoryLoading = true;
-            void Promise.all([store.load(accountId, play.inventoryKey), store.loadPlace(accountId, play.inventoryKey).catch(() => null)])
-              .then(([saved, place]) => {
+            void Promise.all([
+              store.load(accountId, play.inventoryKey),
+              store.loadPlace(accountId, play.inventoryKey).catch(() => null),
+              // (Not loaded: not kept either, so what was kept isn't lost.)
+              store.loadState(accountId, play.inventoryKey).catch((err: unknown) => {
+                metrics.error('player_state', err instanceof Error ? err.message : String(err), clientWorld.get(socket));
+                return undefined;
+              }),
+            ])
+              .then(([saved, place, state]) => {
                 if (socket.readyState !== socket.OPEN) return;
+                const p = players.get(socket);
+                if (p && state !== undefined) {
+                  loadedVitals = state?.vitals ?? null;
+                  if (loadedVitals && play.mode === 'survival') p.vitals.restore(loadedVitals);
+                  p.bed = state?.bed ?? null;
+                  stateKey = { accountId, world: play.inventoryKey };
+                  p.saveState = saveState;
+                }
                 // Back where they were last time (if it's still in the world); kept from now on.
                 const there = place && [place.x, place.y, place.z, place.yaw].every(Number.isFinite) && resolveChunk(world.config, { cx: Math.floor(place.x / CHUNK_SIZE), cy: 0, cz: Math.floor(place.z / CHUNK_SIZE) });
                 if (place && there) send({ type: 'returnTo', x: place.x, y: place.y, z: place.z, yaw: place.yaw });
                 placeKey = { accountId, world: play.inventoryKey };
-                placeFrom = Date.now() + (place && there ? PLACE_SETTLE_MS : 0);
+                if (p) p.settleUntil = Date.now() + (place && there ? PLACE_SETTLE_MS : 0);
                 inventory = new PlayerInventory(play.mode, saved ?? (play.mode === 'survival' ? starterInventory() : { items: new Map(), hotbar: creativeHotbar() }), (inv) =>
                   store.save(accountId, play.inventoryKey, inv).catch((err: unknown) => {
                     metrics.error('inventory', err instanceof Error ? err.message : String(err), clientWorld.get(socket));
@@ -745,7 +793,6 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
                   }),
                 );
                 send(inventory.message());
-                const p = players.get(socket);
                 if (p && play.mode === 'survival') {
                   p.vulnerable = true;
                   sendVitals(socket, p, true);
@@ -959,6 +1006,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               result = r;
             } else {
               const o = world.objectAt(Math.floor(msg.x / 16), Math.floor(msg.y / 16), Math.floor(msg.z / 16));
+              // A bed: theirs from now on (see respawn); nothing about it changes.
+              const p = players.get(socket);
+              if (o && isBed(o) && p) {
+                const mine = p.bed?.x === o.x && p.bed.y === o.y && p.bed.z === o.z;
+                p.bed = { x: o.x, y: o.y, z: o.z };
+                p.saveState?.();
+                send({ type: 'editResult', id: msg.id, ok: true, note: mine ? 'this is already your bed' : "this is your bed now: you'll come back here after dying" });
+                break;
+              }
               if (!o || !usable(o)) return fail(o?.kind === 'design' ? `a ${objectName(o)} doesn't change` : 'nothing to open there');
               result = world.toggleObject(o);
             }

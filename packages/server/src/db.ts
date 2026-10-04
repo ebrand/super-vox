@@ -51,6 +51,20 @@ const MIGRATIONS: { name: string; sql: string }[] = [
         primary key (account_id, world)
       );`,
   },
+  {
+    name: '004_player_states',
+    sql: `
+      create table ${SCHEMA}.player_states (
+        account_id uuid not null references ${SCHEMA}.accounts (id) on delete cascade,
+        world text not null,
+        vitals jsonb,
+        bed_x integer,
+        bed_y integer,
+        bed_z integer,
+        updated_at timestamptz not null default now(),
+        primary key (account_id, world)
+      );`,
+  },
 ];
 
 /** Connects to Postgres (Supabase) and brings the schema (SCHEMA) up to date. */

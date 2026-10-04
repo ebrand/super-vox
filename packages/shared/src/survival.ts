@@ -57,6 +57,15 @@ export function fallDamage(speed: number): number {
 
 export type DeathCause = 'fell' | 'drowned' | 'starved' | 'mob' | 'blast';
 
+/** Vitals as kept between visits (see Vitals.saved, Vitals.restore). */
+export interface SavedVitals {
+  health: number;
+  food: number;
+  /** Breath left (s). */
+  air: number;
+  exhaustion: number;
+}
+
 /** A player's health, food and breath (see the module comment); times are ms. */
 export class Vitals {
   health = PLAYER_HEALTH;
@@ -69,6 +78,20 @@ export class Vitals {
   private lastRegen = 0;
   private lastStarve = 0;
   private lastDrown = 0;
+
+  /** What to keep of them between visits. */
+  saved(): SavedVitals {
+    return { health: this.health, food: this.food, air: this.air, exhaustion: this.exhaustion };
+  }
+
+  /** Back as they were kept (anything out of range or missing left as it is; never dead). */
+  restore(s: Partial<SavedVitals>): void {
+    const ok = (v: unknown, lo: number, hi: number): v is number => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
+    if (ok(s.health, 1, PLAYER_HEALTH)) this.health = Math.round(s.health);
+    if (ok(s.food, 0, MAX_FOOD)) this.food = Math.round(s.food);
+    if (ok(s.air, 0, AIR_SECONDS)) this.air = s.air;
+    if (ok(s.exhaustion, 0, EXHAUSTION_PER_FOOD)) this.exhaustion = s.exhaustion;
+  }
 
   /** Breath as bubbles (0..MAX_AIR). */
   get bubbles(): number {

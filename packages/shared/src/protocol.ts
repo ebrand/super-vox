@@ -13,7 +13,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 32;
+export const PROTOCOL_VERSION = 33;
 
 export type ClientMessage =
   | {
@@ -127,8 +127,12 @@ export type ServerMessage =
    * yaw, radians), sent once their inventory has loaded. Not sent the first time in a world.
    */
   | { type: 'returnTo'; x: number; y: number; z: number; yaw: number }
-  /** The player died (how, if known) and comes back at (x, y, z) (feet, units). */
-  | { type: 'respawn'; x: number; y: number; z: number; cause?: DeathCause }
+  /**
+   * The player died (how, if known) and comes back at (x, y, z) (feet, units): at their bed
+   * (`bed: 'here'`), or at the spawn point, their bed having been taken down (`'gone'`) or built
+   * over (`'blocked'`); no `bed`: they never had one.
+   */
+  | { type: 'respawn'; x: number; y: number; z: number; cause?: DeathCause; bed?: 'here' | 'gone' | 'blocked' }
   /** TNT lit: the voxel at (x, y, z) of `size` (units) blows in `ms`. */
   | { type: 'fuse'; x: number; y: number; z: number; size: number; ms: number }
   /**
@@ -161,7 +165,7 @@ export type ServerMessage =
   | { type: 'tileUnavailable'; level: number; tx: number; tz: number }
   /** Reply to requestChunk for a chunk outside the world. */
   | { type: 'chunkUnavailable'; cx: number; cy: number; cz: number }
-  | { type: 'editResult'; id: number; ok: true }
+  | { type: 'editResult'; id: number; ok: true; note?: string }
   | { type: 'editResult'; id: number; ok: false; error: string }
   | { type: 'error'; code: string; message: string };
 
