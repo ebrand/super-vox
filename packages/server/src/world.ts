@@ -58,6 +58,8 @@ import {
   editMiningTime,
   fenceJoins,
   objectBlocks,
+  fitTorch,
+  isTorchVoxel,
   objectHeight,
   objectCells,
   objectStation,
@@ -863,11 +865,56 @@ export class World {
    * Places an object with its (bottom) block at (bx, by, bz). Throws EditError if a block it
    * needs is outside the world, holds something solid, or holds another object.
    */
-  placeObject(kind: ObjectKind, bx: number, by: number, bz: number, facing: Facing): EditResult {
-    const o: PlacedObject = { kind, x: this.wrapBlockX(bx), y: by, z: bz, facing, open: false };
+  placeObject(kind: ObjectKind, bx: number, by: number, bz: number, facing: Facing, wall = false): EditResult {
+    const o: PlacedObject = { kind, x: this.wrapBlockX(bx), y: by, z: bz, facing, open: false, ...(kind === 'torch' && wall ? { wall: true } : {}) };
+    if (kind === 'torch') return this.placeTorch(o, wall);
     this.checkRoom(o, `a ${kind} needs ${kind === 'door' ? 'two empty blocks' : 'an empty block'}`);
     this.addObject(o);
     const result = this.writeBlocks([...this.objectWrites(o), ...this.neighbourFenceWrites(o.x, o.y, o.z)]);
+    this.stats.edits++;
+    this.saveObjects();
+    return result;
+  }
+
+  /**
+   * Places a torch: in an empty block, or one partly filled (as the ground's surface often is), if
+   * it fits (standing on what's under it there); held up by the block below it (standing, unless
+   * the ground in its own block holds it) or the wall it's on.
+   */
+  private placeTorch(o: PlacedObject, wall: boolean): EditResult {
+    // Standing, where the ground under it fills its block (aimed at the block's low edge, say):
+    // on that ground, in the block above.
+    if (!wall && !this.objectAt(o.x, o.y, o.z)) {
+      const here = this.blockAt(o.x, o.y, o.z);
+      const fit = here === undefined ? null : fitTorch(blockVoxels(withoutWater(here)), blockVoxels(withoutWater(this.blockAt(o.x, o.y + 1, o.z) ?? null)), o.facing, false);
+      if (!fit || !fit.lower.length) {
+        const up = this.blockAt(o.x, o.y + 1, o.z);
+        if (up !== undefined && fitTorch(blockVoxels(withoutWater(up)), blockVoxels(withoutWater(this.blockAt(o.x, o.y + 2, o.z) ?? null)), o.facing, false)) o.y++;
+      }
+    }
+    if (this.objectAt(o.x, o.y, o.z)) throw new EditError(`there's already something there`);
+    const block = this.blockAt(o.x, o.y, o.z), up = this.blockAt(o.x, o.y + 1, o.z);
+    if (block === undefined) throw new EditError('outside the world');
+    const ground = blockVoxels(withoutWater(block)), above = blockVoxels(withoutWater(up ?? null));
+    const torch = fitTorch(ground, above, o.facing, wall);
+    if (!torch) throw new EditError("a torch doesn't fit there");
+    if (torch.upper.length) {
+      if (up === undefined || this.objectAt(o.x, o.y + 1, o.z)) throw new EditError("a torch doesn't fit there");
+      o.span = [1, 2, 1];
+    }
+    // (Not standing at the bottom of its block: the ground in it holds it up.)
+    const standsOnGround = !wall && !torch.lower.some((v) => v.y === 0);
+    if (!standsOnGround) {
+      const [dx, dz] = wall ? FACING_STEP[o.facing] : [0, 0];
+      const x = o.x + dx, y = wall ? o.y : o.y - 1, z = o.z + dz;
+      const on = this.blockAt(x, y, z);
+      if (!on || blockVoxels(withoutWater(on)).length === 0 || this.objectAt(x, y, z)) throw new EditError(wall ? 'a torch goes on a wall: nothing to hold it there' : 'a torch stands on something: nothing under it');
+    }
+    this.addObject(o);
+    const result = this.writeBlocks([
+      { bx: o.x, by: o.y, bz: o.z, block: blockFromVoxels([...ground, ...torch.lower]) },
+      ...(torch.upper.length ? [{ bx: o.x, by: o.y + 1, bz: o.z, block: blockFromVoxels([...above, ...torch.upper]) }] : []),
+    ]);
     this.stats.edits++;
     this.saveObjects();
     return result;
@@ -893,7 +940,8 @@ export class World {
   /** Takes an object down (its blocks become empty); fences beside it let go. */
   removeObject(o: PlacedObject): EditResult {
     this.dropObject(o);
-    const empty = this.objectBlocksAt(o).map(([bx, by, bz]) => ({ bx, by, bz, block: null }));
+    // (A torch may share its block with the ground: that stays.)
+    const empty = this.objectBlocksAt(o).map(([bx, by, bz]) => ({ bx, by, bz, block: o.kind === 'torch' ? blockFromVoxels(blockVoxels(withoutWater(this.blockAt(bx, by, bz) ?? null)).filter((v) => !isTorchVoxel(v))) : null }));
     const result = this.writeBlocks([...empty, ...this.neighbourFenceWrites(o.x, o.y, o.z)]);
     this.stats.edits++;
     this.saveObjects();

@@ -3,7 +3,7 @@ import {
   BLOCKS_PER_AXIS,
   CHUNK_SIZE,
   MAX_CANCEL,
-  chunkOpacity,
+  chunkLighting,
   chunkKey,
   columnSpans,
   type ColumnRange,
@@ -96,6 +96,8 @@ export class ChunkManager {
   /** Per loaded chunk, which blocks stop light (null: none; see chunkOpacity), and per block column the highest that does (-1: none). */
   private readonly opacity = new Map<string, Uint8Array | null>();
   private readonly tops = new Map<string, Int8Array | null>();
+  /** Per loaded chunk, the blocks giving light (torches; see chunkLighting), null for none. */
+  private readonly glow = new Map<string, Uint16Array | null>();
   /** Decoded chunks for picking, built on demand and dropped when data changes. */
   private readonly decoded = new Map<string, Chunk | null>();
   private readonly coords = new Map<string, ChunkCoord>();
@@ -451,6 +453,7 @@ export class ChunkManager {
         this.kinds.delete(key);
         this.opacity.delete(key);
         this.tops.delete(key);
+        this.glow.delete(key);
         this.coords.delete(key);
         this.decoded.delete(key);
       }
@@ -546,10 +549,10 @@ export class ChunkManager {
     // The same chunk again (e.g. sent with its column after we had it as a neighbour): nothing to do.
     if (previous !== undefined && sameBytes(previous, bytes)) return;
     this.decoded.delete(key);
-    const opacity = bytes ? chunkOpacity(bytes) : null;
+    const { opaque: opacity, glow } = bytes ? chunkLighting(bytes) : { opaque: null, glow: null };
     const tops = opacity && topsOf(opacity);
     // Where its light may change (see lightChanged), worked out before it's stored.
-    const relit = meshNeighbors ? this.lightChanged(coord, this.tops.get(key), tops) : [];
+    const relit = meshNeighbors ? this.lightChanged(coord, this.tops.get(key), tops, !sameGlow(this.glow.get(key) ?? null, glow)) : [];
     const redo = (k: string) => {
       const m = this.meshes.get(k);
       if (m) m.mask = -1;
@@ -566,6 +569,7 @@ export class ChunkManager {
     this.kinds.set(key, bytes ? summarizeChunk(bytes) : 'air');
     this.opacity.set(key, opacity);
     this.tops.set(key, tops);
+    this.glow.set(key, glow);
     this.coords.set(key, coord);
     if (!meshNeighbors) return;
     this.tryMesh(key);
@@ -591,16 +595,18 @@ export class ChunkManager {
    * Meshed chunks whose light may change when chunk `c`'s light-stopping blocks change (from
    * column tops `before` to `after`, see topsOf; undefined: it wasn't here): those around it in
    * shade (light reaches 15 blocks, so no further; those lit throughout stay so unless the sky is
-   * shut off over them), and, where the highest block stopping light in a column moves, those
-   * around the blocks that are open to the sky now and weren't, or were and aren't.
+   * shut off over them), all of those around it if `glowChanged` (a torch put up or taken down),
+   * and, where the highest block stopping light in a column moves, those around the blocks that
+   * are open to the sky now and weren't, or were and aren't.
    */
-  private lightChanged(c: ChunkCoord, before: Int8Array | null | undefined, after: Int8Array | null): string[] {
+  private lightChanged(c: ChunkCoord, before: Int8Array | null | undefined, after: Int8Array | null, glowChanged = false): string[] {
     const out = new Set<string>();
     for (let dy = -1; dy <= 1; dy++)
       for (let dz = -1; dz <= 1; dz++)
         for (let dx = -1; dx <= 1; dx++) {
           const k = chunkKey({ cx: c.cx + dx, cy: c.cy + dy, cz: c.cz + dz });
-          if (this.meshes.get(k)?.shaded) out.add(k);
+          const m = this.meshes.get(k);
+          if (m && (m.shaded || glowChanged)) out.add(k);
         }
     // (Only meshed chunks need redoing: those still to mesh get it right when they are.)
     const meshed: string[] = [];
@@ -662,6 +668,7 @@ export class ChunkManager {
    */
   private lightInput(c: ChunkCoord): LightInput | undefined {
     const opaque: (Uint8Array | 0 | 1)[] = new Array(27);
+    const glow: (Uint16Array | null)[] = new Array(27).fill(null);
     for (let dy = -1; dy <= 1; dy++)
       for (let dz = -1; dz <= 1; dz++)
         for (let dx = -1; dx <= 1; dx++) {
@@ -679,6 +686,7 @@ export class ChunkManager {
             else o = 1;
           }
           opaque[aroundIndex(dx, dy, dz)] = o;
+          glow[aroundIndex(dx, dy, dz)] = this.glow.get(k) ?? null;
         }
     // Above the box: anything in the columns around that stops light.
     const above = new Uint8Array(BOX * BOX), n = BLOCKS_PER_AXIS;
@@ -698,7 +706,7 @@ export class ChunkManager {
             for (let bx = 0; bx < n; bx++) if (t[bx + n * bz]! >= 0) above[(dx + 1) * n + bx + BOX * ((dz + 1) * n + bz)] = 1;
         }
       }
-    return { opaque, above };
+    return { opaque, above, ...(glow.some((g) => g) ? { glow } : {}) };
   }
 
   private neighborCoords(c: ChunkCoord): ChunkCoord[] {
@@ -783,6 +791,13 @@ export class ChunkManager {
     if (mesh) this.scene.add(mesh);
     this.meshes.set(key, { mesh, mask, shaded });
   }
+}
+
+function sameGlow(a: Uint16Array | null, b: Uint16Array | null): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 /** Per block column (bx + 16 bz) of a chunk, the highest block that stops light (see chunkOpacity), -1 for none. */

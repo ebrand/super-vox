@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BLOCK_SIZE, BLOCKS_PER_AXIS, BLOCKS_PER_CHUNK, Material, blockIndex, emptyChunk, type Chunk } from '@super-vox/shared';
-import { BOX, SKY_LIGHT, aroundIndex, faceLight, skyLight, type LightInput } from './skyLight.js';
+import { BOX, SKY_LIGHT, aroundIndex, faceLight, lightFields, skyLight, type LightInput } from './skyLight.js';
 import { packQuads, visibleFaces } from './mesher.js';
 
 const N = BLOCKS_PER_AXIS;
@@ -98,17 +98,74 @@ describe('meshing with sky light', () => {
     for (let y = 0; y < N; y++) for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) if (!shaftAndTunnel(x + N, y + N, z + N)) chunk.blocks[blockIndex(x, y, z)] = rock;
     const neighbors = new Array(6).fill(null).map(() => ({ ...emptyChunk({ cx: 0, cy: 0, cz: 0 }), blocks: new Array(BLOCKS_PER_CHUNK).fill(rock) }));
     const light = skyLight(rockBut(shaftAndTunnel))!;
-    const quads = visibleFaces(chunk, neighbors, true, light);
+    const quads = visibleFaces(chunk, neighbors, true, { sky: light, block: null });
     expect(quads.length).toBeGreaterThan(0);
     expect(quads.some((q) => q.light && q.light.some((l) => l < 255))).toBe(true);
     // Farther down the tunnel, darker.
     const floor = (bx: number) => quads.find((q) => q.dir === 2 && q.v <= bx * BLOCK_SIZE && q.v + q.dv > bx * BLOCK_SIZE)!;
     expect(floor(14).light![0]).toBeLessThan(floor(8).light![0]);
     const packed = packQuads(quads);
-    expect(packed.dark).toBeInstanceOf(Uint8Array);
-    expect(packed.dark!.length).toBe(packed.quadCount * 4);
-    expect(Math.max(...packed.dark!)).toBeGreaterThan(0);
+    expect(packed.shade).toBeInstanceOf(Uint8Array);
+    expect(packed.shade!.length).toBe(packed.quadCount * 8);
+    const darks = packed.shade!.filter((_, i) => i % 2 === 0), glows = packed.shade!.filter((_, i) => i % 2 === 1);
+    expect(Math.max(...darks)).toBeGreaterThan(0);
+    expect(Math.max(...glows)).toBe(0);
     // Without light: no shade.
-    expect(packQuads(visibleFaces(chunk, neighbors)).dark).toBeUndefined();
+    expect(packQuads(visibleFaces(chunk, neighbors)).shade).toBeUndefined();
+  });
+});
+
+describe('block light', () => {
+  /** A sealed room of air (box blocks 20..27 across, 20..23 up) in rock, sources at `glow` (box coordinates and light). */
+  function room(glow: [number, number, number, number][]): LightInput {
+    const input = rockBut((x, y, z) => x >= 20 && x <= 27 && z >= 20 && z <= 27 && y >= 20 && y <= 23);
+    input.glow = new Array(27).fill(null);
+    for (const [x, y, z, l] of glow) {
+      const k = aroundIndex(Math.floor(x / N) - 1, Math.floor(y / N) - 1, Math.floor(z / N) - 1);
+      const b = blockIndex(x % N, y % N, z % N) * 16 + l;
+      const g = input.glow[k] as Uint16Array | null;
+      input.glow[k] = Uint16Array.from([...(g ?? []), b]);
+    }
+    return input;
+  }
+
+  it('has none without anything giving light', () => {
+    expect(lightFields(room([])).block).toBeNull();
+    // (And a sealed room has no sky light in it.)
+    expect(at(lightFields(room([])).sky!, 22, 21, 22)).toBe(0);
+  });
+
+  it('is brightest at a torch and one less per block, and goes no further than the room', () => {
+    const block = lightFields(room([[22, 20, 22, 14]])).block!;
+    expect(at(block, 22, 20, 22)).toBe(14);
+    expect(at(block, 23, 20, 22)).toBe(13);
+    expect(at(block, 25, 21, 24)).toBe(14 - 3 - 1 - 2);
+    // The walls: rock, marked as stopping light; none of it gets into the rock.
+    expect(at(block, 28, 20, 22)).toBe(255);
+    expect([...block].every((l) => l === 255 || l <= 14)).toBe(true);
+  });
+
+  it('is the brightest of what reaches each block when there are several sources', () => {
+    const block = lightFields(room([[20, 20, 20, 6], [27, 20, 27, 14]])).block!;
+    // Next to the weak one, the strong one (13 blocks away) gives 1; the weak one 5.
+    expect(at(block, 21, 20, 20)).toBe(5);
+    // Halfway: the strong one wins.
+    expect(at(block, 24, 20, 24)).toBe(14 - 6);
+  });
+
+  it('lights faces near a torch, less further off, and packs it per vertex', () => {
+    const chunk: Chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    const rock = { kind: 'uniform', size: 16, material: Material.Stone } as const;
+    const open = (x: number, y: number, z: number) => x >= 4 && x <= 11 && z >= 4 && z <= 11 && y >= 4 && y <= 7;
+    for (let y = 0; y < N; y++) for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) if (!open(x, y, z)) chunk.blocks[blockIndex(x, y, z)] = rock;
+    const neighbors = new Array(6).fill(null).map(() => ({ ...emptyChunk({ cx: 0, cy: 0, cz: 0 }), blocks: new Array(BLOCKS_PER_CHUNK).fill(rock) }));
+    const light = lightFields(room([[N + 5, N + 4, N + 5, 14]]));
+    const quads = visibleFaces(chunk, neighbors, true, light);
+    // The floor (+Y faces at y 4) by the torch, and across the room.
+    const floor = (bx: number, bz: number) => quads.find((q) => q.dir === 2 && q.plane === 4 * BLOCK_SIZE && q.u <= bz * BLOCK_SIZE && q.u + q.du > bz * BLOCK_SIZE && q.v <= bx * BLOCK_SIZE && q.v + q.dv > bx * BLOCK_SIZE)!;
+    expect(floor(5, 5).glow![0]).toBeGreaterThan(floor(10, 10).glow![0]);
+    const packed = packQuads(quads);
+    const glows = packed.shade!.filter((_, i) => i % 2 === 1);
+    expect(Math.max(...glows)).toBeGreaterThan(200);
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type * as THREE from 'three';
-import { CHUNK_SIZE, FLAT_WORLD_16KM, Material, ROUND_WORLD_16x8KM, emptyChunk, encodeChunk, type ClientMessage, type WorldConfig } from '@super-vox/shared';
+import { CHUNK_SIZE, FLAT_WORLD_16KM, Material, ROUND_WORLD_16x8KM, emptyChunk, encodeChunk, packVoxel, type ClientMessage, type WorldConfig } from '@super-vox/shared';
+import { aroundIndex } from './skyLight.js';
 import { ChunkManager } from './chunkManager.js';
 import type { MeshWorkerPool } from './workerPool.js';
 
@@ -315,6 +316,40 @@ describe('sky light', () => {
     const cm = new ChunkManager(FLAT_WORLD_16KM, scene, {} as THREE.Material, {} as THREE.Material, () => {}, pool, 64, () => {});
     return { cm, finishAll, runs: (k: string) => runs.get(k) ?? 0, last: (k: string) => last.get(k) };
   }
+
+  it('redoes everything a torch can reach when one is put up, sending where it is', async () => {
+    const { cm, finishAll, runs, last } = lit();
+    const cols = [{ cx: 0, cz: 5 }, { cx: 1, cz: 5 }, { cx: 0, cz: 6 }, { cx: 1, cz: 6 }];
+    cm.setRegion(cols, CHUNK_SIZE, 6 * CHUNK_SIZE);
+    // Ground half way up layer 0, open sky above.
+    const ground = (cx: number, cz: number, cy: number, torch = false) => {
+      const c = emptyChunk({ cx, cy, cz });
+      if (cy < 1) for (let by = 0; by < (cy === 0 ? 8 : 16); by++) for (let i = 0; i < 256; i++) c.blocks[i + 256 * by] = rock;
+      if (torch) c.blocks[3 + 16 * (3 + 16 * 8)] = { kind: 'voxels', packed: Uint16Array.of(packVoxel(6, 0, 6, 2), packVoxel(6, 8, 6, 2)), materials: Uint16Array.of(Material.TorchWood, Material.TorchFlame) };
+      return encodeChunk(c);
+    };
+    for (const { cx, cz } of cols) {
+      cm.onColumn({ cx, cz, minY: 8 * 16, maxY: 8 * 16, sent: [{ lo: -1, hi: 1 }] });
+      for (let cy = -1; cy <= 1; cy++) cm.onChunkBytes(ground(cx, cz, cy));
+    }
+    await finishAll();
+    const diagonal = '1,0,6';
+    expect(runs(diagonal)).toBe(1);
+    expect(last(diagonal)!.light!).not.toHaveProperty('glow');
+    // A torch on the ground in chunk (0, 0, 5): its diagonal neighbour, all in daylight, is redone.
+    cm.onChunkBytes(ground(0, 5, 0, true));
+    await finishAll();
+    expect(runs(diagonal)).toBe(2);
+    const glow = (last(diagonal)!.light as unknown as { glow: (Uint16Array | null)[] }).glow;
+    expect(glow[aroundIndex(-1, 0, -1)]).toBeInstanceOf(Uint16Array);
+    // Something changing nearby that light doesn't care about (buried rock turned to dirt): not redone.
+    const other = emptyChunk({ cx: 0, cy: -1, cz: 5 });
+    other.blocks.fill(rock);
+    other.blocks[0] = { kind: 'uniform', size: 16, material: Material.Dirt };
+    cm.onChunkBytes(encodeChunk(other));
+    await finishAll();
+    expect(runs(diagonal)).toBe(2);
+  });
 
   it('sends what light is worked out from, and redoes shade below where the sky is let in', async () => {
     const { cm, finishAll, runs, last } = lit();

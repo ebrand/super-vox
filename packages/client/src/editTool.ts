@@ -662,10 +662,20 @@ export class EditTool {
   private placeObject(item: ItemId): void {
     const spot = this.objectSpot();
     if (!spot) return;
-    const { x, y, z, facing } = spot;
+    const { x, y, z } = spot;
+    let { facing } = spot, wall = false;
+    if (item === Item.Torch) {
+      // On the face aimed at: a top, standing; a side, on that wall (facing it); not under things.
+      const [nx, ny, nz] = this.hit!.normal;
+      if (ny < 0) return this.say('a torch goes on a floor or a wall, not under something');
+      if (ny === 0) {
+        wall = true;
+        facing = nx > 0 ? 'w' : nx < 0 ? 'e' : nz > 0 ? 'n' : 's';
+      }
+    }
     const id = this.nextId++;
     this.pending.set(id, 'place');
-    this.send({ type: 'placeObject', id, item, x, y, z, facing });
+    this.send({ type: 'placeObject', id, item, x, y, z, facing, ...(wall ? { wall } : {}) });
   }
 
   private breakSmaller(): void {

@@ -67,6 +67,8 @@ export const Item = {
   IronAxe: 1023,
   IronShovel: 1024,
   IronSword: 1025,
+  /** Placed on floors and walls (see objects.ts): it lights what's around it. */
+  Torch: 1026,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -98,6 +100,7 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.IronAxe]: 'iron axe',
   [Item.IronShovel]: 'iron shovel',
   [Item.IronSword]: 'iron sword',
+  [Item.Torch]: 'torch',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */
@@ -145,7 +148,10 @@ export const PLACEABLE: readonly MaterialId[] = [
   Material.Water,
 ];
 
-const BUILT_IN: readonly ItemId[] = [...PLACEABLE, ...(Object.values(Item) as ItemId[]).filter((id) => !DESIGNED_ONLY.has(id))];
+/** What ores give (mined, not placed): had like blocks, by volume. */
+const MINED: readonly MaterialId[] = [Material.Coal, Material.RawIron];
+
+const BUILT_IN: readonly ItemId[] = [...PLACEABLE, ...MINED, ...(Object.values(Item) as ItemId[]).filter((id) => !DESIGNED_ONLY.has(id))];
 const allItems: ItemId[] = [...BUILT_IN];
 
 /**

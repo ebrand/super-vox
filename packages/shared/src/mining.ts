@@ -31,6 +31,8 @@ export const HARDNESS: Partial<Record<MaterialId, number>> = {
   [Material.Planks]: 1.5,
   [Material.CraftingTable]: 1.5,
   [Material.FenceWood]: 1.5,
+  [Material.TorchWood]: 0.05,
+  [Material.TorchFlame]: 0.05,
   [Material.GateWood]: 1.5,
   [Material.DoorWood]: 1.5,
   [Material.Wood]: 2,

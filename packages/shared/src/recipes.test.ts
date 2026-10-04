@@ -40,6 +40,7 @@ describe('recipes', () => {
       }
     }
     expect(describeRecipe(recipeById('wooden-sword')!)).toBe('2 planks + 1 stick → 1 wooden sword');
+    expect(describeRecipe(recipeById('torches')!)).toBe('1/8 coal + 1 stick → 4 torch');
   });
 
   it('count blocks by volume and items whole', () => {

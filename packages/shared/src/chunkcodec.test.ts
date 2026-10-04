@@ -232,3 +232,28 @@ describe('chunkOpacity', () => {
     expect(blocksLight(Material.Needles)).toBe(false);
   });
 });
+
+describe('chunkLighting', () => {
+  it('finds the blocks giving light, with their light, whatever kind of block they are', async () => {
+    const { chunkLighting } = await import('./chunkcodec.js');
+    const { Material, LIGHT_LEVEL } = await import('./materials.js');
+    const { blockIndex } = await import('./chunk.js');
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    expect(chunkLighting(encodeChunk(chunk))).toEqual({ opaque: null, glow: null });
+    const stone: Block = { kind: 'uniform', size: 16, material: Material.Stone };
+    chunk.blocks[blockIndex(0, 0, 0)] = stone;
+    // A torch (voxels), and a grid block with a flame cell.
+    chunk.blocks[blockIndex(3, 4, 5)] = { kind: 'voxels', packed: Uint16Array.of(packVoxel(6, 0, 6, 2), packVoxel(6, 8, 6, 2)), materials: Uint16Array.of(Material.TorchWood, Material.TorchFlame) };
+    const grid = new Uint16Array(8);
+    grid[3] = Material.TorchFlame;
+    chunk.blocks[blockIndex(15, 15, 15)] = { kind: 'grid', size: 8, materials: grid };
+    const l = chunkLighting(encodeChunk(chunk));
+    const level = LIGHT_LEVEL[Material.TorchFlame]!;
+    expect([...l.glow!]).toEqual([blockIndex(3, 4, 5) * 16 + level, blockIndex(15, 15, 15) * 16 + level]);
+    expect(l.opaque![blockIndex(0, 0, 0)]).toBe(1);
+    expect(l.opaque![blockIndex(3, 4, 5)]).toBe(0);
+    // Light and no rock: nothing stops light.
+    chunk.blocks[blockIndex(0, 0, 0)] = null;
+    expect(chunkLighting(encodeChunk(chunk)).opaque).toBeNull();
+  });
+});

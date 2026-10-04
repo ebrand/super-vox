@@ -1037,7 +1037,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               if (!kind && !design) return fail(`a ${itemName(msg.item)} isn't placed like that`);
               const why = inventory?.refuseItem(msg.item);
               if (why) return fail(why);
-              result = design ? world.placeDesign(design, msg.x, msg.y, msg.z, msg.facing) : world.placeObject(kind!, msg.x, msg.y, msg.z, msg.facing);
+              result = design ? world.placeDesign(design, msg.x, msg.y, msg.z, msg.facing) : world.placeObject(kind!, msg.x, msg.y, msg.z, msg.facing, msg.wall ?? false);
               inventory?.addItem(msg.item, -1);
             } else if (msg.type === 'bucket') {
               // Water in buckets is kept by volume (a 1 m block of it is BLOCK_VOLUME); 16 units deep fills a block.

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { EditError, FLAT_WORLD_16KM, FlatGenerator, Material, blockIndex, blockVoxels, decodeChunk, defaultFlatGen, type Block } from '@super-vox/shared';
+import { EditError, FLAT_WORLD_16KM, FlatGenerator, Item, Material, blockIndex, blockVoxels, decodeChunk, defaultFlatGen, objectItem, type Block } from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
 import { World } from './world.js';
 
@@ -55,6 +55,63 @@ describe('placed objects', () => {
     w.toggleObject(w.objectAt(210, 1, 210)!);
     expect(extent(block(w, 210, 0, 210))).toEqual(extent(block(w, 210, 1, 210)));
     expect(() => w.toggleObject(w.objectAt(199, 0, 200)!)).toThrow(EditError);
+  });
+
+  it('stand torches on the ground or put them on walls, and want something to hold them', () => {
+    const w = flat();
+    w.placeObject('torch', 300, 0, 300, 'n');
+    const standing = blockVoxels(block(w, 300, 0, 300));
+    expect(standing.some((v) => v.material === Material.TorchFlame)).toBe(true);
+    expect(standing.some((v) => v.material === Material.TorchWood)).toBe(true);
+    // In the air: nothing under it.
+    expect(() => w.placeObject('torch', 302, 3, 300, 'n')).toThrow(/nothing under it/);
+    // On a wall: a stone block at (310, 0, 309), the torch south of it, against its side (north).
+    w.applyEdit({ op: 'place', x: 310 * 16, y: 0, z: 309 * 16, size: 16, material: Material.Stone });
+    w.placeObject('torch', 310, 0, 310, 'n', true);
+    expect(w.objectAt(310, 0, 310)).toMatchObject({ kind: 'torch', facing: 'n', wall: true });
+    // Against the wall: its stick touches the north side of its block.
+    expect(Math.min(...blockVoxels(block(w, 310, 0, 310)).map((v) => v.z))).toBe(0);
+    // No wall to the east of it.
+    expect(() => w.placeObject('torch', 312, 0, 310, 'e', true)).toThrow(/nothing to hold it/);
+    // Taking it down gives back a torch.
+    expect(objectItem(w.objectAt(310, 0, 310)!)).toBe(Item.Torch);
+  });
+
+  it('stand torches on the ground inside a partly filled block, reaching up into the next if they must', () => {
+    const w = flat();
+    const fill = (bx: number, by: number, bz: number, top: number) => {
+      for (let y = 0; y < top; y += 2) for (let z = 0; z < 16; z += 2) for (let x = 0; x < 16; x += 2) w.applyEdit({ op: 'place', x: bx * 16 + x, y: by * 16 + y, z: bz * 16 + z, size: 2, material: Material.Dirt });
+    };
+    const dirt = (b: Block) => blockVoxels(b).filter((v) => v.material === Material.Dirt).length;
+    // Ground 1/8 m deep in the block: the torch stands on it, all in that block.
+    fill(400, 0, 400, 2);
+    w.placeObject('torch', 400, 0, 400, 'n');
+    const low = blockVoxels(block(w, 400, 0, 400));
+    expect(Math.min(...low.filter((v) => v.material !== Material.Dirt).map((v) => v.y))).toBe(2);
+    expect(block(w, 400, 1, 400)).toBeNull();
+    // Ground 3/8 m deep: it reaches into the block above, and takes both.
+    fill(402, 0, 400, 6);
+    w.placeObject('torch', 402, 0, 400, 'n');
+    expect(blockVoxels(block(w, 402, 1, 400)).some((v) => v.material === Material.TorchFlame)).toBe(true);
+    expect(w.objectAt(402, 1, 400)).toBe(w.objectAt(402, 0, 400));
+    // Taken down: the ground stays as it was, the block above empty again.
+    const before = dirt(block(w, 402, 0, 400));
+    w.removeObject(w.objectAt(402, 0, 400)!);
+    expect(dirt(block(w, 402, 0, 400))).toBe(before);
+    expect(blockVoxels(block(w, 402, 0, 400)).some((v) => v.material === Material.TorchWood)).toBe(false);
+    expect(block(w, 402, 1, 400)).toBeNull();
+    // Aimed at a block whose ground fills it under the torch, with more ground in the block above:
+    // it stands on that, a block up.
+    fill(406, 0, 400, 16);
+    fill(406, 1, 400, 4);
+    w.placeObject('torch', 406, 0, 400, 'n');
+    expect(w.objectAt(406, 0, 400)).toBeUndefined();
+    expect(w.objectAt(406, 1, 400)).toMatchObject({ kind: 'torch', y: 1 });
+    expect(Math.min(...blockVoxels(block(w, 406, 1, 400)).filter((v) => v.material === Material.TorchWood).map((v) => v.y))).toBe(4);
+    // A wall torch where the ground is in its way: doesn't fit.
+    w.applyEdit({ op: 'place', x: 404 * 16, y: 0, z: 399 * 16, size: 16, material: Material.Stone });
+    fill(404, 0, 400, 16);
+    expect(() => w.placeObject('torch', 404, 0, 400, 'n', true)).toThrow(/doesn't fit/);
   });
 
   it('need empty room, and keep ordinary edits out of them', () => {

@@ -54,7 +54,13 @@ export const Material = {
   DarkStone: 42,
   PaleStone: 43,
   MossyStone: 44,
+  /** A torch (see objects.ts): its stick, and its flame, which gives light (see LIGHT_LEVEL). */
+  TorchWood: 45,
+  TorchFlame: 46,
 } as const;
+
+/** Light (0..15, as the sky's: see the client's skyLight) given by blocks with any of these in them. */
+export const LIGHT_LEVEL: Readonly<Record<number, number>> = { [Material.TorchFlame]: 14 };
 
 /** Flowing water reaches this many blocks from its source. */
 export const MAX_FLOW = 7;
@@ -101,6 +107,8 @@ const MATERIAL_NAMES: Record<number, string> = {
   [Material.Cobblestone]: 'cobblestone',
   [Material.CraftingTable]: 'crafting table',
   [Material.FenceWood]: 'fence',
+  [Material.TorchWood]: 'torch',
+  [Material.TorchFlame]: 'torch',
   [Material.GateWood]: 'gate',
   [Material.DoorWood]: 'door',
   [Material.TNT]: 'TNT',

@@ -7,7 +7,7 @@ import {
   type Chunk,
   type VoxelsBlock,
 } from './chunk.js';
-import { Material, isWater } from './materials.js';
+import { LIGHT_LEVEL, Material, isWater } from './materials.js';
 import type { ChunkCoord } from './world.js';
 
 /**
@@ -161,43 +161,76 @@ export function blocksLight(material: number): boolean {
  * through. Null if none do.
  */
 export function chunkOpacity(bytes: Uint8Array): Uint8Array | null {
+  return chunkLighting(bytes).opaque;
+}
+
+/**
+ * What an encoded chunk does to light, without decoding it: `opaque` as chunkOpacity, and `glow`,
+ * the blocks giving light (those with any voxel of a LIGHT_LEVEL material), each as its
+ * blockIndex * 16 + its light (null for none).
+ */
+export function chunkLighting(bytes: Uint8Array): { opaque: Uint8Array | null; glow: Uint16Array | null } {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (bytes.byteLength < 15) throw new ChunkDecodeError('truncated chunk data');
   let o = 13;
+  const need = (n: number) => {
+    if (o + n > bytes.byteLength) throw new ChunkDecodeError('truncated chunk data');
+  };
   const paletteLen = view.getUint16(o, true); o += 2;
-  const opaque: boolean[] = [];
+  const opaque: boolean[] = [], level: number[] = [];
+  /** The light of materials read at [from, to) (u16 each, every `stride` bytes). */
+  const lightOf = (from: number, to: number, stride: number) => {
+    let l = 0;
+    for (let p = from; p < to; p += stride) l = Math.max(l, LIGHT_LEVEL[view.getUint16(p, true)] ?? 0);
+    return l;
+  };
   for (let i = 0; i < paletteLen; i++) {
-    if (o + 2 > bytes.byteLength) throw new ChunkDecodeError('truncated chunk data');
+    need(2);
     const kind = view.getUint8(o), size = view.getUint8(o + 1);
     o += 2;
     if (kind === KIND_UNIFORM) {
-      if (o + 2 > bytes.byteLength) throw new ChunkDecodeError('truncated chunk data');
-      opaque.push(blocksLight(view.getUint16(o, true)));
+      need(2);
+      const m = view.getUint16(o, true);
+      opaque.push(blocksLight(m));
+      level.push(LIGHT_LEVEL[m] ?? 0);
       o += 2;
     } else if (kind === KIND_GRID) {
       if (!isGridSize(size)) throw new ChunkDecodeError(`invalid voxel size ${size}`);
-      o += (BLOCK_SIZE / size) ** 3 * 2;
+      const len = (BLOCK_SIZE / size) ** 3 * 2;
+      need(len);
       opaque.push(false);
+      level.push(lightOf(o, o + len, 2));
+      o += len;
     } else if (kind === KIND_VOXELS) {
-      if (o + 2 > bytes.byteLength) throw new ChunkDecodeError('truncated chunk data');
-      o += 2 + (view.getUint16(o, true) || MAX_BLOCK_VOXELS) * 4;
+      need(2);
+      const n = view.getUint16(o, true) || MAX_BLOCK_VOXELS;
+      need(2 + n * 4);
       opaque.push(false);
+      // (Each voxel: packed position, then material.)
+      level.push(lightOf(o + 4, o + 2 + n * 4, 4));
+      o += 2 + n * 4;
     } else throw new ChunkDecodeError(`unknown block kind ${kind}`);
   }
-  if (!opaque.includes(true)) return null;
-  if (o + 2 > bytes.byteLength) throw new ChunkDecodeError('truncated chunk data');
+  const anyOpaque = opaque.includes(true), anyGlow = level.some((l) => l > 0);
+  if (!anyOpaque && !anyGlow) return { opaque: null, glow: null };
+  need(2);
   const runCount = view.getUint16(o, true); o += 2;
-  const out = new Uint8Array(BLOCKS_PER_CHUNK);
+  const out = anyOpaque ? new Uint8Array(BLOCKS_PER_CHUNK) : null;
+  const glow: number[] = [];
   let at = 0;
   for (let r = 0; r < runCount; r++) {
-    if (o + 4 > bytes.byteLength) throw new ChunkDecodeError('truncated chunk data');
+    need(4);
     const len = view.getUint16(o, true), idx = view.getUint16(o + 2, true);
     o += 4;
     if (at + len > BLOCKS_PER_CHUNK) throw new ChunkDecodeError('runs exceed chunk size');
-    if (idx !== EMPTY_INDEX && opaque[idx]) out.fill(1, at, at + len);
+    if (idx !== EMPTY_INDEX) {
+      if (out && opaque[idx]) out.fill(1, at, at + len);
+      const l = level[idx] ?? 0;
+      if (l > 0) for (let b = at; b < at + len; b++) glow.push(b * 16 + l);
+    }
     at += len;
   }
-  return out;
+  return { opaque: out, glow: glow.length ? Uint16Array.from(glow) : null };
 }
 
 export function readChunkHeader(bytes: Uint8Array): ChunkCoord {

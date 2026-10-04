@@ -86,7 +86,7 @@ export function toolFactor(m: MaterialId, tool: ItemId | null): number {
 }
 
 /** Leaves give nothing (for now); nor do objects' voxels (taking an object down gives the object). */
-const GIVES_NOTHING = new Set<MaterialId>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves, Material.FenceWood, Material.GateWood, Material.DoorWood]);
+const GIVES_NOTHING = new Set<MaterialId>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves, Material.FenceWood, Material.GateWood, Material.DoorWood, Material.TorchWood, Material.TorchFlame]);
 const GIVES: Readonly<Partial<Record<MaterialId, MaterialId>>> = {
   ...Object.fromEntries(GROUNDS.map((m) => [m, Material.Dirt])),
   [Material.Stone]: Material.Cobblestone,

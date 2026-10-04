@@ -10,7 +10,7 @@ import { Material, type MaterialId } from './materials.js';
  * block (doors: two, stacked), and the server keeps a register of where they are, which way they
  * face and whether they're open (see PlacedObject).
  */
-export type ObjectKind = 'fence' | 'gate' | 'door' | 'table';
+export type ObjectKind = 'fence' | 'gate' | 'door' | 'table' | 'torch';
 
 /** Which way an object faces: the way the player looked when placing it (n = -Z). */
 export type Facing = 'n' | 'e' | 's' | 'w';
@@ -38,17 +38,20 @@ export interface PlacedObject {
   facing: Facing;
   /** Gates and doors: open (fences: always false). */
   open: boolean;
+  /** A torch: on a wall (the side `facing` is toward), not standing on the floor. */
+  wall?: boolean;
   /** A design: its id. */
   design?: string;
   /** A design: which of its states it's in. */
   state?: number;
-  /** A design: the blocks its box takes along x, y and z (as placed: turned; kept, should the design change). */
+  /** A design: the blocks its box takes along x, y and z (as placed: turned; kept, should the design change). A torch: [1, 2, 1] when it reaches into the block above. */
   span?: [number, number, number];
 }
 
 /** The blocks an object takes, as offsets from (x, y, z). */
 export function objectCells(o: PlacedObject): [number, number, number][] {
-  const [w, h, d] = o.kind === 'design' ? (o.span ?? [1, 1, 1]) : [1, objectHeight(o.kind), 1];
+  // (A torch reaching up into the block above takes it too: see fitTorch.)
+  const [w, h, d] = o.span ?? (o.kind === 'design' ? [1, 1, 1] : [1, objectHeight(o.kind), 1]);
   const out: [number, number, number][] = [];
   for (let dy = 0; dy < h; dy++) for (let dz = 0; dz < d; dz++) for (let dx = 0; dx < w; dx++) out.push([dx, dy, dz]);
   return out;
@@ -96,12 +99,12 @@ export function objectName(o: PlacedObject): string {
   return o.kind === 'design' ? (designById(o.design ?? '')?.name ?? 'object') : o.kind === 'table' ? 'crafting table' : o.kind;
 }
 
-export const OBJECT_ITEM: Record<ObjectKind, ItemId> = { fence: Item.Fence, gate: Item.Gate, door: Item.Door, table: Item.CraftingTable };
-export const OBJECT_MATERIAL: Record<ObjectKind, MaterialId> = { fence: Material.FenceWood, gate: Material.GateWood, door: Material.DoorWood, table: Material.CraftingTable };
+export const OBJECT_ITEM: Record<ObjectKind, ItemId> = { fence: Item.Fence, gate: Item.Gate, door: Item.Door, table: Item.CraftingTable, torch: Item.Torch };
+export const OBJECT_MATERIAL: Record<ObjectKind, MaterialId> = { fence: Material.FenceWood, gate: Material.GateWood, door: Material.DoorWood, table: Material.CraftingTable, torch: Material.TorchWood };
 
 /** The object an item places, if it places one. */
 export function objectKindOf(item: ItemId): ObjectKind | null {
-  return item === Item.Fence ? 'fence' : item === Item.Gate ? 'gate' : item === Item.Door ? 'door' : item === Item.CraftingTable ? 'table' : null;
+  return item === Item.Fence ? 'fence' : item === Item.Gate ? 'gate' : item === Item.Door ? 'door' : item === Item.CraftingTable ? 'table' : item === Item.Torch ? 'torch' : null;
 }
 
 /**
@@ -110,7 +113,7 @@ export function objectKindOf(item: ItemId): ObjectKind | null {
  * finds no object there, and mines it as a block.)
  */
 export function isObjectMaterial(m: MaterialId): boolean {
-  return m === Material.FenceWood || m === Material.GateWood || m === Material.DoorWood || m === Material.CraftingTable || m === Material.DarkMetal || m === Material.LightMetal;
+  return m === Material.FenceWood || m === Material.GateWood || m === Material.DoorWood || m === Material.CraftingTable || m === Material.DarkMetal || m === Material.LightMetal || m === Material.TorchWood || m === Material.TorchFlame;
 }
 
 /** Whether an object opens and closes (gates and doors). */
@@ -211,6 +214,45 @@ export function tableVoxels(facing: Facing): BlockVoxel[] {
 }
 
 /**
+ * A torch: a 1/8 m stick with its flame on top, standing in the middle of its block, or on a wall
+ * (the side `facing` is toward), leaning out from it.
+ */
+export function torchVoxels(facing: Facing, wall: boolean): BlockVoxel[] {
+  const stick = Material.TorchWood, flame = Material.TorchFlame;
+  if (!wall) return [...box(7, 0, 7, 9, 8, 9, 2, stick), ...box(7, 8, 7, 9, 12, 9, 2, flame)];
+  // On the north wall (-Z): from against it, up and out.
+  return turn([...box(7, 4, 0, 9, 8, 2, 2, stick), ...box(7, 8, 2, 9, 10, 4, 2, stick), ...box(7, 10, 2, 9, 14, 4, 2, flame)], TURNS[facing]);
+}
+
+/** Whether a voxel is part of a torch. */
+export function isTorchVoxel(v: BlockVoxel): boolean {
+  return v.material === Material.TorchWood || v.material === Material.TorchFlame;
+}
+
+/**
+ * A torch's voxels in a block already holding `ground` (voxels: the ground's surface, say), and
+ * the block above holding `above`: a standing one on top of what's under it there (reaching up
+ * into the block above if it must; `upper`, in that block's own coordinates), a wall one where it
+ * goes. Null if it doesn't fit (it would overlap something).
+ */
+export function fitTorch(ground: readonly BlockVoxel[], above: readonly BlockVoxel[], facing: Facing, wall: boolean): { lower: BlockVoxel[]; upper: BlockVoxel[] } | null {
+  let torch = torchVoxels(facing, wall);
+  if (!wall) {
+    // Standing on the highest of the ground under its stick (rounded up to its voxels' size, so
+    // none of them is cut by the top of the block).
+    let lift = 0;
+    for (const v of ground) if (v.x < 9 && v.x + v.size > 7 && v.z < 9 && v.z + v.size > 7) lift = Math.max(lift, v.y + v.size);
+    lift = Math.ceil(lift / 2) * 2;
+    torch = torch.map((v) => ({ ...v, y: v.y + lift }));
+  }
+  const lower = torch.filter((v) => v.y < S), upper = torch.filter((v) => v.y >= S).map((v) => ({ ...v, y: v.y - S }));
+  const overlaps = (a: readonly BlockVoxel[], b: readonly BlockVoxel[]) =>
+    a.some((p) => b.some((q) => p.x < q.x + q.size && q.x < p.x + p.size && p.y < q.y + q.size && q.y < p.y + p.size && p.z < q.z + q.size && q.z < p.z + p.size));
+  if (overlaps(lower, ground) || overlaps(upper, above)) return null;
+  return { lower, upper };
+}
+
+/**
  * Every block (offset from the object's (x, y, z)) of an object with its voxels. A design no longer
  * in the library, or changed to another size: none (it can't be redrawn).
  */
@@ -222,6 +264,7 @@ export function objectBlocks(o: PlacedObject, fenceToward: readonly Facing[] = [
   }
   if (o.kind === 'fence') return [{ dx: 0, dy: 0, dz: 0, voxels: fenceVoxels(fenceToward) }];
   if (o.kind === 'table') return [{ dx: 0, dy: 0, dz: 0, voxels: tableVoxels(o.facing) }];
+  if (o.kind === 'torch') return [{ dx: 0, dy: 0, dz: 0, voxels: torchVoxels(o.facing, !!o.wall) }];
   if (o.kind === 'gate') return [{ dx: 0, dy: 0, dz: 0, voxels: gateVoxels(o.facing, o.open) }];
   const door = doorVoxels(o.facing, o.open);
   return [

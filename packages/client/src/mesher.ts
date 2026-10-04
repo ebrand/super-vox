@@ -16,7 +16,7 @@ import {
   type GridBlock,
   type MaterialId,
 } from '@super-vox/shared';
-import { faceLight } from './skyLight.js';
+import { faceLight, type LightFields } from './skyLight.js';
 
 /**
  * Face directions, indexed 0..5: +X, -X, +Y, -Y, +Z, -Z. Neighbor chunks are
@@ -65,6 +65,8 @@ export interface Quad {
   ao?: readonly [number, number, number, number];
   /** Sky light at the same corners, 0 (dark) .. 255 (open to the sky; see faceLight). Omitted = all 255. */
   light?: readonly [number, number, number, number];
+  /** Block light (torches) at the same corners, 0 (none) .. 255 (15). Omitted = all 0. */
+  glow?: readonly [number, number, number, number];
 }
 
 /** Chunks adjacent in each of the six directions; null means empty. */
@@ -299,11 +301,11 @@ function faceOcclusion(chunk: Chunk, neighbors: Neighbors, q: Quad, b: [number, 
 
 /**
  * Collects every visible voxel face of `chunk`, merged within each block, with ambient occlusion
- * at their corners, and sky light if `light` (the chunk's, see skyLight) is given. Faces against
- * a null neighbor are visible. Blocks with identical contents and identical neighbor objects
- * share the face search.
+ * at their corners, and sky and block light from `light` (the chunk's, see lightFields). Faces
+ * against a null neighbor are visible. Blocks with identical contents and identical neighbor
+ * objects share the face search.
  */
-export function visibleFaces(chunk: Chunk, neighbors: Neighbors, occlusion = true, light: Uint8Array | null = null): Quad[] {
+export function visibleFaces(chunk: Chunk, neighbors: Neighbors, occlusion = true, light: LightFields | null = null): Quad[] {
   const out: Quad[] = [];
   const b: [number, number, number] = [0, 0, 0];
   const probe: [number, number, number] = [0, 0, 0];
@@ -343,9 +345,13 @@ export function visibleFaces(chunk: Chunk, neighbors: Neighbors, occlusion = tru
             const ao = faceOcclusion(chunk, neighbors, g, probe);
             if (ao[0] || ao[1] || ao[2] || ao[3]) g.ao = ao;
           }
-          if (light) {
-            const l = faceLight(light, g.dir, g.plane, g.u, g.v, g.du, g.dv);
+          if (light?.sky) {
+            const l = faceLight(light.sky, g.dir, g.plane, g.u, g.v, g.du, g.dv);
             if (l[0] < 255 || l[1] < 255 || l[2] < 255 || l[3] < 255) g.light = l;
+          }
+          if (light?.block) {
+            const l = faceLight(light.block, g.dir, g.plane, g.u, g.v, g.du, g.dv, 0);
+            if (l[0] || l[1] || l[2] || l[3]) g.glow = l;
           }
           return g;
         });
@@ -391,7 +397,7 @@ function gcd(a: number, b: number): number {
 }
 
 /** A face's shading at corner k: its occlusion and light together (equal shading, equal key). */
-const shadeAt = (f: Quad, k: number) => (f.ao ? f.ao[k]! : 0) * 256 + (f.light ? f.light[k]! : 255);
+const shadeAt = (f: Quad, k: number) => ((f.ao ? f.ao[k]! : 0) * 256 + (f.light ? f.light[k]! : 255)) * 256 + (f.glow ? f.glow[k]! : 0);
 
 /**
  * Greedily merges coplanar faces that share direction, material, and voxel
@@ -406,7 +412,7 @@ export function mergeFaces(faces: Quad[]): Quad[] {
   // of the same span and shading; others with uneven corners stay as they are.
   const strips = new Map<string, Quad[]>();
   for (const f of faces) {
-    const ao = f.ao || f.light ? [shadeAt(f, 0), shadeAt(f, 1), shadeAt(f, 2), shadeAt(f, 3)] : undefined;
+    const ao = f.ao || f.light || f.glow ? [shadeAt(f, 0), shadeAt(f, 1), shadeAt(f, 2), shadeAt(f, 3)] : undefined;
     const kind = `${f.dir}|${f.plane}|${f.material}|${f.size}|${f.pa ?? 0}|${f.pb ?? 0}`;
     if (ao && !(ao[0] === ao[1] && ao[1] === ao[2] && ao[2] === ao[3])) {
       const alongU = ao[0] === ao[1] && ao[3] === ao[2], alongV = ao[0] === ao[3] && ao[1] === ao[2];
@@ -496,12 +502,15 @@ export function mergeFaces(faces: Quad[]): Quad[] {
 export interface MeshBuffers {
   positions: Uint16Array;
   faces: Uint8Array;
-  /** Per vertex, how far its sky light is below full (0 open to the sky .. 255 dark); omitted when all are lit. */
-  dark?: Uint8Array;
+  /**
+   * Per vertex, 2 bytes: how far its sky light is below full (0 open to the sky .. 255 dark), and
+   * its block light (0 none .. 255 full); omitted when every vertex is (0, 0).
+   */
+  shade?: Uint8Array;
   quadCount: number;
 }
 
-/** (Without `dark`, which only meshes with shade underground have.) */
+/** (Without `shade`, which only meshes in shade or by torches have.) */
 export const BYTES_PER_QUAD = 4 * (3 * 2 + 4);
 
 /** Triangle indices for quad q: every quad uses this pattern offset by 4q. */
@@ -526,19 +535,19 @@ export function packQuads(quads: Quad[]): MeshBuffers {
   const n = quads.length;
   const positions = new Uint16Array(n * 12);
   const faces = new Uint8Array(n * 16);
-  const dark = quads.some((q) => q.light) ? new Uint8Array(n * 4) : undefined;
+  const shade = quads.some((q) => q.light || q.glow) ? new Uint8Array(n * 8) : undefined;
   const p = [0, 0, 0];
   quads.forEach((q, qi) => {
     const { axis, sign } = DIRS[q.dir]!;
     const ua = U_AXIS[axis]!;
     const va = V_AXIS[axis]!;
     // Counter-clockwise seen from outside: U then V for +dirs, V then U for -dirs.
-    const ao = q.ao ?? NO_AO, light = q.light ?? FULL_LIGHT;
+    const ao = q.ao ?? NO_AO, light = q.light ?? FULL_LIGHT, glow = q.glow ?? NO_AO;
     // Corner k as an index into Quad.ao.
     let order = sign > 0 ? [0, 1, 2, 3] : [0, 3, 2, 1];
     // Triangles split along corners 0-2; run that diagonal between the more shaded pair.
-    const shade = (c: number) => ao[c]! + (255 - light[c]!) / 64;
-    if (shade(order[0]!) + shade(order[2]!) < shade(order[1]!) + shade(order[3]!)) order = [order[1]!, order[2]!, order[3]!, order[0]!];
+    const dim = (c: number) => ao[c]! + (255 - Math.max(light[c]!, glow[c]!)) / 64;
+    if (dim(order[0]!) + dim(order[2]!) < dim(order[1]!) + dim(order[3]!)) order = [order[1]!, order[2]!, order[3]!, order[0]!];
     const material = Math.min(q.material, MAX_MESH_MATERIAL);
     order.forEach((c, k) => {
       const u = c === 1 || c === 2 ? q.u + q.du : q.u, v = c >= 2 ? q.v + q.dv : q.v;
@@ -551,8 +560,11 @@ export function packQuads(quads: Quad[]): MeshBuffers {
       faces[vi * 4 + 1] = (q.pa ?? 0) | ((q.pb ?? 0) << 4);
       faces[vi * 4 + 2] = material & 0xff;
       faces[vi * 4 + 3] = (material >> 8) | (ao[c]! << 6);
-      if (dark) dark[vi] = 255 - light[c]!;
+      if (shade) {
+        shade[vi * 2] = 255 - light[c]!;
+        shade[vi * 2 + 1] = glow[c]!;
+      }
     });
   });
-  return dark ? { positions, faces, dark, quadCount: n } : { positions, faces, quadCount: n };
+  return shade ? { positions, faces, shade, quadCount: n } : { positions, faces, quadCount: n };
 }
