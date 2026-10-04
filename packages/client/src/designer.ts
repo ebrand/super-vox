@@ -47,7 +47,9 @@ const say = (text: string, kind: '' | 'good' | 'bad' = '') => {
 const css = (c: readonly [number, number, number]) => `rgb(${c.map((v) => Math.round(Math.min(1, Math.max(0, v)) ** (1 / 2.2) * 255)).join(' ')})`;
 const sizeLabel = (units: number) => (units === BLOCK_SIZE ? '1 m' : `1/${BLOCK_SIZE / units} m`);
 
-type Tool = 'build' | 'erase' | 'paint' | 'line' | 'box';
+type Tool = 'build' | 'erase' | 'paint' | 'line' | 'box' | 'select';
+/** Tools that drag out a line or box (see drawing). */
+const drags = (t: Tool): t is 'line' | 'box' | 'select' => t === 'line' || t === 'box' || t === 'select';
 
 let library: ObjectDesign[] = [];
 let canEdit = false;
@@ -90,6 +92,11 @@ const ghostEdges = new THREE.LineSegments(new THREE.EdgesGeometry(cube), new THR
 ghost.add(ghostEdges);
 ghost.visible = false;
 scene.add(ghost);
+/** The selection (see DesignEditor.selection): a box outlined in blue. */
+const selectionBox = new THREE.Mesh(cube, new THREE.MeshBasicMaterial({ color: 0x40a0ff, transparent: true, opacity: 0.12, depthWrite: false }));
+selectionBox.add(new THREE.LineSegments(new THREE.EdgesGeometry(cube), new THREE.LineBasicMaterial({ color: 0x40a0ff })));
+selectionBox.visible = false;
+scene.add(selectionBox);
 /**
  * The working plane: what aiming finds in empty space (with the box's far walls), so lines and
  * boxes can start in mid-air. Flat on the floor to begin with; raised, lowered and turned upright
@@ -175,6 +182,15 @@ function standIn(x: number, z: number): THREE.Group {
   part(0, body + 0.2, h, h - body - 0.2, h - body - 0.2);
   g.position.set(x, 0, z);
   return g;
+}
+
+/** Shows the selection where it is now. */
+function drawSelection(): void {
+  const r = editor.selection;
+  selectionBox.visible = !!r;
+  if (!r) return;
+  selectionBox.scale.set(r.x1 - r.x0 + 0.2, r.y1 - r.y0 + 0.2, r.z1 - r.z0 + 0.2);
+  selectionBox.position.set((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, (r.z0 + r.z1) / 2);
 }
 
 function drawVoxels(): void {
@@ -274,7 +290,7 @@ function showAim(): void {
   } else if (target) {
     box = target;
     ok = act !== 'erase';
-    hoverEl.textContent = `${sizeLabel(target.size)} of ${materialName(target.material)}${act === 'pick' ? ' (click: use it)' : act === 'paint' ? ` → ${materialName(material)}` : ' (click: erase)'}`;
+    hoverEl.textContent = `${sizeLabel(target.size)} of ${materialName(target.material)}${act === 'pick' ? ' (click: use it)' : act === 'paint' ? ` → ${materialName(material)}` : act === 'select' ? ' (drag: select)' : ' (click: erase)'}`;
   }
   if (!box) return;
   const grow = act === 'build' ? 0 : 0.1;
@@ -282,7 +298,7 @@ function showAim(): void {
   ghost.scale.setScalar(box.size + grow);
   ghostEdges.scale.setScalar(1);
   ghost.position.set(box.x + box.size / 2, box.y + box.size / 2, box.z + box.size / 2);
-  const color = act === 'pick' ? 0xffffff : !ok ? 0xff4040 : act === 'paint' ? 0xe3b341 : 0x40ff60;
+  const color = act === 'pick' ? 0xffffff : !ok ? 0xff4040 : act === 'paint' ? 0xe3b341 : act === 'select' ? 0x40a0ff : 0x40ff60;
   (ghost.material as THREE.MeshBasicMaterial).color.set(color);
   (ghost.material as THREE.MeshBasicMaterial).opacity = act === 'build' ? 0.35 : 0.15;
   (ghostEdges.material as THREE.LineBasicMaterial).color.set(color);
@@ -316,7 +332,7 @@ type Cell = { x: number; y: number; z: number };
  * started from and the axis out of the face it started on; a line or a box's base is dragged out
  * (`end`), then a box is raised or lowered along that axis (`depth`, units) and clicked to finish.
  */
-let drawing: { kind: 'line' | 'box'; clear: boolean; start: Cell; axis: number; end: Cell; stage: 'drag' | 'raise'; depth: number; from: number } | null = null;
+let drawing: { kind: 'line' | 'box' | 'select'; clear: boolean; start: Cell; axis: number; end: Cell; stage: 'drag' | 'raise'; depth: number; from: number } | null = null;
 
 /** Where a line or box would start: the cell a build would fill, or (clearing) the cell in what's aimed at. */
 function startCell(clear: boolean): { cell: Cell; normal: number[] } | null {
@@ -359,7 +375,7 @@ const cellAxes = ['x', 'y', 'z'] as const;
 function drawnRegion(): Region | null {
   if (!drawing) return null;
   const end = { ...drawing.end };
-  if (drawing.kind === 'box') end[cellAxes[drawing.axis]!] = drawing.start[cellAxes[drawing.axis]!] + drawing.depth;
+  if (drawing.kind !== 'line') end[cellAxes[drawing.axis]!] = drawing.start[cellAxes[drawing.axis]!] + drawing.depth;
   return clipRegion(regionBetween(drawing.start, end, voxelSize), editor.extent);
 }
 
@@ -400,12 +416,12 @@ function draw(): void {
   ghost.scale.set(size[0]! + 0.1, size[1]! + 0.1, size[2]! + 0.1);
   ghostEdges.scale.setScalar(1);
   ghost.position.set((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, (r.z0 + r.z1) / 2);
-  const color = d.clear ? 0xff4040 : 0x40ff60;
+  const color = d.kind === 'select' ? 0x40a0ff : d.clear ? 0xff4040 : 0x40ff60;
   (ghost.material as THREE.MeshBasicMaterial).color.set(color);
   (ghost.material as THREE.MeshBasicMaterial).opacity = 0.25;
   (ghostEdges.material as THREE.LineBasicMaterial).color.set(color);
   const n = size.map((s) => s / voxelSize);
-  const what = `${n.join(' × ')} of ${sizeLabel(voxelSize)}${d.clear ? ': clear it' : ` ${materialName(material)}: ${n[0]! * n[1]! * n[2]!} voxels`}`;
+  const what = d.kind === 'select' ? `select ${n.join(' × ')} of ${sizeLabel(voxelSize)}` : `${n.join(' × ')} of ${sizeLabel(voxelSize)}${d.clear ? ': clear it' : ` ${materialName(material)}: ${n[0]! * n[1]! * n[2]!} voxels`}`;
   hoverEl.textContent = d.stage === 'raise' ? `${what} · move to raise it, click to finish (Esc: stop)` : what;
 }
 
@@ -415,7 +431,10 @@ function finishDrawing(): void {
   const r = drawnRegion();
   drawing = null;
   controls.enabled = true;
-  if (r) {
+  if (d.kind === 'select') {
+    editor.selection = r;
+    sayMove();
+  } else if (r) {
     if (d.clear) {
       const n = editor.clearRegion(r);
       say(n ? `cleared ${n} voxel${n === 1 ? '' : 's'}` : 'nothing there to clear');
@@ -425,6 +444,40 @@ function finishDrawing(): void {
     }
   }
   changed();
+}
+
+// --- Moving a selection --------------------------------------------------------------------------
+
+/** Says what's selected and how far a move goes. */
+function sayMove(): void {
+  if (!editor.selection) return say('nothing selected');
+  const { inside, partly } = editor.selected();
+  if (!inside.length) return say(`nothing wholly inside the selection${partly ? ` (${partly} only partly inside: they stay put)` : ''}`, 'bad');
+  say(`${inside.length} voxel${inside.length === 1 ? '' : 's'} selected${partly ? `, ${partly} only partly inside (they stay put)` : ''} · moves ${sizeLabel(editor.moveStep(voxelSize))} at a time (arrows, shift ↑ ↓: up and down)`);
+}
+
+const DIRECTIONS = ['left', 'right', 'down', 'up', 'back', 'front'];
+
+/** Moves the selection and what's in it a step along `axis` (0 x, 1 y, 2 z) in direction `dir`. */
+function moveSelection(axis: 0 | 1 | 2, dir: 1 | -1): void {
+  const why = editor.move(axis, dir, voxelSize);
+  if (why) return say(`can't move it: ${why}`, 'bad');
+  changed();
+  const { inside } = editor.selected();
+  say(`moved ${inside.length} voxel${inside.length === 1 ? '' : 's'} ${DIRECTIONS[axis * 2 + (dir > 0 ? 1 : 0)]} ${sizeLabel(editor.moveStep(voxelSize))}`);
+}
+
+/**
+ * The arrow keys, as the view is turned: up and down move away from and toward the eye, left and
+ * right across it (each along whichever of x and z is nearest); `vertical`: up and down are up and down.
+ */
+function arrowMove(key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight', vertical: boolean): void {
+  if (vertical && (key === 'ArrowUp' || key === 'ArrowDown')) return moveSelection(1, key === 'ArrowUp' ? 1 : -1);
+  const forward = camera.getWorldDirection(new THREE.Vector3()).setY(0);
+  const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0));
+  const v = key === 'ArrowUp' ? forward : key === 'ArrowDown' ? forward.negate() : key === 'ArrowRight' ? right : right.negate();
+  if (Math.abs(v.x) >= Math.abs(v.z)) moveSelection(0, v.x > 0 ? 1 : -1);
+  else moveSelection(2, v.z > 0 ? 1 : -1);
 }
 
 function stopDrawing(): void {
@@ -452,11 +505,11 @@ view.addEventListener(
       controls.enabled = false; // (until the button's up: this press doesn't turn the view)
       return;
     }
-    if ((tool === 'line' || tool === 'box') && !e.altKey) {
+    if (drags(tool) && !e.altKey) {
       aimAt(e);
-      // (Shift: as the press says, or as the keyboard last did.)
-      const clear = e.shiftKey || shift;
-      const s = startCell(clear);
+      // (Shift: as the press says, or as the keyboard last did. A selection starts in what's aimed at, as clearing does.)
+      const clear = tool !== 'select' && (e.shiftKey || shift);
+      const s = startCell(clear || tool === 'select');
       if (!s) return;
       const axis = Math.max(0, s.normal.findIndex((c) => c !== 0));
       drawing = { kind: tool, clear, start: s.cell, axis, end: { ...s.cell }, stage: 'drag', depth: 0, from: 0 };
@@ -486,7 +539,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
     return;
   }
   // A click, not a drag (turning or moving the view).
-  if (down && e.button === 0 && down.button === 0 && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5 && tool !== 'line' && tool !== 'box') {
+  if (down && e.button === 0 && down.button === 0 && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5 && !drags(tool)) {
     aimAt(e);
     click();
   }
@@ -589,6 +642,12 @@ $('plane-down').onclick = () => stepPlane(-1);
 $('plane-up').onclick = () => stepPlane(1);
 $('plane-turn').onclick = () => turnPlane();
 $('plane-home').onclick = () => resetPlane();
+for (const b of $('move').querySelectorAll<HTMLButtonElement>('button[data-axis]')) b.onclick = () => moveSelection(Number(b.dataset.axis) as 0 | 1 | 2, Number(b.dataset.dir) as 1 | -1);
+$('move-done').onclick = () => {
+  editor.selection = null;
+  changed();
+  say('nothing selected');
+};
 
 function setTool(t: Tool): void {
   stopDrawing();
@@ -794,6 +853,7 @@ function renderPanels(): void {
   for (const b of palette.querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', Number(b.dataset.material) === material);
   $('material-name').textContent = materialName(material);
   mirrorEl.classList.toggle('on', editor.mirror);
+  $('move').hidden = !editor.selection;
   undoEl.disabled = !editor.canUndo;
   redoEl.disabled = !editor.canRedo;
   if (document.activeElement !== nameEl) nameEl.value = editor.draft.name;
@@ -810,6 +870,7 @@ function renderPanels(): void {
 /** After a change: redraw what it touched (`all`: the panels too). */
 function changed(all = false): void {
   drawVoxels();
+  drawSelection();
   if (all) drawFrame();
   renderPanels();
   if (lastPointer) aimAt(lastPointer);
@@ -1014,7 +1075,18 @@ window.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey) return;
   const n = Number(e.key);
   if (n >= 1 && n <= GRID_SIZES.length) setVoxelSize(GRID_SIZES[n - 1]!);
-  else if (e.code === 'Escape') stopDrawing();
+  else if (e.code === 'Escape') {
+    // (A line or box being drawn first; then the selection.)
+    if (drawing) stopDrawing();
+    else if (editor.selection) {
+      editor.selection = null;
+      changed();
+      say('nothing selected');
+    }
+  } else if ((e.code === 'ArrowUp' || e.code === 'ArrowDown' || e.code === 'ArrowLeft' || e.code === 'ArrowRight') && editor.selection) {
+    e.preventDefault();
+    arrowMove(e.code, e.shiftKey);
+  }
   else if (e.code === 'BracketRight' || e.code === 'PageUp') stepPlane(1);
   else if (e.code === 'BracketLeft' || e.code === 'PageDown') stepPlane(-1);
   else if (e.code === 'KeyV') turnPlane();
@@ -1022,6 +1094,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyB') setTool('build');
   else if (e.code === 'KeyL') setTool('line');
   else if (e.code === 'KeyF') setTool('box');
+  else if (e.code === 'KeyS') setTool('select');
   else if (e.code === 'KeyE') setTool('erase');
   else if (e.code === 'KeyP') setTool('paint');
   else if (e.code === 'KeyM') mirrorEl.click();
