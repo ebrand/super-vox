@@ -34,6 +34,16 @@ import {
   usable,
   isBed,
   isTool,
+  advance,
+  put,
+  take,
+  refusePut,
+  stationAmong,
+  objectStation,
+  type PlacedObject,
+  type StationKind,
+  isSword,
+  SWORDS,
   type ItemId,
   Material,
   TABLE_REACH,
@@ -525,6 +535,37 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (p.vitals.hurt(damage, now)) respawn(client, p, world, cause);
     sendVitals(client, p);
   };
+  // Furnaces and stoves (see stations.ts): who has each open, by world and origin block, to tell
+  // when it changes; and, while anyone has one open, it's brought up to date once a second.
+  const stationViewers = new Map<World, Map<string, Set<WebSocket>>>();
+  const stationKey = (o: PlacedObject) => `${o.x},${o.y},${o.z}`;
+  /** Tells everyone with station `o` open what's in it now (null: it's gone). */
+  const showStation = (world: World, o: PlacedObject, now: number, gone = false) => {
+    const viewers = stationViewers.get(world)?.get(stationKey(o));
+    if (!viewers?.size) return;
+    const st = gone ? null : world.station(o, now);
+    const kind = (objectStation(o) as StationKind | null) ?? 'furnace';
+    const msg: ServerMessage = { type: 'station', x: o.x, y: o.y, z: o.z, kind, name: objectName(o), state: st ? st.state : null, serverTime: now };
+    for (const s of viewers) sendTo(s, msg);
+    if (gone) stationViewers.get(world)?.delete(stationKey(o));
+  };
+  const stationTicking = setInterval(() => {
+    const now = Date.now();
+    for (const [world, byKey] of stationViewers) {
+      for (const [key, viewers] of byKey) {
+        if (!viewers.size) continue;
+        const [x, y, z] = key.split(',').map(Number) as [number, number, number];
+        const o = world.objectAt(x, y, z);
+        const st = o && world.station(o, now);
+        if (!o || !st) {
+          for (const s of viewers) sendTo(s, { type: 'station', x, y, z, kind: 'furnace', name: '', state: null, serverTime: now });
+          byKey.delete(key);
+          continue;
+        }
+        if (advance(st.kind, st.state, now)) showStation(world, o, now);
+      }
+    }
+  }, 1000);
   const mobbing = setInterval(() => {
     const now = Date.now();
     const byWorld = new Map<World, WebSocket[]>();
@@ -607,6 +648,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     clearTimeout(blasting);
     clearInterval(flowing);
     clearInterval(mobbing);
+    clearInterval(stationTicking);
     clearInterval(sampling);
     metrics.stop();
   });
@@ -689,7 +731,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           }),
         lane,
       );
+    /** The furnace or stove this player has open, if any (see stationViewers). */
+    let viewing: { world: World; key: string } | null = null;
+    const stopViewing = () => {
+      if (viewing) stationViewers.get(viewing.world)?.get(viewing.key)?.delete(socket);
+      viewing = null;
+    };
     socket.on('close', () => {
+      stopViewing();
       queue.close();
       void inventory?.flush();
       savePlace(true);
@@ -916,12 +965,17 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (msg.edit.op === 'remove') {
             const o = world.objectAt(Math.floor(msg.edit.x / 16), Math.floor(msg.edit.y / 16), Math.floor(msg.edit.z / 16));
             if (o) {
+              // A furnace or stove: what's in it comes back too (brought up to date first).
+              const now = Date.now(), st = world.station(o, now);
+              const contents = st ? (advance(st.kind, st.state, now), [st.state.fuel, st.state.input, st.state.output]) : [];
               const result = world.removeObject(o);
+              if (st) showStation(world, o, now, true);
               metrics.totals.edits++;
               send({ type: 'editResult', id: msg.id, ok: true });
               const item = objectItem(o);
-              if (inventory && item !== null) {
-                inventory.addItem(item, 1);
+              if (inventory && (item !== null || contents.some(Boolean))) {
+                if (item !== null) inventory.addItem(item, 1);
+                for (const c of contents) if (c) inventory.addItem(c.item, c.amount);
                 send(inventory.message());
               }
               broadcast(world, result);
@@ -1007,7 +1061,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               inventory?.addItem(Material.Water, -r.poured * perUnit);
               result = r.result;
             } else if (msg.type === 'cut') {
-              const radius = msg.sword === Item.StoneSword ? 1 : msg.sword === Item.WoodenSword ? 0 : -1;
+              const radius = SWORDS[msg.sword]?.cut ?? -1;
               if (radius < 0) return fail(`a ${itemName(msg.sword)} doesn't cut`);
               if (inventory && inventory.count(msg.sword) < 1) return fail(`you have no ${itemName(msg.sword)}`);
               const r = world.cutLeaves(msg.x, msg.y, msg.z, radius);
@@ -1045,9 +1099,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           const now = Date.now();
           if (now - p.lastAttack < 400) return; // a swing at a time
           // A sword only if they have one; otherwise a bare hand.
-          const weapon = msg.weapon === Item.StoneSword && (inventory?.count(Item.StoneSword) ?? 1) >= 1
-            ? 'stone-sword'
-            : msg.weapon === Item.WoodenSword && (inventory?.count(Item.WoodenSword) ?? 1) >= 1 ? 'wooden-sword' : 'hand';
+          const weapon = msg.weapon !== null && isSword(msg.weapon) && (inventory?.count(msg.weapon) ?? 1) >= 1 ? msg.weapon : null;
           p.lastAttack = now;
           if (p.vulnerable) p.vitals.exert(EXHAUSTION.attack);
           // (A little reach to spare: the pose is up to a tenth of a second old.)
@@ -1059,6 +1111,53 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           }
           break;
         }
+
+        case 'stationOpen':
+        case 'stationPut':
+        case 'stationTake': {
+          if (!greeted) return;
+          const fail = (message: string) => send({ type: 'error', code: 'station', message });
+          if (!canEdit()) return fail('sign in to use it');
+          if (opts.inventories && who && !inventory) return fail(inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded");
+          const o = world.objectAt(msg.x, msg.y, msg.z);
+          const now = Date.now();
+          const st = o && world.station(o, now);
+          if (!o || !st) return fail('no furnace or stove there');
+          // Within reach (as a crafting table must be) of where they last said they were.
+          const pose = players.get(socket)?.pose;
+          if (!pose || !stationAmong([o], st.kind, pose.x, pose.y, pose.z, TABLE_REACH, world.config.wrapX ? world.config.widthUnits / 16 : null)) return fail(`too far from the ${objectName(o)}`);
+          advance(st.kind, st.state, now);
+          if (msg.type === 'stationOpen') {
+            stopViewing();
+            const byKey = stationViewers.get(world) ?? new Map<string, Set<WebSocket>>();
+            stationViewers.set(world, byKey);
+            const key = stationKey(o);
+            if (!byKey.has(key)) byKey.set(key, new Set());
+            byKey.get(key)!.add(socket);
+            viewing = { world, key };
+            showStation(world, o, now);
+            break;
+          }
+          if (msg.type === 'stationPut') {
+            const why = refusePut(st.kind, st.state, msg.slot, msg.item);
+            if (why) return fail(why);
+            if (inventory?.mode === 'survival' && inventory.count(msg.item) < msg.amount) return fail(`you haven't that much ${itemName(msg.item)}`);
+            put(st.state, msg.slot, msg.item, msg.amount);
+            inventory?.addItem(msg.item, -msg.amount);
+          } else {
+            const got = take(st.state, msg.slot);
+            if (!got) return fail('nothing there');
+            inventory?.addItem(got.item, got.amount);
+          }
+          world.saveStations();
+          showStation(world, o, now);
+          if (inventory?.mode === 'survival') send(inventory.message());
+          break;
+        }
+
+        case 'stationClose':
+          stopViewing();
+          break;
 
         case 'craft': {
           if (!inventory) {

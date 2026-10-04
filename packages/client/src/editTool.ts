@@ -33,6 +33,10 @@ import {
   designSpan,
   usable,
   isBed,
+  isStationKind,
+  isSword,
+  SWORDS,
+  objectStation,
   type PlacedObject,
   type ItemId,
   nextBreakSize,
@@ -167,6 +171,8 @@ export class EditTool {
    * (see mining.ts; the server checks), with the progress shown (onMiningProgress: 0..1, or null).
    */
   survival = false;
+  /** Right-clicked a furnace or stove (see stations.ts): to open it. */
+  onStation: ((o: PlacedObject) => void) | null = null;
   onMiningProgress: ((fraction: number | null) => void) | null = null;
   /** The left button held to mine; what's being mined (and since when, needing how long, ms); what was last mined. */
   private miningHeld = false;
@@ -428,13 +434,13 @@ export class EditTool {
         const dir = this.camera.getWorldDirection(new THREE.Vector3());
         const mob = this.pickEntity?.([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], ATTACK_REACH * UNITS_PER_METER);
         if (mob && (!this.hit || mob.dist < this.hit.distance)) {
-          const weapon = held === Item.WoodenSword || held === Item.StoneSword ? held : null;
+          const weapon = isSword(held) ? held : null;
           this.send({ type: 'attack', target: mob.id, weapon });
           return;
         }
         // Explosives light; a sword cuts leaves (a sweep); otherwise left-click removes.
         if (this.target && this.targetMaterial !== null && isExplosive(this.targetMaterial)) this.ignite();
-        else if ((held === Item.WoodenSword || held === Item.StoneSword) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) this.cut(held);
+        else if (held !== null && isSword(held) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) this.cut(held);
         else if (this.survival) this.miningHeld = true; // (mined as it's held: see stepMining)
         else this.remove();
       } else if (button === 2) {
@@ -443,6 +449,7 @@ export class EditTool {
         const design = this.aimedDesign();
         if (held === Item.Bucket) this.bucket();
         else if (design && isBed(design)) this.use('bed');
+        else if (design && isStationKind(objectStation(design))) this.onStation?.(design);
         else if (design && usable(design)) this.use();
         else if (!design && this.targetMaterial !== null && isUsableMaterial(this.targetMaterial)) this.use();
         else if (held !== null && isFood(held)) this.eat(held);
@@ -513,7 +520,7 @@ export class EditTool {
     const target = !this.target
       ? 'nothing in reach'
       : design
-        ? `aiming at a ${objectName(design)}${isBed(design) ? ' (right-click: make it your bed)' : next ? ` (right-click: ${next})` : ''} (left-click: take it down)`
+        ? `aiming at a ${objectName(design)}${isBed(design) ? ' (right-click: make it your bed)' : isStationKind(objectStation(design)) ? ' (right-click: open it)' : next ? ` (right-click: ${next})` : ''} (left-click: take it down)`
       : this.targetMaterial !== null && isObjectMaterial(this.targetMaterial)
         ? `aiming at a ${materialName(this.targetMaterial)}${opensHere ? ' (right-click: open / close)' : ''} (left-click: take it down)`
         : this.targetMaterial !== null && isExplosive(this.targetMaterial)
@@ -524,8 +531,8 @@ export class EditTool {
       this.mode === 'hybrid'
         ? held === Item.Bucket
           ? 'click: remove · right-click: fill the bucket at water, or pour it out'
-          : held === Item.WoodenSword || held === Item.StoneSword
-            ? `click: cut leaves (${held === Item.StoneSword ? '3 x 3 x 3 m' : '1 m'}), or remove · right-click: place`
+          : held !== null && isSword(held)
+            ? `click: cut leaves (${SWORDS[held]!.cut > 0 ? `${2 * SWORDS[held]!.cut + 1} x ${2 * SWORDS[held]!.cut + 1} x ${2 * SWORDS[held]!.cut + 1} m` : '1 m'}), or remove · right-click: place`
             : 'click: remove · right-click: place (⌘+wheel: pick size, ⌘ shows it)'
         : this.mode === 'dig'
           ? `click: remove · ⌘+click: remove everything in the box (⌘ shows it) · ⌥: 1/16 m steps${this.bigBoxes ? ' · boxes up to 16 m' : ''}`
@@ -694,7 +701,7 @@ export class EditTool {
     if (this.mode === 'place' || !this.target) return null;
     if (this.mode === 'hybrid' && this.targetMaterial !== null && isExplosive(this.targetMaterial)) return null; // (lit, not mined)
     const held = this.materialOf();
-    if ((held === Item.WoodenSword || held === Item.StoneSword) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) return null;
+    if (held !== null && isSword(held) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) return null;
     return { op: 'remove', x: this.target.x, y: this.target.y, z: this.target.z };
   }
 

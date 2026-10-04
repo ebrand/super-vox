@@ -73,7 +73,9 @@ describe('Vitals', () => {
     expect(isFood(Item.Stick)).toBe(false);
     expect(v.eat(Item.Stick)).toBe(false);
     expect(v.eat(Item.Pork)).toBe(true);
-    expect(v.food).toBe(4);
+    expect(v.food).toBe(3); // (raw; cooked is 8)
+    expect(v.eat(Item.CookedPork)).toBe(true);
+    expect(v.food).toBe(11);
     v.food = MAX_FOOD - 1;
     expect(v.eat(Item.Pork)).toBe(true);
     expect(v.food).toBe(MAX_FOOD);

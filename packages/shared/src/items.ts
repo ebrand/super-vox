@@ -59,6 +59,14 @@ export const Item = {
   StoneAxe: 1017,
   WoodenShovel: 1018,
   StoneShovel: 1019,
+  /** Smelted in a furnace from raw iron (see stations.ts): what iron tools are made of. */
+  IronIngot: 1020,
+  /** Pork cooked on a stove: far more filling than raw (see FOODS). */
+  CookedPork: 1021,
+  IronPickaxe: 1022,
+  IronAxe: 1023,
+  IronShovel: 1024,
+  IronSword: 1025,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -84,6 +92,12 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.StoneAxe]: 'stone axe',
   [Item.WoodenShovel]: 'wooden shovel',
   [Item.StoneShovel]: 'stone shovel',
+  [Item.IronIngot]: 'iron ingot',
+  [Item.CookedPork]: 'cooked pork',
+  [Item.IronPickaxe]: 'iron pickaxe',
+  [Item.IronAxe]: 'iron axe',
+  [Item.IronShovel]: 'iron shovel',
+  [Item.IronSword]: 'iron sword',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */

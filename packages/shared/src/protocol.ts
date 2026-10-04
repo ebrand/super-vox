@@ -9,11 +9,12 @@ import type { DeathCause } from './survival.js';
 import { isFacing, type Facing, type PlacedObject } from './objects.js';
 import type { ObjectDesign } from './designs.js';
 import type { EntityKind } from './mobs.js';
+import type { StationKind, StationState } from './stations.js';
 import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 34;
+export const PROTOCOL_VERSION = 35;
 
 export type ClientMessage =
   | {
@@ -65,6 +66,16 @@ export type ClientMessage =
   | { type: 'ignite'; id: number; x: number; y: number; z: number }
   /** Use (open or close) the object with a voxel at unit (x, y, z); answered with `editResult`. */
   | { type: 'use'; id: number; x: number; y: number; z: number }
+  /**
+   * A furnace or stove (see stations.ts), the one taking block (x, y, z): open it (answered with
+   * `station`, and again whenever it changes, until closed); put `amount` of `item` (stored terms:
+   * blocks by volume, items by count) from the inventory in a slot; take a slot's contents into the
+   * inventory. Refusals come as an `error` with code 'station'.
+   */
+  | { type: 'stationOpen'; x: number; y: number; z: number }
+  | { type: 'stationPut'; x: number; y: number; z: number; slot: 'fuel' | 'input'; item: number; amount: number }
+  | { type: 'stationTake'; x: number; y: number; z: number; slot: 'fuel' | 'input' | 'output' }
+  | { type: 'stationClose' }
   /** Hit a mob (`target`, an entity id) with what's in hand (`weapon`: an item id, null for a bare hand). */
   | { type: 'attack'; target: number; weapon: number | null }
   /** Survival: landed from a fall at `speed` (m/s, downward); see fallDamage. */
@@ -135,6 +146,11 @@ export type ServerMessage =
    * over (`'blocked'`); no `bed`: they never had one.
    */
   | { type: 'respawn'; x: number; y: number; z: number; cause?: DeathCause; bed?: 'here' | 'gone' | 'blocked' }
+  /**
+   * The furnace or stove open (see `stationOpen`): its origin block (x, y, z), what it is, and what's
+   * in it as of `serverTime` (ms); `state` null: it's gone (taken down).
+   */
+  | { type: 'station'; x: number; y: number; z: number; kind: StationKind; name: string; state: StationState | null; serverTime: number }
   /** TNT lit: the voxel at (x, y, z) of `size` (units) blows in `ms`. */
   | { type: 'fuse'; x: number; y: number; z: number; size: number; ms: number }
   /**
@@ -337,6 +353,15 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   if (msg.type === 'use' && isId(msg.id) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
     return { type: 'use', id: msg.id as number, x: msg.x, y: msg.y, z: msg.z };
   }
+  if ((msg.type === 'stationOpen' || msg.type === 'stationPut' || msg.type === 'stationTake') && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
+    const at = { x: msg.x as number, y: msg.y as number, z: msg.z as number };
+    if (msg.type === 'stationOpen') return { type: 'stationOpen', ...at };
+    if (msg.type === 'stationTake' && (msg.slot === 'fuel' || msg.slot === 'input' || msg.slot === 'output')) return { type: 'stationTake', ...at, slot: msg.slot };
+    if (msg.type === 'stationPut' && (msg.slot === 'fuel' || msg.slot === 'input') && isInt32(msg.item) && Number.isSafeInteger(msg.amount) && (msg.amount as number) > 0) {
+      return { type: 'stationPut', ...at, slot: msg.slot, item: msg.item as number, amount: msg.amount as number };
+    }
+  }
+  if (msg.type === 'stationClose') return { type: 'stationClose' };
   if (msg.type === 'attack' && isId(msg.target) && (msg.weapon === null || isInt32(msg.weapon))) {
     return { type: 'attack', target: msg.target as number, weapon: msg.weapon as number | null };
   }
