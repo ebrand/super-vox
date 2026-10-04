@@ -112,23 +112,26 @@ export const WATER_GLSL = /* glsl */ `
     // right at the waterline.) Its depth is averaged over a ring about a step and a half across:
     // a bottom made in coarse steps (far tiles, the terraformer's close-up) would otherwise foam in
     // whole squares, each step either in the band or out of it.
+    // (Cheap: none for the open sea, which covers the whole screen behind everything; and only
+    // where foam could be, near the band, so most water pays nothing for it.)
+    float band = 0.12 * waveScale;
     float steps = max(cell, bottomStep);
-    float ringPx = clamp((steps > 0.0 ? 1.5 * steps : 6.0 * pixel) / max(pixel, 1e-4), 0.0, 96.0);
+    float ringPx = steps > 0.0 ? min(1.5 * steps / max(pixel, 1e-4), 96.0) : 0.0;
     float foamDepth = depth;
-    if (ringPx >= 1.0) {
+    if (ringPx >= 1.0 && depth < band * 4.0 && !fromBelow) {
       float k = max(dot(view, cameraForward), 1e-3), sinkAlong = max(-view.y, 0.05);
       float sum = depth * 2.0;
-      // Two rings (the whole way out, and half), staggered.
-      for (int i = 0; i < 16; i++) {
-        float a = float(i) * 0.7854 + (i >= 8 ? 0.3927 : 0.0);
-        float r = i >= 8 ? ringPx * 0.5 : ringPx;
+      // Eight around it, alternately the whole way out and half.
+      for (int i = 0; i < 8; i++) {
+        float a = float(i) * 0.7854;
+        float r = (i - (i / 2) * 2) == 0 ? ringPx : ringPx * 0.5;
         float w = sceneViewDepth(uv + vec2(cos(a), sin(a)) * r / resolution);
         // (In front of the water there: the shore, dry: as shallow as it gets.)
         sum += max(0.0, (w - surfaceW) / k) * sinkAlong;
       }
-      foamDepth = sum / 18.0;
+      foamDepth = sum / 10.0;
     }
-    float shallow = 1.0 - smoothstep(0.0, 0.12 * waveScale, foamDepth);
+    float shallow = 1.0 - smoothstep(0.0, band, foamDepth);
     // (Two layers of noise drifting apart, bent by the ripples: lace, not a grid. Sines across
     // times sines along made a checkerboard, plain to see wherever foam covered more than a strip.)
     vec2 fp = worldPos.xz / waveScale;
