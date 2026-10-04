@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import type { ChunkCoord, ColumnRange, TerrainStroke, TileCoord, WorldConfig } from '@super-vox/shared';
+import type { ChunkCoord, ColumnRange, PlateStages, TerrainStroke, TileCoord, WorldConfig } from '@super-vox/shared';
 import type { GenJob, GenRequest, GenResponse } from './genWorker.js';
 import type { RemoteGenerator } from './world.js';
 import type { WorldSpec } from './worldFile.js';
@@ -26,16 +26,19 @@ export class GenPool {
     for (let i = 0; i < size; i++) this.workers.push(this.spawn(i));
   }
 
-  /** Generation of a world (its settings, as built, and terraforming) on the pool. */
-  remote(name: string, spec: WorldSpec, config: WorldConfig, strokes: readonly TerrainStroke[]): RemoteGenerator & { forget(): void } {
+  /**
+   * Generation of a world (its settings, as built, and terraforming) on the pool; for a plate world,
+   * `stages`, the build already made (see PlateStageCache.share), so workers needn't make it again.
+   */
+  remote(name: string, spec: WorldSpec, config: WorldConfig, strokes: readonly TerrainStroke[], stages: PlateStages | null = null): RemoteGenerator & { forget(): void } {
     const key = `${name}#${this.nextKey++}`;
-    const msg: GenRequest & { type: 'world' } = { type: 'world', key, spec, config, strokes: [...strokes] };
+    const msg: GenRequest & { type: 'world' } = { type: 'world', key, spec, config, strokes: [...strokes], stages };
     this.worlds.set(key, msg);
     for (const w of this.workers) w.postMessage(msg);
     const n = this.size;
     const run = (worker: number, job: GenJob) => this.run(worker, key, job);
     return {
-      chunk: (c: ChunkCoord) => run(columnWorker(c.cx, c.cz, n), { kind: 'chunk', coord: c }).then((r) => ({ bytes: r.bytes!, ms: r.ms })),
+      chunk: (c: ChunkCoord) => run(columnWorker(c.cx, c.cz, n), { kind: 'chunk', coord: c }).then((r) => ({ bytes: r.bytes!, ms: r.ms, buildMs: r.buildMs })),
       tile: (t: TileCoord) => run(spread(t.level * 7919 + t.tx, t.tz, n), { kind: 'tile', t }).then((r) => ({ bytes: r.bytes!, ms: r.ms })),
       column: (cx: number, cz: number) => run(columnWorker(cx, cz, n), { kind: 'column', cx, cz }).then((r) => r.range as ColumnRange),
       forget: () => {

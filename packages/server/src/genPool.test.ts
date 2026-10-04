@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { CHUNK_SIZE, ROUND_WORLD_16x8KM, defaultPlateTerrain, defaultVoxelize, encodeChunk, type ChunkCoord, type ColumnRange, type TerrainStroke } from '@super-vox/shared';
+import { CHUNK_SIZE, PlateStageCache, ROUND_WORLD_16x8KM, defaultPlateTerrain, defaultVoxelize, encodeChunk, type ChunkCoord, type ColumnRange, type TerrainStroke } from '@super-vox/shared';
 import { GenPool } from './genPool.js';
 import { World, tileBytes, type RemoteGenerator } from './world.js';
 import { generatorFor, type WorldSpec } from './worldFile.js';
@@ -35,6 +35,36 @@ describe('GenPool', () => {
     for (const t of [{ level: 2, tx: 109, tz: 46 }, { level: 5, tx: 13, tz: 5 }]) {
       expect((await remote.tile(t)).bytes).toEqual(tileBytes(main, config, t));
     }
+  });
+
+  it("builds a plate world once: workers given the build's stages make the same terrain without building it again", async () => {
+    const strokes: TerrainStroke[] = [{ kind: 'raise', x: 7020, z: 3000, radius: 40, amount: 30, softness: 0.5 }];
+    const main = generatorFor(spec, config, strokes).generator;
+    const cache = new PlateStageCache();
+    generatorFor(spec, config, strokes, cache);
+    const stages = cache.share();
+    const pool = new GenPool(2), plain = new GenPool(2);
+    pools.push(pool, plain);
+    const shared = pool.remote('test', spec, config, strokes, stages), own = plain.remote('test', spec, config, strokes);
+    // (Two columns: one on each worker.)
+    const first = [{ cx: 436, cy: 0, cz: 186 }, { cx: 437, cy: 0, cz: 188 }];
+    const sharedBuild = await Promise.all(first.map((c) => shared.chunk(c)));
+    const ownBuild = await Promise.all(first.map((c) => own.chunk(c)));
+    for (let k = 0; k < first.length; k++) {
+      expect(sharedBuild[k]!.bytes).toEqual(encodeChunk(main.generateChunk(first[k]!)));
+      expect(ownBuild[k]!.bytes).toEqual(sharedBuild[k]!.bytes);
+      expect(sharedBuild[k]!.buildMs!).toBeLessThan(ownBuild[k]!.buildMs! / 4);
+    }
+    for (let cz = 186; cz < 189; cz++) {
+      for (let cx = 436; cx < 439; cx++) {
+        const range = await shared.column(cx, cz);
+        expect(range).toEqual(main.columnRange(cx, cz));
+        for (let cy = Math.floor(range.minY / CHUNK_SIZE) - 1; cy <= Math.floor(range.maxY / CHUNK_SIZE) + 1; cy++) {
+          expect((await shared.chunk({ cx, cy, cz })).bytes).toEqual(encodeChunk(main.generateChunk({ cx, cy, cz })));
+        }
+      }
+    }
+    for (const t of [{ level: 2, tx: 109, tz: 46 }, { level: 5, tx: 13, tz: 5 }]) expect((await shared.tile(t)).bytes).toEqual(tileBytes(main, config, t));
   });
 
   it('works on many requests at once, across its workers', async () => {

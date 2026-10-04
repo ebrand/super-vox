@@ -1089,6 +1089,41 @@ describe('TerrainGenerator on plate heights', () => {
   });
 });
 
+describe('PlateStageCache.share and from (one build for every generation thread)', () => {
+  it('gives another thread a world just as built, without building it again', () => {
+    const config = { ...defaultPlateTerrain(21), rivers: 60, lakes: 60, mountains: 50 };
+    const strokes = [{ kind: 'raise' as const, x: 300 * 16 * 16, z: 300 * 16 * 16, radius: 80, amount: 20, softness: 0.5 }];
+    const cache = new PlateStageCache();
+    const original = new PlateHeights(FLAT_WORLD_16KM, config, cache, strokes);
+    const stages = cache.share();
+    expect(stages.map((s) => s.stage)).toEqual(['layout', 'mountains', 'relief', 'coast', 'heights', 'strokes', 'climate', 'hydrology']);
+    // (Posted to a real thread in genPool.test.ts.)
+    const t0 = Date.now();
+    const again = new PlateHeights(FLAT_WORLD_16KM, config, PlateStageCache.from(stages, FLAT_WORLD_16KM), strokes);
+    const fromStages = Date.now() - t0;
+    const t1 = Date.now();
+    const fresh = new PlateHeights(FLAT_WORLD_16KM, config, undefined, strokes);
+    const built = Date.now() - t1;
+    expect(fromStages).toBeLessThan(built / 3);
+    // The same ground, materials, water, trees and rivers everywhere sampled, as the original and as a fresh build.
+    for (const p of [original, fresh]) {
+      for (const [x, z, step] of [[0, 0, 4096], [300 * 256 - 2048, 300 * 256 - 2048, 64], [123_456, 77_000, 16]] as const) {
+        const H = again.heights(x, z, 64, 64, step), Hp = p.heights(x, z, 64, 64, step);
+        expect(H).toEqual(Hp);
+        expect(again.materials(x, z, 64, 64, step, H)).toEqual(p.materials(x, z, 64, 64, step, Hp));
+        expect(again.water(x, z, 64, 64, step)).toEqual(p.water(x, z, 64, 64, step));
+        // (Trees only over small areas: the coarse one is the whole world.)
+        if (step <= 64) expect(again.trees(x, z, x + 64 * step, z + 64 * step)).toEqual(p.trees(x, z, x + 64 * step, z + 64 * step));
+      }
+      expect(again.hydrology?.riverCells).toBe(p.hydrology?.riverCells);
+      expect(again.hydrology!.riverCells).toBeGreaterThan(0);
+    }
+    // A build from the shared cache on this thread works off the shared arrays too (no second copy).
+    expect(new PlateHeights(FLAT_WORLD_16KM, config, cache, strokes).elevation.buffer).toBeInstanceOf(SharedArrayBuffer);
+    expect(again.elevation.buffer).toBeInstanceOf(SharedArrayBuffer);
+  });
+});
+
 describe('PlateStageCache', () => {
   const base: PlateTerrainConfig = { ...defaultPlateTerrain(5, ROUND_WORLD_16x8KM), islandArcs: 50, hotspots: 6, plains: 25 };
   /** Everything a build decides, to compare builds by. */

@@ -505,6 +505,61 @@ export class PlateStageCache {
 
   /** How many stages have been reused, all told (for tests). */
   hits = 0;
+
+  /**
+   * The stages kept, for other threads (see PlateStageCache.from): their arrays moved into shared
+   * memory (in place: builds from this cache use the shared ones too), so every thread reads one
+   * copy, nothing copied when they're posted. The river index is left out (rebuilt from the
+   * segments); anything else that isn't plain data throws.
+   */
+  share(): PlateStages {
+    const out: PlateStages = [];
+    for (const [stage, kept] of this.stages) {
+      if (stage === 'hydrology') {
+        // (Posted without its river index; kept here with it.)
+        const { rivers, ...rest } = kept.value as { rivers: RiverIndex | null };
+        const shared = shareData(rest, stage) as object;
+        kept.value = { ...shared, rivers };
+        out.push({ stage, key: kept.key, value: { ...shared, rivers: null } });
+      } else {
+        kept.value = shareData(kept.value, stage);
+        out.push({ stage, key: kept.key, value: kept.value });
+      }
+    }
+    return out;
+  }
+
+  /** A cache holding `stages` (from share(), on another thread), for a build of the same world (`world`) to reuse. */
+  static from(stages: PlateStages, world: WorldConfig): PlateStageCache {
+    const cache = new PlateStageCache();
+    for (const { stage, key, value } of stages) {
+      let v = value;
+      if (stage === 'hydrology') {
+        const h = value as { hydrology: Hydrology | null; rivers: RiverIndex | null };
+        v = { ...h, rivers: h.hydrology?.segments.length ? new RiverIndex(h.hydrology.segments, world.widthUnits, world.wrapX) : null };
+      }
+      cache.stages.set(stage, { key, value: v });
+    }
+    return cache;
+  }
+}
+
+/** A build's stages as share() gives them (plain data: posted between threads as it is). */
+export type PlateStages = { stage: string; key: string; value: unknown }[];
+
+/** `v` with its typed arrays in shared memory (plain objects and arrays rebuilt around them); throws on anything else. */
+function shareData(v: unknown, path: string): unknown {
+  if (v === null || typeof v !== 'object') return v;
+  if (ArrayBuffer.isView(v)) {
+    if (v.buffer instanceof SharedArrayBuffer) return v;
+    const a = v as unknown as { constructor: new (b: SharedArrayBuffer) => ArrayBufferView & { set(x: ArrayLike<number>): void }; length: number; BYTES_PER_ELEMENT: number };
+    const shared = new a.constructor(new SharedArrayBuffer(a.length * a.BYTES_PER_ELEMENT));
+    shared.set(v as unknown as ArrayLike<number>);
+    return shared;
+  }
+  if (Array.isArray(v)) return v.map((x, i) => shareData(x, `${path}[${i}]`));
+  if (Object.getPrototypeOf(v) !== Object.prototype) throw new Error(`can't share ${path}: not plain data`);
+  return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, shareData(x, `${path}.${k}`)]));
 }
 
 /**

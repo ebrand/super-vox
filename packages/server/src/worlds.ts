@@ -24,6 +24,8 @@ import {
   type PlateTerrainConfig,
   type WorldConfig,
   type WorldShape,
+  PlateStageCache,
+  type PlateStages,
 } from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
 import { createHash } from 'node:crypto';
@@ -354,12 +356,23 @@ export class FileWorldCatalog implements WorldCatalog {
   private build(file: WorldFile): Opened {
     const config = this.opts.config ?? worldConfigOf(file.spec);
     const strokes = readStrokes(this.dataRoot, file.name);
-    const { generator, heights } = generatorFor(file.spec, config, strokes);
-    const tolerance = file.spec.generator === 'flat' ? null : file.spec.voxelize.tolerance;
     // Terrain from settings is made on the worker threads (flat worlds cost next to nothing).
     const workers = this.opts.generationWorkers ?? 0;
-    if (workers > 0 && file.spec.generator !== 'flat') this.pool ??= new GenPool(workers);
-    const remote = this.pool && file.spec.generator !== 'flat' ? this.pool.remote(file.name, file.spec, config, strokes) : null;
+    const pooled = workers > 0 && file.spec.generator !== 'flat';
+    if (pooled) this.pool ??= new GenPool(workers);
+    // A plate world is built once, here; its stages, in shared memory, are the workers' too (and
+    // this thread's: built again from them, at next to no cost, it keeps no copy of its own).
+    let stages: PlateStages | null = null;
+    let built: ReturnType<typeof generatorFor>;
+    if (pooled && file.spec.generator === 'plates') {
+      const cache = new PlateStageCache();
+      generatorFor(file.spec, config, strokes, cache);
+      stages = cache.share();
+      built = generatorFor(file.spec, config, strokes, cache);
+    } else built = generatorFor(file.spec, config, strokes);
+    const { generator, heights } = built;
+    const tolerance = file.spec.generator === 'flat' ? null : file.spec.voxelize.tolerance;
+    const remote = this.pool && pooled ? this.pool.remote(file.name, file.spec, config, strokes, stages) : null;
     // Generated terrain kept on disk, for this version of it (older versions' go).
     const disk = this.opts.diskCache && file.spec.generator !== 'flat' ? this.diskCache(file, generator, config, strokes) : null;
     const world = new World(config, generator, { tolerance, store: new FileChunkStore(join(this.dataRoot, file.name, 'chunks')), ...(remote ? { remote } : {}), ...(disk ? { disk } : {}) });

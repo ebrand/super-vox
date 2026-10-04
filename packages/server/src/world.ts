@@ -193,7 +193,8 @@ export interface EditResult {
  */
 /** Makes a world's generated chunks, tiles and column ranges elsewhere (see GenPool): `ms`, how long they took. */
 export interface RemoteGenerator {
-  chunk(coord: ChunkCoord): Promise<{ bytes: Uint8Array; ms: number }>;
+  /** (`buildMs`: what building the world's generator took first, if it had to.) */
+  chunk(coord: ChunkCoord): Promise<{ bytes: Uint8Array; ms: number; buildMs?: number }>;
   tile(t: TileCoord): Promise<{ bytes: Uint8Array; ms: number }>;
   column(cx: number, cz: number): Promise<ColumnRange>;
 }
