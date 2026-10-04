@@ -236,6 +236,7 @@ hurtEl.id = 'hurt';
 document.body.append(healthEl, hurtEl);
 let health: number | null = null;
 /** What to say when we died, by how. */
+const RESPAWNED = { here: 'back at your bed', gone: 'your bed is gone, so back at the spawn point', blocked: 'your bed is built over, so back at the spawn point', none: 'back at the spawn point' } as const;
 const DEATHS: Record<DeathCause, string> = { fell: 'you fell to your death', drowned: 'you drowned', starved: 'you starved', mob: 'you were killed', blast: 'you were blown up' };
 function showHealth(h: number, max: number, food: number, air: number): void {
   if (health !== null && h < health) {
@@ -638,11 +639,11 @@ connection = connect({
         editTool?.say('back where you left off');
         break;
       case 'respawn':
-        // Died: back at the spawn point (standing on it).
+        // Died: back at our bed or the spawn point (standing on it).
         camera.position.set(unitsToMeters(msg.x), unitsToMeters(msg.y) + PLAYER.eye / UNITS_PER_METER + 0.5, unitsToMeters(msg.z));
         controls.stopFalling(); // (no falling on from where we died)
         updateLod(true);
-        editTool?.say(`${DEATHS[msg.cause ?? 'mob']}: back at the spawn point`);
+        editTool?.say(`${DEATHS[msg.cause ?? 'mob']}: ${RESPAWNED[msg.bed ?? 'none']}`);
         break;
       case 'inventory':
         inventoryUi.update(msg);

@@ -29,6 +29,7 @@ import {
   designOrigin,
   designSpan,
   usable,
+  isBed,
   type PlacedObject,
   type ItemId,
   nextBreakSize,
@@ -434,10 +435,11 @@ export class EditTool {
         else if (this.survival) this.miningHeld = true; // (mined as it's held: see stepMining)
         else this.remove();
       } else if (button === 2) {
-        // Right-click: with a bucket, fills it at water or pours it out; opens and closes gates and
-        // doors; with a fence, gate or door in hand, places one.
+        // Right-click: with a bucket, fills it at water or pours it out; makes a bed ours; opens and
+        // closes gates and doors; with a fence, gate or door in hand, places one.
         const design = this.aimedDesign();
         if (held === Item.Bucket) this.bucket();
+        else if (design && isBed(design)) this.use('bed');
         else if (design && usable(design)) this.use();
         else if (!design && this.targetMaterial !== null && isUsableMaterial(this.targetMaterial)) this.use();
         else if (held !== null && isFood(held)) this.eat(held);
@@ -489,6 +491,7 @@ export class EditTool {
     const what = this.pending.get(msg.id);
     this.pending.delete(msg.id);
     if (!msg.ok) this.say(`${what ?? 'edit'} failed: ${msg.error}`);
+    else if (msg.note) this.say(msg.note);
     return true;
   }
 
@@ -507,7 +510,7 @@ export class EditTool {
     const target = !this.target
       ? 'nothing in reach'
       : design
-        ? `aiming at a ${objectName(design)}${next ? ` (right-click: ${next})` : ''} (left-click: take it down)`
+        ? `aiming at a ${objectName(design)}${isBed(design) ? ' (right-click: make it your bed)' : next ? ` (right-click: ${next})` : ''} (left-click: take it down)`
       : this.targetMaterial !== null && isObjectMaterial(this.targetMaterial)
         ? `aiming at a ${materialName(this.targetMaterial)}${opensHere ? ' (right-click: open / close)' : ''} (left-click: take it down)`
         : this.targetMaterial !== null && isExplosive(this.targetMaterial)
@@ -621,11 +624,11 @@ export class EditTool {
     this.send({ type: 'cut', id, sword, x: floorDiv(this.target.x, BLOCK_SIZE), y: floorDiv(this.target.y, BLOCK_SIZE), z: floorDiv(this.target.z, BLOCK_SIZE) });
   }
 
-  /** Opens or closes the gate or door aimed at. */
-  private use(): void {
+  /** Opens or closes the gate or door aimed at (or makes the bed aimed at ours). */
+  private use(what = 'open'): void {
     if (!this.target) return;
     const id = this.nextId++;
-    this.pending.set(id, 'open');
+    this.pending.set(id, what);
     this.send({ type: 'use', id, x: this.target.x, y: this.target.y, z: this.target.z });
   }
 

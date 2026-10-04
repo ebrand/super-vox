@@ -50,6 +50,8 @@ export const Item = {
   Stove: 1010,
   Anvil: 1011,
   SmithingTable: 1012,
+  /** Placed as the design that's the bed: right-clicked, it's where its owner comes back to after dying. */
+  Bed: 1013,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -68,10 +70,11 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.Stove]: 'stove',
   [Item.Anvil]: 'anvil',
   [Item.SmithingTable]: 'smithing table',
+  [Item.Bed]: 'bed',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */
-const DESIGNED_ONLY = new Set<ItemId>([Item.Furnace, Item.Stove, Item.Anvil, Item.SmithingTable]);
+const DESIGNED_ONLY = new Set<ItemId>([Item.Furnace, Item.Stove, Item.Anvil, Item.SmithingTable, Item.Bed]);
 
 /** Whether an id is a block material (amounts are volumes) rather than an item (amounts are counts). */
 export function isBlock(id: ItemId): boolean {

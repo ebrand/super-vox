@@ -67,6 +67,11 @@ export function objectStation(o: PlacedObject): DesignRole | null {
   return o.kind === 'design' ? (designById(o.design ?? '')?.role ?? null) : null;
 }
 
+/** Whether an object is a bed (the design standing in for one): right-clicked, it's where you come back to. */
+export function isBed(o: PlacedObject): boolean {
+  return objectStation(o) === 'bed';
+}
+
 /**
  * Whether any of `objects` that's station `role` takes a block within `reach` (units, Chebyshev,
  * by block, as materialNearIn) of (x, y, z) (units). `wrapBlocks`: round worlds, blocks around.

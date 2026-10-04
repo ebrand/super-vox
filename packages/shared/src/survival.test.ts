@@ -113,3 +113,21 @@ describe('Vitals', () => {
     expect(v.health).toBe(PLAYER_HEALTH);
   });
 });
+
+describe('Vitals kept between visits', () => {
+  it('come back as saved; anything out of range or missing is left as it was, and never dead', () => {
+    const v = new Vitals();
+    v.hurt(7, 0);
+    v.exert(EXHAUSTION_PER_FOOD * 3 + 1);
+    const saved = v.saved();
+    expect(saved).toEqual({ health: 13, food: 17, air: AIR_SECONDS, exhaustion: 1 });
+    const back = new Vitals();
+    back.restore(saved);
+    expect(back.saved()).toEqual(saved);
+    const odd = new Vitals();
+    odd.restore({ health: 0, food: 21, air: Number.NaN });
+    expect(odd.saved()).toEqual(new Vitals().saved());
+    odd.restore({ food: 4.4 });
+    expect(odd.food).toBe(4);
+  });
+});
