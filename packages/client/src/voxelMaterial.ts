@@ -56,6 +56,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
     },
     vertexShader: /* glsl */ `
       attribute vec4 face;
+      attribute float dark;
       uniform vec3 palette[PALETTE_SIZE];
       uniform float tinted[PALETTE_SIZE];
       varying vec3 vColor;
@@ -67,6 +68,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       varying float vAo;
       varying float vTinted;
       varying float vTree;
+      varying float vSkyLight;
       #include <common>
       #include <logdepthbuf_pars_vertex>
       const vec3 NORMALS[6] = vec3[6](
@@ -87,6 +89,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
         vTinted = material < PALETTE_SIZE ? tinted[material] : 0.0;
         // Trees (trunks and leaves): the map grid is on the ground only.
         vTree = ${TREE_MATERIALS.map((m) => `material == ${m}`).join(' || ')} ? 1.0 : 0.0;
+        vSkyLight = 1.0 - dark;
         vUnits = position;
         vec4 world = modelMatrix * vec4(position, 1.0);
         vWorld = world.xyz;
@@ -116,6 +119,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       varying float vAo;
       varying float vTinted;
       varying float vTree;
+      varying float vSkyLight;
       #include <logdepthbuf_pars_fragment>
       // Lines every "spacing" (world units of vWorld: metres) across x and z, "widthPx" pixels wide
       // (x: the lines across x, at constant x; y: those at constant z); fading out once they're
@@ -160,6 +164,9 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
         float ao = max(0.0, 1.0 - aoStrength * vAo);
         float sky = 0.5 + 0.5 * n.y;
         vec3 light = mix(groundAmbient, skyAmbient, sky) * ao + sunColor * max(dot(n, sunDir), 0.0) * mix(1.0, ao, 0.5);
+        // Shade underground: sky light 0..15 (vSkyLight 0..1), each step down 80% as bright, so
+        // the depths of a cave are nearly black (as Minecraft's).
+        light *= pow(0.8, 15.0 * (1.0 - vSkyLight));
         // Below the water, light that reached down through it (red is lost first).
         if (vWorld.y < waterLevel) light *= exp(-WATER_ABSORB * 0.5 * (waterLevel - vWorld.y));
         vec3 rgb = base * light * exposure * (1.0 - 0.35 * line);

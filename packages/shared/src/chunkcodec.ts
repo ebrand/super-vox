@@ -7,7 +7,7 @@ import {
   type Chunk,
   type VoxelsBlock,
 } from './chunk.js';
-import { isWater } from './materials.js';
+import { Material, isWater } from './materials.js';
 import type { ChunkCoord } from './world.js';
 
 /**
@@ -147,6 +147,59 @@ export function summarizeChunk(bytes: Uint8Array): 'air' | 'solid' | 'mixed' {
 }
 
 /** Reads just the coordinates from an encoded chunk without decoding it. */
+/** Uniform blocks of these let light through, like water: leaves (and partial blocks, which are never uniform). */
+const SEE_THROUGH = new Set<number>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves]);
+
+/** Whether a whole block of `material` stops light (see chunkOpacity). */
+export function blocksLight(material: number): boolean {
+  return material !== 0 && !isWater(material) && !SEE_THROUGH.has(material);
+}
+
+/**
+ * Which of an encoded chunk's blocks stop light, without decoding its voxels: 1 per block (in
+ * blockIndex order) for whole blocks of anything but water and leaves; partial blocks let it
+ * through. Null if none do.
+ */
+export function chunkOpacity(bytes: Uint8Array): Uint8Array | null {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.byteLength < 15) throw new ChunkDecodeError('truncated chunk data');
+  let o = 13;
+  const paletteLen = view.getUint16(o, true); o += 2;
+  const opaque: boolean[] = [];
+  for (let i = 0; i < paletteLen; i++) {
+    if (o + 2 > bytes.byteLength) throw new ChunkDecodeError('truncated chunk data');
+    const kind = view.getUint8(o), size = view.getUint8(o + 1);
+    o += 2;
+    if (kind === KIND_UNIFORM) {
+      if (o + 2 > bytes.byteLength) throw new ChunkDecodeError('truncated chunk data');
+      opaque.push(blocksLight(view.getUint16(o, true)));
+      o += 2;
+    } else if (kind === KIND_GRID) {
+      if (!isGridSize(size)) throw new ChunkDecodeError(`invalid voxel size ${size}`);
+      o += (BLOCK_SIZE / size) ** 3 * 2;
+      opaque.push(false);
+    } else if (kind === KIND_VOXELS) {
+      if (o + 2 > bytes.byteLength) throw new ChunkDecodeError('truncated chunk data');
+      o += 2 + (view.getUint16(o, true) || MAX_BLOCK_VOXELS) * 4;
+      opaque.push(false);
+    } else throw new ChunkDecodeError(`unknown block kind ${kind}`);
+  }
+  if (!opaque.includes(true)) return null;
+  if (o + 2 > bytes.byteLength) throw new ChunkDecodeError('truncated chunk data');
+  const runCount = view.getUint16(o, true); o += 2;
+  const out = new Uint8Array(BLOCKS_PER_CHUNK);
+  let at = 0;
+  for (let r = 0; r < runCount; r++) {
+    if (o + 4 > bytes.byteLength) throw new ChunkDecodeError('truncated chunk data');
+    const len = view.getUint16(o, true), idx = view.getUint16(o + 2, true);
+    o += 4;
+    if (at + len > BLOCKS_PER_CHUNK) throw new ChunkDecodeError('runs exceed chunk size');
+    if (idx !== EMPTY_INDEX && opaque[idx]) out.fill(1, at, at + len);
+    at += len;
+  }
+  return out;
+}
+
 export function readChunkHeader(bytes: Uint8Array): ChunkCoord {
   if (bytes.byteLength < 13) throw new ChunkDecodeError('truncated chunk data');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

@@ -4,6 +4,10 @@ import { BYTES_PER_QUAD, quadIndices, type MeshBuffers } from './mesher.js';
 
 /** One index buffer shared by every mesh; replaced by a larger one when needed. */
 let sharedIndex = new THREE.BufferAttribute(quadIndices(16_384), 1);
+/** No shade (see MeshBuffers.dark), for every mesh without its own; replaced by a larger one when needed. */
+const noDarks = new WeakSet<object>();
+let sharedNoDark = new THREE.BufferAttribute(new Uint8Array(16_384 * 4), 1, true);
+noDarks.add(sharedNoDark);
 
 /** onUpload callback: frees an attribute's JS array after it reaches the GPU. */
 function releaseArray(this: { array: unknown }): void {
@@ -24,15 +28,22 @@ export function createPackedMesh(
     // Meshes built earlier keep the old, smaller buffer.
     sharedIndex = new THREE.BufferAttribute(quadIndices(Math.ceil(buffers.quadCount * 1.5)), 1);
   }
+  if (!buffers.dark && sharedNoDark.count < buffers.quadCount * 4) {
+    sharedNoDark = new THREE.BufferAttribute(new Uint8Array(Math.ceil(buffers.quadCount * 1.5) * 4), 1, true);
+    noDarks.add(sharedNoDark);
+  }
   const position = new THREE.BufferAttribute(buffers.positions, 3);
   const face = new THREE.BufferAttribute(buffers.faces, 4);
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', position);
   geom.setAttribute('face', face);
+  // Shade underground (see MeshBuffers.dark): meshes without it are lit throughout.
+  const dark = buffers.dark && new THREE.BufferAttribute(buffers.dark, 1, true);
+  geom.setAttribute('dark', dark ?? sharedNoDark);
   geom.setIndex(sharedIndex);
   geom.setDrawRange(0, buffers.quadCount * 6);
   geom.computeBoundingSphere();
-  for (const attr of [position, face]) attr.onUpload(releaseArray);
+  for (const attr of [position, face, ...(dark ? [dark] : [])]) attr.onUpload(releaseArray);
   const mesh = new THREE.Mesh(geom, material);
   mesh.position.set(origin.x / UNITS_PER_METER, origin.y / UNITS_PER_METER, origin.z / UNITS_PER_METER);
   mesh.scale.setScalar(1 / UNITS_PER_METER);
@@ -60,6 +71,8 @@ export function disposePackedMesh(obj: THREE.Object3D): void {
   obj.traverse((o) => {
     if (!(o instanceof THREE.Mesh)) return;
     o.geometry.setIndex(null);
+    // (Shared buffers stay.)
+    if (noDarks.has(o.geometry.getAttribute('dark'))) o.geometry.deleteAttribute('dark');
     o.geometry.dispose();
   });
 }

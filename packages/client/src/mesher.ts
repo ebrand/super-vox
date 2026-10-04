@@ -16,6 +16,7 @@ import {
   type GridBlock,
   type MaterialId,
 } from '@super-vox/shared';
+import { faceLight } from './skyLight.js';
 
 /**
  * Face directions, indexed 0..5: +X, -X, +Y, -Y, +Z, -Z. Neighbor chunks are
@@ -62,6 +63,8 @@ export interface Quad {
    * (in a corner). Omitted = all 0.
    */
   ao?: readonly [number, number, number, number];
+  /** Sky light at the same corners, 0 (dark) .. 255 (open to the sky; see faceLight). Omitted = all 255. */
+  light?: readonly [number, number, number, number];
 }
 
 /** Chunks adjacent in each of the six directions; null means empty. */
@@ -296,10 +299,11 @@ function faceOcclusion(chunk: Chunk, neighbors: Neighbors, q: Quad, b: [number, 
 
 /**
  * Collects every visible voxel face of `chunk`, merged within each block, with ambient occlusion
- * at their corners. Faces against a null neighbor are visible. Blocks with identical contents
- * and identical neighbor objects share the face search.
+ * at their corners, and sky light if `light` (the chunk's, see skyLight) is given. Faces against
+ * a null neighbor are visible. Blocks with identical contents and identical neighbor objects
+ * share the face search.
  */
-export function visibleFaces(chunk: Chunk, neighbors: Neighbors, occlusion = true): Quad[] {
+export function visibleFaces(chunk: Chunk, neighbors: Neighbors, occlusion = true, light: Uint8Array | null = null): Quad[] {
   const out: Quad[] = [];
   const b: [number, number, number] = [0, 0, 0];
   const probe: [number, number, number] = [0, 0, 0];
@@ -338,6 +342,10 @@ export function visibleFaces(chunk: Chunk, neighbors: Neighbors, occlusion = tru
           if (occlusion) {
             const ao = faceOcclusion(chunk, neighbors, g, probe);
             if (ao[0] || ao[1] || ao[2] || ao[3]) g.ao = ao;
+          }
+          if (light) {
+            const l = faceLight(light, g.dir, g.plane, g.u, g.v, g.du, g.dv);
+            if (l[0] < 255 || l[1] < 255 || l[2] < 255 || l[3] < 255) g.light = l;
           }
           return g;
         });
@@ -382,11 +390,14 @@ function gcd(a: number, b: number): number {
   return a;
 }
 
+/** A face's shading at corner k: its occlusion and light together (equal shading, equal key). */
+const shadeAt = (f: Quad, k: number) => (f.ao ? f.ao[k]! : 0) * 256 + (f.light ? f.light[k]! : 255);
+
 /**
  * Greedily merges coplanar faces that share direction, material, and voxel
  * size into larger rectangles. The union of the output equals the union of
- * the input. Faces with the same occlusion at all four corners merge (keeping it); faces with
- * differing corners are kept as they are.
+ * the input. Faces with the same shading (occlusion and light) at all four corners merge
+ * (keeping it); faces with differing corners are kept as they are.
  */
 export function mergeFaces(faces: Quad[]): Quad[] {
   const groups = new Map<string, Quad[]>();
@@ -395,7 +406,7 @@ export function mergeFaces(faces: Quad[]): Quad[] {
   // of the same span and shading; others with uneven corners stay as they are.
   const strips = new Map<string, Quad[]>();
   for (const f of faces) {
-    const ao = f.ao;
+    const ao = f.ao || f.light ? [shadeAt(f, 0), shadeAt(f, 1), shadeAt(f, 2), shadeAt(f, 3)] : undefined;
     const kind = `${f.dir}|${f.plane}|${f.material}|${f.size}|${f.pa ?? 0}|${f.pb ?? 0}`;
     if (ao && !(ao[0] === ao[1] && ao[1] === ao[2] && ao[2] === ao[3])) {
       const alongU = ao[0] === ao[1] && ao[3] === ao[2], alongV = ao[0] === ao[3] && ao[1] === ao[2];
@@ -485,9 +496,12 @@ export function mergeFaces(faces: Quad[]): Quad[] {
 export interface MeshBuffers {
   positions: Uint16Array;
   faces: Uint8Array;
+  /** Per vertex, how far its sky light is below full (0 open to the sky .. 255 dark); omitted when all are lit. */
+  dark?: Uint8Array;
   quadCount: number;
 }
 
+/** (Without `dark`, which only meshes with shade underground have.) */
 export const BYTES_PER_QUAD = 4 * (3 * 2 + 4);
 
 /** Triangle indices for quad q: every quad uses this pattern offset by 4q. */
@@ -503,6 +517,7 @@ export function quadIndices(quads: number): Uint32Array {
 }
 
 const NO_AO = [0, 0, 0, 0] as const;
+const FULL_LIGHT = [255, 255, 255, 255] as const;
 /** Highest material id a mesh can carry (14 bits); higher ids are clamped to it (drawn as unknown). */
 export const MAX_MESH_MATERIAL = 0x3fff;
 
@@ -511,17 +526,19 @@ export function packQuads(quads: Quad[]): MeshBuffers {
   const n = quads.length;
   const positions = new Uint16Array(n * 12);
   const faces = new Uint8Array(n * 16);
+  const dark = quads.some((q) => q.light) ? new Uint8Array(n * 4) : undefined;
   const p = [0, 0, 0];
   quads.forEach((q, qi) => {
     const { axis, sign } = DIRS[q.dir]!;
     const ua = U_AXIS[axis]!;
     const va = V_AXIS[axis]!;
     // Counter-clockwise seen from outside: U then V for +dirs, V then U for -dirs.
-    const ao = q.ao ?? NO_AO;
+    const ao = q.ao ?? NO_AO, light = q.light ?? FULL_LIGHT;
     // Corner k as an index into Quad.ao.
     let order = sign > 0 ? [0, 1, 2, 3] : [0, 3, 2, 1];
-    // Triangles split along corners 0-2; run that diagonal between the more occluded pair.
-    if (ao[order[0]!]! + ao[order[2]!]! < ao[order[1]!]! + ao[order[3]!]!) order = [order[1]!, order[2]!, order[3]!, order[0]!];
+    // Triangles split along corners 0-2; run that diagonal between the more shaded pair.
+    const shade = (c: number) => ao[c]! + (255 - light[c]!) / 64;
+    if (shade(order[0]!) + shade(order[2]!) < shade(order[1]!) + shade(order[3]!)) order = [order[1]!, order[2]!, order[3]!, order[0]!];
     const material = Math.min(q.material, MAX_MESH_MATERIAL);
     order.forEach((c, k) => {
       const u = c === 1 || c === 2 ? q.u + q.du : q.u, v = c >= 2 ? q.v + q.dv : q.v;
@@ -534,7 +551,8 @@ export function packQuads(quads: Quad[]): MeshBuffers {
       faces[vi * 4 + 1] = (q.pa ?? 0) | ((q.pb ?? 0) << 4);
       faces[vi * 4 + 2] = material & 0xff;
       faces[vi * 4 + 3] = (material >> 8) | (ao[c]! << 6);
+      if (dark) dark[vi] = 255 - light[c]!;
     });
   });
-  return { positions, faces, quadCount: n };
+  return dark ? { positions, faces, dark, quadCount: n } : { positions, faces, quadCount: n };
 }

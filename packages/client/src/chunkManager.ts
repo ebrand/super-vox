@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import {
+  BLOCKS_PER_AXIS,
   CHUNK_SIZE,
   MAX_CANCEL,
+  chunkOpacity,
   chunkKey,
   columnSpans,
   type ColumnRange,
@@ -21,6 +23,7 @@ import { createPackedMesh, disposePackedMesh, meshGpuBytes, meshQuads } from './
 import { WATER_LAYER } from './water.js';
 import { DIRS } from './mesher.js';
 import type { MeshWorkerPool } from './workerPool.js';
+import { BOX, aroundIndex, type LightInput } from './skyLight.js';
 
 export interface ChunkStats {
   columns: number;
@@ -90,6 +93,9 @@ export class ChunkManager {
   /** Encoded chunk bytes; null means known empty (outside the world). */
   private readonly data = new Map<string, Uint8Array | null>();
   private readonly kinds = new Map<string, 'air' | 'solid' | 'mixed'>();
+  /** Per loaded chunk, which blocks stop light (null: none; see chunkOpacity), and per block column the highest that does (-1: none). */
+  private readonly opacity = new Map<string, Uint8Array | null>();
+  private readonly tops = new Map<string, Int8Array | null>();
   /** Decoded chunks for picking, built on demand and dropped when data changes. */
   private readonly decoded = new Map<string, Chunk | null>();
   private readonly coords = new Map<string, ChunkCoord>();
@@ -103,7 +109,7 @@ export class ChunkManager {
   private wanted = new Set<string>();
   /** Current mesh per rendered chunk (null = no visible faces) and the open-side mask it was built with. */
   /** Per chunk: its terrain and water meshes (a group), or null for nothing to draw. */
-  private readonly meshes = new Map<string, { mesh: THREE.Object3D | null; mask: number }>();
+  private readonly meshes = new Map<string, { mesh: THREE.Object3D | null; mask: number; shaded?: boolean }>();
   /** Mesh jobs running; `stale` once the chunk (or a neighbour) changed since it started. */
   private readonly jobs = new Map<string, { token: number; mask: number; stale?: boolean }>();
   /** Meshes kept, after leaving the selection, until their replacements are in (oldest first). */
@@ -443,6 +449,8 @@ export class ChunkManager {
         if (bytes) this.rememberChunk(key, this.coords.get(key)!, bytes);
         this.data.delete(key);
         this.kinds.delete(key);
+        this.opacity.delete(key);
+        this.tops.delete(key);
         this.coords.delete(key);
         this.decoded.delete(key);
       }
@@ -538,24 +546,159 @@ export class ChunkManager {
     // The same chunk again (e.g. sent with its column after we had it as a neighbour): nothing to do.
     if (previous !== undefined && sameBytes(previous, bytes)) return;
     this.decoded.delete(key);
-    if (previous !== undefined) {
-      // An update (e.g. an edit): rebuild this chunk's mesh and its neighbours',
-      // whose border faces may change. Old meshes stay until replaced.
-      for (const k of [key, ...this.neighborCoords(coord).map(chunkKey)]) {
-        const m = this.meshes.get(k);
-        if (m) m.mask = -1;
-        // A job already meshing finishes (so a chunk changing faster than it meshes, like
-        // flowing water, still updates), then meshes again.
-        const job = this.jobs.get(k);
-        if (job) job.stale = true;
-      }
-    }
+    const opacity = bytes ? chunkOpacity(bytes) : null;
+    const tops = opacity && topsOf(opacity);
+    // Where its light may change (see lightChanged), worked out before it's stored.
+    const relit = meshNeighbors ? this.lightChanged(coord, this.tops.get(key), tops) : [];
+    const redo = (k: string) => {
+      const m = this.meshes.get(k);
+      if (m) m.mask = -1;
+      // A job already meshing finishes (so a chunk changing faster than it meshes, like
+      // flowing water, still updates), then meshes again.
+      const job = this.jobs.get(k);
+      if (job) job.stale = true;
+    };
+    // An update (e.g. an edit): rebuild this chunk's mesh and its neighbours', whose border faces
+    // may change. Old meshes stay until replaced.
+    if (previous !== undefined) for (const k of [key, ...this.neighborCoords(coord).map(chunkKey)]) redo(k);
+    for (const k of relit) redo(k);
     this.data.set(key, bytes);
     this.kinds.set(key, bytes ? summarizeChunk(bytes) : 'air');
+    this.opacity.set(key, opacity);
+    this.tops.set(key, tops);
     this.coords.set(key, coord);
     if (!meshNeighbors) return;
     this.tryMesh(key);
     for (const n of this.neighborCoords(coord)) this.tryMesh(chunkKey(n));
+    // Those waiting for it for their light (around it, and below it in the columns around).
+    for (const k of this.lightWaiters(coord)) this.tryMesh(k);
+    for (const k of relit) this.tryMesh(k);
+  }
+
+  /** Rendered chunks whose light this one is part of: around it (3 x 3 x 3), and below it in the columns around. */
+  private lightWaiters(c: ChunkCoord): string[] {
+    const out: string[] = [];
+    for (let dz = -1; dz <= 1; dz++)
+      for (let dx = -1; dx <= 1; dx++)
+        for (const k of this.renderByColumn.get(colKey(c.cx + dx, c.cz + dz)) ?? []) {
+          const cy = Number(k.split(',')[1]);
+          if (cy <= c.cy + 1) out.push(k);
+        }
+    return out;
+  }
+
+  /**
+   * Meshed chunks whose light may change when chunk `c`'s light-stopping blocks change (from
+   * column tops `before` to `after`, see topsOf; undefined: it wasn't here): those around it in
+   * shade (light reaches 15 blocks, so no further; those lit throughout stay so unless the sky is
+   * shut off over them), and, where the highest block stopping light in a column moves, those
+   * around the blocks that are open to the sky now and weren't, or were and aren't.
+   */
+  private lightChanged(c: ChunkCoord, before: Int8Array | null | undefined, after: Int8Array | null): string[] {
+    const out = new Set<string>();
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dz = -1; dz <= 1; dz++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const k = chunkKey({ cx: c.cx + dx, cy: c.cy + dy, cz: c.cz + dz });
+          if (this.meshes.get(k)?.shaded) out.add(k);
+        }
+    // (Only meshed chunks need redoing: those still to mesh get it right when they are.)
+    const meshed: string[] = [];
+    for (let dz = -1; dz <= 1; dz++)
+      for (let dx = -1; dx <= 1; dx++)
+        for (const k of this.renderByColumn.get(colKey(c.cx + dx, c.cz + dz)) ?? []) if (this.meshes.has(k)) meshed.push(k);
+    if (!meshed.length) return [...out];
+    const layer = new Map<number, Int8Array | null | undefined>();
+    const topsAt = (cy: number) => {
+      if (!layer.has(cy)) layer.set(cy, this.tops.get(chunkKey({ cx: c.cx, cy, cz: c.cz })));
+      return layer.get(cy);
+    };
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < BLOCKS_PER_AXIS * BLOCKS_PER_AXIS; i++) {
+      const was = before?.[i] ?? -1, now = after?.[i] ?? -1;
+      if (was === now || this.stopsAbove(c, i, topsAt)) continue;
+      const below = was < 0 || now < 0 ? this.topBelow(c, i, topsAt) : 0;
+      const a = was < 0 ? below : c.cy * BLOCKS_PER_AXIS + was, b = now < 0 ? below : c.cy * BLOCKS_PER_AXIS + now;
+      lo = Math.min(lo, Math.min(a, b) + 1);
+      hi = Math.max(hi, Math.max(a, b));
+    }
+    if (lo <= hi) {
+      const l0 = Math.floor(lo / BLOCKS_PER_AXIS) - 1, l1 = Math.floor(hi / BLOCKS_PER_AXIS) + 1;
+      for (const k of meshed) {
+        const cy = Number(k.split(',')[1]);
+        if (cy >= l0 && cy <= l1) out.add(k);
+      }
+    }
+    return [...out];
+  }
+
+  /** Whether anything loaded above chunk `c` stops light in its block column `i` (bx + 16 bz). */
+  private stopsAbove(c: ChunkCoord, i: number, topsAt: (cy: number) => Int8Array | null | undefined): boolean {
+    const range = this.ranges.get(colKey(c.cx, c.cz));
+    if (!range) return false;
+    for (let cy = c.cy + 1; cy * CHUNK_SIZE <= range.maxY; cy++) {
+      const t = topsAt(cy);
+      if (t && t[i]! >= 0) return true;
+    }
+    return false;
+  }
+
+  /** The highest block (y, blocks) stopping light in block column `i` below chunk `c`, as far as we know. */
+  private topBelow(c: ChunkCoord, i: number, topsAt: (cy: number) => Int8Array | null | undefined): number {
+    const range = this.ranges.get(colKey(c.cx, c.cz));
+    if (!range) return c.cy * BLOCKS_PER_AXIS - 1;
+    for (let cy = c.cy - 1; ; cy--) {
+      // (Below everything in the column: rock.)
+      if ((cy + 1) * CHUNK_SIZE <= range.minY) return (cy + 1) * BLOCKS_PER_AXIS - 1;
+      const t = topsAt(cy);
+      if (t && t[i]! >= 0) return cy * BLOCKS_PER_AXIS + t[i]!;
+    }
+  }
+
+  /**
+   * What chunk `c`'s light is worked out from (see skyLight), or undefined while a chunk it needs
+   * is on its way. Chunks not here are worked out from their column: above everything in it,
+   * open; below, rock; unknown, rock (nothing lights through them).
+   */
+  private lightInput(c: ChunkCoord): LightInput | undefined {
+    const opaque: (Uint8Array | 0 | 1)[] = new Array(27);
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dz = -1; dz <= 1; dz++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const n = { cx: c.cx + dx, cy: c.cy + dy, cz: c.cz + dz }, k = chunkKey(n);
+          let o: Uint8Array | 0 | 1;
+          if (this.data.has(k)) o = this.opacity.get(k) ?? 0;
+          else {
+            const col = colKey(n.cx, n.cz), range = this.ranges.get(col);
+            // (A column not known yet: rock. That can only make it darker than it is, and meshes
+            // in shade are made again as what's around them comes in, see lightChanged.)
+            if (range === undefined) o = 1;
+            else if (range === null || n.cy * CHUNK_SIZE > range.maxY) o = 0;
+            else if ((n.cy + 1) * CHUNK_SIZE <= range.minY) o = 1;
+            else if (this.wanted.has(k)) return undefined;
+            else o = 1;
+          }
+          opaque[aroundIndex(dx, dy, dz)] = o;
+        }
+    // Above the box: anything in the columns around that stops light.
+    const above = new Uint8Array(BOX * BOX), n = BLOCKS_PER_AXIS;
+    for (let dz = -1; dz <= 1; dz++)
+      for (let dx = -1; dx <= 1; dx++) {
+        const range = this.ranges.get(colKey(c.cx + dx, c.cz + dz));
+        if (!range) continue;
+        for (let cy = c.cy + 2; cy * CHUNK_SIZE <= range.maxY; cy++) {
+          const k = chunkKey({ cx: c.cx + dx, cy, cz: c.cz + dz });
+          if (!this.data.has(k)) {
+            if (this.wanted.has(k)) return undefined;
+            continue;
+          }
+          const t = this.tops.get(k);
+          if (!t) continue;
+          for (let bz = 0; bz < n; bz++)
+            for (let bx = 0; bx < n; bx++) if (t[bx + n * bz]! >= 0) above[(dx + 1) * n + bx + BOX * ((dz + 1) * n + bz)] = 1;
+        }
+      }
+    return { opaque, above };
   }
 
   private neighborCoords(c: ChunkCoord): ChunkCoord[] {
@@ -597,10 +740,12 @@ export class ChunkManager {
       this.setMesh(key, null, mask);
       return;
     }
+    const light = this.lightInput(coord);
+    if (!light) return; // meshed once what it needs is in
     const token = this.nextToken++;
     this.jobs.set(key, { token, mask });
     // Skipped if, by the time a worker is free, this job has been superseded or isn't rendered.
-    void this.pool.run({ kind: 'chunk', center, neighbors }, () => this.jobs.get(key)?.token === token).then((res) => {
+    void this.pool.run({ kind: 'chunk', center, neighbors, light }, () => this.jobs.get(key)?.token === token).then((res) => {
       const job = this.jobs.get(key);
       if (job?.token !== token) return; // superseded or no longer rendered
       this.jobs.delete(key);
@@ -619,14 +764,14 @@ export class ChunkManager {
           water.renderOrder = 4; // before the far sea, which it hides
           group.add(water);
         }
-        this.setMesh(key, group.children.length ? group : null, mask);
+        this.setMesh(key, group.children.length ? group : null, mask, res.shaded);
       }
       if (job.stale) this.tryMesh(key);
       this.onChange();
     });
   }
 
-  private setMesh(key: string, mesh: THREE.Object3D | null, mask: number): void {
+  private setMesh(key: string, mesh: THREE.Object3D | null, mask: number, shaded = false): void {
     const prev = this.meshes.get(key)?.mesh;
     if (prev) disposePackedMesh(prev);
     const stale = this.stale.get(key);
@@ -636,6 +781,18 @@ export class ChunkManager {
       this.staleAt.delete(key);
     }
     if (mesh) this.scene.add(mesh);
-    this.meshes.set(key, { mesh, mask });
+    this.meshes.set(key, { mesh, mask, shaded });
   }
+}
+
+/** Per block column (bx + 16 bz) of a chunk, the highest block that stops light (see chunkOpacity), -1 for none. */
+function topsOf(opacity: Uint8Array): Int8Array {
+  const n = BLOCKS_PER_AXIS, out = new Int8Array(n * n).fill(-1);
+  for (let i = 0; i < n * n; i++)
+    for (let by = n - 1; by >= 0; by--)
+      if (opacity[i + n * n * by]) {
+        out[i] = by;
+        break;
+      }
+  return out;
 }

@@ -17,6 +17,7 @@ import {
 import { Material, type MaterialId } from './materials.js';
 import { fractalGrid, type Octave } from './noise.js';
 import { oreAt } from './ores.js';
+import { caveColumn, type CaveSettings } from './caves.js';
 import type { VoxelSize } from './units.js';
 import { CHUNK_SIZE, type ChunkCoord, type WorldConfig } from './world.js';
 
@@ -52,6 +53,8 @@ export interface HeightSource {
   climate?(): ClimateGrid | null;
   /** Optional trees with any part in the box [x0, x1) x [z0, z1) (units), in a fixed order. */
   trees?(x0: number, z0: number, x1: number, z1: number): Tree[];
+  /** Optional caves carved out of the rock (see caves.ts), or null for none. */
+  caves?(): CaveSettings | null;
 }
 
 /** What lies beneath a surface material, down to DIRT_DEPTH. */
@@ -211,6 +214,8 @@ interface Column {
   SR: WaterRanges | null;
   /** Lowest and highest water surface over the ground, or null. */
   water: { min: number; max: number } | null;
+  /** Caves in the column (see caveColumn), worked out the first time they're asked for; null: none. */
+  caves?: { lo: number; hi: number; mask: Uint8Array } | null;
 }
 
 /**
@@ -305,11 +310,43 @@ export class TerrainGenerator implements ChunkGenerator {
       if (h < minY) minY = h;
       if (h > maxY) maxY = h;
     }
+    // Down to its deepest cave, so the chunks around them are loaded.
+    const caves = this.cavesOf(cx, cz);
+    if (caves) {
+      outer: for (let by = caves.lo; by < caves.hi; by++) for (let k = 0; k < 256; k++) if (caves.mask[k + 256 * (by - caves.lo)]) {
+        minY = Math.min(minY, by * BLOCK_SIZE);
+        break outer;
+      }
+    }
     // Tree tops (of trees reaching into the column) count too, so crowns are loaded.
     for (const t of trees) maxY = Math.max(maxY, t.y + t.height);
     if (!water) return { minY, maxY };
     // Then the water over the ground.
     return { minY, maxY: Math.max(maxY, water.max), solidTop: maxY, water: { ...water } };
+  }
+
+  /** Column (cx, cz)'s caves (see caveColumn), worked out once per column; null for none. */
+  private cavesOf(cx: number, cz: number): { lo: number; hi: number; mask: Uint8Array } | null {
+    const settings = this.source.caves?.() ?? null;
+    if (!settings || settings.amount <= 0) return null;
+    const col = this.chunkColumn(cx, cz);
+    if (col.caves !== undefined) return col.caves;
+    // Per block column: the ground's lowest point over it, and whether water stands over it.
+    const surface = new Int32Array(256), underWater: boolean[] = new Array(256).fill(false);
+    for (let bz = 0; bz < BLOCKS_PER_AXIS; bz++)
+      for (let bx = 0; bx < BLOCKS_PER_AXIS; bx++) {
+        let low = Infinity, wet = false;
+        for (let z = bz * BLOCK_SIZE; z < (bz + 1) * BLOCK_SIZE; z++)
+          for (let x = bx * BLOCK_SIZE; x < (bx + 1) * BLOCK_SIZE; x++) {
+            const i = x + CHUNK_SIZE * z, h = col.H[i]!;
+            low = Math.min(low, h);
+            if (col.S && col.S[i]! > h) wet = true;
+          }
+        surface[bx + 16 * bz] = low;
+        underWater[bx + 16 * bz] = wet;
+      }
+    col.caves = caveColumn(settings, cx, cz, surface, underWater, this.world.minYUnits);
+    return col.caves;
   }
 
   private chunkColumn(cx: number, cz: number): Column {
@@ -375,6 +412,7 @@ export class TerrainGenerator implements ChunkGenerator {
     if (y0 < w.minYUnits || y0 >= w.maxYUnits) return chunk;
 
     const { H, M, trees, S, SR } = this.chunkColumn(coord.cx, coord.cz);
+    const caves = this.cavesOf(coord.cx, coord.cz);
     const oreX = x0 / BLOCK_SIZE, oreZ = z0 / BLOCK_SIZE;
     // Per block column: min / max surface height, and the top material at the minimum.
     const bMin = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(2 ** 31 - 1);
@@ -401,6 +439,8 @@ export class TerrainGenerator implements ChunkGenerator {
           const by0 = y0 + by * BLOCK_SIZE;
           if (by0 >= maxH) break; // this and every block above is air
           let block: Block;
+          // A cave: nothing (and no water: see below).
+          if (caves && by0 / BLOCK_SIZE >= caves.lo && by0 / BLOCK_SIZE < caves.hi && caves.mask[k + 256 * (by0 / BLOCK_SIZE - caves.lo)]) continue;
           if (by0 + BLOCK_SIZE <= minH) {
             // Wholly underground: its material, and deep in the stone, maybe ore (see oreAt).
             let m = this.materialFor(minH, by0 + BLOCK_SIZE, bMat[k]!);
@@ -421,6 +461,8 @@ export class TerrainGenerator implements ChunkGenerator {
           for (let by = 0; by < BLOCKS_PER_AXIS && y0 + by * BLOCK_SIZE < top; by++) {
             const i = blockIndex(bx, by, bz);
             if (chunk.blocks[i]) continue;
+            const aby = (y0 + by * BLOCK_SIZE) / BLOCK_SIZE;
+            if (caves && aby >= caves.lo && aby < caves.hi && caves.mask[bx + BLOCKS_PER_AXIS * bz + 256 * (aby - caves.lo)]) continue;
             const voxels = this.waterVoxels(SR, bx * BLOCK_SIZE, y0 + by * BLOCK_SIZE, bz * BLOCK_SIZE);
             if (voxels.packed.length === 1 && voxels.packed[0] === packVoxel(0, 0, 0, BLOCK_SIZE)) chunk.blocks[i] = setBlockWater(null, 0);
             else if (voxels.packed.length) chunk.blocks[i] = { kind: 'voxels', packed: Uint16Array.from(voxels.packed), materials: Uint16Array.from(voxels.materials) };

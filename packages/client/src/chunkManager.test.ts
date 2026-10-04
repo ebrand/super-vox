@@ -276,3 +276,81 @@ describe('known', () => {
     expect(cm.known({ cx: 2, cy: 0, cz: 5 })).toBe(false); // not in the region
   });
 });
+
+describe('sky light', () => {
+  const rock = { kind: 'uniform', size: 16, material: Material.Stone } as const;
+  /** Rock, but air where `air(bx, by, bz)`. */
+  function rockBytes(cy: number, air: (bx: number, by: number, bz: number) => boolean = () => false) {
+    const c = emptyChunk({ cx: 0, cy, cz: 5 });
+    for (let by = 0; by < 16; by++) for (let bz = 0; bz < 16; bz++) for (let bx = 0; bx < 16; bx++) if (!air(bx, by, bz)) c.blocks[bx + 16 * (bz + 16 * by)] = rock;
+    return encodeChunk(c);
+  }
+  const cave = (_bx: number, by: number) => by >= 4 && by <= 8;
+  const shaft = (bx: number, _by: number, bz: number) => bx === 3 && bz === 3;
+
+  /** Jobs by chunk; those of layer -3 (the cave) come back in shade. */
+  function lit() {
+    const jobs: { key: string; req: { light?: { opaque: unknown[]; above: Uint8Array } }; resolve: (r: unknown) => void }[] = [];
+    const runs = new Map<string, number>();
+    const pool = {
+      run: (req: { center: Uint8Array; light?: { opaque: unknown[]; above: Uint8Array } }) =>
+        new Promise((resolve) => {
+          const v = new DataView(req.center.buffer, req.center.byteOffset);
+          const key = `${v.getInt32(1, true)},${v.getInt32(5, true)},${v.getInt32(9, true)}`;
+          jobs.push({ key, req, resolve });
+        }),
+    } as unknown as MeshWorkerPool;
+    const last = new Map<string, (typeof jobs)[number]['req']>();
+    const finishAll = async () => {
+      while (jobs.length) {
+        for (const j of jobs.splice(0)) {
+          runs.set(j.key, (runs.get(j.key) ?? 0) + 1);
+          last.set(j.key, j.req);
+          j.resolve({ id: 0, buffers: null, ms: 0, shaded: j.key === '0,-3,5' });
+        }
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    };
+    const scene = { add: () => {}, remove: () => {} } as unknown as THREE.Scene;
+    const cm = new ChunkManager(FLAT_WORLD_16KM, scene, {} as THREE.Material, {} as THREE.Material, () => {}, pool, 64, () => {});
+    return { cm, finishAll, runs: (k: string) => runs.get(k) ?? 0, last: (k: string) => last.get(k) };
+  }
+
+  it('sends what light is worked out from, and redoes shade below where the sky is let in', async () => {
+    const { cm, finishAll, runs, last } = lit();
+    cm.setRegion([{ cx: 0, cz: 5 }], 0, 5 * CHUNK_SIZE);
+    // Ground at the top of layer 0, a cave in layer -3.
+    cm.onColumn({ cx: 0, cz: 5, minY: -3 * CHUNK_SIZE, maxY: CHUNK_SIZE - 1, sent: [{ lo: -5, hi: 2 }] });
+    for (let cy = -5; cy <= 2; cy++) cm.onChunkBytes(cy >= 1 ? encodeChunk(emptyChunk({ cx: 0, cy, cz: 5 })) : rockBytes(cy, cy === -3 ? cave : undefined));
+    await finishAll();
+    expect(runs('0,-3,5')).toBe(1);
+    const req = last('0,-3,5')!;
+    expect(req.light).toBeDefined();
+    expect(req.light!.opaque[13]).toBeInstanceOf(Uint8Array);
+    // Over its box (layers -4 .. -2): rock in layers -1 and 0.
+    const mid = 16 + 3 + 48 * (16 + 3);
+    expect(req.light!.above[mid]).toBe(1);
+    // An edit that lets no light in: the cave, three layers down, isn't redone.
+    const dirt = emptyChunk({ cx: 0, cy: 0, cz: 5 });
+    dirt.blocks.fill(rock);
+    dirt.blocks[0] = { kind: 'uniform', size: 16, material: Material.Dirt };
+    cm.onChunkBytes(encodeChunk(dirt));
+    await finishAll();
+    expect(runs('0,-3,5')).toBe(1);
+    // A shaft: first through layer -2 (next to the cave: redone, but still roofed over)...
+    cm.onChunkBytes(rockBytes(-2, shaft));
+    await finishAll();
+    const after = runs('0,-3,5');
+    expect(after).toBe(2);
+    expect(last('0,-3,5')!.light!.above[mid]).toBe(1);
+    // ...then through the top layer: the sky gets down to layer -1's rock, not the cave.
+    cm.onChunkBytes(rockBytes(0, shaft));
+    await finishAll();
+    expect(runs('0,-3,5')).toBe(after);
+    // Then through layer -1, two layers over the cave: the sky reaches it, and it's redone.
+    cm.onChunkBytes(rockBytes(-1, shaft));
+    await finishAll();
+    expect(runs('0,-3,5')).toBe(after + 1);
+    expect(last('0,-3,5')!.light!.above[mid]).toBe(0);
+  });
+});

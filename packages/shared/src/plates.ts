@@ -3,6 +3,7 @@ import type { ClimateGrid } from './climate.js';
 import { Material } from './materials.js';
 import { TREE_REACH, canopyOver, treesIn, type Canopy, type Climate, type Clumping, type Tree, type TreeEdits } from './trees.js';
 import { RiverIndex, buildHydrology, carveRivers, type Hydrology } from './rivers.js';
+import type { CaveSettings } from './caves.js';
 import { NO_WATER } from './water.js';
 import { StrokeIndex, applyStrokes, isTreeStroke, strokesIn, treeChance, smoothAverage, smoothReach, type SmoothTarget, type TerrainStroke } from './strokes.js';
 import { fractalGrid, ridgedGrid, type Octave } from './noise.js';
@@ -114,6 +115,8 @@ export interface PlateTerrainConfig {
    */
   lakes: number;
   lakesByArea: number;
+  /** Caves (see caves.ts): 0 none (worlds made before caves) .. 100 common and big; 25 rare. */
+  caves: number;
   /** Bare rock ground's own relief (ridged outcrops, knolls and gullies, 16-256 m), 0 (as smooth as any) .. 100. */
   rockRoughness: number;
   /** Bare rock ground's surface: 0 all one stone .. 100 patches of gravel, dark, pale and (where wet) mossy stone. */
@@ -183,6 +186,7 @@ export function defaultPlateTerrain(seed = 1, world?: WorldConfig): PlateTerrain
     lakesByArea: 1,
     rockRoughness: 50,
     rockVariety: 50,
+    caves: 25,
     islandArcs: 0,
     hotspots: 0,
     islandMinSize: 200,
@@ -232,6 +236,7 @@ export const PLATE_LIMITS = {
   lakes: [0, 100],
   rockRoughness: [0, 100],
   rockVariety: [0, 100],
+  caves: [0, 100],
   islandArcs: [0, 100],
   hotspots: [0, 40],
   islandSize: [50, 4000],
@@ -285,6 +290,8 @@ export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   if (r.lakes === undefined) r.lakes = 0;
   // The lakes setting was the smallest basin holding one.
   if (r.lakesByArea === undefined) r.lakesByArea = 0;
+  // There were no caves.
+  if (r.caves === undefined) r.caves = 0;
   // With biomes, the snow and rock altitudes didn't count (temperature alone decided).
   if (r.altitudeSnow === undefined) r.altitudeSnow = 0;
   if (r.altitudeRock === undefined) r.altitudeRock = 0;
@@ -350,6 +357,7 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   num(c.rivers, L.rivers, 'rivers');
   num(c.lakes, L.lakes, 'lakes');
   num(c.rockRoughness, L.rockRoughness, 'rockRoughness');
+  num(c.caves, L.caves, 'caves');
   num(c.rockVariety, L.rockVariety, 'rockVariety');
   if (c.lakesByArea !== 0 && c.lakesByArea !== 1) throw new RangeError(`lakesByArea must be 0 or 1; got ${c.lakesByArea}`);
   num(c.islandArcs, L.islandArcs, 'islandArcs');
@@ -2100,6 +2108,11 @@ export class PlateHeights implements HeightSource {
       else if (pa > edge) out[k] = Material.PaleStone;
       else if (pb > edge && (moisture === null || moisture[k]! > ROCK_MOSS_MOISTURE)) out[k] = Material.MossyStone;
     }
+  }
+
+  /** Caves (see caves.ts): none at 0. */
+  caves(): CaveSettings | null {
+    return this.config.caves > 0 ? { amount: this.config.caves, seed: this.config.terrainSeed * 7919 + 101 } : null;
   }
 
   /** The forest canopy over samples, for distant views (see canopyOver). */

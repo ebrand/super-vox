@@ -206,3 +206,29 @@ describe('chunk codec', () => {
     }
   });
 });
+
+describe('chunkOpacity', () => {
+  it('marks whole blocks of rock, not air, water, leaves or partial blocks', async () => {
+    const { chunkOpacity, blocksLight } = await import('./chunkcodec.js');
+    const { Material } = await import('./materials.js');
+    const { blockIndex } = await import('./chunk.js');
+    const { setBlockWater } = await import('./water.js');
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    expect(chunkOpacity(encodeChunk(chunk))).toBeNull();
+    const stone: Block = { kind: 'uniform', size: 16, material: Material.Stone };
+    chunk.blocks[blockIndex(1, 2, 3)] = stone;
+    chunk.blocks[blockIndex(15, 15, 15)] = stone;
+    chunk.blocks[blockIndex(4, 4, 4)] = { kind: 'uniform', size: 16, material: Material.Leaves };
+    chunk.blocks[blockIndex(5, 4, 4)] = setBlockWater(null, 0);
+    chunk.blocks[blockIndex(6, 4, 4)] = { kind: 'voxels', packed: Uint16Array.of(packVoxel(0, 0, 0, 8)), materials: Uint16Array.of(Material.Stone) };
+    const o = chunkOpacity(encodeChunk(chunk))!;
+    expect([...o.keys()].filter((i) => o[i])).toEqual([blockIndex(1, 2, 3), blockIndex(15, 15, 15)]);
+    // Leaves and water only: nothing stops light.
+    chunk.blocks[blockIndex(1, 2, 3)] = null;
+    chunk.blocks[blockIndex(15, 15, 15)] = null;
+    expect(chunkOpacity(encodeChunk(chunk))).toBeNull();
+    expect(blocksLight(Material.Stone)).toBe(true);
+    expect(blocksLight(Material.Water)).toBe(false);
+    expect(blocksLight(Material.Needles)).toBe(false);
+  });
+});
