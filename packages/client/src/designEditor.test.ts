@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FIRST_DESIGN_ITEM, Material, parseDesign } from '@super-vox/shared';
-import { DesignEditor, aimSurface, cellsIn, clipRegion, draftOf, placeAgainst, regionBetween } from './designEditor.js';
+import { DesignEditor, aimSurface, cellsIn, clipRegion, draftOf, placeAgainst, regionBetween, shapeCells } from './designEditor.js';
 
 const P = Material.Planks, S = Material.Stone;
 
@@ -215,5 +215,55 @@ describe('aimSurface', () => {
     expect(placeAgainst(r.point, r.normal, 4)).toEqual({ x: 8, y: 8, z: 12 });
     // A plane outside where the ray is in the box: the far wall instead.
     expect(aimSurface([10, 50, 10], [0.3, -1, 0], box, { axis: 0, at: 4 })!.on).toBe('wall');
+  });
+});
+
+describe('round shapes', () => {
+  const C = { x: 16, y: 16, z: 16 };
+  const key = (c: { x: number; y: number; z: number }) => `${c.x},${c.y},${c.z}`;
+  it('make circles across any axis, spheres, and domes on either side', () => {
+    expect(shapeCells('circle', C, 1, 1, 0, 4, false)).toEqual([C]);
+    // Radius 1 cell: a plus and its corners (9); radius 2: 21 (corners out).
+    expect(shapeCells('circle', C, 1, 1, 4, 4, false)).toHaveLength(9);
+    const disk = shapeCells('circle', C, 1, 1, 8, 4, false);
+    expect(disk).toHaveLength(21);
+    expect(disk.every((c) => c.y === 16)).toBe(true);
+    expect(shapeCells('circle', C, 0, 1, 8, 4, false).every((c) => c.x === 16)).toBe(true);
+    // A sphere of radius 1 cell: 19; a dome its upper half and middle (9 + 5), or lower.
+    expect(shapeCells('sphere', C, 1, 1, 4, 4, false)).toHaveLength(19);
+    const up = shapeCells('dome', C, 1, 1, 4, 4, false), down = shapeCells('dome', C, 1, -1, 4, 4, false);
+    expect(up).toHaveLength(14);
+    expect(up.every((c) => c.y >= 16)).toBe(true);
+    expect(down.every((c) => c.y <= 16)).toBe(true);
+    // (The radius is snapped to whole cells.)
+    expect(shapeCells('sphere', C, 1, 1, 5, 4, false)).toHaveLength(19);
+  });
+
+  it('are hollow as rings and shells one cell thick: the solid shape less its inside', () => {
+    const solid = shapeCells('sphere', C, 1, 1, 12, 4, false), shell = shapeCells('sphere', C, 1, 1, 12, 4, true), core = shapeCells('sphere', C, 1, 1, 8, 4, false);
+    const inShell = new Set(shell.map(key));
+    expect(shell.length).toBeLessThan(solid.length);
+    // Everything of the solid sphere is in the shell or within the smaller one.
+    const coreKeys = new Set(core.map(key));
+    expect(solid.every((c) => inShell.has(key(c)) || coreKeys.has(key(c)))).toBe(true);
+    expect(shell.some((c) => key(c) === key(C))).toBe(false);
+    const ring = shapeCells('circle', C, 1, 1, 8, 4, true);
+    expect(ring.some((c) => key(c) === key(C))).toBe(false);
+    expect(ring.length).toBeGreaterThan(8);
+  });
+
+  it('fill as one change, clipped to the box, and clear as one', () => {
+    const e = new DesignEditor();
+    e.resize([2, 2, 2]);
+    // A sphere centred on the box's corner cell: only the part inside goes in.
+    const cells = shapeCells('sphere', { x: 0, y: 0, z: 0 }, 1, 1, 8, 4, false);
+    const { placed, skipped } = e.fill(cells, 4, P);
+    expect(placed + skipped).toBe(cells.length);
+    expect(placed).toBeGreaterThan(0);
+    expect(skipped).toBeGreaterThan(0);
+    expect(e.clearCells(cells, 4)).toBe(placed);
+    expect(e.voxels).toHaveLength(0);
+    e.undo();
+    expect(e.voxels).toHaveLength(placed);
   });
 });

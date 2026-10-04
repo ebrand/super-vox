@@ -136,6 +136,20 @@ export class DesignEditor {
     return gone;
   }
 
+  /**
+   * Takes away every voxel touching any of `cells` (of `size`; mirroring, their mirror images' too),
+   * as one change. How many went.
+   */
+  clearCells(cells: readonly Cell[], size: number): number {
+    const [W] = this.extent;
+    const touches = (v: BlockVoxel, c: Cell) => v.x < c.x + size && c.x < v.x + v.size && v.y < c.y + size && c.y < v.y + v.size && v.z < c.z + size && c.z < v.z + v.size;
+    const all = this.mirror ? [...cells, ...cells.map((c) => ({ ...c, x: W - c.x - size }))] : cells;
+    const kept = this.voxels.filter((v) => !all.some((c) => touches(v, c)));
+    const gone = this.voxels.length - kept.length;
+    if (gone) this.change(() => (this.draft.states[this.state]!.voxels = kept));
+    return gone;
+  }
+
   /** Takes away the voxel at index `i` (and, mirroring, its mirror image, if there is one just like it). */
   remove(i: number): void {
     const v = this.voxels[i];
@@ -420,4 +434,45 @@ export function aimSurface(
   const p = at(t1);
   p[exitAxis] = dir[exitAxis]! > 0 ? extent[exitAxis]! : 0;
   return { point: p, normal: back(exitAxis), on: 'wall' };
+}
+
+/** Round shapes the designer draws (see shapeCells). */
+export type RoundShape = 'circle' | 'dome' | 'sphere';
+
+/**
+ * The cells of `size` (units) making a round shape centred on cell `centre`, of `radius` (units,
+ * between cell centres): a circle (a disk) across axis `axis` (0 x, 1 y, 2 z) through the centre;
+ * a sphere around it; a dome, the sphere's half on the `sign` side (1 or -1) of that axis (the
+ * centre's layer included, as its floor). Hollow: a ring, or a shell, one cell thick. A cell is in
+ * if its centre is within the radius (and half a cell, so a radius of 0 is the centre cell alone).
+ */
+export function shapeCells(kind: RoundShape, centre: Cell, axis: 0 | 1 | 2, sign: 1 | -1, radius: number, size: number, hollow: boolean): Cell[] {
+  const out: Cell[] = [];
+  const n = Math.max(0, Math.round(radius / size));
+  const outer = (n + 0.5) ** 2, inner = Math.max(0, n - 0.5) ** 2;
+  const keys = ['x', 'y', 'z'] as const;
+  // (The two axes across the shape's axis.)
+  const across = keys.filter((_, k) => k !== axis) as ['x' | 'y' | 'z', 'x' | 'y' | 'z'];
+  const flat = kind === 'circle';
+  for (let a = -n; a <= n; a++) {
+    // (Along the axis: the circle's one layer; the dome's half; the whole sphere.)
+    if (flat && a !== 0) continue;
+    if (kind === 'dome' && a * sign < 0) continue;
+    for (let b = -n; b <= n; b++) {
+      for (let c = -n; c <= n; c++) {
+        const d = a * a + b * b + c * c;
+        if (d > outer) continue;
+        if (hollow && n > 0 && d <= inner) {
+          // (A hollow dome keeps its floor's rim only, as the ring a circle would be: no lid on the bottom.)
+          continue;
+        }
+        const cell = { ...centre };
+        cell[keys[axis]] += a * size;
+        cell[across[0]] += b * size;
+        cell[across[1]] += c * size;
+        out.push(cell);
+      }
+    }
+  }
+  return out;
 }

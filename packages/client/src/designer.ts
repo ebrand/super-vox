@@ -27,7 +27,7 @@ import {
   type MaterialId,
   type ObjectDesign,
 } from '@super-vox/shared';
-import { DesignEditor, aimSurface, cellsIn, clipRegion, draftOf, newDraft, placeAgainst, regionBetween, type Region, type WorkPlane } from './designEditor.js';
+import { DesignEditor, aimSurface, cellsIn, clipRegion, draftOf, newDraft, placeAgainst, regionBetween, shapeCells, type Region, type RoundShape, type WorkPlane } from './designEditor.js';
 import { materialColor } from './materials.js';
 
 /**
@@ -47,9 +47,13 @@ const say = (text: string, kind: '' | 'good' | 'bad' = '') => {
 const css = (c: readonly [number, number, number]) => `rgb(${c.map((v) => Math.round(Math.min(1, Math.max(0, v)) ** (1 / 2.2) * 255)).join(' ')})`;
 const sizeLabel = (units: number) => (units === BLOCK_SIZE ? '1 m' : `1/${BLOCK_SIZE / units} m`);
 
-type Tool = 'build' | 'erase' | 'paint' | 'line' | 'box' | 'select';
-/** Tools that drag out a line or box (see drawing). */
-const drags = (t: Tool): t is 'line' | 'box' | 'select' => t === 'line' || t === 'box' || t === 'select';
+type Tool = 'build' | 'erase' | 'paint' | 'line' | 'box' | 'select' | RoundShape;
+const ROUND: readonly Tool[] = ['circle', 'dome', 'sphere'];
+const isRound = (t: Tool | string): t is RoundShape => (ROUND as readonly string[]).includes(t);
+/** Tools that drag out a line, a box, or a round shape's radius (see drawing). */
+const drags = (t: Tool): t is 'line' | 'box' | 'select' | RoundShape => t === 'line' || t === 'box' || t === 'select' || isRound(t);
+/** Round shapes (circle, dome, sphere) as rings and shells, one voxel thick (see shapeCells). */
+let hollow = false;
 
 let library: ObjectDesign[] = [];
 let canEdit = false;
@@ -92,6 +96,13 @@ const ghostEdges = new THREE.LineSegments(new THREE.EdgesGeometry(cube), new THR
 ghost.add(ghostEdges);
 ghost.visible = false;
 scene.add(ghost);
+/** A round shape being drawn: its voxels as they'd go in (or come out). */
+const SHAPE_PREVIEW_MAX = 40_000;
+const shapePreview = new THREE.InstancedMesh(cube, new THREE.MeshBasicMaterial({ color: 0x40ff60, transparent: true, opacity: 0.35, depthWrite: false }), SHAPE_PREVIEW_MAX);
+shapePreview.count = 0;
+shapePreview.frustumCulled = false;
+scene.add(shapePreview);
+
 /** The selection (see DesignEditor.selection): a box outlined in blue. */
 const selectionBox = new THREE.Mesh(cube, new THREE.MeshBasicMaterial({ color: 0x40a0ff, transparent: true, opacity: 0.12, depthWrite: false }));
 selectionBox.add(new THREE.LineSegments(new THREE.EdgesGeometry(cube), new THREE.LineBasicMaterial({ color: 0x40a0ff })));
@@ -271,8 +282,8 @@ const hoverEl = $('hover');
 function showAim(): void {
   if (drawing) return draw();
   let act = action();
-  // (Lines and boxes start like a build: from where one would go.)
-  if (act === 'line' || act === 'box') act = 'build';
+  // (Lines, boxes and round shapes start like a build: from where one would go.)
+  if (act === 'line' || act === 'box' || isRound(act)) act = 'build';
   const target = aim?.index != null ? editor.voxels[aim.index] : undefined;
   ghost.visible = false;
   hoverEl.textContent = '';
@@ -332,7 +343,17 @@ type Cell = { x: number; y: number; z: number };
  * started from and the axis out of the face it started on; a line or a box's base is dragged out
  * (`end`), then a box is raised or lowered along that axis (`depth`, units) and clicked to finish.
  */
-let drawing: { kind: 'line' | 'box' | 'select'; clear: boolean; start: Cell; axis: number; end: Cell; stage: 'drag' | 'raise'; depth: number; from: number } | null = null;
+let drawing: { kind: 'line' | 'box' | 'select' | RoundShape; clear: boolean; start: Cell; axis: number; sign: 1 | -1; end: Cell; stage: 'drag' | 'raise'; depth: number; from: number } | null = null;
+
+/** A round shape's radius (units, between cell centres) as drawn: from the centre cell to the one the pointer's over, on its plane. */
+function roundRadius(d: NonNullable<typeof drawing>): number {
+  return Math.hypot(d.end.x - d.start.x, d.end.y - d.start.y, d.end.z - d.start.z);
+}
+
+/** The cells of the round shape being drawn. */
+function roundCells(d: NonNullable<typeof drawing>): Cell[] {
+  return shapeCells(d.kind as RoundShape, d.start, d.axis as 0 | 1 | 2, d.sign, roundRadius(d), voxelSize, hollow);
+}
 
 /** Where a line or box would start: the cell a build would fill, or (clearing) the cell in what's aimed at. */
 function startCell(clear: boolean): { cell: Cell; normal: number[] } | null {
@@ -387,6 +408,16 @@ function draw(): void {
     // (From where the pointer was when the base was let go: it starts as a slab.)
     const a = alongAxis(o, d.axis);
     if (a) d.depth = snap(a.t - d.from);
+  } else if (isRound(d.kind)) {
+    // The radius: out across the plane through the centre cell (as a box's base).
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(AXES[d.axis]!, o);
+    const p = raycaster.ray.intersectPlane(plane, new THREE.Vector3());
+    if (p) {
+      d.end = { x: Math.floor(p.x / voxelSize) * voxelSize, y: Math.floor(p.y / voxelSize) * voxelSize, z: Math.floor(p.z / voxelSize) * voxelSize };
+      d.end[cellAxes[d.axis]!] = d.start[cellAxes[d.axis]!];
+    }
+    showShape(d);
+    return;
   } else if (d.kind === 'line') {
     let best: { axis: number; t: number; off: number } | null = null;
     for (let axis = 0; axis < 3; axis++) {
@@ -425,12 +456,47 @@ function draw(): void {
   hoverEl.textContent = d.stage === 'raise' ? `${what} · move to raise it, click to finish (Esc: stop)` : what;
 }
 
+/** Shows the round shape being drawn, voxel by voxel, and says what it is. */
+function showShape(d: NonNullable<typeof drawing>): void {
+  const cells = roundCells(d);
+  const m = new THREE.Matrix4(), half = voxelSize / 2;
+  shapePreview.count = Math.min(cells.length, SHAPE_PREVIEW_MAX);
+  for (let i = 0; i < shapePreview.count; i++) {
+    const c = cells[i]!;
+    m.makeScale(voxelSize * 0.96, voxelSize * 0.96, voxelSize * 0.96).setPosition(c.x + half, c.y + half, c.z + half);
+    shapePreview.setMatrixAt(i, m);
+  }
+  shapePreview.instanceMatrix.needsUpdate = true;
+  (shapePreview.material as THREE.MeshBasicMaterial).color.set(d.clear ? 0xff4040 : 0x40ff60);
+  ghost.visible = false;
+  const radiusM = Math.round(roundRadius(d) / voxelSize) * voxelSize / BLOCK_SIZE;
+  const name = d.kind === 'circle' ? (hollow ? 'ring' : 'circle') : `${hollow ? 'hollow ' : ''}${d.kind}`;
+  hoverEl.textContent = `${name}, radius ${radiusM} m of ${sizeLabel(voxelSize)}${d.clear ? ': clear it' : ` ${materialName(material)}: ${cells.length} voxels`} · let go to ${d.clear ? 'clear' : 'make'} it (Esc: stop)`;
+}
+
+function hideShape(): void {
+  shapePreview.count = 0;
+}
+
 /** Fills (or clears) what's been drawn. */
 function finishDrawing(): void {
   const d = drawing!;
   const r = drawnRegion();
   drawing = null;
   controls.enabled = true;
+  if (isRound(d.kind)) {
+    hideShape();
+    const cells = roundCells(d);
+    if (d.clear) {
+      const n = editor.clearCells(cells, voxelSize);
+      say(n ? `cleared ${n} voxel${n === 1 ? '' : 's'}` : 'nothing there to clear');
+    } else {
+      const { placed, skipped } = editor.fill(cells, voxelSize, material);
+      say(`${placed} voxel${placed === 1 ? '' : 's'} in${skipped ? `, ${skipped} skipped (taken, or outside the box)` : ''}`, placed ? '' : 'bad');
+    }
+    changed();
+    return;
+  }
   if (d.kind === 'select') {
     editor.selection = r;
     sayMove();
@@ -483,6 +549,7 @@ function arrowMove(key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight', ve
 function stopDrawing(): void {
   if (!drawing) return;
   drawing = null;
+  hideShape();
   controls.enabled = true;
   showAim();
 }
@@ -512,7 +579,8 @@ view.addEventListener(
       const s = startCell(clear || tool === 'select');
       if (!s) return;
       const axis = Math.max(0, s.normal.findIndex((c) => c !== 0));
-      drawing = { kind: tool, clear, start: s.cell, axis, end: { ...s.cell }, stage: 'drag', depth: 0, from: 0 };
+      const sign: 1 | -1 = (s.normal[axis] ?? 1) < 0 ? -1 : 1;
+      drawing = { kind: tool, clear, start: s.cell, axis, sign, end: { ...s.cell }, stage: 'drag', depth: 0, from: 0 };
       controls.enabled = false;
       draw();
     }
@@ -528,7 +596,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   }
   if (drawing?.stage === 'drag') {
     aimAt(e);
-    if (drawing.kind === 'line') finishDrawing();
+    if (drawing.kind === 'line' || isRound(drawing.kind)) finishDrawing();
     else {
       drawing.stage = 'raise';
       drawing.from = alongAxis(centre(drawing.start), drawing.axis)?.t ?? 0;
@@ -556,6 +624,12 @@ renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 // --- The panels ---------------------------------------------------------------------------------
 
 const toolsEl = $('tools'), sizesEl = $('sizes'), mirrorEl = $<HTMLButtonElement>('mirror');
+const hollowEl = $<HTMLButtonElement>('hollow');
+hollowEl.onclick = () => {
+  hollow = !hollow;
+  if (drawing && isRound(drawing.kind)) draw();
+  renderPanels();
+};
 const undoEl = $<HTMLButtonElement>('undo'), redoEl = $<HTMLButtonElement>('redo');
 for (const b of toolsEl.querySelectorAll<HTMLButtonElement>('button')) b.onclick = () => setTool(b.dataset.tool as Tool);
 for (const s of GRID_SIZES) {
@@ -853,6 +927,7 @@ function renderPanels(): void {
   for (const b of palette.querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', Number(b.dataset.material) === material);
   $('material-name').textContent = materialName(material);
   mirrorEl.classList.toggle('on', editor.mirror);
+  hollowEl.classList.toggle('on', hollow);
   $('move').hidden = !editor.selection;
   undoEl.disabled = !editor.canUndo;
   redoEl.disabled = !editor.canRedo;
@@ -1095,6 +1170,10 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyL') setTool('line');
   else if (e.code === 'KeyF') setTool('box');
   else if (e.code === 'KeyS') setTool('select');
+  else if (e.code === 'KeyC') setTool('circle');
+  else if (e.code === 'KeyD') setTool('dome');
+  else if (e.code === 'KeyR') setTool('sphere');
+  else if (e.code === 'KeyH') hollowEl.click();
   else if (e.code === 'KeyE') setTool('erase');
   else if (e.code === 'KeyP') setTool('paint');
   else if (e.code === 'KeyM') mirrorEl.click();

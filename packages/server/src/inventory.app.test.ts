@@ -405,9 +405,12 @@ describe('inventories', () => {
 
   it('carry water in buckets, a cubic metre each, and pour it out', async () => {
     const { url, cookie, inventories, ann } = await setup('survival');
-    await inventories.save(ann.id, 'default@single', { items: new Map([[Item.Bucket, 1], [Material.Water, B]]), hotbar: Array(HOTBAR_SLOTS).fill(null) });
+    await inventories.save(ann.id, 'default@single', { items: new Map([[Item.Bucket, 1], [Material.Water, B], [Material.Dirt, 4 * B]]), hotbar: Array(HOTBAR_SLOTS).fill(null) });
     const p = await player(url, cookie);
     await p.until(() => !!p.inventory());
+    // Walls round block (50, 0, 50), so what's poured there can't run off before it's scooped up
+    // (poured water levels out, a step every WATER_STEP_MS).
+    for (const [x, z] of [[49, 50], [51, 50], [50, 49], [50, 51]]) expect(await p.edit({ op: 'place', x: x! * 16, y: 0, z: z! * 16, size: 16, material: Material.Dirt })).toMatchObject({ ok: true });
     let id = 200;
     const act = async (msg: object) => {
       const n = ++id;
