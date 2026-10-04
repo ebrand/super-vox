@@ -87,6 +87,7 @@ function specForNewWorld(): WorldSpec {
         treeClumping: numberEnv('WORLD_TREE_CLUMPING', d.treeClumping),
         rivers: numberEnv('WORLD_RIVERS', d.rivers),
         lakes: numberEnv('WORLD_LAKES', d.lakes),
+        lakesByArea: numberEnv('WORLD_LAKES_BY_AREA', d.lakesByArea),
         islandArcs: numberEnv('WORLD_ISLAND_ARCS', d.islandArcs),
         hotspots: numberEnv('WORLD_HOTSPOTS', d.hotspots),
         islandMinSize: numberEnv('WORLD_ISLAND_MIN_SIZE', d.islandMinSize),

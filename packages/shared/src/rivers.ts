@@ -24,6 +24,8 @@ export interface HydrologyInput {
   rivers: number;
   /** 0 (basins filled in) .. 100 (even small basins hold lakes). */
   lakes: number;
+  /** Whether `lakes` is the share of the basins' water that's lakes, biggest first (else the smallest basin holding one: see lakeMinCells). */
+  lakesByArea?: boolean;
   seed: number;
 }
 
@@ -204,10 +206,24 @@ export function buildHydrology(input: HydrologyInput): Hydrology {
   // 2. Basins: connected cells filled over half a metre (beyond the jitter) above the ground; deep
   //    enough and big enough ones
   //    are lakes at their spill height; the rest are filled in.
+  //    (By area: every basin found first, then the biggest made lakes until they hold `lakes`
+  //    percent of what all of them could.)
   const lakeLevel = new Float32Array(n).fill(NO_LAKE);
-  const minLake = lakeMinCells(input.lakes);
+  const byArea = input.lakesByArea === true;
+  const minLake = byArea ? (input.lakes > 0 ? lakeMinCells(100) : Infinity) : lakeMinCells(input.lakes);
   const seen = new Uint8Array(n);
   let lakeCount = 0, lakeCells = 0;
+  const makeLake = (cells: number[]) => {
+    let level = Infinity;
+    for (const i of cells) level = Math.min(level, F[i]!);
+    for (const i of cells) lakeLevel[i] = level;
+    lakeCount++;
+    lakeCells += cells.length;
+  };
+  const fillIn = (cells: number[]) => {
+    for (const i of cells) E[i] = F[i]!;
+  };
+  const candidates: number[][] = [];
   for (let s = 0; s < n; s++) {
     if (seen[s] || outlet[s] || F[s]! - E[s]! <= 8.5) continue;
     const cells: number[] = [s];
@@ -224,14 +240,21 @@ export function buildHydrology(input: HydrologyInput): Hydrology {
         cells.push(j);
       }
     }
-    if (cells.length >= minLake && deepest >= LAKE_MIN_DEPTH) {
-      let level = Infinity;
-      for (const i of cells) level = Math.min(level, F[i]!);
-      for (const i of cells) lakeLevel[i] = level;
-      lakeCount++;
-      lakeCells += cells.length;
-    } else {
-      for (const i of cells) E[i] = F[i]!;
+    if (cells.length < minLake || deepest < LAKE_MIN_DEPTH) fillIn(cells);
+    else if (byArea) candidates.push(cells);
+    else makeLake(cells);
+  }
+  if (byArea) {
+    // Biggest first (ties: the one found first), until the share is reached.
+    candidates.sort((a, b) => b.length - a.length || a[0]! - b[0]!);
+    const total = candidates.reduce((t, c) => t + c.length, 0);
+    const want = (Math.min(100, Math.max(0, input.lakes)) / 100) * total;
+    let taken = 0;
+    for (const cells of candidates) {
+      if (taken < want) {
+        makeLake(cells);
+        taken += cells.length;
+      } else fillIn(cells);
     }
   }
 

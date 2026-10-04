@@ -771,10 +771,11 @@ describe('biomes', () => {
     const cold = land({ northTemperature: -14, southTemperature: -6 });
     expect(Math.min(...cold.filter((x) => x.mat === Material.Snow).map((x) => x.m))).toBeLessThan(20);
     expect(cold.filter((x) => x.mat === Material.Stone && x.m > 10 && x.m < 90).length).toBe(0);
-    // A cool world: a band of bare rock below the snow on high ground, none on low ground.
+    // A cool world: a band of bare rock below the snow on high ground, none on low ground (from
+    // 100 m up, wandering 30 m either way at snowFractal 50).
     const cool = land({ northTemperature: -2, southTemperature: 10 });
     expect(cool.some((x) => x.mat === Material.Stone && x.m > 120)).toBe(true);
-    expect(cool.filter((x) => x.mat === Material.Stone && x.m > 10 && x.m < 90).length).toBe(0);
+    expect(cool.filter((x) => x.mat === Material.Stone && x.m > 10 && x.m < 69).length).toBe(0);
     // The snow temperature moves the line; the fixed heights (biomes off only) don't.
     const snowShare = (over: Partial<PlateTerrainConfig>) => {
       const l = land({ northTemperature: -2, southTemperature: 10, ...over });
@@ -803,11 +804,15 @@ describe('biomes', () => {
 
   it('with altitudeRock, also put bare rock above the rock altitude however warm', () => {
     // A hot world without snow: rock on all the ground above the rock altitude, none on the
-    // land between the beaches and it.
+    // land between the beaches and it (the line wandering 30 m either way at snowFractal 50).
     const hot = landOf({ northTemperature: 26, southTemperature: 32, snowAltitude: 2000, rockAltitude: 150 });
-    expect(hot.filter((x) => x.m >= 150).length).toBeGreaterThan(0);
-    expect(hot.filter((x) => x.m >= 150 && x.mat !== Material.Stone).length).toBe(0);
-    expect(hot.filter((x) => x.m > 10 && x.m < 150 && x.mat === Material.Stone).length).toBe(0);
+    expect(hot.filter((x) => x.m >= 181).length).toBeGreaterThan(0);
+    expect(hot.filter((x) => x.m >= 181 && x.mat !== Material.Stone).length).toBe(0);
+    expect(hot.filter((x) => x.m > 10 && x.m < 119 && x.mat === Material.Stone).length).toBe(0);
+    // ...and between, some of each: not a contour line.
+    const edge = hot.filter((x) => x.m > 125 && x.m < 175);
+    expect(edge.some((x) => x.mat === Material.Stone)).toBe(true);
+    expect(edge.some((x) => x.mat !== Material.Stone)).toBe(true);
     // Snow above it stays snow; out of reach, the same as temperature alone.
     const both = landOf({ northTemperature: 26, southTemperature: 32, snowAltitude: 250, rockAltitude: 150 });
     expect(both.filter((x) => x.m > 250 + 31 && x.mat !== Material.Snow).length).toBe(0);
@@ -818,9 +823,9 @@ describe('biomes', () => {
 });
 
 describe('rock and snow', () => {
-  /** The material at a point for ground `metres` above the sea, ignoring steepness. */
+  /** The material at a point for ground `metres` above the sea, ignoring steepness (and the lines' wandering). */
   const at = (over: Partial<PlateTerrainConfig>, metres: number) => {
-    const p = plates({ rockSlope: 90, ...over });
+    const p = plates({ rockSlope: 90, snowFractal: 0, ...over });
     return p.materials(128_000, 128_000, 1, 1, 1, Int32Array.of(p.seaLevel + metres * 16))[0];
   };
 
@@ -966,7 +971,7 @@ describe('beaches', () => {
     const H = p.heights(0, 0, 500, 500, 512), M = p.materials(0, 0, 500, 500, 512, H);
     let checked = 0;
     for (let k = 0; k < H.length; k++) {
-      if (M[k] !== Material.Stone || H[k]! >= p.seaLevel + 180 * 16) continue;
+      if (M[k] !== Material.Stone || H[k]! >= p.seaLevel + (180 - 31) * 16) continue; // (the rock altitude, wandering 30 m)
       if (Math.abs(H[k]! - p.seaLevel) > 4 * 16) {
         const x = (k % 500) * 512, z = Math.floor(k / 500) * 512;
         const e = (a: number, b: number) => p.heights(a, b, 1, 1)[0]!;

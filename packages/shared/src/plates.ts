@@ -107,8 +107,13 @@ export interface PlateTerrainConfig {
   treeClumping: number;
   /** Rivers: 0 (none) .. 100 (many small streams); 50 is a network of streams joining into rivers. */
   rivers: number;
-  /** Lakes in land basins: 0 (basins are filled in) .. 100 (even small basins hold lakes). */
+  /**
+   * Lakes in land basins: 0 (basins are filled in) .. 100 (even small basins hold lakes). With
+   * lakesByArea 1, the share of the water basins could hold that's lakes (the biggest first); 0,
+   * the smallest basin that holds one (halving every 10: worlds made before lakesByArea).
+   */
   lakes: number;
+  lakesByArea: number;
   /** Density of island chains along seams where an oceanic plate meets another plate, 0 (none) .. 100. */
   islandArcs: number;
   /** Groups of islands inside oceanic plates, each a main island trailing smaller ones (0..40). */
@@ -171,6 +176,7 @@ export function defaultPlateTerrain(seed = 1, world?: WorldConfig): PlateTerrain
     treeClumping: 60,
     rivers: 50,
     lakes: 50,
+    lakesByArea: 1,
     islandArcs: 0,
     hotspots: 0,
     islandMinSize: 200,
@@ -258,6 +264,8 @@ export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
     if (r.southTemperature === undefined) r.southTemperature = 26;
   }
   if (r.lakes === undefined) r.lakes = 0;
+  // The lakes setting was the smallest basin holding one.
+  if (r.lakesByArea === undefined) r.lakesByArea = 0;
   // With biomes, the snow and rock altitudes didn't count (temperature alone decided).
   if (r.altitudeSnow === undefined) r.altitudeSnow = 0;
   if (r.altitudeRock === undefined) r.altitudeRock = 0;
@@ -322,6 +330,7 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   num(c.treeClumping, L.treeClumping, 'treeClumping');
   num(c.rivers, L.rivers, 'rivers');
   num(c.lakes, L.lakes, 'lakes');
+  if (c.lakesByArea !== 0 && c.lakesByArea !== 1) throw new RangeError(`lakesByArea must be 0 or 1; got ${c.lakesByArea}`);
   num(c.islandArcs, L.islandArcs, 'islandArcs');
   int(c.hotspots, ...L.hotspots, 'hotspots');
   num(c.islandMinSize, L.islandSize, 'islandMinSize', ' m');
@@ -506,6 +515,8 @@ export class PlateHeights implements HeightSource {
   /** Fractal noise moving the snow line up and down, and how far (units). */
   private readonly snowNoise: Octave[];
   private readonly snowWander: number;
+  /** Fractal noise moving the heights bare rock starts at (ROCK_BAND_MIN_HEIGHT, rockLine) up and down, as far as the snow line wanders: its own, so the two edges don't run alike. */
+  private readonly rockNoise: Octave[];
   /** Biome borders: how far noise shifts the climate (0: sharp), and the ecotone trees mix across. */
   private readonly ragged: Ecotone;
   private readonly raggedNoise: [Octave[], Octave[]];
@@ -693,7 +704,7 @@ export class PlateHeights implements HeightSource {
     // Strokes change the ground under the climate and the rivers.
     const strokesKey = JSON.stringify(strokes);
     const climateKey = [...heightKey, strokesKey, cf.biomes, cf.northTemperature, cf.southTemperature, cf.equator, cf.equatorTemperature, cf.windFrom, cf.rainfall];
-    const hydrologyKey = [...(cf.biomes === 1 ? climateKey : heightKey), strokesKey, cf.biomes, cf.rivers, cf.lakes];
+    const hydrologyKey = [...(cf.biomes === 1 ? climateKey : heightKey), strokesKey, cf.biomes, cf.rivers, cf.lakes, cf.lakesByArea];
     // On a wrapping world each octave's lattice must tile the width exactly.
     const fit = (spacing: number) => (this.wrap ? W / Math.max(1, Math.round(W / spacing)) : spacing);
     const octaves = (seed: number, spacings: number[], persistence = 0.5): Octave[] =>
@@ -1459,6 +1470,7 @@ export class PlateHeights implements HeightSource {
     // The snow line wanders at every scale from ~1 km down to 16 m.
     this.snowNoise = octaves(config.terrainSeed * 7919 + 37, [16384, 8192, 4096, 2048, 1024, 512, 256], 0.65);
     this.snowWander = (config.snowFractal / 100) * SNOW_FRACTAL_MAX;
+    this.rockNoise = octaves(config.terrainSeed * 7919 + 41, [16384, 8192, 4096, 2048, 1024, 512, 256], 0.65);
     // Biome borders wander at every scale from ~1 km down to 16 m.
     const blend = config.biomes === 1 ? config.biomeBlend / 100 : 0;
     this.ragged = { degrees: blend * RAGGED_DEGREES, moisture: blend * RAGGED_MOISTURE };
@@ -1478,7 +1490,7 @@ export class PlateHeights implements HeightSource {
       const filled = elevation.slice();
       const hydrology = buildHydrology({
         elevation: filled, cols, rows, cell: PLATE_CELL, sea, wrap: this.wrap,
-        wetness: this.moisture, rivers: config.rivers, lakes: config.lakes, seed: config.terrainSeed * 7919 + 61,
+        wetness: this.moisture, rivers: config.rivers, lakes: config.lakes, lakesByArea: config.lakesByArea === 1, seed: config.terrainSeed * 7919 + 61,
       });
       return { elevation: filled, hydrology, rivers: hydrology.segments.length ? new RiverIndex(hydrology.segments, W, this.wrap) : null };
     });
@@ -1806,11 +1818,11 @@ export class PlateHeights implements HeightSource {
     // altitudeRock, also lie above their altitudes); without, fixed heights. Either way the snow line
     // wanders (in degrees or metres), computed only where some ground is within its reach.
     const byHeight = !climate || this.altitudeSnow;
-    const shiftNear = (wander: number, near: () => boolean) => {
+    const shiftNear = (wander: number, near: () => boolean, noise = this.snowNoise) => {
       if (wander <= 0 || !near()) return null;
-      const f = fractalGrid(this.snowNoise, x0, z0, w, d, step);
+      const f = fractalGrid(noise, x0, z0, w, d, step);
       // Scaled by the octaves' weight so it spans about -1..1.
-      const s = (2 / this.snowNoise.reduce((a, o) => a + o.weight, 0)) * 1.8 * wander;
+      const s = (2 / noise.reduce((a, o) => a + o.weight, 0)) * 1.8 * wander;
       return f.map((v) => Math.max(-wander, Math.min(wander, v * s)));
     };
     const degrees = (this.snowWander / SNOW_FRACTAL_MAX) * SNOW_FRACTAL_DEGREES;
@@ -1820,6 +1832,9 @@ export class PlateHeights implements HeightSource {
     };
     const tempShift = climate ? shiftNear(degrees, () => anyWithin(climate.temperature, this.snowTemp, degrees + ROCK_BAND_DEGREES)) : null;
     const heightShift = byHeight ? shiftNear(this.snowWander, () => anyWithin(heights, this.snowLine, this.snowWander)) : null;
+    // The heights rock starts at wander too (else their edge, and the treeline with it, follows a contour).
+    const rockBandAt = sea + ROCK_BAND_MIN_HEIGHT;
+    const rockShift = shiftNear(this.snowWander, () => (climate !== null && anyWithin(heights, rockBandAt, this.snowWander)) || ((!climate || this.altitudeRock) && anyWithin(heights, this.rockLine, this.snowWander)), this.rockNoise);
     // River and lake beds (only looked up where this world has any), and polar ice.
     const standing = this.hydrology ? this.surface(x0, z0, w, d, step).water : null;
     const ice = this.iceTops(x0, z0, w, d, step);
@@ -1850,10 +1865,11 @@ export class PlateHeights implements HeightSource {
         // (And above the snow and rock altitudes, with altitudeSnow and altitudeRock.)
         const t = climate.temperature[k]! + (tempShift ? tempShift[k]! : 0);
         snow = t < this.snowTemp || high;
-        bare = (t < this.snowTemp + ROCK_BAND_DEGREES && h - sea > ROCK_BAND_MIN_HEIGHT) || (this.altitudeRock && h >= this.rockLine);
+        const r = rockShift ? rockShift[k]! : 0;
+        bare = (t < this.snowTemp + ROCK_BAND_DEGREES && h > rockBandAt + r) || (this.altitudeRock && h >= this.rockLine + r);
       } else {
         snow = high;
-        bare = h >= this.rockLine;
+        bare = h >= this.rockLine + (rockShift ? rockShift[k]! : 0);
       }
       // Steep ground is bare rock even above the snow line: steep faces don't hold snow.
       out[k] =
