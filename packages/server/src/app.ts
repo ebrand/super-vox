@@ -47,6 +47,7 @@ import {
   isValidWorldName,
   clockHours,
   isWorldShape,
+  WORLD_SHAPES,
   normalizeX,
   parseClockChange,
   parsePlateTerrain,
@@ -341,7 +342,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (!catalog.create) return reply.code(403).send({ error: 'creating worlds is not enabled on this server' });
     if (!(await operator(req))) return reply.code(403).send(notOperator('creating worlds'));
     const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { name?: unknown; plates?: unknown; shape?: unknown; mode?: unknown };
-    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: 'shape must be "round-64x32", "round-16x8" or "flat-16x16"' });
+    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: `shape must be one of ${Object.keys(WORLD_SHAPES).map((s) => `"${s}"`).join(', ')}` });
     if (body.mode !== undefined && !isGameMode(body.mode)) return reply.code(400).send({ error: 'mode must be "survival" or "creative"' });
     if (!isValidWorldName(body.name)) {
       return reply.code(400).send({ error: 'name must be 1-64 lower-case letters, digits, "-" or "_", starting with a letter or digit' });
@@ -369,7 +370,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const { name } = req.params;
     if (!isValidWorldName(name)) return reply.code(404).send({ error: 'no such world' });
     const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { plates?: unknown; shape?: unknown };
-    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: 'shape must be "round-64x32", "round-16x8" or "flat-16x16"' });
+    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: `shape must be one of ${Object.keys(WORLD_SHAPES).map((s) => `"${s}"`).join(', ')}` });
     let plates;
     try {
       plates = parsePlateTerrain(body.plates);

@@ -25,11 +25,11 @@ function numberEnv(name: string, fallback: number): number {
 }
 
 /** Settings for a world that doesn't exist yet (WORLD_GENERATOR: plates (default), noise, or flat). */
-/** WORLD_SHAPE for a new default world: round-64x32 (default), round-16x8 or flat-16x16. */
+/** WORLD_SHAPE for a new default world: round-64x32 (default), round-32x16, round-16x8 or flat-16x16. */
 function worldShapeEnv(): WorldShape {
   const v = process.env.WORLD_SHAPE;
   if (v === undefined || v === '') return DEFAULT_WORLD_SHAPE;
-  if (!isWorldShape(v)) throw new RangeError(`WORLD_SHAPE must be "round-64x32", "round-16x8" or "flat-16x16"; got "${v}"`);
+  if (!isWorldShape(v)) throw new RangeError(`WORLD_SHAPE must be one of ${Object.keys(WORLD_SHAPES).map((s) => `"${s}"`).join(', ')}; got "${v}"`);
   return v;
 }
 
