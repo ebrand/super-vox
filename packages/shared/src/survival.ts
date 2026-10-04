@@ -43,7 +43,7 @@ export const EXHAUSTION = {
 } as const;
 
 /** Food points each food gives back. */
-export const FOODS: Readonly<Record<ItemId, number>> = { [Item.Pork]: 4 };
+export const FOODS: Readonly<Record<ItemId, number>> = { [Item.Pork]: 3, [Item.CookedPork]: 8 };
 
 export function isFood(item: ItemId): boolean {
   return FOODS[item] !== undefined;

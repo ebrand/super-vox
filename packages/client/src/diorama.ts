@@ -164,6 +164,11 @@ export class Diorama {
     );
   }
 
+  /** Tints the ground by `climate` (see encodeClimate; null: no tint), as the world's settings have it now. */
+  setClimate(climate: Uint8Array | null, wrapX: boolean): void {
+    this.material.setTint(climate ? createTint(decodeClimate(climate), wrapX) : null);
+  }
+
   /**
    * Shows a diorama's parts (see terraform.worker.ts): `area` is its corner and size, base and top
    * (units), to frame the view on it.

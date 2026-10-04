@@ -139,6 +139,12 @@ const inventoryUi = new InventoryUi(
     const wrap = world?.wrapX ? world.widthUnits / BLOCK_SIZE : null;
     return stationAmong(placedObjects, 'crafting-table', x, y, z, TABLE_REACH, wrap) || materialNearIn((cx, cy, cz) => chunks!.chunkAt({ cx, cy, cz }), x, y, z, TABLE_REACH, Material.CraftingTable);
   },
+  // The furnace or stove open (see stations.ts).
+  (act, at) => {
+    if (act === 'close') connection?.send({ type: 'stationClose' });
+    else if ('take' in act) connection?.send({ type: 'stationTake', ...at, slot: act.take });
+    else connection?.send({ type: 'stationPut', ...at, slot: act.put, item: act.item, amount: act.amount });
+  },
 );
 // The wheel steps through the hotbar (while it's there: players who can build).
 controls.onWheel = (deltaY) => {
@@ -513,6 +519,8 @@ connection = connect({
             updateHud();
           });
           editTool = new EditTool(scene, camera, chunks, send, () => inventoryUi.material, () => (controls.collide ? playerBox(eyeUnits()) : null));
+          // Right-clicking a furnace or stove opens it (the server answers with what's in it).
+          editTool.onStation = (o) => send({ type: 'stationOpen', x: o.x, y: o.y, z: o.z });
           // Survival: removing is mining, held for as long as the material takes (a ring shows how far along).
           editTool.survival = survivalMovement;
           // Creative: dig and fill boxes up to 16 m (dig and place modes).
@@ -662,9 +670,19 @@ connection = connect({
       case 'editResult':
         editTool?.onServerMessage(msg);
         break;
+      case 'station':
+        // Opened (the mouse let go of, as for the inventory), or what's in it now.
+        if (msg.state && !inventoryUi.isOpen && controls.pointerLocked) document.exitPointerLock();
+        inventoryUi.showStation(msg);
+        break;
       case 'error':
         if (msg.code === 'craft') {
           inventoryUi.say(msg.message);
+          break;
+        }
+        if (msg.code === 'station') {
+          if (inventoryUi.isOpen) inventoryUi.say(msg.message);
+          else editTool?.say(msg.message);
           break;
         }
         if (msg.code === 'eat') {

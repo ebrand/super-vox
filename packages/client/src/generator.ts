@@ -1,6 +1,8 @@
 import './fullscreen.js';
-import { BIOME_NAMES, Biome, DEFAULT_WORLD_SHAPE, PLATE_LIMITS, WORLD_SHAPES, defaultPlateCounts, defaultPlateTerrain, isValidWorldName, isWorldShape, validatePlateTerrain, type BiomeId, type PlateTerrainConfig, type WorldShape } from '@super-vox/shared';
+import { BIOME_NAMES, Biome, DEFAULT_WORLD_SHAPE, PLATE_LIMITS, SURFACE_SETTINGS, WORLD_SHAPES, defaultPlateCounts, defaultPlateTerrain, isValidWorldName, isWorldShape, validatePlateTerrain, type BiomeId, type PlateTerrainConfig, type WorldShape } from '@super-vox/shared';
 import type { PreviewRequest, PreviewResponse } from './generator.worker.js';
+import type { CloseUpRequest, CloseUpResponse } from './generatorArea.worker.js';
+import { Diorama } from './diorama.js';
 import type { Preview } from './generatorPreview.js';
 import { materialName } from './materials.js';
 import { renderMap } from './worldMap.js';
@@ -38,45 +40,45 @@ const FIELDS: FieldSpec[] = [
   { key: 'maxHeight', label: 'Highest hills', section: 'Land and sea', min: L.height[0], max: L.height[1], step: 1, unit: 'm', hint: 'Top of the land outside mountain ranges' },
   { key: 'minHeight', label: 'Deepest sea floor', section: 'Land and sea', min: L.height[0], max: L.height[1], step: 1, unit: 'm' },
   { key: 'shoreFractal', label: 'Shoreline fractal', section: 'Land and sea', min: L.shoreFractal[0], max: L.shoreFractal[1], step: 1, hint: '0 smooth coasts … 100 broken coasts, many islands' },
-  { key: 'terrainSeed', label: 'Terrain seed', section: 'Relief', min: 0, max: MAX_SEED, step: 1, seed: true, hint: "Each plate's noise; reroll the relief, keep the plates" },
-  { key: 'noiseScale', label: 'Feature size', section: 'Relief', min: L.noiseScale[0], max: L.noiseScale[1], step: 50, unit: 'm', log: true, hint: 'Size of the largest hills and basins' },
-  { key: 'noiseRoughness', label: 'Roughness', section: 'Relief', min: L.noiseRoughness[0], max: L.noiseRoughness[1], step: 1, hint: '0 smooth swells … 100 rugged' },
-  { key: 'plains', label: 'Plains', section: 'Relief', min: L.plains[0], max: L.plains[1], step: 1, unit: '%', hint: 'Share of the land that is broad, nearly flat lowland (good for building)' },
-  { key: 'lowlandFlatness', label: 'Lowland flatness', section: 'Relief', min: L.lowlandFlatness[0], max: L.lowlandFlatness[1], step: 1, hint: 'Flatter low ground, steeper climb near the peaks (flat coasts get wider beaches)' },
-  { key: 'surfaceRoughness', label: 'Surface roughness', section: 'Relief', min: L.surfaceRoughness[0], max: L.surfaceRoughness[1], step: 1, hint: 'Small bumps in the ground: 0 smooth … 100 lumpy (50 = original)' },
-  { key: 'mountains', label: 'Mountains', section: 'Mountains', min: L.mountains[0], max: L.mountains[1], step: 1, unit: '%', hint: 'Share of converging plate seams that raise ranges (0 = none)' },
-  { key: 'mountainHeight', label: 'Mountain height', section: 'Mountains', min: L.height[0], max: L.height[1], step: 5, unit: 'm', hint: 'The highest peak (at least the highest hills)' },
-  { key: 'mountainWidth', label: 'Range width', section: 'Mountains', min: L.mountainWidth[0], max: L.mountainWidth[1], step: 50, unit: 'm', log: true },
-  { key: 'mountainRuggedness', label: 'Ruggedness', section: 'Mountains', min: L.mountainRuggedness[0], max: L.mountainRuggedness[1], step: 1, hint: '0 rounded massifs … 100 sharp ridges' },
-  { key: 'mountainDetail', label: 'Mountain detail', section: 'Mountains', min: L.mountainDetail[0], max: L.mountainDetail[1], step: 1, hint: 'Gullies, spurs and crags on mountain sides (16-256 m); fine detail, so it shows in the game more than in this preview' },
-  { key: 'beaches', label: 'Beaches', section: 'Surface', min: L.beaches[0], max: L.beaches[1], step: 1, hint: 'Sand on gentle coasts: 0 none … 100 wide; steep coasts stay rocky' },
-  { key: 'rockAltitude', label: 'Rock altitude', section: 'Surface', min: L.altitude[0], max: L.altitude[1], step: 5, unit: 'm', hint: 'Bare rock from this height above the sea, however warm (with biomes, cold high ground has rock too)' },
-  { key: 'altitudeRock', label: 'Rock altitude with biomes', section: 'Surface', min: 0, max: 1, step: 1, toggle: true, hint: 'With biomes: bare rock above the rock altitude too (off: temperature alone, as worlds made before this setting)' },
-  { key: 'snowAltitude', label: 'Snow altitude', section: 'Surface', min: L.altitude[0], max: L.altitude[1], step: 5, unit: 'm', hint: 'Snow from this height above the sea, however warm (with biomes, cold ground lower down has snow too)' },
-  { key: 'altitudeSnow', label: 'Snow altitude with biomes', section: 'Surface', min: 0, max: 1, step: 1, toggle: true, hint: 'With biomes: snow above the snow altitude too (off: temperature alone, as worlds made before this setting)' },
-  { key: 'snowFractal', label: 'Snow line fractal', section: 'Surface', min: L.snowFractal[0], max: L.snowFractal[1], step: 1, hint: 'How ragged the snow line is: 0 a contour … 100 wandering ±60 m' },
-  { key: 'rockRoughness', label: 'Rock roughness', section: 'Surface', min: L.rockRoughness[0], max: L.rockRoughness[1], step: 1, hint: 'Outcrops, knolls and gullies (16-256 m) on bare rock ground (cold high ground, above the rock altitude): 0 smooth … 100 up to ±24 m; fine detail, so it shows in the game more than in this preview' },
-  { key: 'rockVariety', label: 'Rock variety', section: 'Surface', min: L.rockVariety[0], max: L.rockVariety[1], step: 1, hint: 'Bare rock in patches of gravel, pale and (where wet) mossy stone, with dark bands on steep faces: 0 all one stone … 100 many' },
-  { key: 'rockSlope', label: 'Rock slope', section: 'Surface', min: L.rockSlope[0], max: L.rockSlope[1], step: 1, unit: '°', hint: 'Ground steeper than this is bare rock, even above the snow; 90 = never' },
-  { key: 'biomes', label: 'Biomes', section: 'Climate', min: 0, max: 1, step: 1, toggle: true, hint: 'Jungle, forests, grassland, savanna, desert, tundra and ice from temperature and moisture' },
-  { key: 'northTemperature', label: 'North temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 1, unit: '°C', hint: 'At sea level on the north edge' },
-  { key: 'southTemperature', label: 'South temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 1, unit: '°C', hint: 'At sea level on the south edge' },
-  { key: 'equator', label: 'Equator', section: 'Climate', min: 0, max: 1, step: 1, toggle: true, hint: 'Hottest across the middle, colder toward both edges (off: from the north edge to the south edge)' },
-  { key: 'equatorTemperature', label: 'Equator temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 1, unit: '°C', hint: 'At sea level across the middle (with an equator)' },
-  { key: 'altitudeCooling', label: 'Altitude cooling', section: 'Climate', min: L.altitudeCooling[0], max: L.altitudeCooling[1], step: 0.1, unit: '°C/100 m', hint: 'Colder with height (real air: ~0.65)' },
-  { key: 'rainfall', label: 'Rainfall', section: 'Climate', min: L.rainfall[0], max: L.rainfall[1], step: 1, hint: '0 dry … 100 soaked; wet near the sea, drier inland' },
-  { key: 'snowTemperature', label: 'Snow temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 0.5, unit: '°C', hint: 'Ground colder than this is snow; a band of bare rock lies just below it on high ground' },
-  { key: 'biomeBlend', label: 'Biome blending', section: 'Climate', min: L.biomeBlend[0], max: L.biomeBlend[1], step: 1, hint: '0 sharp borders … 100 wide, ragged transitions where trees mix and ground colours blend' },
-  { key: 'rivers', label: 'Rivers', section: 'Climate', min: L.rivers[0], max: L.rivers[1], step: 1, hint: '0 none … 100 many small streams; rivers cut valleys to the sea, more in wet country' },
-  { key: 'lakes', label: 'Lakes', section: 'Climate', min: L.lakes[0], max: L.lakes[1], step: 1, unit: '%', hint: 'Share of the water land basins could hold that stands in lakes, the biggest first: 0 basins filled in … 100 even small basins hold lakes' },
-  { key: 'lakesByArea', label: 'Lakes by area', section: 'Climate', min: 0, max: 1, step: 1, toggle: true, hint: 'On: lakes is a share of the water basins could hold, growing evenly. Off: the smallest basin with a lake, halving every 10 (as worlds made before this setting)' },
-  { key: 'trees', label: 'Trees', section: 'Climate', min: L.trees[0], max: L.trees[1], step: 1, hint: 'Forest density: 0 none, 50 natural for each biome, 100 double' },
-  { key: 'treeClumping', label: 'Tree clumping', section: 'Climate', min: L.treeClumping[0], max: L.treeClumping[1], step: 1, hint: '0 trees spread evenly … 100 dense groves and open glades (~100-400 m across)' },
-  { key: 'windFrom', label: 'Wind from', section: 'Climate', min: L.windFrom[0], max: L.windFrom[1], step: 5, unit: '°', hint: 'Compass direction rain comes from (270 = west); land behind mountains is drier' },
   { key: 'islandArcs', label: 'Island arcs', section: 'Islands', min: L.islandArcs[0], max: L.islandArcs[1], step: 1, hint: 'Chains along seams where an ocean plate meets another plate' },
   { key: 'hotspots', label: 'Hotspots', section: 'Islands', min: L.hotspots[0], max: L.hotspots[1], step: 1, hint: 'Groups in ocean plates: a main island trailing smaller ones' },
   { key: 'islandMinSize', label: 'Smallest island', section: 'Islands', min: L.islandSize[0], max: L.islandSize[1], step: 10, unit: 'm', log: true, hint: 'Across; islands count toward the land share' },
   { key: 'islandMaxSize', label: 'Largest island', section: 'Islands', min: L.islandSize[0], max: L.islandSize[1], step: 10, unit: 'm', log: true },
+  { key: 'terrainSeed', label: 'Terrain seed', section: 'Hills and lowlands', min: 0, max: MAX_SEED, step: 1, seed: true, hint: "Each plate's noise; reroll the relief, keep the plates" },
+  { key: 'noiseScale', label: 'Feature size', section: 'Hills and lowlands', min: L.noiseScale[0], max: L.noiseScale[1], step: 50, unit: 'm', log: true, hint: 'Size of the largest hills and basins' },
+  { key: 'noiseRoughness', label: 'Roughness', section: 'Hills and lowlands', min: L.noiseRoughness[0], max: L.noiseRoughness[1], step: 1, hint: '0 smooth swells … 100 rugged' },
+  { key: 'plains', label: 'Plains', section: 'Hills and lowlands', min: L.plains[0], max: L.plains[1], step: 1, unit: '%', hint: 'Share of the land that is broad, nearly flat lowland (good for building)' },
+  { key: 'lowlandFlatness', label: 'Lowland flatness', section: 'Hills and lowlands', min: L.lowlandFlatness[0], max: L.lowlandFlatness[1], step: 1, hint: 'Flatter low ground, steeper climb near the peaks (flat coasts get wider beaches)' },
+  { key: 'mountains', label: 'Mountains', section: 'Mountain ranges', min: L.mountains[0], max: L.mountains[1], step: 1, unit: '%', hint: 'Share of converging plate seams that raise ranges (0 = none)' },
+  { key: 'mountainHeight', label: 'Mountain height', section: 'Mountain ranges', min: L.height[0], max: L.height[1], step: 5, unit: 'm', hint: 'The highest peak (at least the highest hills)' },
+  { key: 'mountainWidth', label: 'Range width', section: 'Mountain ranges', min: L.mountainWidth[0], max: L.mountainWidth[1], step: 50, unit: 'm', log: true },
+  { key: 'mountainRuggedness', label: 'Ruggedness', section: 'Mountain ranges', min: L.mountainRuggedness[0], max: L.mountainRuggedness[1], step: 1, hint: '0 rounded massifs … 100 sharp ridges' },
+  { key: 'biomes', label: 'Biomes', section: 'Climate', min: 0, max: 1, step: 1, toggle: true, hint: 'Jungle, forests, grassland, savanna, desert, tundra and ice from temperature and moisture' },
+  { key: 'equator', label: 'Equator', section: 'Climate', min: 0, max: 1, step: 1, toggle: true, hint: 'Hottest across the middle, colder toward both edges (off: from the north edge to the south edge)' },
+  { key: 'northTemperature', label: 'North temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 1, unit: '°C', hint: 'At sea level on the north edge' },
+  { key: 'southTemperature', label: 'South temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 1, unit: '°C', hint: 'At sea level on the south edge' },
+  { key: 'equatorTemperature', label: 'Equator temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 1, unit: '°C', hint: 'At sea level across the middle (with an equator)' },
+  { key: 'rainfall', label: 'Rainfall', section: 'Climate', min: L.rainfall[0], max: L.rainfall[1], step: 1, hint: '0 dry … 100 soaked; wet near the sea, drier inland' },
+  { key: 'windFrom', label: 'Wind from', section: 'Climate', min: L.windFrom[0], max: L.windFrom[1], step: 5, unit: '°', hint: 'Compass direction rain comes from (270 = west); land behind mountains is drier' },
+  { key: 'rivers', label: 'Rivers', section: 'Rivers and lakes', min: L.rivers[0], max: L.rivers[1], step: 1, hint: '0 none … 100 many small streams; rivers cut valleys to the sea, more in wet country' },
+  { key: 'lakes', label: 'Lakes', section: 'Rivers and lakes', min: L.lakes[0], max: L.lakes[1], step: 1, unit: '%', hint: 'Share of the water land basins could hold that stands in lakes, the biggest first: 0 basins filled in … 100 even small basins hold lakes' },
+  { key: 'lakesByArea', label: 'Lakes by area', section: 'Rivers and lakes', min: 0, max: 1, step: 1, toggle: true, hint: 'On: lakes is a share of the water basins could hold, growing evenly. Off: the smallest basin with a lake, halving every 10 (as worlds made before this setting)' },
+  { key: 'surfaceRoughness', label: 'Surface roughness', section: 'Ground', min: L.surfaceRoughness[0], max: L.surfaceRoughness[1], step: 1, hint: 'Small bumps in the ground: 0 smooth … 100 lumpy (50 = original)' },
+  { key: 'mountainDetail', label: 'Mountain detail', section: 'Ground', min: L.mountainDetail[0], max: L.mountainDetail[1], step: 1, hint: 'Gullies, spurs and crags on mountain sides (16-256 m); fine detail, so it shows in the game more than in this preview' },
+  { key: 'beaches', label: 'Beaches', section: 'Ground', min: L.beaches[0], max: L.beaches[1], step: 1, hint: 'Sand on gentle coasts: 0 none … 100 wide; steep coasts stay rocky' },
+  { key: 'rockAltitude', label: 'Rock altitude', section: 'Rock', min: L.altitude[0], max: L.altitude[1], step: 5, unit: 'm', hint: 'Bare rock from this height above the sea, however warm (with biomes, cold high ground has rock too)' },
+  { key: 'altitudeRock', label: 'Rock altitude with biomes', section: 'Rock', min: 0, max: 1, step: 1, toggle: true, hint: 'With biomes: bare rock above the rock altitude too (off: temperature alone, as worlds made before this setting)' },
+  { key: 'rockSlope', label: 'Rock slope', section: 'Rock', min: L.rockSlope[0], max: L.rockSlope[1], step: 1, unit: '°', hint: 'Ground steeper than this is bare rock, even above the snow; 90 = never' },
+  { key: 'rockRoughness', label: 'Rock roughness', section: 'Rock', min: L.rockRoughness[0], max: L.rockRoughness[1], step: 1, hint: 'Outcrops, knolls and gullies (16-256 m) on bare rock ground (cold high ground, above the rock altitude): 0 smooth … 100 up to ±24 m; fine detail, so it shows in the game more than in this preview' },
+  { key: 'rockVariety', label: 'Rock variety', section: 'Rock', min: L.rockVariety[0], max: L.rockVariety[1], step: 1, hint: 'Bare rock in patches of gravel, pale and (where wet) mossy stone, with dark bands on steep faces: 0 all one stone … 100 many' },
+  { key: 'snowTemperature', label: 'Snow temperature', section: 'Snow and cold', min: L.temperature[0], max: L.temperature[1], step: 0.5, unit: '°C', hint: 'Ground colder than this is snow; a band of bare rock lies just below it on high ground' },
+  { key: 'altitudeCooling', label: 'Altitude cooling', section: 'Snow and cold', min: L.altitudeCooling[0], max: L.altitudeCooling[1], step: 0.1, unit: '°C/100 m', hint: 'Colder with height (real air: ~0.65)' },
+  { key: 'snowAltitude', label: 'Snow altitude', section: 'Snow and cold', min: L.altitude[0], max: L.altitude[1], step: 5, unit: 'm', hint: 'Snow from this height above the sea, however warm (with biomes, cold ground lower down has snow too)' },
+  { key: 'altitudeSnow', label: 'Snow altitude with biomes', section: 'Snow and cold', min: 0, max: 1, step: 1, toggle: true, hint: 'With biomes: snow above the snow altitude too (off: temperature alone, as worlds made before this setting)' },
+  { key: 'snowFractal', label: 'Snow line fractal', section: 'Snow and cold', min: L.snowFractal[0], max: L.snowFractal[1], step: 1, hint: 'How ragged the snow line is: 0 a contour … 100 wandering ±60 m' },
+  { key: 'biomeBlend', label: 'Biome blending', section: 'Forests', min: L.biomeBlend[0], max: L.biomeBlend[1], step: 1, hint: '0 sharp borders … 100 wide, ragged transitions where trees mix and ground colours blend' },
+  { key: 'trees', label: 'Trees', section: 'Forests', min: L.trees[0], max: L.trees[1], step: 1, hint: 'Forest density: 0 none, 50 natural for each biome, 100 double' },
+  { key: 'treeClumping', label: 'Tree clumping', section: 'Forests', min: L.treeClumping[0], max: L.treeClumping[1], step: 1, hint: '0 trees spread evenly … 100 dense groves and open glades (~100-400 m across)' },
 ];
 
 // ---- Settings, kept in the URL hash so a reload (or a shared link) keeps them.
@@ -108,6 +110,8 @@ let shape: WorldShape = isWorldShape(hashShape) ? hashShape : DEFAULT_WORLD_SHAP
 const shapeEl = document.getElementById('shape') as HTMLSelectElement;
 shapeEl.value = shape;
 shapeEl.addEventListener('change', () => {
+  // (Another world: the close-up's area is gone with it.)
+  if (closeUp) closeCloseUp();
   // Plate counts follow the world's size, keeping their proportion to the default.
   const before = defaultPlateCounts(WORLD_SHAPES[shape]);
   shape = shapeEl.value as WorldShape;
@@ -132,13 +136,59 @@ const inputs = new Map<keyof PlateTerrainConfig, { number: HTMLInputElement; ran
 const toSlider = (f: FieldSpec, v: number) => (f.log ? (Math.log(v / f.min) / Math.log(f.max / f.min)) * 1000 : v);
 const fromSlider = (f: FieldSpec, s: number) => (f.log ? Math.round((f.min * (f.max / f.min) ** (s / 1000)) / f.step) * f.step : s);
 
-let section = '';
+// Two parts: what shapes the whole world (the map), then the surface's detail (the map and the
+// close-up: see SURFACE_SETTINGS); each in sections that fold, remembered in this browser.
+const FOLDED_KEY = 'super-vox-generator-folded';
+let folded = new Set<string>();
+try {
+  folded = new Set(JSON.parse(localStorage.getItem(FOLDED_KEY) ?? '[]') as string[]);
+} catch {
+  // (Private windows: nothing remembered.)
+}
+const PARTS = {
+  world: { title: 'Whole world', about: 'Plates, land, climate, rivers: these shape the whole world, so a change builds it again.' },
+  surface: { title: 'Surface detail', about: 'Ground, rock, snow and forests: quick to change, and all the close-up shows.' },
+} as const;
+let section = '', part = '';
+let fieldsEl: HTMLElement = form;
 for (const f of FIELDS) {
+  const p = SURFACE_SETTINGS.includes(f.key) ? 'surface' : 'world';
+  if (p !== part) {
+    part = p;
+    const h = document.createElement('div');
+    h.className = 'part' + (p === 'world' ? ' world-only' : '');
+    h.innerHTML = '<h3></h3><p></p>';
+    h.querySelector('h3')!.textContent = PARTS[p].title;
+    h.querySelector('p')!.textContent = PARTS[p].about;
+    form.appendChild(h);
+  }
   if (f.section !== section) {
     section = f.section;
+    const name = section;
+    const box = document.createElement('section');
+    box.className = 'group' + (p === 'world' ? ' world-only' : '') + (folded.has(name) ? ' folded' : '');
     const h = document.createElement('h2');
-    h.textContent = section;
-    form.appendChild(h);
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.textContent = name;
+    toggle.setAttribute('aria-expanded', String(!folded.has(name)));
+    toggle.addEventListener('click', () => {
+      const fold = !box.classList.contains('folded');
+      box.classList.toggle('folded', fold);
+      toggle.setAttribute('aria-expanded', String(!fold));
+      if (fold) folded.add(name);
+      else folded.delete(name);
+      try {
+        localStorage.setItem(FOLDED_KEY, JSON.stringify([...folded]));
+      } catch {
+        // (Not remembered, then.)
+      }
+    });
+    h.appendChild(toggle);
+    fieldsEl = document.createElement('div');
+    fieldsEl.className = 'fields';
+    box.append(h, fieldsEl);
+    form.appendChild(box);
   }
   const div = document.createElement('div');
   div.className = 'field';
@@ -190,7 +240,7 @@ for (const f of FIELDS) {
     else showForm();
   });
   inputs.set(f.key, { number, range, hint });
-  form.appendChild(div);
+  fieldsEl.appendChild(div);
 }
 
 function showForm(): void {
@@ -214,14 +264,17 @@ function set(key: keyof PlateTerrainConfig, value: number): void {
   if (key === 'mountainHeight' && value < config.maxHeight) config.maxHeight = value;
   showForm();
   toHash(config);
-  requestPreview();
+  // (In the close-up, only it is redrawn: the map waits till it's back.)
+  if (closeUp) requestCloseUp();
+  else requestPreview();
 }
 
 document.getElementById('reset')!.addEventListener('click', () => {
   config = defaultPlateTerrain(1, WORLD_SHAPES[shape]);
   showForm();
   toHash(config);
-  requestPreview();
+  if (closeUp) requestCloseUp();
+  else requestPreview();
 });
 
 // ---- Preview: built in a worker, which drops a build once newer settings arrive.
@@ -617,3 +670,180 @@ showForm();
 toHash(config);
 requestPreview();
 void loadWorlds();
+
+// ---- The close-up: an area of the world in 3D (see generatorArea.worker.ts), made again as the
+//      settings that shape the surface change (the others shape the whole world: the map's).
+
+const cuSizeEl = document.getElementById('cu-size') as HTMLSelectElement;
+const cuStepEl = document.getElementById('cu-step') as HTMLSelectElement;
+const cuPickEl = document.getElementById('cu-pick') as HTMLButtonElement;
+const cuBackEl = document.getElementById('cu-back') as HTMLButtonElement;
+const cuFrameEl = document.getElementById('cu-frame')!;
+const closeUpNote = document.getElementById('closeup-note')!;
+const stage = document.getElementById('stage')!;
+const closeUpWorker = new Worker(new URL('./generatorArea.worker.ts', import.meta.url), { type: 'module' });
+/** The area shown (its middle, units), while the close-up is; and the diorama, once made. */
+let closeUp: { cx: number; cz: number } | null = null;
+let diorama: Diorama | null = null;
+let picking = false;
+let cuSentId = 0;
+let mapStale = false;
+/** The map's line of stats, to put back when the close-up closes. */
+let lastStats = '';
+/** Whether the close-up's frame loop is running (see frame). */
+let framing = false;
+/** The last area shown ("x0,z0,size,step"): the same again keeps the view where it is. */
+let shownArea = '';
+
+/** The close-up's size and step between samples (m), as chosen; and roughly how long it takes. */
+function cuChoice(): { sizeM: number; stepM: number } {
+  return { sizeM: Number(cuSizeEl.value), stepM: Number(cuStepEl.value) };
+}
+
+function setPicking(on: boolean): void {
+  if (on && !picking) lastStats = statsEl.textContent ?? '';
+  if (!on && picking && !closeUp) statsEl.textContent = lastStats;
+  picking = on && !closeUp;
+  cuPickEl.classList.toggle('on', picking);
+  canvas.classList.toggle('picking', picking);
+  cuFrameEl.hidden = true;
+  if (picking) statsEl.textContent = 'click the map where to look closer (Esc: never mind)';
+}
+cuPickEl.addEventListener('click', () => setPicking(!picking));
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && picking) setPicking(false);
+});
+
+/** The world position (units) under the pointer on the map. */
+function mapPoint(e: MouseEvent): { x: number; z: number } | null {
+  const r = canvas.getBoundingClientRect(), w = WORLD_SHAPES[shape];
+  const fx = (e.clientX - r.left) / r.width, fz = (e.clientY - r.top) / r.height;
+  if (fx < 0 || fz < 0 || fx > 1 || fz > 1) return null;
+  return { x: fx * w.widthUnits, z: fz * w.depthUnits };
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!picking) return;
+  const r = canvas.getBoundingClientRect(), s = stage.getBoundingClientRect(), w = WORLD_SHAPES[shape];
+  const side = (cuChoice().sizeM * 16 * r.width) / w.widthUnits;
+  Object.assign(cuFrameEl.style, { left: `${e.clientX - s.left - side / 2}px`, top: `${e.clientY - s.top - side / 2}px`, width: `${side}px`, height: `${side}px` });
+  cuFrameEl.hidden = false;
+});
+canvas.addEventListener('mouseleave', () => (cuFrameEl.hidden = true));
+canvas.addEventListener('click', (e) => {
+  if (!picking) return;
+  const p = mapPoint(e);
+  if (!p) return;
+  setPicking(false);
+  openCloseUp(p.x, p.z);
+});
+
+function openCloseUp(cx: number, cz: number): void {
+  if (!closeUp) lastStats = statsEl.textContent ?? '';
+  closeUp = { cx, cz };
+  document.body.classList.add('closeup');
+  closeUpNote.hidden = false;
+  cuPickEl.hidden = true;
+  cuBackEl.hidden = false;
+  canvas.hidden = true;
+  hoverEl.hidden = true;
+  if (diorama) diorama.canvas.hidden = false;
+  requestCloseUp();
+}
+
+function closeCloseUp(): void {
+  closeUp = null;
+  document.body.classList.remove('closeup');
+  closeUpNote.hidden = true;
+  cuPickEl.hidden = false;
+  cuBackEl.hidden = true;
+  canvas.hidden = false;
+  hoverEl.hidden = false;
+  // (Let go of it: a 4 km close-up at 2 m is millions of faces. Opened again, it's made again.)
+  if (diorama) {
+    diorama.canvas.remove();
+    diorama.dispose();
+    diorama = null;
+    shownArea = '';
+  }
+  cuSentId++; // (an answer on its way is dropped)
+  if (mapStale) {
+    mapStale = false;
+    requestPreview();
+  } else statsEl.textContent = lastStats;
+}
+cuBackEl.addEventListener('click', closeCloseUp);
+
+/** Asks for the close-up as the settings are now (the worker answers only the newest). */
+function requestCloseUp(): void {
+  if (!closeUp) return;
+  mapStale = true;
+  const w = WORLD_SHAPES[shape], { sizeM, stepM } = cuChoice();
+  const size = sizeM * 16, step = stepM * 16;
+  // On a whole number of metres, inside the world (round worlds wrap east-west).
+  let x0 = Math.round((closeUp.cx - size / 2) / 16) * 16;
+  let z0 = Math.round((closeUp.cz - size / 2) / 16) * 16;
+  if (!w.wrapX) x0 = Math.max(0, Math.min(w.widthUnits - size, x0));
+  else x0 = ((x0 % w.widthUnits) + w.widthUnits) % w.widthUnits;
+  z0 = Math.max(0, Math.min(w.depthUnits - size, z0));
+  statsEl.className = '';
+  // (4 km at 2 m is four times the samples of anything else: about 15 s.)
+  const slow = (sizeM / stepM) ** 2 > 2_000_000;
+  statsEl.textContent = `making the close-up (${sizeM / 1024} km, a sample every ${stepM} m)…${slow ? ' the finest and biggest: this takes a while' : ''}`;
+  const req: CloseUpRequest = { id: ++cuSentId, shape, config, x0, z0, size, step };
+  closeUpWorker.postMessage(req);
+}
+for (const el of [cuSizeEl, cuStepEl]) el.addEventListener('change', () => requestCloseUp());
+
+closeUpWorker.onmessage = (ev: MessageEvent<CloseUpResponse>) => {
+  const res = ev.data;
+  if (res.id !== cuSentId || !closeUp) return;
+  if (!res.ok) {
+    statsEl.className = 'bad';
+    statsEl.textContent = `close-up failed: ${res.error}`;
+    return;
+  }
+  const t0 = performance.now();
+  if (!diorama) {
+    diorama = new Diorama(res.climate, res.wrapX, res.seaLevel);
+    stage.prepend(diorama.canvas);
+    if (!framing) requestAnimationFrame(frame);
+    framing = true;
+  } else diorama.setClimate(res.climate, res.wrapX);
+  diorama.canvas.hidden = false;
+  const area = `${res.x0},${res.z0},${res.size},${res.step}`;
+  diorama.show(res.parts, res, area === shownArea);
+  diorama.setField(res.heights, res.n, res.step, res.x0, res.z0);
+  shownArea = area;
+  statsEl.textContent = `close-up: ${res.size / 16 / 1024} km at x ${Math.round((res.x0 + res.size / 2) / 16)}, z ${Math.round((res.z0 + res.size / 2) / 16)} m, a sample every ${res.step / 16} m · made in ${(res.ms / 1000).toFixed(1)} s (${Math.round(res.quads / 1000)}k faces), shown in ${Math.round(performance.now() - t0)} ms`;
+};
+closeUpWorker.onerror = (e) => {
+  statsEl.className = 'bad';
+  statsEl.textContent = `close-up failed: ${e.message}`;
+};
+
+function frame(): void {
+  if (diorama && closeUp) diorama.render();
+  requestAnimationFrame(frame);
+}
+
+// ---- Folding the panel away (more room for the map or the close-up), remembered in this browser.
+
+const FOLD_KEY = 'super-vox-generator-panel-folded';
+const foldEl = document.getElementById('fold') as HTMLButtonElement;
+function setPanelFolded(folded: boolean): void {
+  document.body.classList.toggle('no-panel', folded);
+  foldEl.textContent = folded ? '›' : '‹';
+  foldEl.title = folded ? 'Show the panel' : 'Hide the panel';
+  try {
+    localStorage.setItem(FOLD_KEY, folded ? '1' : '0');
+  } catch {
+    // (Not remembered, then.)
+  }
+}
+foldEl.addEventListener('click', () => setPanelFolded(!document.body.classList.contains('no-panel')));
+try {
+  setPanelFolded(localStorage.getItem(FOLD_KEY) === '1');
+} catch {
+  setPanelFolded(false);
+}

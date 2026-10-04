@@ -72,6 +72,10 @@ const BUILT_IN: readonly Recipe[] = [
   r('stone-axe', 'tools', [[Material.Cobblestone, 3], [Item.Stick, 2]], [Item.StoneAxe, 1], true),
   r('wooden-shovel', 'tools', [[Material.Planks, 1], [Item.Stick, 2]], [Item.WoodenShovel, 1], true),
   r('stone-shovel', 'tools', [[Material.Cobblestone, 1], [Item.Stick, 2]], [Item.StoneShovel, 1], true),
+  r('iron-pickaxe', 'tools', [[Item.IronIngot, 3], [Item.Stick, 2]], [Item.IronPickaxe, 1], true),
+  r('iron-axe', 'tools', [[Item.IronIngot, 3], [Item.Stick, 2]], [Item.IronAxe, 1], true),
+  r('iron-shovel', 'tools', [[Item.IronIngot, 1], [Item.Stick, 2]], [Item.IronShovel, 1], true),
+  r('iron-sword', 'tools', [[Item.IronIngot, 2], [Item.Stick, 1]], [Item.IronSword, 1], true),
   r('tnt', 'explosives', [[Material.Sand, 4], [Material.Planks, 1]], [Material.TNT, 1], true),
 ];
 const recipes: Recipe[] = [...BUILT_IN];

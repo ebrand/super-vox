@@ -1,6 +1,8 @@
 import { intersectsSolid, moveAabb, type Aabb, type SolidAt } from './physics.js';
 import { UNITS_PER_METER } from './units.js';
 import { walkStep, type WalkState } from './walking.js';
+import type { ItemId } from './items.js';
+import { SWORDS } from './tools.js';
 
 /**
  * Creatures (mobs): pigs wander by day and run from whoever hits them; zombies come out at night,
@@ -39,8 +41,8 @@ export const REGEN_AFTER_MS = 6000;
 
 /** How far a player can hit (m, eye to the body's nearest point), and how hard: by what's in hand. */
 export const ATTACK_REACH = 4.5;
-export function attackDamage(weapon: 'hand' | 'wooden-sword' | 'stone-sword'): number {
-  return weapon === 'stone-sword' ? 5 : weapon === 'wooden-sword' ? 4 : 1;
+export function attackDamage(weapon: ItemId | null): number {
+  return weapon === null ? 1 : (SWORDS[weapon]?.damage ?? 1);
 }
 /** Knockback from a hit: horizontal speed (m/s) and a little hop. */
 export const KNOCKBACK = 6;

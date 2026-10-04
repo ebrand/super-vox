@@ -190,6 +190,17 @@ export function defaultPlateTerrain(seed = 1, world?: WorldConfig): PlateTerrain
   };
 }
 
+/**
+ * Settings that change only the surface, sample by sample (its roughness, rock, snow, beaches,
+ * trees): none of a build's stages depend on them, so a world built again with a change to them
+ * reuses every stage (see PlateStageCache), and is ready at once. (The generator's close-up offers
+ * just these.)
+ */
+export const SURFACE_SETTINGS: readonly (keyof PlateTerrainConfig)[] = [
+  'surfaceRoughness', 'mountainDetail', 'beaches', 'rockAltitude', 'altitudeRock', 'snowAltitude', 'altitudeSnow', 'snowFractal',
+  'rockRoughness', 'rockVariety', 'rockSlope', 'altitudeCooling', 'snowTemperature', 'biomeBlend', 'trees', 'treeClumping',
+];
+
 export const PLATE_LIMITS = {
   majorPlates: [1, 80],
   minorPlates: [0, 200],

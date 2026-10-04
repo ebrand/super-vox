@@ -14,6 +14,13 @@ import {
   isBlock,
   itemName,
   stored,
+  FUELS,
+  STATION_RECIPES,
+  stackLabel,
+  stationRecipe,
+  stationWorking,
+  type StationSlot,
+  type Stack,
   type GameMode,
   type ItemId,
   type MaterialId,
@@ -24,6 +31,7 @@ import { TABLE_SLOTS, addToTable, available, couldMake, describeEntry, fillFor, 
 import { materialColor } from './materials.js';
 
 type InventoryMessage = Extract<ServerMessage, { type: 'inventory' }>;
+type StationMessage = Extract<ServerMessage, { type: 'station' }>;
 
 /** Wheel travel (pixels) per hotbar step: about one mouse-wheel notch. */
 const WHEEL_STEP = 40;
@@ -55,6 +63,12 @@ const ITEM_LOOK: Record<number, { color: readonly [number, number, number]; glyp
   [Item.StoneAxe]: { color: [0.22, 0.22, 0.23], glyph: 'Γ' },
   [Item.WoodenShovel]: { color: [0.45, 0.29, 0.13], glyph: '♠' },
   [Item.StoneShovel]: { color: [0.22, 0.22, 0.23], glyph: '♠' },
+  [Item.IronPickaxe]: { color: [0.55, 0.56, 0.58], glyph: '⛏' },
+  [Item.IronAxe]: { color: [0.55, 0.56, 0.58], glyph: 'Γ' },
+  [Item.IronShovel]: { color: [0.55, 0.56, 0.58], glyph: '♠' },
+  [Item.IronSword]: { color: [0.55, 0.56, 0.58], glyph: '†' },
+  [Item.IronIngot]: { color: [0.62, 0.62, 0.64], glyph: '▬' },
+  [Item.CookedPork]: { color: [0.55, 0.3, 0.15], glyph: 'p' },
 };
 
 /** How an item looks in slots: built-in ones as ITEM_LOOK has them; designed objects, the colour of what they're mostly made of, and their initial. */
@@ -71,10 +85,10 @@ function colorOf(id: ItemId): string {
 }
 
 /** The window's tabs: those that work, and the stations still to come (shown, greyed, with why). */
-type Tab = 'inventory' | 'crafting' | 'recipes';
+type Tab = 'inventory' | 'crafting' | 'recipes' | 'station';
 const COMING: readonly { name: string; why: string }[] = [
-  { name: 'Smelting', why: 'needs a furnace (coming with ores)' },
-  { name: 'Cooking', why: 'needs a stove or campfire (coming with the furnace)' },
+  { name: 'Smelting', why: 'right-click a furnace to smelt' },
+  { name: 'Cooking', why: 'right-click a stove to cook' },
 ];
 
 /** How the inventory tab orders things. */
@@ -107,6 +121,10 @@ export class InventoryUi {
   private sort: Sort = 'kind';
   /** Something to throw away, waiting for a yes. */
   private discarding: ItemId | null = null;
+  /** The furnace or stove open (see showStation), and when (performance.now) its state came. */
+  private station: { msg: StationMessage & { state: NonNullable<StationMessage['state']> }; at: number } | null = null;
+  /** While a station's open: its gauges move between the server's updates. */
+  private gauges: number | null = null;
   private readonly bar: HTMLElement;
   private readonly panel: HTMLElement;
   private readonly tabs: HTMLElement;
@@ -124,6 +142,11 @@ export class InventoryUi {
     private readonly onDiscard: (item: ItemId, amount: number) => void = () => {},
     /** Whether a placed crafting table is within reach (TABLE_REACH) of the player. */
     private readonly nearTable: () => boolean = () => false,
+    /** The open furnace or stove (block x, y, z): put an amount of something in a slot, take a slot's contents, or close it. */
+    private readonly onStation: (
+      act: { put: 'fuel' | 'input'; item: ItemId; amount: number } | { take: StationSlot } | 'close',
+      at: { x: number; y: number; z: number },
+    ) => void = () => {},
   ) {
     this.bar = document.createElement('div');
     this.bar.id = 'hotbar';
@@ -222,11 +245,50 @@ export class InventoryUi {
     this.render(); // (the hotbar at the bottom back)
   }
 
-  /** Closing gives back what was on the table (it never left the inventory). */
+  /** Closing gives back what was on the table (it never left the inventory), and lets go of a station. */
   private closed(): void {
     this.table = [];
     this.chosen = null;
     this.discarding = null;
+    if (this.station) {
+      const { x, y, z } = this.station.msg;
+      this.station = null;
+      this.onStation('close', { x, y, z });
+      if (this.tab === 'station') this.tab = 'inventory';
+    }
+    if (this.gauges !== null) clearInterval(this.gauges);
+    this.gauges = null;
+  }
+
+  /**
+   * A furnace or stove opened, or what's in it now (see the `station` message): the window opens on
+   * its tab. Gone (taken down), it's let go of.
+   */
+  showStation(msg: StationMessage): void {
+    const same = this.station && this.station.msg.x === msg.x && this.station.msg.y === msg.y && this.station.msg.z === msg.z;
+    if (!msg.state) {
+      if (same) {
+        this.station = null;
+        if (this.tab === 'station') this.tab = 'inventory';
+        this.note.textContent = "it's gone: taken down";
+        this.render();
+      }
+      return;
+    }
+    const opening = !same || this.panel.hidden;
+    this.station = { msg: msg as StationMessage & { state: NonNullable<StationMessage['state']> }, at: performance.now() };
+    if (opening) {
+      this.note.textContent = '';
+      this.tab = 'station';
+      this.panel.hidden = false;
+    }
+    this.gauges ??= window.setInterval(() => this.moveGauges(), 200);
+    this.render();
+  }
+
+  /** Whether the station tab is what's showing (main: to let go of the mouse when it opens). */
+  get stationOpen(): boolean {
+    return !this.panel.hidden && this.tab === 'station' && this.station !== null;
   }
 
   /**
@@ -384,17 +446,128 @@ export class InventoryUi {
     if (this.mode === 'survival') {
       tab('Crafting', this.tab === 'crafting', () => this.show('crafting'));
       tab('Recipes', this.tab === 'recipes', () => this.show('recipes'));
-      for (const c of COMING) tab(c.name, false, null, c.why);
+    }
+    // The furnace or stove open; the other station's tab greyed (survival).
+    const open = this.station?.msg.kind;
+    for (const [kind, c] of [['furnace', COMING[0]!], ['stove', COMING[1]!]] as const) {
+      if (open === kind) tab(c.name, this.tab === 'station', () => this.show('station'));
+      else if (this.mode === 'survival') tab(c.name, false, null, c.why);
     }
     this.tabs.replaceChildren(...tabs);
     this.windowBar.replaceChildren(...this.hotbar.map((m, i) => this.slot(m, i)));
-    this.body.replaceChildren(...(this.tab === 'crafting' ? this.craftingTab() : this.tab === 'recipes' ? this.recipesTab() : this.inventoryTab()));
+    const body = this.tab === 'station' && this.station ? this.stationTab() : this.tab === 'crafting' ? this.craftingTab() : this.tab === 'recipes' ? this.recipesTab() : this.inventoryTab();
+    this.body.replaceChildren(...body);
   }
 
   private show(tab: Tab): void {
     this.tab = tab;
     this.discarding = null;
     this.render();
+  }
+
+  // ---- A furnace or stove (see stations.ts).
+
+  /** The station's state as it is now: the server's last, moved on by the time since (while it's working). */
+  private stationNow(): { burn: number; burnTotal: number; progress: number; seconds: number } {
+    const { msg, at } = this.station!;
+    const s = msg.state, r = s.input ? stationRecipe(msg.kind, s.input.item) : undefined;
+    const dt = stationWorking(msg.kind, s) ? (performance.now() - at) / 1000 : 0;
+    const seconds = r?.seconds ?? 10;
+    return { burn: Math.max(0, s.burn - dt), burnTotal: s.burnTotal, progress: Math.min(seconds, s.progress + dt), seconds };
+  }
+
+  private moveGauges(): void {
+    if (!this.station || this.panel.hidden || this.tab !== 'station') return;
+    const now = this.stationNow();
+    const set = (name: string, f: number) => {
+      const bar = this.body.querySelector<HTMLElement>(`.gauge.${name} i`);
+      if (bar) bar.style.width = `${Math.round(Math.min(1, Math.max(0, f)) * 100)}%`;
+    };
+    set('burn', now.burnTotal > 0 ? now.burn / now.burnTotal : 0);
+    set('progress', now.progress / now.seconds);
+  }
+
+  private stationTab(): HTMLElement[] {
+    const { msg } = this.station!;
+    const s = msg.state, kind = msg.kind, at = { x: msg.x, y: msg.y, z: msg.z };
+    const making = kind === 'furnace' ? 'smelt' : 'cook';
+    const gauge = (name: string, title: string) => {
+      const g = document.createElement('div');
+      g.className = `gauge ${name}`;
+      g.title = title;
+      g.append(document.createElement('i'));
+      return g;
+    };
+    const box = (slot: StationSlot, title: string, stack: Stack | null, g: HTMLElement | null) => {
+      const el = document.createElement('div');
+      el.className = 'station-slot';
+      const h = document.createElement('h4');
+      h.textContent = title;
+      const what = document.createElement('div');
+      what.className = 'what';
+      if (stack) what.append(this.swatch(stack.item, ''), `${itemName(stack.item)} ${stackLabel(stack)}`);
+      else what.textContent = 'empty';
+      el.append(h, what);
+      if (g) el.append(g);
+      if (stack && this.mode === 'survival') {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = slot === 'output' ? 'Take' : 'Take out';
+        b.addEventListener('click', () => this.onStation({ take: slot }, at));
+        el.append(b);
+      }
+      return el;
+    };
+    const row = document.createElement('div');
+    row.className = 'station-row';
+    row.append(
+      box('fuel', 'Fuel', s.fuel, gauge('burn', 'fuel burning')),
+      box('input', kind === 'furnace' ? 'To smelt' : 'To cook', s.input, gauge('progress', `${making}ing`)),
+      box('output', kind === 'furnace' ? 'Smelted' : 'Cooked', s.output, null),
+    );
+    // What they have that goes in: fuels, and what this station makes something from.
+    const adds = document.createElement('div');
+    adds.className = 'station-adds';
+    const offer = (slot: 'fuel' | 'input', title: string, ids: readonly ItemId[], unit: (id: ItemId) => number) => {
+      const h = document.createElement('h4');
+      h.textContent = title;
+      adds.append(h);
+      // (What there is, any amount: not whole blocks, as recipes count.)
+      const have = ids.filter((id) => this.mode === 'creative' || (this.items.get(id) ?? 0) > 0);
+      if (!have.length) {
+        const p = document.createElement('p');
+        p.className = 'hint';
+        p.textContent = slot === 'fuel' ? 'No fuel: coal, wood, planks or sticks burn.' : kind === 'furnace' ? 'Nothing to smelt: mine iron ore (with a stone pickaxe) for raw iron.' : 'Nothing to cook: pork, from pigs.';
+        adds.append(p);
+        return;
+      }
+      for (const id of have) {
+        const line = document.createElement('div');
+        line.className = 'station-add';
+        const n = this.mode === 'creative' ? Infinity : (this.items.get(id) ?? 0);
+        line.append(this.swatch(id, ''), `${itemName(id)} ${this.amountText(id)}`);
+        const button = (label: string, amount: number) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = label;
+          b.disabled = amount <= 0;
+          b.addEventListener('click', () => this.onStation({ put: slot, item: id, amount }, at));
+          line.append(b);
+        };
+        const u = unit(id);
+        button(isBlock(id) ? '+ 1/8 m³' : '+ 1', Math.min(u, n));
+        if (this.mode === 'survival') button('+ all', n);
+        else button('+ 1 m³', isBlock(id) ? 8 * u : 8);
+        adds.append(line);
+      }
+    };
+    offer('fuel', 'Add fuel', Object.keys(FUELS).map(Number), (id) => FUELS[id]!.unit);
+    offer('input', kind === 'furnace' ? 'Add to smelt' : 'Add to cook', STATION_RECIPES[kind].map((r) => r.input), (id) => stationRecipe(kind, id)!.unit);
+    const name = document.createElement('p');
+    name.className = 'hint';
+    name.textContent = `${msg.name}: it keeps going with the window closed, and for everyone (what's in it is shared).`;
+    queueMicrotask(() => this.moveGauges());
+    return [name, row, adds];
   }
 
   // ---- The inventory tab.

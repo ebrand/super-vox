@@ -61,6 +61,11 @@ import {
   objectHeight,
   objectCells,
   objectStation,
+  emptyStation,
+  isStationKind,
+  isStationState,
+  type StationKind,
+  type StationState,
   isBed,
   liftOut,
   playerBox,
@@ -220,6 +225,8 @@ export class World {
   private readonly decoded = new Map<string, Chunk>();
   /** Placed objects (fences, gates, doors, designs) by their bottom block, "bx,by,bz" (block X in the world's range). */
   private readonly objects = new Map<string, PlacedObject>();
+  /** What's in each furnace and stove (see stations.ts), by its origin block (objectKey). */
+  private readonly stations = new Map<string, StationState>();
   /** Every block a placed object takes (see objectCells), "bx,by,bz", to the object. */
   private readonly cells = new Map<string, PlacedObject>();
   /** Told whenever objects are placed, taken down or change (to tell players about designs: see designObjects). */
@@ -256,6 +263,7 @@ export class World {
       this.recordEdited(chunk);
     }
     for (const o of this.store?.loadObjects?.() ?? []) this.addObject(o);
+    for (const [k, s] of Object.entries(this.store?.loadStations?.() ?? {})) if (isStationState(s) && this.objects.has(k)) this.stations.set(k, s);
     if (config.widthUnits % CHUNK_SIZE !== 0 || config.depthUnits % CHUNK_SIZE !== 0) {
       throw new RangeError('world width and depth must be multiples of the chunk size');
     }
@@ -753,7 +761,26 @@ export class World {
     for (const [x, y, z] of this.objectBlocksAt(o)) this.cells.set(objectKey(x, y, z), o);
   }
 
+  /**
+   * The furnace or stove `o` is (see objectStation), and what's in it (kept from here on: change
+   * it, then saveStations); null if it isn't one.
+   */
+  station(o: PlacedObject, now: number): { kind: StationKind; state: StationState } | null {
+    const kind = objectStation(o);
+    if (!isStationKind(kind)) return null;
+    const key = objectKey(o.x, o.y, o.z);
+    let state = this.stations.get(key);
+    if (!state) this.stations.set(key, (state = emptyStation(now)));
+    return { kind, state };
+  }
+
+  saveStations(): void {
+    this.store?.saveStations?.(Object.fromEntries(this.stations));
+  }
+
   private dropObject(o: PlacedObject): void {
+    // (A station taken down loses what's in it: take it out first, see station.)
+    if (this.stations.delete(objectKey(o.x, o.y, o.z))) this.saveStations();
     this.objects.delete(objectKey(o.x, o.y, o.z));
     for (const [x, y, z] of this.objectBlocksAt(o)) this.cells.delete(objectKey(x, y, z));
   }

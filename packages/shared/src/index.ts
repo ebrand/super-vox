@@ -28,6 +28,7 @@ export * from './flocking.js';
 export * from './walking.js';
 export * from './mobs.js';
 export * from './tools.js';
+export * from './stations.js';
 export * from './ores.js';
 export * from './mining.js';
 export * from './explosives.js';

@@ -4,12 +4,12 @@ import { Material, isWater, type MaterialId } from './materials.js';
 /**
  * Tools (Minecraft's, more or less): a pickaxe for anything from stone, an axe for wood, a shovel
  * for earth and sand. The right one mines its materials faster (stone tools faster than wooden
- * ones); stone and ores need a pickaxe (iron ore a stone one at least) to give anything, and
+ * ones, iron faster still); stone and ores need a pickaxe (iron ore a stone one at least) to give anything, and
  * without one take far longer. They don't wear out (yet).
  */
 export type ToolKind = 'pickaxe' | 'axe' | 'shovel';
 
-/** Each tool: its kind, its tier (1 wood, 2 stone) and how many times faster it mines its materials. */
+/** Each tool: its kind, its tier (1 wood, 2 stone, 3 iron) and how many times faster it mines its materials. */
 export const TOOLS: Readonly<Record<ItemId, { kind: ToolKind; tier: number; speed: number }>> = {
   [Item.WoodenPickaxe]: { kind: 'pickaxe', tier: 1, speed: 2 },
   [Item.StonePickaxe]: { kind: 'pickaxe', tier: 2, speed: 4 },
@@ -17,7 +17,21 @@ export const TOOLS: Readonly<Record<ItemId, { kind: ToolKind; tier: number; spee
   [Item.StoneAxe]: { kind: 'axe', tier: 2, speed: 4 },
   [Item.WoodenShovel]: { kind: 'shovel', tier: 1, speed: 2 },
   [Item.StoneShovel]: { kind: 'shovel', tier: 2, speed: 4 },
+  [Item.IronPickaxe]: { kind: 'pickaxe', tier: 3, speed: 6 },
+  [Item.IronAxe]: { kind: 'axe', tier: 3, speed: 6 },
+  [Item.IronShovel]: { kind: 'shovel', tier: 3, speed: 6 },
 };
+
+/** Swords: damage per hit (a bare hand does 1), and how far a swing cuts through leaves (blocks around: 0 just the one). */
+export const SWORDS: Readonly<Record<ItemId, { damage: number; cut: number }>> = {
+  [Item.WoodenSword]: { damage: 4, cut: 0 },
+  [Item.StoneSword]: { damage: 5, cut: 1 },
+  [Item.IronSword]: { damage: 6, cut: 1 },
+};
+
+export function isSword(item: ItemId | null | undefined): boolean {
+  return item !== null && item !== undefined && SWORDS[item] !== undefined;
+}
 
 export function isTool(item: ItemId | null | undefined): boolean {
   return item !== null && item !== undefined && TOOLS[item] !== undefined;

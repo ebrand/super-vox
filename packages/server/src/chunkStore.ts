@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ChunkCoord, PlacedObject } from '@super-vox/shared';
+import type { ChunkCoord, PlacedObject, StationState } from '@super-vox/shared';
 
 /** Persists edited chunks, and the world's placed objects (fences, gates, doors). */
 export interface ChunkStore {
@@ -8,10 +8,14 @@ export interface ChunkStore {
   save(coord: ChunkCoord, bytes: Uint8Array): void;
   loadObjects?(): PlacedObject[];
   saveObjects?(objects: PlacedObject[]): void;
+  /** What's in the world's furnaces and stoves, by their origin block ("x,y,z"). */
+  loadStations?(): Record<string, unknown>;
+  saveStations?(stations: Record<string, StationState>): void;
 }
 
 const FILE = /^(-?\d+)_(-?\d+)_(-?\d+)\.chunk$/;
 const OBJECTS = 'objects.json';
+const STATIONS = 'stations.json';
 
 /** One file per edited chunk, `<cx>_<cy>_<cz>.chunk`, in a directory. */
 export class FileChunkStore implements ChunkStore {
@@ -41,6 +45,16 @@ export class FileChunkStore implements ChunkStore {
 
   saveObjects(objects: PlacedObject[]): void {
     this.write(OBJECTS, JSON.stringify(objects));
+  }
+
+  /** Furnaces' and stoves' contents, in stations.json beside the chunks. */
+  loadStations(): Record<string, unknown> {
+    const path = join(this.dir, STATIONS);
+    return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>) : {};
+  }
+
+  saveStations(stations: Record<string, StationState>): void {
+    this.write(STATIONS, JSON.stringify(stations));
   }
 
   private write(name: string, data: string | Uint8Array): void {
