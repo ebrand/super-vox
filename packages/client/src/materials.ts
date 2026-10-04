@@ -36,6 +36,10 @@ const COLORS: Record<number, readonly [number, number, number]> = {
   [Material.IronOre]: [0.42, 0.3, 0.22],
   [Material.Coal]: [0.03, 0.03, 0.035],
   [Material.RawIron]: [0.52, 0.36, 0.26],
+  [Material.Gravel]: [0.44, 0.39, 0.32],
+  [Material.DarkStone]: [0.17, 0.17, 0.19],
+  [Material.PaleStone]: [0.55, 0.53, 0.5],
+  [Material.MossyStone]: [0.24, 0.3, 0.2],
   // Water (drawn by its own shader; this is for places that show a flat colour).
   ...Object.fromEntries(Array.from({ length: MAX_FLOW + 1 }, (_, l) => [Material.Water + l, [0.05, 0.2, 0.3] as const])),
   [Material.PouredWater]: [0.05, 0.2, 0.3],
@@ -76,6 +80,10 @@ const NAMES: Record<number, string> = {
   [Material.IronOre]: 'iron ore',
   [Material.Coal]: 'coal',
   [Material.RawIron]: 'raw iron',
+  [Material.Gravel]: 'gravel',
+  [Material.DarkStone]: 'dark stone',
+  [Material.PaleStone]: 'pale stone',
+  [Material.MossyStone]: 'mossy stone',
   ...Object.fromEntries(Array.from({ length: MAX_FLOW }, (_, l) => [Material.Water + 1 + l, `flowing water (${l + 1})`])),
 };
 

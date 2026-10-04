@@ -3,7 +3,8 @@ import { PlateHeights, defaultPlateTerrain } from './plates.js';
 import { DEFAULT_SITE_SEARCH, findSites, sitePicture, validateSiteSearch, type SiteSearch } from './sites.js';
 import { FLAT_WORLD_16KM } from './world.js';
 
-const p = new PlateHeights(FLAT_WORLD_16KM, { ...defaultPlateTerrain(9), rivers: 60, lakes: 30 });
+// (Without bare rock's relief: the search grades hills, and outcrops on them are detail it doesn't see.)
+const p = new PlateHeights(FLAT_WORLD_16KM, { ...defaultPlateTerrain(9), rivers: 60, lakes: 30, rockRoughness: 0 });
 const search = (over: Partial<SiteSearch> = {}) => findSites(p, FLAT_WORLD_16KM, { ...DEFAULT_SITE_SEARCH, ...over });
 
 describe('findSites', () => {

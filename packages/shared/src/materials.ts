@@ -49,6 +49,11 @@ export const Material = {
   /** What ores give: kept by volume as blocks are, but never placed (see PLACEABLE). */
   Coal: 39,
   RawIron: 40,
+  /** Bare rock's surface besides stone (see PlateHeights.rockSurface): scree, dark and pale stone, and stone gone mossy. */
+  Gravel: 41,
+  DarkStone: 42,
+  PaleStone: 43,
+  MossyStone: 44,
 } as const;
 
 /** Flowing water reaches this many blocks from its source. */
@@ -106,6 +111,10 @@ const MATERIAL_NAMES: Record<number, string> = {
   [Material.IronOre]: 'iron ore',
   [Material.Coal]: 'coal',
   [Material.RawIron]: 'raw iron',
+  [Material.Gravel]: 'gravel',
+  [Material.DarkStone]: 'dark stone',
+  [Material.PaleStone]: 'pale stone',
+  [Material.MossyStone]: 'mossy stone',
 };
 
 

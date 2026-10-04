@@ -88,6 +88,8 @@ function specForNewWorld(): WorldSpec {
         rivers: numberEnv('WORLD_RIVERS', d.rivers),
         lakes: numberEnv('WORLD_LAKES', d.lakes),
         lakesByArea: numberEnv('WORLD_LAKES_BY_AREA', d.lakesByArea),
+        rockRoughness: numberEnv('WORLD_ROCK_ROUGHNESS', d.rockRoughness),
+        rockVariety: numberEnv('WORLD_ROCK_VARIETY', d.rockVariety),
         islandArcs: numberEnv('WORLD_ISLAND_ARCS', d.islandArcs),
         hotspots: numberEnv('WORLD_HOTSPOTS', d.hotspots),
         islandMinSize: numberEnv('WORLD_ISLAND_MIN_SIZE', d.islandMinSize),

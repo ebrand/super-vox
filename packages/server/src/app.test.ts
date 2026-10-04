@@ -573,8 +573,11 @@ describe('named worlds', () => {
     expect(msg).toMatchObject({ type: 'clock', clock: { hours: 21.5, frozen: true } });
     // Saved with the world, and only its players are told.
     expect(JSON.parse(readFileSync(join(root, 'home', 'world.json'), 'utf8')).clock).toMatchObject({ hours: 21.5, frozen: true });
+    // (Only the clock counts: the other player may still be getting what follows its welcome.)
     let otherHeard = false;
-    other.ws.once('message', () => (otherHeard = true));
+    other.ws.on('message', (d, bin) => {
+      if (!bin && (JSON.parse(String(d)) as { type: string }).type === 'clock') otherHeard = true;
+    });
     await new Promise((r) => setTimeout(r, 100));
     expect(otherHeard).toBe(false);
     // Bad changes and unknown worlds.

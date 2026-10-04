@@ -114,6 +114,10 @@ export interface PlateTerrainConfig {
    */
   lakes: number;
   lakesByArea: number;
+  /** Bare rock ground's own relief (ridged outcrops, knolls and gullies, 16-256 m), 0 (as smooth as any) .. 100. */
+  rockRoughness: number;
+  /** Bare rock ground's surface: 0 all one stone .. 100 patches of gravel, dark, pale and (where wet) mossy stone. */
+  rockVariety: number;
   /** Density of island chains along seams where an oceanic plate meets another plate, 0 (none) .. 100. */
   islandArcs: number;
   /** Groups of islands inside oceanic plates, each a main island trailing smaller ones (0..40). */
@@ -177,6 +181,8 @@ export function defaultPlateTerrain(seed = 1, world?: WorldConfig): PlateTerrain
     rivers: 50,
     lakes: 50,
     lakesByArea: 1,
+    rockRoughness: 50,
+    rockVariety: 50,
     islandArcs: 0,
     hotspots: 0,
     islandMinSize: 200,
@@ -213,6 +219,8 @@ export const PLATE_LIMITS = {
   treeClumping: [0, 100],
   rivers: [0, 100],
   lakes: [0, 100],
+  rockRoughness: [0, 100],
+  rockVariety: [0, 100],
   islandArcs: [0, 100],
   hotspots: [0, 40],
   islandSize: [50, 4000],
@@ -330,6 +338,8 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   num(c.treeClumping, L.treeClumping, 'treeClumping');
   num(c.rivers, L.rivers, 'rivers');
   num(c.lakes, L.lakes, 'lakes');
+  num(c.rockRoughness, L.rockRoughness, 'rockRoughness');
+  num(c.rockVariety, L.rockVariety, 'rockVariety');
   if (c.lakesByArea !== 0 && c.lakesByArea !== 1) throw new RangeError(`lakesByArea must be 0 or 1; got ${c.lakesByArea}`);
   num(c.islandArcs, L.islandArcs, 'islandArcs');
   int(c.hotspots, ...L.hotspots, 'hotspots');
@@ -394,6 +404,15 @@ const ECOTONE_MOISTURE = 0.2;
 /** With biomes: bare rock below the snow, this many degrees warmer, on ground this high above the sea. */
 const ROCK_BAND_DEGREES = 1.5;
 const ROCK_BAND_MIN_HEIGHT = 100 * M;
+/** Mossy stone only where it's at least this wet (moisture 0..1). */
+const ROCK_MOSS_MOISTURE = 0.2;
+/** Stretches the patch noises (a mean of octaves varies less than one does) to about -1..1 (see rockSurface). */
+const ROCK_PATCH_STRETCH = 3;
+/** Strongest relief on bare rock ground (amplitude, units) at rockRoughness = 100 (see rockReliefAt). */
+const ROCK_DETAIL_MAX = 24 * M;
+/** Rock relief fades in across this much, either side of where bare rock starts (degrees C, units). */
+const ROCK_FADE_DEGREES = 1;
+const ROCK_FADE_HEIGHT = 30 * M;
 /** Strongest mountain-side detail (amplitude, units) at mountainDetail = 100, on the most mountainous ground. */
 const MOUNTAIN_DETAIL_MAX = 60 * M;
 /** Plains sit at this fraction of the smoothed land around them (lowland basins). */
@@ -541,6 +560,12 @@ export class PlateHeights implements HeightSource {
   private readonly mountainness: Float32Array;
   /** Ridged octaves for mountain-side detail, and its strength (units). */
   private readonly crags: Octave[];
+  /** Bare rock ground's relief (see rockReliefAt): ridged noise and its strongest amplitude (units). */
+  private readonly rockCrags: Octave[];
+  private readonly rockAmp: number;
+  /** Bare rock's surface (see rockSurface): two noises for patches, and how varied (0..1). */
+  private readonly rockPatches: [Octave[], Octave[]];
+  private readonly rockVariety: number;
   private readonly cragAmp: number;
   readonly plates: readonly Plate[];
   /** Islands placed by arcs and hotspots (centres and radii in units). */
@@ -1465,6 +1490,10 @@ export class PlateHeights implements HeightSource {
     // Mountain sides: ridged noise from 256 m down to 16 m (gullies, spurs, crags).
     this.crags = octaves(config.seed * 7919 + 31, [4096, 2048, 1024, 512, 256], 0.55);
     this.cragAmp = (config.mountainDetail / 100) * MOUNTAIN_DETAIL_MAX;
+    this.rockCrags = octaves(config.terrainSeed * 7919 + 43, [4096, 2048, 1024, 512, 256], 0.55);
+    this.rockAmp = (config.rockRoughness / 100) * ROCK_DETAIL_MAX;
+    this.rockPatches = [octaves(config.terrainSeed * 7919 + 47, [8192, 4096, 2048, 1024, 512], 0.6), octaves(config.terrainSeed * 7919 + 53, [8192, 4096, 2048, 1024, 512], 0.6)];
+    this.rockVariety = config.rockVariety / 100;
     // Beaches come and go along a coast over a few hundred metres.
     this.beachNoise = octaves(config.terrainSeed * 7919 + 13, [8192, 4096, 2048]);
     // The snow line wanders at every scale from ~1 km down to 16 m.
@@ -1710,6 +1739,7 @@ export class PlateHeights implements HeightSource {
     const strokes = this.strokes.length ? strokesIn(this.strokes, x0, z0, x0 + (w - 1) * step, z0 + (d - 1) * step, this.wrap ? this.world.widthUnits : null) : [];
     const rough = this.interpolate(this.rough, x0, z0, w, d, step);
     const crag = this.cragsAt(x0, z0, w, d, step);
+    const rockRelief = this.rockReliefAt(x0, z0, w, d, step, elev);
     const out = new Int32Array(w * d);
     for (let k = 0; k < out.length; k++) {
       const e = elev[k]!;
@@ -1718,6 +1748,7 @@ export class PlateHeights implements HeightSource {
       const amp = Math.min((DETAIL_MIN + (DETAIL_MAX - DETAIL_MIN) * rough[k]!) * this.detailScale, room);
       let h = e + detail[k]! * norm * Math.max(0, amp);
       if (crag) h += crag[k]! * Math.max(0, Math.min(crag.amp[k]!, room));
+      if (rockRelief) h += rockRelief[k]! * Math.max(0, Math.min(rockRelief.amp[k]!, room));
       h = Math.min(this.maxHeight, Math.max(this.minHeight, h));
       if (strokes.length) {
         // Terraforming, exactly here (within the world's own height range, which may pass the
@@ -1755,6 +1786,44 @@ export class PlateHeights implements HeightSource {
     const out = ridged.map((v) => (v - CRAG_MEAN) * CRAG_STRETCH) as Float64Array & { amp: Float64Array };
     // Square root: flanks, not just the cores of ranges, get the detail.
     out.amp = m.map((v) => Math.sqrt(v) * this.cragAmp);
+    return out;
+  }
+
+  /**
+   * Bare rock ground's own relief for a block of samples: ridged noise (about -1..1) and its
+   * amplitude per sample (units), or null where none is near (the common case: skipped). How rocky
+   * a sample is goes by the smooth ground under it (`elev`, before any detail, so the relief can't
+   * move where rock is): high and cold as the rock band (see materialsWith), or above the rock
+   * altitude where that counts, fading in across ROCK_FADE_DEGREES and ROCK_FADE_HEIGHT.
+   */
+  private rockReliefAt(x0: number, z0: number, w: number, d: number, step: number, elev: Float64Array): (Float64Array & { amp: Float64Array }) | null {
+    if (this.rockAmp <= 0) return null;
+    const climate = this.temperature !== null;
+    const band = this.seaLevel + ROCK_BAND_MIN_HEIGHT, byAltitude = !climate || this.altitudeRock;
+    let top = -Infinity;
+    for (let k = 0; k < elev.length; k++) top = Math.max(top, elev[k]!);
+    const lowest = Math.min(climate ? band : Infinity, byAltitude ? this.rockLine : Infinity) - ROCK_FADE_HEIGHT;
+    if (top <= lowest) return null;
+    const temperature = climate ? this.interpolate(this.temperature!, x0, z0, w, d, step) : null;
+    const high = (h: number, at: number) => smoothstep(at - ROCK_FADE_HEIGHT, at + ROCK_FADE_HEIGHT, h);
+    const coldAt = this.snowTemp + ROCK_BAND_DEGREES;
+    const amp = new Float64Array(w * d);
+    let any = false;
+    for (let k = 0; k < amp.length; k++) {
+      const e = elev[k]!;
+      let rockiness = byAltitude ? high(e, this.rockLine) : 0;
+      if (temperature) {
+        const t = temperature[k]! - this.cooling * Math.max(0, e - this.seaLevel);
+        rockiness = Math.max(rockiness, smoothstep(coldAt + ROCK_FADE_DEGREES, coldAt - ROCK_FADE_DEGREES, t) * high(e, band));
+      }
+      amp[k] = rockiness * this.rockAmp;
+      if (rockiness > 0) any = true;
+    }
+    if (!any) return null;
+    // (As the crags', centred and stretched; then softly kept within -1..1, so the amplitude is the most it moves.)
+    const ridged = ridgedGrid(this.rockCrags, x0, z0, w, d, step);
+    const out = ridged.map((v) => Math.tanh((v - CRAG_MEAN) * CRAG_STRETCH * 1.1)) as Float64Array & { amp: Float64Array };
+    out.amp = amp;
     return out;
   }
 
@@ -1838,6 +1907,8 @@ export class PlateHeights implements HeightSource {
     // River and lake beds (only looked up where this world has any), and polar ice.
     const standing = this.hydrology ? this.surface(x0, z0, w, d, step).water : null;
     const ice = this.iceTops(x0, z0, w, d, step);
+    // Steep stone (see rockSurface), marked only if there's any.
+    let cliffs: Uint8Array | null = null;
     for (let k = 0; k < out.length; k++) {
       const h = heights[k]!;
       if (ice && ice[k]! >= h - M) {
@@ -1880,8 +1951,35 @@ export class PlateHeights implements HeightSource {
         : bare ? Material.Stone
         : climate ? BIOME_GROUND[climate.biome[k]! as BiomeId]
         : Material.Grass;
+      if (steep && out[k] === Material.Stone) (cliffs ??= new Uint8Array(out.length))[k] = 1;
     }
+    this.rockSurface(x0, z0, w, d, step, out, cliffs, climate?.biomeMoisture ?? null);
     return out;
+  }
+
+  /**
+   * Bare rock's surface, in place (see rockVariety): where `out` is stone, patches of other stone
+   * by two noises: on steep faces (`cliffs`), dark bands; elsewhere gravel (scree), pale stone and,
+   * where it's wet (`moisture`), mossy stone.
+   */
+  private rockSurface(x0: number, z0: number, w: number, d: number, step: number, out: Uint16Array, cliffs: Uint8Array | null, moisture: ArrayLike<number> | null): void {
+    const v = this.rockVariety;
+    if (v <= 0 || !out.includes(Material.Stone)) return;
+    const [na, nb] = this.rockPatches;
+    // Scaled by the octaves' weight so each spans about -1..1.
+    const a = fractalGrid(na, x0, z0, w, d, step), b = fractalGrid(nb, x0, z0, w, d, step);
+    const sa = 2 / na.reduce((t, o) => t + o.weight, 0), sb = 2 / nb.reduce((t, o) => t + o.weight, 0);
+    // Patches where a noise passes `edge`: at variety 0.5 about a third of the rock, at 1 most of it.
+    const edge = 0.9 - 0.75 * v;
+    for (let k = 0; k < out.length; k++) {
+      if (out[k] !== Material.Stone) continue;
+      const pa = a[k]! * sa * ROCK_PATCH_STRETCH, pb = b[k]! * sb * ROCK_PATCH_STRETCH;
+      if (cliffs && cliffs[k]) {
+        if (pa > edge) out[k] = Material.DarkStone;
+      } else if (pa < -edge) out[k] = Material.Gravel;
+      else if (pa > edge) out[k] = Material.PaleStone;
+      else if (pb > edge && (moisture === null || moisture[k]! > ROCK_MOSS_MOISTURE)) out[k] = Material.MossyStone;
+    }
   }
 
   /** The forest canopy over samples, for distant views (see canopyOver). */

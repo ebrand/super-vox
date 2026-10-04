@@ -6,6 +6,9 @@ import { PLATE_CELL, PlateHeights, PlateStageCache, defaultPlateCounts, defaultP
 import { TerrainGenerator } from './terrain.js';
 import { CHUNK_SIZE, FLAT_WORLD_16KM, ROUND_WORLD_16x8KM } from './world.js';
 
+/** Bare rock, of any kind (see rockVariety). */
+const isRock = (m: number | undefined) => m === Material.Stone || m === Material.Gravel || m === Material.DarkStone || m === Material.PaleStone || m === Material.MossyStone;
+
 const cache = new Map<string, PlateHeights>();
 /** A plate world with `over` settings; mountains, biomes, rivers and lakes are off unless asked for, so other features are tested alone. */
 function plates(over: Partial<PlateTerrainConfig> = {}, world = FLAT_WORLD_16KM): PlateHeights {
@@ -303,7 +306,7 @@ describe('PlateHeights', () => {
     const probe = (h: number) => p.materials(100_000, 100_000, 1, 1, 1, Int32Array.of(h))[0];
     expect(probe(sea - 500)).toBe(Material.Sand);
     expect(probe(sea + 250 * 16)).toBe(Material.Snow);
-    expect(probe(sea + 200 * 16)).toBe(Material.Stone);
+    expect(isRock(probe(sea + 200 * 16))).toBe(true);
     const H = p.heights(0, 0, 500, 500, 512);
     const M = p.materials(0, 0, 500, 500, 512, H);
     expect([...M].filter((m, k) => m === Material.Grass && H[k]! > sea + 64 && H[k]! < sea + 100 * 16).length).toBeGreaterThan(100);
@@ -500,8 +503,8 @@ describe('mountains', () => {
     expect(coastMax(plates({ mountains: 90 }))).toBeLessThan(35);
     expect(coastMax(plates({ mountains: 90 }))).toBeGreaterThan(coastMax(plates({ mountains: 0 })));
     // Some coasts are now bare rock at the water at default heights; without mountains none are.
-    expect(coasts(plates({ mountains: 90 })).some((c) => c.atWater === Material.Stone)).toBe(true);
-    expect(coasts(plates({ mountains: 0 })).some((c) => c.atWater === Material.Stone)).toBe(false);
+    expect(coasts(plates({ mountains: 90 })).some((c) => isRock(c.atWater))).toBe(true);
+    expect(coasts(plates({ mountains: 0 })).some((c) => isRock(c.atWater))).toBe(false);
   });
 
   it('get gullies and crags on their sides with mountain detail, and nothing changes elsewhere', () => {
@@ -637,7 +640,7 @@ describe('flat ground', () => {
     expect(b50).toBeGreaterThan(b0 * 1.3);
     expect(b100).toBeGreaterThan(b50 * 1.3);
     // At 0 the ground is exactly the interpolated grid: at a grid cell's centre, its own height.
-    const p = plates({ surfaceRoughness: 0 });
+    const p = plates({ surfaceRoughness: 0, rockRoughness: 0 });
     const i = landCells(p)[1234]!, c = i % p.cols, r = (i - c) / p.cols;
     expect(p.heights((c + 0.5) * PLATE_CELL - 0.5, (r + 0.5) * PLATE_CELL - 0.5, 1, 1)[0]).toBe(Math.round(p.elevation[i]!));
   });
@@ -748,7 +751,7 @@ describe('biomes', () => {
     expect(checked).toBeGreaterThan(1000);
     const off = plates({ seed: 4 });
     const Mo = off.materials(512, 512, N, N, 1024, off.heights(512, 512, N, N, 1024));
-    expect([...Mo].some((m) => m > Material.Snow)).toBe(false);
+    expect([...Mo].some((m) => m > Material.Snow && !isRock(m))).toBe(false);
   });
 
   /** Land materials over the world, with each sample's height above the sea (m). */
@@ -766,16 +769,16 @@ describe('biomes', () => {
     // A hot world: no snow even on 600 m peaks, and no rock band (ground beaches aside).
     const hot = land({ northTemperature: 26, southTemperature: 32 });
     expect(hot.some((x) => x.mat === Material.Snow)).toBe(false);
-    expect(hot.filter((x) => x.mat === Material.Stone && x.m > 10).length).toBe(0);
+    expect(hot.filter((x) => isRock(x.mat) && x.m > 10).length).toBe(0);
     // A cold world: snow right down to the shore, and no bare rock on low ground (tundra there).
     const cold = land({ northTemperature: -14, southTemperature: -6 });
     expect(Math.min(...cold.filter((x) => x.mat === Material.Snow).map((x) => x.m))).toBeLessThan(20);
-    expect(cold.filter((x) => x.mat === Material.Stone && x.m > 10 && x.m < 90).length).toBe(0);
+    expect(cold.filter((x) => isRock(x.mat) && x.m > 10 && x.m < 90).length).toBe(0);
     // A cool world: a band of bare rock below the snow on high ground, none on low ground (from
     // 100 m up, wandering 30 m either way at snowFractal 50).
     const cool = land({ northTemperature: -2, southTemperature: 10 });
-    expect(cool.some((x) => x.mat === Material.Stone && x.m > 120)).toBe(true);
-    expect(cool.filter((x) => x.mat === Material.Stone && x.m > 10 && x.m < 69).length).toBe(0);
+    expect(cool.some((x) => isRock(x.mat) && x.m > 120)).toBe(true);
+    expect(cool.filter((x) => isRock(x.mat) && x.m > 10 && x.m < 69).length).toBe(0);
     // The snow temperature moves the line; the fixed heights (biomes off only) don't.
     const snowShare = (over: Partial<PlateTerrainConfig>) => {
       const l = land({ northTemperature: -2, southTemperature: 10, ...over });
@@ -807,18 +810,72 @@ describe('biomes', () => {
     // land between the beaches and it (the line wandering 30 m either way at snowFractal 50).
     const hot = landOf({ northTemperature: 26, southTemperature: 32, snowAltitude: 2000, rockAltitude: 150 });
     expect(hot.filter((x) => x.m >= 181).length).toBeGreaterThan(0);
-    expect(hot.filter((x) => x.m >= 181 && x.mat !== Material.Stone).length).toBe(0);
-    expect(hot.filter((x) => x.m > 10 && x.m < 119 && x.mat === Material.Stone).length).toBe(0);
+    expect(hot.filter((x) => x.m >= 181 && !isRock(x.mat)).length).toBe(0);
+    expect(hot.filter((x) => x.m > 10 && x.m < 119 && isRock(x.mat)).length).toBe(0);
     // ...and between, some of each: not a contour line.
     const edge = hot.filter((x) => x.m > 125 && x.m < 175);
-    expect(edge.some((x) => x.mat === Material.Stone)).toBe(true);
-    expect(edge.some((x) => x.mat !== Material.Stone)).toBe(true);
+    expect(edge.some((x) => isRock(x.mat))).toBe(true);
+    expect(edge.some((x) => !isRock(x.mat))).toBe(true);
     // Snow above it stays snow; out of reach, the same as temperature alone.
     const both = landOf({ northTemperature: 26, southTemperature: 32, snowAltitude: 250, rockAltitude: 150 });
     expect(both.filter((x) => x.m > 250 + 31 && x.mat !== Material.Snow).length).toBe(0);
     const mats = (over: Partial<PlateTerrainConfig>) => landOf({ northTemperature: -2, southTemperature: 10, ...over }).map((x) => x.mat);
     expect(mats({ rockAltitude: 2000 })).toEqual(mats({ altitudeRock: 0 }));
     expect(mats({ rockAltitude: 100 })).not.toEqual(mats({ altitudeRock: 0 }));
+  });
+});
+
+describe('bare rock ground', () => {
+  // A cool world: a band of bare rock on high ground, below the snow.
+  const cool = (over: Partial<PlateTerrainConfig>) => plates({ biomes: 1, mountains: 60, rockSlope: 90, northTemperature: -2, southTemperature: 10, ...over });
+  const N = 250, S = 1024;
+
+  it('gets relief of its own with rockRoughness (outcrops, knolls), and only there', () => {
+    const smooth = cool({ rockRoughness: 0 }), rough = cool({ rockRoughness: 100 });
+    const Hs = smooth.heights(512, 512, N, N, S), Hr = rough.heights(512, 512, N, N, S);
+    const Ms = smooth.materials(512, 512, N, N, S, Hs);
+    let onRock = 0, moved = 0, lowMoved = 0, low = 0;
+    for (let k = 0; k < Hs.length; k++) {
+      const m = (Hs[k]! - smooth.seaLevel) / 16;
+      if (isRock(Ms[k]) && m > 160) {
+        onRock++;
+        if (Math.abs(Hr[k]! - Hs[k]!) > 2 * 16) moved++;
+      } else if (m > 5 && m < 40) {
+        low++;
+        if (Hr[k] !== Hs[k]) lowMoved++;
+      }
+    }
+    expect(onRock).toBeGreaterThan(100);
+    expect(moved / onRock).toBeGreaterThan(0.3);
+    expect(low).toBeGreaterThan(1000);
+    expect(lowMoved).toBe(0);
+    // Bounded: at most its amplitude (24 m at 100).
+    for (let k = 0; k < Hs.length; k++) expect(Math.abs(Hr[k]! - Hs[k]!)).toBeLessThanOrEqual(24 * 16 + 1);
+  });
+
+  it('comes in patches with rockVariety: gravel, pale and mossy stone, dark bands on steep faces; none at 0', () => {
+    const count = (over: Partial<PlateTerrainConfig>) => {
+      const p = cool(over);
+      const M = p.materials(512, 512, N, N, S, p.heights(512, 512, N, N, S));
+      const n = new Map<number, number>();
+      let rock = 0;
+      for (const m of M) if (isRock(m)) (rock++, n.set(m, (n.get(m) ?? 0) + 1));
+      return { rock, share: (m: number) => (n.get(m) ?? 0) / rock };
+    };
+    const none = count({ rockVariety: 0 });
+    expect(none.rock).toBeGreaterThan(100);
+    expect(none.share(Material.Stone)).toBe(1);
+    const some = count({ rockVariety: 50 }), lots = count({ rockVariety: 100 });
+    for (const m of [Material.Gravel, Material.PaleStone]) {
+      expect(some.share(m)).toBeGreaterThan(0.02);
+      expect(lots.share(m)).toBeGreaterThan(some.share(m));
+    }
+    expect(some.share(Material.Stone)).toBeGreaterThan(0.25);
+    expect(lots.share(Material.Stone)).toBeLessThan(some.share(Material.Stone));
+    // (rockSlope 90: nothing counts as steep, so no dark bands.)
+    expect(lots.share(Material.DarkStone)).toBe(0);
+    const steep = count({ rockVariety: 100, rockSlope: 10 });
+    expect(steep.share(Material.DarkStone)).toBeGreaterThan(0);
   });
 });
 
@@ -831,14 +888,14 @@ describe('rock and snow', () => {
 
   it('puts rock and snow at fixed heights above the sea, whatever the height range', () => {
     expect(at({}, 170)).toBe(Material.Grass);
-    expect(at({}, 190)).toBe(Material.Stone);
+    expect(isRock(at({}, 190))).toBe(true);
     expect(at({}, 250)).toBe(Material.Snow);
     // Same heights in a world reaching 600 m; and measured from the sea, wherever it is.
     expect(at({ maxHeight: 600 }, 250)).toBe(Material.Snow);
-    expect(at({ seaLevel: 50, maxHeight: 400 }, 190)).toBe(Material.Stone);
+    expect(isRock(at({ seaLevel: 50, maxHeight: 400 }, 190))).toBe(true);
     expect(at({ seaLevel: 50, maxHeight: 400 }, 170)).toBe(Material.Grass);
     // Configurable; with rock at or above the snow there's no rock band.
-    expect(at({ rockAltitude: 60, snowAltitude: 90 }, 70)).toBe(Material.Stone);
+    expect(isRock(at({ rockAltitude: 60, snowAltitude: 90 }, 70))).toBe(true);
     expect(at({ rockAltitude: 300, snowAltitude: 240 }, 250)).toBe(Material.Snow);
     expect(at({ rockAltitude: 300, snowAltitude: 240 }, 230)).toBe(Material.Grass);
   });
@@ -894,8 +951,8 @@ describe('rock and snow', () => {
     expect(cell).toBeGreaterThanOrEqual(0);
     const x = ((cell % C) + 0.5) * PLATE_CELL, z = (Math.floor(cell / C) + 0.5) * PLATE_CELL;
     const probe = (rockSlope: number, metres: number) => plates({ maxHeight: 600, rockSlope, biomes: 0 }).materials(x, z, 1, 1, 1, Int32Array.of(p.seaLevel + metres * 16))[0];
-    expect(probe(25, 300)).toBe(Material.Stone); // steep, above the snow line: rock
-    expect(probe(25, 100)).toBe(Material.Stone); // steep, low: rock
+    expect(isRock(probe(25, 300))).toBe(true); // steep, above the snow line: rock
+    expect(isRock(probe(25, 100))).toBe(true); // steep, low: rock
     expect(probe(90, 300)).toBe(Material.Snow);
     expect(probe(90, 100)).toBe(Material.Grass);
   });
@@ -904,7 +961,7 @@ describe('rock and snow', () => {
     const stone = (rockSlope: number) => {
       const p = plates({ maxHeight: 600, rockSlope });
       const M = p.materials(0, 0, 500, 500, 512, p.heights(0, 0, 500, 500, 512));
-      return [...M].filter((m) => m === Material.Stone).length;
+      return [...M].filter((m) => isRock(m)).length;
     };
     expect(stone(20)).toBeGreaterThan(stone(30) * 1.3);
     expect(stone(30)).toBeGreaterThan(stone(90));
@@ -963,7 +1020,7 @@ describe('beaches', () => {
     const gentle = coasts(plates({ beaches: 50 }));
     const steep = coasts(plates({ beaches: 50, maxHeight: 600 }));
     expect(median(steep.map((c) => c.width))).toBeLessThan(median(gentle.map((c) => c.width)) / 2);
-    expect(steep.some((c) => c.atWater === Material.Stone)).toBe(true);
+    expect(steep.some((c) => isRock(c.atWater))).toBe(true);
     // Coastal rock is only a band at the waterline: below the rock altitude, stone elsewhere is
     // steep ground (over the 25 degree rock slope; slopes here are estimated from sampled heights,
     // which include small-scale roughness, so allow some margin).
@@ -971,7 +1028,7 @@ describe('beaches', () => {
     const H = p.heights(0, 0, 500, 500, 512), M = p.materials(0, 0, 500, 500, 512, H);
     let checked = 0;
     for (let k = 0; k < H.length; k++) {
-      if (M[k] !== Material.Stone || H[k]! >= p.seaLevel + (180 - 31) * 16) continue; // (the rock altitude, wandering 30 m)
+      if (!isRock(M[k]!) || H[k]! >= p.seaLevel + (180 - 31) * 16) continue; // (the rock altitude, wandering 30 m)
       if (Math.abs(H[k]! - p.seaLevel) > 4 * 16) {
         const x = (k % 500) * 512, z = Math.floor(k / 500) * 512;
         const e = (a: number, b: number) => p.heights(a, b, 1, 1)[0]!;
