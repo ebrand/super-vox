@@ -544,7 +544,7 @@ describe('named worlds', () => {
   });
 
   it('creates plate worlds from settings, filling in defaults, and refuses bad requests', async () => {
-    const { a, root } = await catalogApp();
+    const { a, url, root } = await catalogApp();
     const post = (body: object) => a.inject({ method: 'POST', url: '/api/worlds', payload: { shape: 'round-16x8', ...body } });
     const created = await post({ name: 'fresh', plates: { seed: 9, landPercent: 45, junk: true } });
     expect(created.statusCode).toBe(201);
@@ -556,6 +556,16 @@ describe('named worlds', () => {
     expect(invalid.statusCode).toBe(400);
     expect(invalid.json().error).toMatch(/landPercent/);
     expect(readWorld(root, 'bad')).toBeNull();
+    // The medium round world (32 x 16 km): made, and played on.
+    const medium = await post({ name: 'medium', plates: { seed: 4 }, shape: 'round-32x16' });
+    expect(medium.statusCode).toBe(201);
+    expect(medium.json().spec.shape).toBe('round-32x16');
+    const p = await hello(url, { world: 'medium' });
+    expect(p.reply).toMatchObject({ type: 'welcome', world: { widthUnits: 32_000 * 16, depthUnits: 16_000 * 16, wrapX: true } });
+    p.ws.close();
+    const odd = await post({ name: 'odd', plates: {}, shape: 'round-32x32' });
+    expect(odd.statusCode).toBe(400);
+    expect(odd.json().error).toMatch(/round-32x16/);
     await a.close();
   });
 
@@ -573,8 +583,11 @@ describe('named worlds', () => {
     expect(msg).toMatchObject({ type: 'clock', clock: { hours: 21.5, frozen: true } });
     // Saved with the world, and only its players are told.
     expect(JSON.parse(readFileSync(join(root, 'home', 'world.json'), 'utf8')).clock).toMatchObject({ hours: 21.5, frozen: true });
+    // (Only the clock counts: the other player may still be getting what follows its welcome.)
     let otherHeard = false;
-    other.ws.once('message', () => (otherHeard = true));
+    other.ws.on('message', (d, bin) => {
+      if (!bin && (JSON.parse(String(d)) as { type: string }).type === 'clock') otherHeard = true;
+    });
     await new Promise((r) => setTimeout(r, 100));
     expect(otherHeard).toBe(false);
     // Bad changes and unknown worlds.

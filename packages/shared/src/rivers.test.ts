@@ -67,6 +67,40 @@ describe('hydrology', () => {
     expect(filled.e[centre]).toBeGreaterThan(lake.e[centre]! + 5 * M);
   });
 
+  it('by area: makes the biggest basins lakes first, until they hold that share of what all of them could', () => {
+    // Three bowls up the valley (above the sea), big, middling and small.
+    const bowls = [[28, 7], [42, 5], [53, 3]] as const;
+    const terrain = () => valley((c, r) => bowls.reduce((t, [bc, br]) => {
+      const d = Math.hypot(c - bc, r - 20);
+      return t + (d < br ? -40 * M * (1 - d / br) : 0);
+    }, 0));
+    const at = (lakes: number) => {
+      const v = terrain();
+      const h = buildHydrology({ elevation: v.e, cols: v.cols, rows: v.rows, cell: CELL, sea: 0, wrap: false, wetness: null, rivers: 0, lakes, lakesByArea: true, seed: 1 });
+      const has = bowls.map(([bc]) => !Number.isNaN(h.lakeLevel[bc + v.cols * 20]!));
+      return { count: h.lakeCount, cells: h.lakeCells, has };
+    };
+    const all = at(100);
+    expect(all.count).toBe(3);
+    expect(at(0).count).toBe(0);
+    // A little: the big bowl alone (the others filled in).
+    expect(at(1).has).toEqual([true, false, false]);
+    // More: never less water, and the middling bowl before the small one.
+    let before = 0;
+    for (let lakes = 0; lakes <= 100; lakes += 5) {
+      const a = at(lakes);
+      expect(a.cells).toBeGreaterThanOrEqual(before);
+      if (a.has[2]) expect(a.has[1]).toBe(true);
+      // At least the share asked for (lakes come whole: up to one basin over).
+      expect(a.cells).toBeGreaterThanOrEqual((lakes / 100) * all.cells - 1e-9);
+      before = a.cells;
+    }
+    // Older worlds keep the smallest-basin meaning; new ones go by area.
+    expect(migratePlateTerrain({}).lakesByArea).toBe(0);
+    expect(migratePlateTerrain({ lakesByArea: 1 }).lakesByArea).toBe(1);
+    expect(defaultPlateTerrain().lakesByArea).toBe(1);
+  });
+
   it('cuts a channel under the water and a valley around it, and leaves the rest alone', () => {
     const s: RiverSegment = { ax: 0, az: 0, bx: 1000 * M, bz: 0, sa: 20 * M, sb: 10 * M, width: 10 * M, depth: 2 * M };
     const mid = 500 * M, surface = 15 * M;

@@ -16,6 +16,7 @@ import {
 } from './chunk.js';
 import { Material, type MaterialId } from './materials.js';
 import { fractalGrid, type Octave } from './noise.js';
+import { oreAt } from './ores.js';
 import type { VoxelSize } from './units.js';
 import { CHUNK_SIZE, type ChunkCoord, type WorldConfig } from './world.js';
 
@@ -374,6 +375,7 @@ export class TerrainGenerator implements ChunkGenerator {
     if (y0 < w.minYUnits || y0 >= w.maxYUnits) return chunk;
 
     const { H, M, trees, S, SR } = this.chunkColumn(coord.cx, coord.cz);
+    const oreX = x0 / BLOCK_SIZE, oreZ = z0 / BLOCK_SIZE;
     // Per block column: min / max surface height, and the top material at the minimum.
     const bMin = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(2 ** 31 - 1);
     const bMax = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(-(2 ** 31));
@@ -398,10 +400,14 @@ export class TerrainGenerator implements ChunkGenerator {
         for (let by = 0; by < BLOCKS_PER_AXIS; by++) {
           const by0 = y0 + by * BLOCK_SIZE;
           if (by0 >= maxH) break; // this and every block above is air
-          chunk.blocks[blockIndex(bx, by, bz)] =
-            by0 + BLOCK_SIZE <= minH
-              ? this.uniformBlock(this.materialFor(minH, by0 + BLOCK_SIZE, bMat[k]!))
-              : this.buildBlock(H, M, SR, bx * BLOCK_SIZE, by0, bz * BLOCK_SIZE);
+          let block: Block;
+          if (by0 + BLOCK_SIZE <= minH) {
+            // Wholly underground: its material, and deep in the stone, maybe ore (see oreAt).
+            let m = this.materialFor(minH, by0 + BLOCK_SIZE, bMat[k]!);
+            if (m === Material.Stone) m = oreAt(oreX + bx, by0 / BLOCK_SIZE, oreZ + bz, minH - (by0 + BLOCK_SIZE));
+            block = this.uniformBlock(m);
+          } else block = this.buildBlock(H, M, SR, bx * BLOCK_SIZE, by0, bz * BLOCK_SIZE);
+          chunk.blocks[blockIndex(bx, by, bz)] = block;
         }
       }
     }

@@ -9,6 +9,9 @@ import {
   blockVoxelContaining,
   breakSizesFor,
   editMiningTime,
+  isTool,
+  canHarvest,
+  pickaxeTierFor,
   BIG_BOX_SIZES,
   facingOfYaw,
   ATTACK_REACH,
@@ -515,7 +518,7 @@ export class EditTool {
         ? `aiming at a ${materialName(this.targetMaterial)}${opensHere ? ' (right-click: open / close)' : ''} (left-click: take it down)`
         : this.targetMaterial !== null && isExplosive(this.targetMaterial)
           ? `aiming at ${sizeLabel(this.target.size)} of ${materialName(this.targetMaterial)}${this.mode === 'hybrid' ? ' (click: light it, then stand back)' : ''}`
-          : `aiming at a ${sizeLabel(this.target.size)} voxel`;
+          : `aiming at a ${sizeLabel(this.target.size)} voxel${this.needsPickaxe()}`;
     const held = this.materialOf();
     const actions =
       this.mode === 'hybrid'
@@ -616,6 +619,13 @@ export class EditTool {
     this.send({ type: 'bucket', id, x, y, z, fill });
   }
 
+  /** Survival: what the voxel aimed at is, if the tool in hand won't get anything from it (see canHarvest). */
+  private needsPickaxe(): string {
+    const m = this.targetMaterial, held = this.materialOf();
+    if (!this.survival || m === null || canHarvest(m, isTool(held) ? held : null)) return '';
+    return ` of ${materialName(m)} (needs a ${pickaxeTierFor(m) > 1 ? 'stone ' : ''}pickaxe to give anything)`;
+  }
+
   /** A sword's sweep through the leaves aimed at. */
   private cut(sword: ItemId): void {
     if (!this.target) return;
@@ -695,7 +705,10 @@ export class EditTool {
    */
   private stepMining(): void {
     const edit = this.survival && this.miningHeld ? this.aimedRemoval() : null;
-    const key = edit && JSON.stringify(edit);
+    // (With the tool in hand: changing it starts again, at its pace.)
+    const held = this.materialOf();
+    const tool = isTool(held) ? held : null;
+    const key = edit && JSON.stringify([edit, tool]);
     if (!edit || key !== this.mined) this.mined = null;
     if (!edit || key === this.mined) {
       this.mining = null;
@@ -704,9 +717,9 @@ export class EditTool {
     }
     const now = performance.now();
     if (this.mining?.key !== key) {
-      const need = editMiningTime(edit, (cx, cy, cz) => this.chunks.chunkAt({ cx, cy, cz })) * 1000;
+      const need = editMiningTime(edit, (cx, cy, cz) => this.chunks.chunkAt({ cx, cy, cz }), tool) * 1000;
       this.mining = { key: key!, edit, start: now, need };
-      this.send({ type: 'mine', x: edit.x, y: edit.y, z: edit.z });
+      this.send({ type: 'mine', x: edit.x, y: edit.y, z: edit.z, ...(tool !== null ? { tool } : {}) });
     }
     const m = this.mining!;
     if (now - m.start < m.need) {

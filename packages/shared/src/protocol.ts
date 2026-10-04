@@ -13,7 +13,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 33;
+export const PROTOCOL_VERSION = 34;
 
 export type ClientMessage =
   | {
@@ -56,9 +56,11 @@ export type ClientMessage =
   | { type: 'cut'; id: number; sword: number; x: number; y: number; z: number }
   /**
    * Survival: starting to mine what's at unit (x, y, z) (a voxel, or a dig box's corner); the
-   * edit that removes it is accepted once it's been mined long enough (see minedLongEnough).
+   * edit that removes it is accepted once it's been mined long enough (see minedLongEnough), with
+   * `tool` (the item in hand, if it's a tool: see tools.ts) as fast as that makes it, and giving
+   * what that gives.
    */
-  | { type: 'mine'; x: number; y: number; z: number }
+  | { type: 'mine'; x: number; y: number; z: number; tool?: number }
   /** Light the TNT with a voxel at unit (x, y, z); answered with `editResult`. */
   | { type: 'ignite'; id: number; x: number; y: number; z: number }
   /** Use (open or close) the object with a voxel at unit (x, y, z); answered with `editResult`. */
@@ -326,8 +328,8 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   if (msg.type === 'cut' && isId(msg.id) && isInt32(msg.sword) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
     return { type: 'cut', id: msg.id as number, sword: msg.sword, x: msg.x, y: msg.y, z: msg.z };
   }
-  if (msg.type === 'mine' && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
-    return { type: 'mine', x: msg.x, y: msg.y, z: msg.z };
+  if (msg.type === 'mine' && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z) && (msg.tool === undefined || isInt32(msg.tool))) {
+    return { type: 'mine', x: msg.x, y: msg.y, z: msg.z, ...(msg.tool !== undefined ? { tool: msg.tool as number } : {}) };
   }
   if (msg.type === 'ignite' && isId(msg.id) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z)) {
     return { type: 'ignite', id: msg.id as number, x: msg.x, y: msg.y, z: msg.z };

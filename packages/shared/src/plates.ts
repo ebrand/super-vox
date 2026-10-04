@@ -107,8 +107,17 @@ export interface PlateTerrainConfig {
   treeClumping: number;
   /** Rivers: 0 (none) .. 100 (many small streams); 50 is a network of streams joining into rivers. */
   rivers: number;
-  /** Lakes in land basins: 0 (basins are filled in) .. 100 (even small basins hold lakes). */
+  /**
+   * Lakes in land basins: 0 (basins are filled in) .. 100 (even small basins hold lakes). With
+   * lakesByArea 1, the share of the water basins could hold that's lakes (the biggest first); 0,
+   * the smallest basin that holds one (halving every 10: worlds made before lakesByArea).
+   */
   lakes: number;
+  lakesByArea: number;
+  /** Bare rock ground's own relief (ridged outcrops, knolls and gullies, 16-256 m), 0 (as smooth as any) .. 100. */
+  rockRoughness: number;
+  /** Bare rock ground's surface: 0 all one stone .. 100 patches of gravel, dark, pale and (where wet) mossy stone. */
+  rockVariety: number;
   /** Density of island chains along seams where an oceanic plate meets another plate, 0 (none) .. 100. */
   islandArcs: number;
   /** Groups of islands inside oceanic plates, each a main island trailing smaller ones (0..40). */
@@ -171,6 +180,9 @@ export function defaultPlateTerrain(seed = 1, world?: WorldConfig): PlateTerrain
     treeClumping: 60,
     rivers: 50,
     lakes: 50,
+    lakesByArea: 1,
+    rockRoughness: 50,
+    rockVariety: 50,
     islandArcs: 0,
     hotspots: 0,
     islandMinSize: 200,
@@ -207,6 +219,8 @@ export const PLATE_LIMITS = {
   treeClumping: [0, 100],
   rivers: [0, 100],
   lakes: [0, 100],
+  rockRoughness: [0, 100],
+  rockVariety: [0, 100],
   islandArcs: [0, 100],
   hotspots: [0, 40],
   islandSize: [50, 4000],
@@ -258,6 +272,8 @@ export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
     if (r.southTemperature === undefined) r.southTemperature = 26;
   }
   if (r.lakes === undefined) r.lakes = 0;
+  // The lakes setting was the smallest basin holding one.
+  if (r.lakesByArea === undefined) r.lakesByArea = 0;
   // With biomes, the snow and rock altitudes didn't count (temperature alone decided).
   if (r.altitudeSnow === undefined) r.altitudeSnow = 0;
   if (r.altitudeRock === undefined) r.altitudeRock = 0;
@@ -322,6 +338,9 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   num(c.treeClumping, L.treeClumping, 'treeClumping');
   num(c.rivers, L.rivers, 'rivers');
   num(c.lakes, L.lakes, 'lakes');
+  num(c.rockRoughness, L.rockRoughness, 'rockRoughness');
+  num(c.rockVariety, L.rockVariety, 'rockVariety');
+  if (c.lakesByArea !== 0 && c.lakesByArea !== 1) throw new RangeError(`lakesByArea must be 0 or 1; got ${c.lakesByArea}`);
   num(c.islandArcs, L.islandArcs, 'islandArcs');
   int(c.hotspots, ...L.hotspots, 'hotspots');
   num(c.islandMinSize, L.islandSize, 'islandMinSize', ' m');
@@ -385,6 +404,15 @@ const ECOTONE_MOISTURE = 0.2;
 /** With biomes: bare rock below the snow, this many degrees warmer, on ground this high above the sea. */
 const ROCK_BAND_DEGREES = 1.5;
 const ROCK_BAND_MIN_HEIGHT = 100 * M;
+/** Mossy stone only where it's at least this wet (moisture 0..1). */
+const ROCK_MOSS_MOISTURE = 0.2;
+/** Stretches the patch noises (a mean of octaves varies less than one does) to about -1..1 (see rockSurface). */
+const ROCK_PATCH_STRETCH = 3;
+/** Strongest relief on bare rock ground (amplitude, units) at rockRoughness = 100 (see rockReliefAt). */
+const ROCK_DETAIL_MAX = 24 * M;
+/** Rock relief fades in across this much, either side of where bare rock starts (degrees C, units). */
+const ROCK_FADE_DEGREES = 1;
+const ROCK_FADE_HEIGHT = 30 * M;
 /** Strongest mountain-side detail (amplitude, units) at mountainDetail = 100, on the most mountainous ground. */
 const MOUNTAIN_DETAIL_MAX = 60 * M;
 /** Plains sit at this fraction of the smoothed land around them (lowland basins). */
@@ -477,6 +505,61 @@ export class PlateStageCache {
 
   /** How many stages have been reused, all told (for tests). */
   hits = 0;
+
+  /**
+   * The stages kept, for other threads (see PlateStageCache.from): their arrays moved into shared
+   * memory (in place: builds from this cache use the shared ones too), so every thread reads one
+   * copy, nothing copied when they're posted. The river index is left out (rebuilt from the
+   * segments); anything else that isn't plain data throws.
+   */
+  share(): PlateStages {
+    const out: PlateStages = [];
+    for (const [stage, kept] of this.stages) {
+      if (stage === 'hydrology') {
+        // (Posted without its river index; kept here with it.)
+        const { rivers, ...rest } = kept.value as { rivers: RiverIndex | null };
+        const shared = shareData(rest, stage) as object;
+        kept.value = { ...shared, rivers };
+        out.push({ stage, key: kept.key, value: { ...shared, rivers: null } });
+      } else {
+        kept.value = shareData(kept.value, stage);
+        out.push({ stage, key: kept.key, value: kept.value });
+      }
+    }
+    return out;
+  }
+
+  /** A cache holding `stages` (from share(), on another thread), for a build of the same world (`world`) to reuse. */
+  static from(stages: PlateStages, world: WorldConfig): PlateStageCache {
+    const cache = new PlateStageCache();
+    for (const { stage, key, value } of stages) {
+      let v = value;
+      if (stage === 'hydrology') {
+        const h = value as { hydrology: Hydrology | null; rivers: RiverIndex | null };
+        v = { ...h, rivers: h.hydrology?.segments.length ? new RiverIndex(h.hydrology.segments, world.widthUnits, world.wrapX) : null };
+      }
+      cache.stages.set(stage, { key, value: v });
+    }
+    return cache;
+  }
+}
+
+/** A build's stages as share() gives them (plain data: posted between threads as it is). */
+export type PlateStages = { stage: string; key: string; value: unknown }[];
+
+/** `v` with its typed arrays in shared memory (plain objects and arrays rebuilt around them); throws on anything else. */
+function shareData(v: unknown, path: string): unknown {
+  if (v === null || typeof v !== 'object') return v;
+  if (ArrayBuffer.isView(v)) {
+    if (v.buffer instanceof SharedArrayBuffer) return v;
+    const a = v as unknown as { constructor: new (b: SharedArrayBuffer) => ArrayBufferView & { set(x: ArrayLike<number>): void }; length: number; BYTES_PER_ELEMENT: number };
+    const shared = new a.constructor(new SharedArrayBuffer(a.length * a.BYTES_PER_ELEMENT));
+    shared.set(v as unknown as ArrayLike<number>);
+    return shared;
+  }
+  if (Array.isArray(v)) return v.map((x, i) => shareData(x, `${path}[${i}]`));
+  if (Object.getPrototypeOf(v) !== Object.prototype) throw new Error(`can't share ${path}: not plain data`);
+  return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, shareData(x, `${path}.${k}`)]));
 }
 
 /**
@@ -506,6 +589,8 @@ export class PlateHeights implements HeightSource {
   /** Fractal noise moving the snow line up and down, and how far (units). */
   private readonly snowNoise: Octave[];
   private readonly snowWander: number;
+  /** Fractal noise moving the heights bare rock starts at (ROCK_BAND_MIN_HEIGHT, rockLine) up and down, as far as the snow line wanders: its own, so the two edges don't run alike. */
+  private readonly rockNoise: Octave[];
   /** Biome borders: how far noise shifts the climate (0: sharp), and the ecotone trees mix across. */
   private readonly ragged: Ecotone;
   private readonly raggedNoise: [Octave[], Octave[]];
@@ -530,6 +615,12 @@ export class PlateHeights implements HeightSource {
   private readonly mountainness: Float32Array;
   /** Ridged octaves for mountain-side detail, and its strength (units). */
   private readonly crags: Octave[];
+  /** Bare rock ground's relief (see rockReliefAt): ridged noise and its strongest amplitude (units). */
+  private readonly rockCrags: Octave[];
+  private readonly rockAmp: number;
+  /** Bare rock's surface (see rockSurface): two noises for patches, and how varied (0..1). */
+  private readonly rockPatches: [Octave[], Octave[]];
+  private readonly rockVariety: number;
   private readonly cragAmp: number;
   readonly plates: readonly Plate[];
   /** Islands placed by arcs and hotspots (centres and radii in units). */
@@ -693,7 +784,7 @@ export class PlateHeights implements HeightSource {
     // Strokes change the ground under the climate and the rivers.
     const strokesKey = JSON.stringify(strokes);
     const climateKey = [...heightKey, strokesKey, cf.biomes, cf.northTemperature, cf.southTemperature, cf.equator, cf.equatorTemperature, cf.windFrom, cf.rainfall];
-    const hydrologyKey = [...(cf.biomes === 1 ? climateKey : heightKey), strokesKey, cf.biomes, cf.rivers, cf.lakes];
+    const hydrologyKey = [...(cf.biomes === 1 ? climateKey : heightKey), strokesKey, cf.biomes, cf.rivers, cf.lakes, cf.lakesByArea];
     // On a wrapping world each octave's lattice must tile the width exactly.
     const fit = (spacing: number) => (this.wrap ? W / Math.max(1, Math.round(W / spacing)) : spacing);
     const octaves = (seed: number, spacings: number[], persistence = 0.5): Octave[] =>
@@ -779,14 +870,66 @@ export class PlateHeights implements HeightSource {
       };
       // Once placed, minors join the majors in one power diagram, so every border is a straight
       // line (before warping) and minors are polygons like the majors, only smaller.
-      const owner = (x: number, z: number, withMinors: boolean) => {
-        let best = 0, bestD = Infinity;
-        const count = withMinors ? plates.length : majorCount;
-        for (let k = 0; k < count; k++) {
-          const d = power(plates[k]!, x, z);
-          if (d < bestD) [best, bestD] = [k, d];
+      // A cell's plate: the first of the lowest power. Worked out for many cells at once (owners),
+      // by blocks of cells: only plates that could be lowest anywhere in a block's box are tried.
+      /** Cells (indices) in blocks of `size` x `size` grid cells, with the box their warped positions lie in. */
+      type Block = { cells: Int32Array; x0: number; x1: number; z0: number; z1: number };
+      const blocksOf = (cells: ArrayLike<number>, size: number): Block[] => {
+        const bc = Math.ceil(cols / size), byBlock = new Map<number, number[]>();
+        for (let k = 0; k < cells.length; k++) {
+          const i = cells[k]!, c = i % cols, r = (i - c) / cols;
+          const b = Math.floor(c / size) + bc * Math.floor(r / size);
+          let list = byBlock.get(b);
+          if (!list) byBlock.set(b, (list = []));
+          list.push(i);
         }
-        return best;
+        return [...byBlock.values()].map((list) => {
+          let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+          for (const i of list) {
+            x0 = Math.min(x0, posX[i]!); x1 = Math.max(x1, posX[i]!);
+            z0 = Math.min(z0, posZ[i]!); z1 = Math.max(z1, posZ[i]!);
+          }
+          return { cells: Int32Array.from(list), x0, x1, z0, z1 };
+        });
+      };
+      // (Wrapping worlds: a plate's copies a world's width east and west, as `dx` finds the nearest.)
+      const shifts = this.wrap ? [-W, 0, W] : [0];
+      const cand = new Int32Array(plates.length + config.minorPlates);
+      /** Calls `found(cell, plate)` for every cell in `blocks`: exactly what a scan of every plate (the first of the lowest power, in order) finds. */
+      const owners = (blocks: Block[], withMinors: boolean, found: (i: number, k: number) => void) => {
+        const count = withMinors ? plates.length : majorCount;
+        const lo = new Float64Array(count), hi = new Float64Array(count);
+        for (const b of blocks) {
+          // Bounds on each plate's power over the box: no point in it can be nearer than `lo` nor
+          // further than `hi`; a plate whose lowest is above some plate's highest never wins there.
+          let lowestHi = Infinity;
+          for (let k = 0; k < count; k++) {
+            const p = plates[k]!;
+            let gx = Infinity, fx = Infinity;
+            for (const s of shifts) {
+              const px = p.x + s;
+              gx = Math.min(gx, Math.max(0, b.x0 - px, px - b.x1));
+              fx = Math.min(fx, Math.max(Math.abs(b.x0 - px), Math.abs(b.x1 - px)));
+            }
+            const gz = Math.max(0, b.z0 - p.z, p.z - b.z1), fz = Math.max(Math.abs(b.z0 - p.z), Math.abs(b.z1 - p.z));
+            lo[k] = gx * gx + gz * gz - p.weight;
+            hi[k] = fx * fx + fz * fz - p.weight;
+            if (hi[k]! < lowestHi) lowestHi = hi[k]!;
+          }
+          // (A margin far beyond rounding: the bounds needn't be tight, only never wrong.)
+          const limit = lowestHi + 1 + Math.abs(lowestHi) * 1e-9;
+          let m = 0;
+          for (let k = 0; k < count; k++) if (lo[k]! - 1 - Math.abs(lo[k]!) * 1e-9 <= limit) cand[m++] = k;
+          for (const i of b.cells) {
+            const x = posX[i]!, z = posZ[i]!;
+            let best = 0, bestD = Infinity;
+            for (let j = 0; j < m; j++) {
+              const k = cand[j]!, d = power(plates[k]!, x, z);
+              if (d < bestD) [best, bestD] = [k, d];
+            }
+            found(i, best);
+          }
+        }
       };
 
       // Plate sizes are tuned on a coarse grid. Each round measures every plate's area and moves
@@ -797,6 +940,8 @@ export class PlateHeights implements HeightSource {
       const S = Math.max(4, Math.round(4 * Math.sqrt(n / 250_000)));
       const sample: number[] = [];
       for (let r = S >> 1; r < rows; r += S) for (let c = S >> 1; c < cols; c += S) sample.push(c + cols * r);
+      // (About 36 samples a block: the bounds cost a block as much as a sample costs without them.)
+      const sampleBlocks = blocksOf(sample, 6 * S);
       const cellArea = (S * PLATE_CELL) ** 2;
       const balance = (target: number[], rounds: number, withMinors: boolean) => {
         const count = target.length;
@@ -805,7 +950,7 @@ export class PlateHeights implements HeightSource {
         const lastErr = new Float64Array(count);
         for (let iter = 0; iter < rounds; iter++) {
           area.fill(0);
-          for (const i of sample) area[owner(posX[i]!, posZ[i]!, withMinors)]!++;
+          owners(sampleBlocks, withMinors, (_, k) => area[k]!++);
           let mean = 0;
           for (let k = 0; k < count; k++) {
             const err = target[k]! - area[k]!;
@@ -857,7 +1002,7 @@ export class PlateHeights implements HeightSource {
       const unit = sample.length / (majorCount * config.plateSizeRatio + config.minorPlates);
       balance(plates.map((p) => (p.major ? config.plateSizeRatio : 1) * unit), 80, true);
       const plateOf = new Uint16Array(n);
-      for (let i = 0; i < n; i++) plateOf[i] = owner(posX[i]!, posZ[i]!, true);
+      owners(blocksOf(Array.from({ length: n }, (_, i) => i), 16), true, (i, k) => (plateOf[i] = k));
 
       // For step 5 (below, which depends on the land share): each major's area with its minors,
       // and the random order they're tried in.
@@ -1454,11 +1599,16 @@ export class PlateHeights implements HeightSource {
     // Mountain sides: ridged noise from 256 m down to 16 m (gullies, spurs, crags).
     this.crags = octaves(config.seed * 7919 + 31, [4096, 2048, 1024, 512, 256], 0.55);
     this.cragAmp = (config.mountainDetail / 100) * MOUNTAIN_DETAIL_MAX;
+    this.rockCrags = octaves(config.terrainSeed * 7919 + 43, [4096, 2048, 1024, 512, 256], 0.55);
+    this.rockAmp = (config.rockRoughness / 100) * ROCK_DETAIL_MAX;
+    this.rockPatches = [octaves(config.terrainSeed * 7919 + 47, [8192, 4096, 2048, 1024, 512], 0.6), octaves(config.terrainSeed * 7919 + 53, [8192, 4096, 2048, 1024, 512], 0.6)];
+    this.rockVariety = config.rockVariety / 100;
     // Beaches come and go along a coast over a few hundred metres.
     this.beachNoise = octaves(config.terrainSeed * 7919 + 13, [8192, 4096, 2048]);
     // The snow line wanders at every scale from ~1 km down to 16 m.
     this.snowNoise = octaves(config.terrainSeed * 7919 + 37, [16384, 8192, 4096, 2048, 1024, 512, 256], 0.65);
     this.snowWander = (config.snowFractal / 100) * SNOW_FRACTAL_MAX;
+    this.rockNoise = octaves(config.terrainSeed * 7919 + 41, [16384, 8192, 4096, 2048, 1024, 512, 256], 0.65);
     // Biome borders wander at every scale from ~1 km down to 16 m.
     const blend = config.biomes === 1 ? config.biomeBlend / 100 : 0;
     this.ragged = { degrees: blend * RAGGED_DEGREES, moisture: blend * RAGGED_MOISTURE };
@@ -1478,7 +1628,7 @@ export class PlateHeights implements HeightSource {
       const filled = elevation.slice();
       const hydrology = buildHydrology({
         elevation: filled, cols, rows, cell: PLATE_CELL, sea, wrap: this.wrap,
-        wetness: this.moisture, rivers: config.rivers, lakes: config.lakes, seed: config.terrainSeed * 7919 + 61,
+        wetness: this.moisture, rivers: config.rivers, lakes: config.lakes, lakesByArea: config.lakesByArea === 1, seed: config.terrainSeed * 7919 + 61,
       });
       return { elevation: filled, hydrology, rivers: hydrology.segments.length ? new RiverIndex(hydrology.segments, W, this.wrap) : null };
     });
@@ -1698,6 +1848,7 @@ export class PlateHeights implements HeightSource {
     const strokes = this.strokes.length ? strokesIn(this.strokes, x0, z0, x0 + (w - 1) * step, z0 + (d - 1) * step, this.wrap ? this.world.widthUnits : null) : [];
     const rough = this.interpolate(this.rough, x0, z0, w, d, step);
     const crag = this.cragsAt(x0, z0, w, d, step);
+    const rockRelief = this.rockReliefAt(x0, z0, w, d, step, elev);
     const out = new Int32Array(w * d);
     for (let k = 0; k < out.length; k++) {
       const e = elev[k]!;
@@ -1706,6 +1857,7 @@ export class PlateHeights implements HeightSource {
       const amp = Math.min((DETAIL_MIN + (DETAIL_MAX - DETAIL_MIN) * rough[k]!) * this.detailScale, room);
       let h = e + detail[k]! * norm * Math.max(0, amp);
       if (crag) h += crag[k]! * Math.max(0, Math.min(crag.amp[k]!, room));
+      if (rockRelief) h += rockRelief[k]! * Math.max(0, Math.min(rockRelief.amp[k]!, room));
       h = Math.min(this.maxHeight, Math.max(this.minHeight, h));
       if (strokes.length) {
         // Terraforming, exactly here (within the world's own height range, which may pass the
@@ -1743,6 +1895,44 @@ export class PlateHeights implements HeightSource {
     const out = ridged.map((v) => (v - CRAG_MEAN) * CRAG_STRETCH) as Float64Array & { amp: Float64Array };
     // Square root: flanks, not just the cores of ranges, get the detail.
     out.amp = m.map((v) => Math.sqrt(v) * this.cragAmp);
+    return out;
+  }
+
+  /**
+   * Bare rock ground's own relief for a block of samples: ridged noise (about -1..1) and its
+   * amplitude per sample (units), or null where none is near (the common case: skipped). How rocky
+   * a sample is goes by the smooth ground under it (`elev`, before any detail, so the relief can't
+   * move where rock is): high and cold as the rock band (see materialsWith), or above the rock
+   * altitude where that counts, fading in across ROCK_FADE_DEGREES and ROCK_FADE_HEIGHT.
+   */
+  private rockReliefAt(x0: number, z0: number, w: number, d: number, step: number, elev: Float64Array): (Float64Array & { amp: Float64Array }) | null {
+    if (this.rockAmp <= 0) return null;
+    const climate = this.temperature !== null;
+    const band = this.seaLevel + ROCK_BAND_MIN_HEIGHT, byAltitude = !climate || this.altitudeRock;
+    let top = -Infinity;
+    for (let k = 0; k < elev.length; k++) top = Math.max(top, elev[k]!);
+    const lowest = Math.min(climate ? band : Infinity, byAltitude ? this.rockLine : Infinity) - ROCK_FADE_HEIGHT;
+    if (top <= lowest) return null;
+    const temperature = climate ? this.interpolate(this.temperature!, x0, z0, w, d, step) : null;
+    const high = (h: number, at: number) => smoothstep(at - ROCK_FADE_HEIGHT, at + ROCK_FADE_HEIGHT, h);
+    const coldAt = this.snowTemp + ROCK_BAND_DEGREES;
+    const amp = new Float64Array(w * d);
+    let any = false;
+    for (let k = 0; k < amp.length; k++) {
+      const e = elev[k]!;
+      let rockiness = byAltitude ? high(e, this.rockLine) : 0;
+      if (temperature) {
+        const t = temperature[k]! - this.cooling * Math.max(0, e - this.seaLevel);
+        rockiness = Math.max(rockiness, smoothstep(coldAt + ROCK_FADE_DEGREES, coldAt - ROCK_FADE_DEGREES, t) * high(e, band));
+      }
+      amp[k] = rockiness * this.rockAmp;
+      if (rockiness > 0) any = true;
+    }
+    if (!any) return null;
+    // (As the crags', centred and stretched; then softly kept within -1..1, so the amplitude is the most it moves.)
+    const ridged = ridgedGrid(this.rockCrags, x0, z0, w, d, step);
+    const out = ridged.map((v) => Math.tanh((v - CRAG_MEAN) * CRAG_STRETCH * 1.1)) as Float64Array & { amp: Float64Array };
+    out.amp = amp;
     return out;
   }
 
@@ -1806,11 +1996,11 @@ export class PlateHeights implements HeightSource {
     // altitudeRock, also lie above their altitudes); without, fixed heights. Either way the snow line
     // wanders (in degrees or metres), computed only where some ground is within its reach.
     const byHeight = !climate || this.altitudeSnow;
-    const shiftNear = (wander: number, near: () => boolean) => {
+    const shiftNear = (wander: number, near: () => boolean, noise = this.snowNoise) => {
       if (wander <= 0 || !near()) return null;
-      const f = fractalGrid(this.snowNoise, x0, z0, w, d, step);
+      const f = fractalGrid(noise, x0, z0, w, d, step);
       // Scaled by the octaves' weight so it spans about -1..1.
-      const s = (2 / this.snowNoise.reduce((a, o) => a + o.weight, 0)) * 1.8 * wander;
+      const s = (2 / noise.reduce((a, o) => a + o.weight, 0)) * 1.8 * wander;
       return f.map((v) => Math.max(-wander, Math.min(wander, v * s)));
     };
     const degrees = (this.snowWander / SNOW_FRACTAL_MAX) * SNOW_FRACTAL_DEGREES;
@@ -1820,9 +2010,14 @@ export class PlateHeights implements HeightSource {
     };
     const tempShift = climate ? shiftNear(degrees, () => anyWithin(climate.temperature, this.snowTemp, degrees + ROCK_BAND_DEGREES)) : null;
     const heightShift = byHeight ? shiftNear(this.snowWander, () => anyWithin(heights, this.snowLine, this.snowWander)) : null;
+    // The heights rock starts at wander too (else their edge, and the treeline with it, follows a contour).
+    const rockBandAt = sea + ROCK_BAND_MIN_HEIGHT;
+    const rockShift = shiftNear(this.snowWander, () => (climate !== null && anyWithin(heights, rockBandAt, this.snowWander)) || ((!climate || this.altitudeRock) && anyWithin(heights, this.rockLine, this.snowWander)), this.rockNoise);
     // River and lake beds (only looked up where this world has any), and polar ice.
     const standing = this.hydrology ? this.surface(x0, z0, w, d, step).water : null;
     const ice = this.iceTops(x0, z0, w, d, step);
+    // Steep stone (see rockSurface), marked only if there's any.
+    let cliffs: Uint8Array | null = null;
     for (let k = 0; k < out.length; k++) {
       const h = heights[k]!;
       if (ice && ice[k]! >= h - M) {
@@ -1850,10 +2045,11 @@ export class PlateHeights implements HeightSource {
         // (And above the snow and rock altitudes, with altitudeSnow and altitudeRock.)
         const t = climate.temperature[k]! + (tempShift ? tempShift[k]! : 0);
         snow = t < this.snowTemp || high;
-        bare = (t < this.snowTemp + ROCK_BAND_DEGREES && h - sea > ROCK_BAND_MIN_HEIGHT) || (this.altitudeRock && h >= this.rockLine);
+        const r = rockShift ? rockShift[k]! : 0;
+        bare = (t < this.snowTemp + ROCK_BAND_DEGREES && h > rockBandAt + r) || (this.altitudeRock && h >= this.rockLine + r);
       } else {
         snow = high;
-        bare = h >= this.rockLine;
+        bare = h >= this.rockLine + (rockShift ? rockShift[k]! : 0);
       }
       // Steep ground is bare rock even above the snow line: steep faces don't hold snow.
       out[k] =
@@ -1864,8 +2060,35 @@ export class PlateHeights implements HeightSource {
         : bare ? Material.Stone
         : climate ? BIOME_GROUND[climate.biome[k]! as BiomeId]
         : Material.Grass;
+      if (steep && out[k] === Material.Stone) (cliffs ??= new Uint8Array(out.length))[k] = 1;
     }
+    this.rockSurface(x0, z0, w, d, step, out, cliffs, climate?.biomeMoisture ?? null);
     return out;
+  }
+
+  /**
+   * Bare rock's surface, in place (see rockVariety): where `out` is stone, patches of other stone
+   * by two noises: on steep faces (`cliffs`), dark bands; elsewhere gravel (scree), pale stone and,
+   * where it's wet (`moisture`), mossy stone.
+   */
+  private rockSurface(x0: number, z0: number, w: number, d: number, step: number, out: Uint16Array, cliffs: Uint8Array | null, moisture: ArrayLike<number> | null): void {
+    const v = this.rockVariety;
+    if (v <= 0 || !out.includes(Material.Stone)) return;
+    const [na, nb] = this.rockPatches;
+    // Scaled by the octaves' weight so each spans about -1..1.
+    const a = fractalGrid(na, x0, z0, w, d, step), b = fractalGrid(nb, x0, z0, w, d, step);
+    const sa = 2 / na.reduce((t, o) => t + o.weight, 0), sb = 2 / nb.reduce((t, o) => t + o.weight, 0);
+    // Patches where a noise passes `edge`: at variety 0.5 about a third of the rock, at 1 most of it.
+    const edge = 0.9 - 0.75 * v;
+    for (let k = 0; k < out.length; k++) {
+      if (out[k] !== Material.Stone) continue;
+      const pa = a[k]! * sa * ROCK_PATCH_STRETCH, pb = b[k]! * sb * ROCK_PATCH_STRETCH;
+      if (cliffs && cliffs[k]) {
+        if (pa > edge) out[k] = Material.DarkStone;
+      } else if (pa < -edge) out[k] = Material.Gravel;
+      else if (pa > edge) out[k] = Material.PaleStone;
+      else if (pb > edge && (moisture === null || moisture[k]! > ROCK_MOSS_MOISTURE)) out[k] = Material.MossyStone;
+    }
   }
 
   /** The forest canopy over samples, for distant views (see canopyOver). */
@@ -2039,21 +2262,23 @@ function inlandLakes(wet: (i: number) => boolean, minSize: number, reach: number
     const cells: number[] = [];
     const stack = [s];
     body[s] = bodies.length;
+    const visit = (j: number) => {
+      if (body[j] === -1 && wet(j)) {
+        body[j] = bodies.length;
+        stack.push(j);
+      }
+    };
     while (stack.length > 0) {
       const i = stack.pop()!;
       cells.push(i);
-      const c = i % cols, r = (i - c) / cols;
-      for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-        let cc = c + a;
-        const rr = r + b;
-        if (wrap) cc = ((cc % cols) + cols) % cols;
-        if (cc < 0 || cc >= cols || rr < 0 || rr >= rows) continue;
-        const j = cc + cols * rr;
-        if (body[j] === -1 && wet(j)) {
-          body[j] = bodies.length;
-          stack.push(j);
-        }
-      }
+      const c = i % cols, r = (i - c) / cols, o = i - c;
+      // East, west, south, north (X wrapping if asked).
+      if (c < cols - 1) visit(i + 1);
+      else if (wrap) visit(o);
+      if (c > 0) visit(i - 1);
+      else if (wrap) visit(o + cols - 1);
+      if (r < rows - 1) visit(i + cols);
+      if (r > 0) visit(i - cols);
     }
     bodies.push(cells);
   }
@@ -2098,26 +2323,40 @@ function chamferLabel(dist: Float32Array, label: Int32Array, cols: number, rows:
   }
 }
 
-/** In-place two-pass chamfer distance transform (cells): zeros are sources, others start at Infinity. */
+/**
+ * In-place two-pass chamfer distance transform (cells): zeros are sources, others start at Infinity.
+ * (Each cell looks at its four neighbours behind it in a pass, in a fixed order, taking each as it
+ * stands then, rounded to float32 as it's stored: written out longhand, as it runs on every build.)
+ */
 function chamfer(dist: Float32Array, cols: number, rows: number, wrap: boolean): void {
-  const at = (c: number, r: number) => {
-    if (wrap) c = ((c % cols) + cols) % cols;
-    return c < 0 || c >= cols || r < 0 || r >= rows ? -1 : c + cols * r;
-  };
-  const relax = (i: number, j: number, w: number) => {
-    if (j >= 0 && dist[j]! + w < dist[i]!) dist[i] = dist[j]! + w;
-  };
+  const D = Math.SQRT2;
   for (let pass = 0; pass < (wrap ? 2 : 1); pass++) {
     for (let r = 0; r < rows; r++) {
+      const o = cols * r, u = o - cols;
       for (let c = 0; c < cols; c++) {
-        const i = c + cols * r;
-        relax(i, at(c - 1, r), 1); relax(i, at(c, r - 1), 1); relax(i, at(c - 1, r - 1), Math.SQRT2); relax(i, at(c + 1, r - 1), Math.SQRT2);
+        const i = o + c;
+        const cl = c > 0 ? c - 1 : wrap ? cols - 1 : -1, cr = c < cols - 1 ? c + 1 : wrap ? 0 : -1;
+        let d = dist[i]!, v: number;
+        if (cl >= 0 && (v = dist[o + cl]! + 1) < d) d = dist[i] = v;
+        if (r > 0) {
+          if ((v = dist[u + c]! + 1) < (d = dist[i]!)) dist[i] = v;
+          if (cl >= 0 && (v = dist[u + cl]! + D) < (d = dist[i]!)) dist[i] = v;
+          if (cr >= 0 && (v = dist[u + cr]! + D) < (d = dist[i]!)) dist[i] = v;
+        }
       }
     }
     for (let r = rows - 1; r >= 0; r--) {
+      const o = cols * r, b = o + cols;
       for (let c = cols - 1; c >= 0; c--) {
-        const i = c + cols * r;
-        relax(i, at(c + 1, r), 1); relax(i, at(c, r + 1), 1); relax(i, at(c + 1, r + 1), Math.SQRT2); relax(i, at(c - 1, r + 1), Math.SQRT2);
+        const i = o + c;
+        const cl = c > 0 ? c - 1 : wrap ? cols - 1 : -1, cr = c < cols - 1 ? c + 1 : wrap ? 0 : -1;
+        let d = dist[i]!, v: number;
+        if (cr >= 0 && (v = dist[o + cr]! + 1) < d) d = dist[i] = v;
+        if (r < rows - 1) {
+          if ((v = dist[b + c]! + 1) < (d = dist[i]!)) dist[i] = v;
+          if (cr >= 0 && (v = dist[b + cr]! + D) < (d = dist[i]!)) dist[i] = v;
+          if (cl >= 0 && (v = dist[b + cl]! + D) < (d = dist[i]!)) dist[i] = v;
+        }
       }
     }
   }

@@ -49,6 +49,12 @@ const ITEM_LOOK: Record<number, { color: readonly [number, number, number]; glyp
   [Item.Bucket]: { color: [0.45, 0.29, 0.13], glyph: 'U' },
   [Item.Pork]: { color: [0.93, 0.6, 0.6], glyph: 'p' },
   [Item.CraftingTable]: { color: [0.33, 0.17, 0.07], glyph: '⊓' },
+  [Item.WoodenPickaxe]: { color: [0.45, 0.29, 0.13], glyph: '⛏' },
+  [Item.StonePickaxe]: { color: [0.22, 0.22, 0.23], glyph: '⛏' },
+  [Item.WoodenAxe]: { color: [0.45, 0.29, 0.13], glyph: 'Γ' },
+  [Item.StoneAxe]: { color: [0.22, 0.22, 0.23], glyph: 'Γ' },
+  [Item.WoodenShovel]: { color: [0.45, 0.29, 0.13], glyph: '♠' },
+  [Item.StoneShovel]: { color: [0.22, 0.22, 0.23], glyph: '♠' },
 };
 
 /** How an item looks in slots: built-in ones as ITEM_LOOK has them; designed objects, the colour of what they're mostly made of, and their initial. */

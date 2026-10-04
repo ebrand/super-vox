@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { emptyChunk, packVoxel, type Chunk } from './chunk.js';
-import { BLOCK_VOLUME, HOTBAR_SLOTS, STARTER_KIT, canPlace, chunkVolumes, dropOf, formatBlocks, isGameMode, starterHotbar, volumeChange } from './items.js';
+import { BLOCK_VOLUME, HOTBAR_SLOTS, Item, STARTER_KIT, canPlace, chunkVolumes, formatBlocks, isGameMode, starterHotbar, volumeChange } from './items.js';
+import { dropOf } from './tools.js';
 import { Material, waterMaterial } from './materials.js';
 
 function chunkWith(...blocks: Chunk['blocks']): Chunk {
@@ -34,8 +35,8 @@ describe('items', () => {
     expect(volumeChange([before], [before])).toEqual(new Map());
   });
 
-  it('drop Minecraft-like: stone gives cobblestone, grassy grounds dirt, leaves and water nothing', () => {
-    expect(dropOf(Material.Stone)).toBe(Material.Cobblestone);
+  it('drop Minecraft-like: stone gives cobblestone (with a pickaxe), grassy grounds dirt, leaves and water nothing', () => {
+    expect(dropOf(Material.Stone, Item.WoodenPickaxe)).toBe(Material.Cobblestone);
     expect(dropOf(Material.Grass)).toBe(Material.Dirt);
     expect(dropOf(Material.Tundra)).toBe(Material.Dirt);
     expect(dropOf(Material.Wood)).toBe(Material.Wood);

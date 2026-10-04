@@ -103,11 +103,13 @@ describe('mining', () => {
     expect(world.miningTime({ op: 'remove', x: 1000, y: -1, z: 1000 })).toBeCloseTo(0.75 / 4, 9);
     // Air: nothing to mine.
     expect(world.miningTime({ op: 'remove', x: 1000, y: 40, z: 1000 })).toBe(0);
-    // A 1 m box of ground: between all dirt and all stone; deeper (all stone) takes a stone block's time.
+    // A 1 m box of ground: between all dirt and all stone (by hand: three times stone's hardness,
+    // needing a pickaxe); deeper (all stone) takes a stone block's time, by the tool in hand.
     const top = world.miningTime({ op: 'removeBox', x: 2000, y: -16, z: 2000, size: 16 });
     expect(top).toBeGreaterThan(0.7);
-    expect(top).toBeLessThan(3);
-    expect(world.miningTime({ op: 'removeBox', x: 2000, y: -160, z: 2000, size: 16 })).toBeCloseTo(3, 6);
+    expect(top).toBeLessThan(9);
+    expect(world.miningTime({ op: 'removeBox', x: 2000, y: -160, z: 2000, size: 16 })).toBeCloseTo(9, 6);
+    expect(world.miningTime({ op: 'removeBox', x: 2000, y: -160, z: 2000, size: 16 }, Item.StonePickaxe)).toBeCloseTo(0.75, 6);
   });
 });
 
@@ -285,13 +287,16 @@ describe('inventories', () => {
     // Placing a 1 m stone block uses one.
     expect(await p.edit({ op: 'place', x: 1600, y: 0, z: 1600, size: 16, material: Material.Stone })).toMatchObject({ ok: true });
     expect(new Map(p.inventory()!.items).get(Material.Stone)).toBe(15 * B);
-    // Mining it back gives cobblestone, as mining stone does.
-    expect(await p.mine({ op: 'remove', x: 1600, y: 0, z: 1600 })).toMatchObject({ ok: true });
+    // Mining it back by hand gives nothing (so no new inventory comes): stone needs a pickaxe (see 'tools').
+    p.ws.send(JSON.stringify({ type: 'mine', x: 1600, y: 0, z: 1600 }));
+    await new Promise((r) => setTimeout(r, 120));
+    expect(await act(p, { type: 'edit', edit: { op: 'remove', x: 1600, y: 0, z: 1600 } })).toMatchObject({ ok: true });
+    await new Promise((r) => setTimeout(r, 50));
     expect(new Map(p.inventory()!.items).get(Material.Stone)).toBe(15 * B);
-    expect(new Map(p.inventory()!.items).get(Material.Cobblestone)).toBe(B);
+    expect(new Map(p.inventory()!.items).get(Material.Cobblestone)).toBeUndefined();
     // No sand, no water in survival.
     expect(await p.edit({ op: 'place', x: 1600, y: 0, z: 1600, size: 16, material: Material.Sand })).toEqual({
-      type: 'editResult', id: 4, ok: false, error: 'not enough sand (have 0, need 1 blocks)',
+      type: 'editResult', id: expect.any(Number), ok: false, error: 'not enough sand (have 0, need 1 blocks)',
     });
     expect(await p.edit({ op: 'place', x: 1600, y: 0, z: 1600, size: 16, material: Material.Water })).toMatchObject({ ok: false, error: "water can't be placed in survival" });
     p.ws.close();

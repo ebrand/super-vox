@@ -94,7 +94,9 @@ describe('world shapes', () => {
     expect(WORLD_SHAPES['round-64x32']).toMatchObject({ widthUnits: 64_000 * 16, depthUnits: 32_000 * 16, wrapX: true });
     expect(WORLD_SHAPES['round-16x8'].wrapX).toBe(true);
     expect(WORLD_SHAPES['flat-16x16'].wrapX).toBe(false);
-    for (const s of ['round-64x32', 'round-16x8', 'flat-16x16']) expect(isWorldShape(s)).toBe(true);
-    expect(isWorldShape('round-32x16')).toBe(false);
+    // ...and a medium one between the giant and the small.
+    expect(WORLD_SHAPES['round-32x16']).toMatchObject({ widthUnits: 32_000 * 16, depthUnits: 16_000 * 16, wrapX: true });
+    for (const s of ['round-64x32', 'round-32x16', 'round-16x8', 'flat-16x16']) expect(isWorldShape(s)).toBe(true);
+    for (const s of ['round-32x32', 'toString', 'constructor', '', 5, null]) expect(isWorldShape(s)).toBe(false);
   });
 });

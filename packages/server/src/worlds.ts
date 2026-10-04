@@ -24,12 +24,16 @@ import {
   type PlateTerrainConfig,
   type WorldConfig,
   type WorldShape,
+  PlateStageCache,
+  type PlateStages,
 } from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
 import { createHash } from 'node:crypto';
 import { rm, readdir } from 'node:fs/promises';
 import { DiskCache } from './diskCache.js';
-import { GenPool } from './genPool.js';
+import { GenPool, startWorker } from './genPool.js';
+import { buildFile, loadBuild, saveBuild } from './plateBuilds.js';
+import type { BuildJob } from './buildWorker.js';
 import { World, tileBytes } from './world.js';
 import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, readStrokes, readWorld, saveClock, saveMode, updateWorld, worldConfigOf, writeStrokes, type WorldFile, type WorldSpec } from './worldFile.js';
 
@@ -96,7 +100,7 @@ export interface WorldCatalog {
 }
 
 /** Bumped when what the disk cache holds changes form. */
-const CACHE_FORMAT = 1;
+const CACHE_FORMAT = 4;
 
 /**
  * Which version of a world's terrain a disk cache holds: its settings and terraforming, and (so
@@ -166,6 +170,8 @@ interface Opened {
   heights: HeightSource | null;
   /** Development: the world voxelized at other tolerances (edits stay in memory). */
   variants: Map<number, World>;
+  /** A plate world: whether its build was loaded from disk (see plateBuilds.ts) or made here. */
+  built: 'disk' | 'here' | null;
 }
 
 /**
@@ -190,11 +196,14 @@ export class FileWorldCatalog implements WorldCatalog {
     /**
      * dayMinutes: the day length of worlds that don't have a clock yet; generationWorkers, how
      * many worker threads generate terrain (0 or absent: the main thread does); diskCache, whether
-     * generated terrain is kept on disk (see DiskCache).
+     * generated terrain is kept on disk (see DiskCache), and plate worlds' builds (see
+     * plateBuilds.ts: made in the background for worlds made or changed, and at start for any
+     * without a build for this code).
      */
     private readonly opts: { dev: boolean; config?: WorldConfig; dayMinutes?: number | 'real'; generationWorkers?: number; diskCache?: boolean },
   ) {
     this.dev = opts.dev;
+    if (opts.diskCache) for (const f of listWorlds(dataRoot)) this.prebuild(f.name);
     // Anyone the server lets (see app.ts: development, or admins) may change a world's clock.
     this.setClock = (name, change) => {
       const now = this.clock(name);
@@ -206,8 +215,11 @@ export class FileWorldCatalog implements WorldCatalog {
     };
     // Creating, changing and deleting worlds: for whoever the server lets (see app.ts: development, or admins).
     {
-      this.create = (name, plates, shape = DEFAULT_WORLD_SHAPE, mode = DEFAULT_GAME_MODE) =>
-        this.summary(createWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize: defaultVoxelize(), shape }, mode));
+      this.create = (name, plates, shape = DEFAULT_WORLD_SHAPE, mode = DEFAULT_GAME_MODE) => {
+        const file = createWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize: defaultVoxelize(), shape }, mode);
+        this.prebuild(name); // (ready before it's first played)
+        return this.summary(file);
+      };
       this.setMode = (name, mode) => {
         const file = saveMode(this.dataRoot, name, mode);
         const o = this.open.get(name);
@@ -222,6 +234,7 @@ export class FileWorldCatalog implements WorldCatalog {
         const s = shape ?? keep;
         const file = updateWorld(this.dataRoot, name, { generator: 'plates', plates, voxelize, ...(s ? { shape: s } : {}) });
         this.close(name); // rebuilt from the new settings on next use
+        this.prebuild(name);
         return this.summary(file);
       };
       this.terraform = (name, base, added) => {
@@ -237,6 +250,7 @@ export class FileWorldCatalog implements WorldCatalog {
         if (over.length) throw new StrokesOverBuildsError(over);
         writeStrokes(this.dataRoot, name, all);
         this.close(name); // remade with them on next use
+        this.prebuild(name);
         return all.length;
       };
       this.delete = (name) => {
@@ -345,6 +359,62 @@ export class FileWorldCatalog implements WorldCatalog {
     return new DiskCache(join(root, version));
   }
 
+  /** Where world `name`'s build came from, if it's open and a plate world (tests, the dashboard). */
+  builtFrom(name: string): 'disk' | 'here' | null {
+    return this.open.get(name)?.built ?? null;
+  }
+
+  /** Worlds waiting to be built in the background (see prebuild), and whether one is being built now. */
+  private readonly toBuild: string[] = [];
+  private building = false;
+  /** Resolves when no background build is waiting or running (tests). */
+  private idle: (() => void)[] = [];
+
+  /**
+   * Builds plate world `name` and saves it (see plateBuilds.ts) in a worker, so it's on disk before
+   * it's played: unless it's on disk already. One at a time, in the order asked.
+   */
+  private prebuild(name: string): void {
+    if (!this.opts.diskCache || this.toBuild.includes(name)) return;
+    this.toBuild.push(name);
+    this.nextBuild();
+  }
+
+  private nextBuild(): void {
+    if (this.building) return;
+    const name = this.toBuild.shift();
+    if (name === undefined) {
+      for (const f of this.idle.splice(0)) f();
+      return;
+    }
+    const file = readWorld(this.dataRoot, name);
+    if (!file || file.spec.generator !== 'plates') return this.nextBuild();
+    const config = this.opts.config ?? worldConfigOf(file.spec);
+    const strokes = readStrokes(this.dataRoot, name);
+    const path = buildFile(this.dataRoot, name, file.spec, config, strokes);
+    if (existsSync(path)) return this.nextBuild();
+    this.building = true;
+    const w = startWorker('buildWorker', { spec: file.spec, config, strokes, file: path } satisfies BuildJob);
+    w.unref();
+    let done = false;
+    const finish = (msg?: { ok: boolean; error?: string }) => {
+      if (done) return;
+      done = true;
+      if (msg && !msg.ok) console.error(`building ${name} in the background failed: ${msg.error}`);
+      this.building = false;
+      void w.terminate();
+      this.nextBuild();
+    };
+    w.once('message', finish);
+    w.once('error', (err: Error) => finish({ ok: false, error: err.message }));
+    w.once('exit', () => finish());
+  }
+
+  /** Resolves once background builds are done (tests). */
+  buildsDone(): Promise<void> {
+    return this.building || this.toBuild.length ? new Promise((r) => this.idle.push(r)) : Promise.resolve();
+  }
+
   /** Closes world `name` (reopened, rebuilt, on next use), letting go of its generation on the pool. */
   private close(name: string): void {
     this.open.get(name)?.remote?.forget();
@@ -354,15 +424,38 @@ export class FileWorldCatalog implements WorldCatalog {
   private build(file: WorldFile): Opened {
     const config = this.opts.config ?? worldConfigOf(file.spec);
     const strokes = readStrokes(this.dataRoot, file.name);
-    const { generator, heights } = generatorFor(file.spec, config, strokes);
-    const tolerance = file.spec.generator === 'flat' ? null : file.spec.voxelize.tolerance;
     // Terrain from settings is made on the worker threads (flat worlds cost next to nothing).
     const workers = this.opts.generationWorkers ?? 0;
-    if (workers > 0 && file.spec.generator !== 'flat') this.pool ??= new GenPool(workers);
-    const remote = this.pool && file.spec.generator !== 'flat' ? this.pool.remote(file.name, file.spec, config, strokes) : null;
+    const pooled = workers > 0 && file.spec.generator !== 'flat';
+    if (pooled) this.pool ??= new GenPool(workers);
+    // A plate world is built once, here; its stages, in shared memory, are the workers' too (and
+    // this thread's: built again from them, at next to no cost, it keeps no copy of its own).
+    // Kept on disk (see plateBuilds.ts): loaded if there's one for these settings, terraforming and
+    // code; else made here, and saved for next time.
+    let stages: PlateStages | null = null;
+    let built: ReturnType<typeof generatorFor>;
+    let from: Opened['built'] = null;
+    if (file.spec.generator === 'plates') {
+      const path = this.opts.diskCache ? buildFile(this.dataRoot, file.name, file.spec, config, strokes) : null;
+      const saved = path ? loadBuild(path) : null;
+      const cache = saved ? PlateStageCache.from(saved, config) : new PlateStageCache();
+      generatorFor(file.spec, config, strokes, cache);
+      // (Every stage reused: it's the build saved. Any that didn't match was made again, so save again.)
+      from = saved && cache.hits === saved.length ? 'disk' : 'here';
+      stages = cache.share();
+      built = generatorFor(file.spec, config, strokes, cache);
+      if (path && from === 'here') {
+        const s = stages;
+        void saveBuild(path, s).catch((err: unknown) => console.error(`saving ${file.name}'s build failed:`, err));
+      }
+    } else built = generatorFor(file.spec, config, strokes);
+    if (!pooled) stages = null;
+    const { generator, heights } = built;
+    const tolerance = file.spec.generator === 'flat' ? null : file.spec.voxelize.tolerance;
+    const remote = this.pool && pooled ? this.pool.remote(file.name, file.spec, config, strokes, stages) : null;
     // Generated terrain kept on disk, for this version of it (older versions' go).
     const disk = this.opts.diskCache && file.spec.generator !== 'flat' ? this.diskCache(file, generator, config, strokes) : null;
     const world = new World(config, generator, { tolerance, store: new FileChunkStore(join(this.dataRoot, file.name, 'chunks')), ...(remote ? { remote } : {}), ...(disk ? { disk } : {}) });
-    return { world, file, strokes, remote, heights, variants: new Map() };
+    return { world, file, strokes, remote, heights, variants: new Map(), built: from };
   }
 }

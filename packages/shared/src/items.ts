@@ -52,6 +52,13 @@ export const Item = {
   SmithingTable: 1012,
   /** Placed as the design that's the bed: right-clicked, it's where its owner comes back to after dying. */
   Bed: 1013,
+  /** Tools (see tools.ts): each mines its own materials faster; a pickaxe is needed for anything from stone. */
+  WoodenPickaxe: 1014,
+  StonePickaxe: 1015,
+  WoodenAxe: 1016,
+  StoneAxe: 1017,
+  WoodenShovel: 1018,
+  StoneShovel: 1019,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -71,6 +78,12 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.Anvil]: 'anvil',
   [Item.SmithingTable]: 'smithing table',
   [Item.Bed]: 'bed',
+  [Item.WoodenPickaxe]: 'wooden pickaxe',
+  [Item.StonePickaxe]: 'stone pickaxe',
+  [Item.WoodenAxe]: 'wooden axe',
+  [Item.StoneAxe]: 'stone axe',
+  [Item.WoodenShovel]: 'wooden shovel',
+  [Item.StoneShovel]: 'stone shovel',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */
@@ -109,6 +122,10 @@ export const PLACEABLE: readonly MaterialId[] = [
   Material.Tundra,
   Material.Planks,
   Material.Cobblestone,
+  Material.Gravel,
+  Material.DarkStone,
+  Material.PaleStone,
+  Material.MossyStone,
   Material.TNT,
   Material.C4,
   Material.Water,
@@ -134,19 +151,6 @@ export function setExtraItems(items: readonly (readonly [ItemId, string])[]): vo
 /** Placeable in this mode: water only in creative (survival will carry it in buckets). */
 export function canPlace(material: MaterialId, mode: GameMode): boolean {
   return PLACEABLE.includes(material) && (mode === 'creative' || !isWater(material));
-}
-
-/** Grassy grounds give dirt when mined. */
-const GIVES_DIRT = new Set<MaterialId>([Material.Grass, Material.Meadow, Material.JungleFloor, Material.DryGrass, Material.TaigaFloor, Material.Tundra]);
-/** Leaves give nothing (for now); nor do objects' voxels (taking an object down gives the object). */
-const GIVES_NOTHING = new Set<MaterialId>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves, Material.FenceWood, Material.GateWood, Material.DoorWood]);
-
-/** What mining a material gives in survival (null: nothing). */
-export function dropOf(material: MaterialId): MaterialId | null {
-  if (isWater(material) || GIVES_NOTHING.has(material)) return null;
-  if (GIVES_DIRT.has(material)) return Material.Dirt;
-  if (material === Material.Stone) return Material.Cobblestone;
-  return material;
 }
 
 /** A new survival player's materials: 16 blocks each of dirt, stone and wood. */

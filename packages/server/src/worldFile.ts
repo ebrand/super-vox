@@ -27,6 +27,7 @@ import {
   type VoxelizeConfig,
   type WorldConfig,
   type WorldShape,
+  PlateStageCache,
 } from '@super-vox/shared';
 
 /** How a world's terrain is generated: chosen when it is created, then fixed. */
@@ -235,8 +236,9 @@ export function openWorld(dataRoot: string, name: string, specForNew: WorldSpec,
  * Builds the generator (and its height source, for tolerance variants) for a spec, with its
  * terraforming `strokes` (plate worlds only).
  */
-export function generatorFor(spec: WorldSpec, world: WorldConfig = FLAT_WORLD_16KM, strokes: readonly TerrainStroke[] = []): { generator: ChunkGenerator; heights: HeightSource | null } {
+export function generatorFor(spec: WorldSpec, world: WorldConfig = FLAT_WORLD_16KM, strokes: readonly TerrainStroke[] = [], cache?: PlateStageCache): { generator: ChunkGenerator; heights: HeightSource | null } {
   if (spec.generator === 'flat') return { generator: new FlatGenerator(world, defaultFlatGen(spec.resolution)), heights: null };
-  const heights = spec.generator === 'plates' ? new PlateHeights(world, spec.plates, undefined, strokes) : new NoiseHeights(world, defaultNoiseTerrain(spec.seed));
+  // (Plate worlds: with `cache`, the stages of an earlier build of the same world are reused: see PlateStageCache.)
+  const heights = spec.generator === 'plates' ? new PlateHeights(world, spec.plates, cache, strokes) : new NoiseHeights(world, defaultNoiseTerrain(spec.seed));
   return { generator: new TerrainGenerator(world, spec.voxelize, heights), heights };
 }

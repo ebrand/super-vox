@@ -3,11 +3,14 @@ import { Material, isWater, type MaterialId } from './materials.js';
 import { BLOCKS_PER_AXIS, BLOCK_SIZE, voxelAt, type Chunk } from './chunk.js';
 import { blockVoxels, removeBoxChunks } from './edit.js';
 import { CHUNK_SIZE } from './world.js';
+import type { ItemId } from './items.js';
+import { toolFactor } from './tools.js';
 
 /**
  * Mining in survival takes time: how long, by hand, to dig out a whole 1 m block of each material
  * (seconds). Smaller voxels go proportionally quicker (by their edge: a 1/16 m voxel of stone in
- * 1/16 of a block's time), and a box takes as long as what's in it. Creative digs at once.
+ * 1/16 of a block's time), and a box takes as long as what's in it; the right tool is faster, and
+ * stone without a pickaxe far slower (see toolFactor). Creative digs at once.
  */
 export const HARDNESS: Partial<Record<MaterialId, number>> = {
   [Material.Leaves]: 0.3,
@@ -33,6 +36,12 @@ export const HARDNESS: Partial<Record<MaterialId, number>> = {
   [Material.Wood]: 2,
   [Material.Cobblestone]: 2.5,
   [Material.Stone]: 3,
+  [Material.Gravel]: 0.6,
+  [Material.DarkStone]: 3,
+  [Material.PaleStone]: 3,
+  [Material.MossyStone]: 3,
+  [Material.CoalOre]: 3,
+  [Material.IronOre]: 3.5,
 };
 
 /** Hardness of materials not listed (anything new): as dirt. */
@@ -44,9 +53,9 @@ export function hardnessOf(m: MaterialId): number {
   return HARDNESS[m] ?? DEFAULT_HARDNESS;
 }
 
-/** Seconds to mine one voxel of `size` (units) of material `m`. */
-export function voxelMiningTime(m: MaterialId, size: number): number {
-  return hardnessOf(m) * (size / MAX_VOXEL_SIZE);
+/** Seconds to mine one voxel of `size` (units) of material `m` with `tool` (null: by hand). */
+export function voxelMiningTime(m: MaterialId, size: number, tool: ItemId | null = null): number {
+  return hardnessOf(m) * toolFactor(m, tool) * (size / MAX_VOXEL_SIZE);
 }
 
 /**
@@ -54,20 +63,22 @@ export function voxelMiningTime(m: MaterialId, size: number): number {
  * of each is inside), each by its share of the box, as a whole box of it would take. A box full
  * of one material takes as long as one voxel of the box's size.
  */
-export function boxMiningTime(voxels: readonly { material: MaterialId; volumeInside: number }[], boxSize: number): number {
+export function boxMiningTime(voxels: readonly { material: MaterialId; volumeInside: number }[], boxSize: number, tool: ItemId | null = null): number {
   let t = 0;
   const box = boxSize ** 3;
-  for (const v of voxels) t += hardnessOf(v.material) * (v.volumeInside / box);
+  for (const v of voxels) t += hardnessOf(v.material) * toolFactor(v.material, tool) * (v.volumeInside / box);
   return t * (boxSize / MAX_VOXEL_SIZE);
 }
 
 /**
  * Seconds to mine what a removal takes out (the voxel at a point, or everything in a box), from
- * the chunks as they are (`chunkAt`: by chunk coordinates, null where there's none); 0 for nothing.
+ * the chunks as they are (`chunkAt`: by chunk coordinates, null where there's none), with `tool`
+ * (null: by hand); 0 for nothing.
  */
 export function editMiningTime(
   edit: { op: 'remove'; x: number; y: number; z: number } | { op: 'removeBox'; x: number; y: number; z: number; size: number },
   chunkAt: (cx: number, cy: number, cz: number) => Chunk | null | undefined,
+  tool: ItemId | null = null,
 ): number {
   const n = CHUNK_SIZE;
   if (edit.op === 'remove') {
@@ -75,7 +86,7 @@ export function editMiningTime(
     const chunk = chunkAt(cx, cy, cz);
     if (!chunk) return 0;
     const v = voxelAt(chunk, edit.x - cx * n, edit.y - cy * n, edit.z - cz * n);
-    return v && !isWater(v.material) ? voxelMiningTime(v.material, v.size) : 0;
+    return v && !isWater(v.material) ? voxelMiningTime(v.material, v.size, tool) : 0;
   }
   // Everything in the box, by how much of each voxel is inside.
   const inside: { material: MaterialId; volumeInside: number }[] = [];
@@ -97,7 +108,7 @@ export function editMiningTime(
       }
     });
   }
-  return boxMiningTime(inside, edit.size);
+  return boxMiningTime(inside, edit.size, tool);
 }
 
 /**

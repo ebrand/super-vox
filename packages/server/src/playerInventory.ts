@@ -103,8 +103,8 @@ export class PlayerInventory {
     this.changed();
   }
 
-  /** Survival: takes what an edit placed and gives what it removed (see EditResult.change). */
-  apply(change: Map<MaterialId, number>): boolean {
+  /** Survival: takes what an edit placed and gives what it removed (see EditResult.change), as mined with `tool` (null: by hand; see dropOf). */
+  apply(change: Map<MaterialId, number>, tool: ItemId | null = null): boolean {
     if (this.mode !== 'survival' || change.size === 0) return false;
     let changed = false;
     for (const [m, d] of change) {
@@ -112,7 +112,7 @@ export class PlayerInventory {
         this.inv.items.set(m, Math.max(0, (this.inv.items.get(m) ?? 0) - d));
         changed = true;
       } else if (d < 0) {
-        const drop = dropOf(m);
+        const drop = dropOf(m, tool);
         if (drop === null) continue;
         this.inv.items.set(drop, (this.inv.items.get(drop) ?? 0) - d);
         changed = true;

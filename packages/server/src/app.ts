@@ -33,6 +33,8 @@ import {
   objectKindOf,
   usable,
   isBed,
+  isTool,
+  type ItemId,
   Material,
   TABLE_REACH,
   recipeById,
@@ -45,6 +47,7 @@ import {
   isValidWorldName,
   clockHours,
   isWorldShape,
+  WORLD_SHAPES,
   normalizeX,
   parseClockChange,
   parsePlateTerrain,
@@ -339,7 +342,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (!catalog.create) return reply.code(403).send({ error: 'creating worlds is not enabled on this server' });
     if (!(await operator(req))) return reply.code(403).send(notOperator('creating worlds'));
     const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { name?: unknown; plates?: unknown; shape?: unknown; mode?: unknown };
-    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: 'shape must be "round-64x32", "round-16x8" or "flat-16x16"' });
+    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: `shape must be one of ${Object.keys(WORLD_SHAPES).map((s) => `"${s}"`).join(', ')}` });
     if (body.mode !== undefined && !isGameMode(body.mode)) return reply.code(400).send({ error: 'mode must be "survival" or "creative"' });
     if (!isValidWorldName(body.name)) {
       return reply.code(400).send({ error: 'name must be 1-64 lower-case letters, digits, "-" or "_", starting with a letter or digit' });
@@ -367,7 +370,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const { name } = req.params;
     if (!isValidWorldName(name)) return reply.code(404).send({ error: 'no such world' });
     const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { plates?: unknown; shape?: unknown };
-    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: 'shape must be "round-64x32", "round-16x8" or "flat-16x16"' });
+    if (body.shape !== undefined && !isWorldShape(body.shape)) return reply.code(400).send({ error: `shape must be one of ${Object.keys(WORLD_SHAPES).map((s) => `"${s}"`).join(', ')}` });
     let plates;
     try {
       plates = parsePlateTerrain(body.plates);
@@ -628,7 +631,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     let who: SignedIn | null = null;
     const canEdit = () => !opts.auth || who !== null;
     /** Survival: where this player started mining, and when (see the `mine` message). */
-    let mining: { x: number; y: number; z: number; at: number } | null = null;
+    let mining: { x: number; y: number; z: number; at: number; tool: ItemId | null } | null = null;
     /** The signed-in player's inventory here; null until loaded (or without accounts). */
     let inventory: PlayerInventory | null = null;
     let inventoryLoading = false;
@@ -844,7 +847,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           break;
 
         case 'mine': {
-          mining = { x: msg.x, y: msg.y, z: msg.z, at: Date.now() };
+          // (The tool in hand, if they have it: see tools.ts.)
+          const tool = msg.tool !== undefined && isTool(msg.tool) && (inventory?.count(msg.tool) ?? 1) >= 1 ? msg.tool : null;
+          mining = { x: msg.x, y: msg.y, z: msg.z, at: Date.now(), tool };
           const p = players.get(socket);
           if (p?.vulnerable) p.vitals.exert(EXHAUSTION.mine);
           break;
@@ -893,11 +898,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             send({ type: 'editResult', id: msg.id, ok: false, error: 'boxes over 1 m are for creative worlds' });
             return;
           }
-          // Survival: digging takes time (see mining.ts), counted from the `mine` message for this spot.
+          // Survival: digging takes time (see mining.ts), counted from the `mine` message for this
+          // spot, with the tool in hand then (which also decides what it gives: see dropOf).
+          let tool: ItemId | null = null;
           if (inventory?.mode === 'survival' && (msg.edit.op === 'remove' || msg.edit.op === 'removeBox')) {
             const e = msg.edit;
-            const started = mining && mining.x === e.x && mining.y === e.y && mining.z === e.z ? mining.at : null;
-            if (!minedLongEnough(started, Date.now(), world.miningTime(e) * (opts.miningTimeScale ?? 1))) {
+            const here = mining && mining.x === e.x && mining.y === e.y && mining.z === e.z ? mining : null;
+            const started = here?.at ?? null;
+            tool = here?.tool ?? null;
+            if (!minedLongEnough(started, Date.now(), world.miningTime(e, tool) * (opts.miningTimeScale ?? 1))) {
               send({ type: 'editResult', id: msg.id, ok: false, error: 'keep mining: it takes longer' });
               return;
             }
@@ -937,7 +946,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           metrics.totals.edits++;
           players.get(socket)!.edits++;
           send({ type: 'editResult', id: msg.id, ok: true });
-          if (inventory?.apply(result.change)) send(inventory.message());
+          if (inventory?.apply(result.change, tool)) send(inventory.message());
           broadcast(world, result);
           break;
         }

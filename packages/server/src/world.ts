@@ -73,6 +73,7 @@ import {
   type ObjectDesign,
   withoutWater,
   type MaterialId,
+  type ItemId,
   volumeChange,
   type Edit,
   type TileCoord,
@@ -192,7 +193,8 @@ export interface EditResult {
  */
 /** Makes a world's generated chunks, tiles and column ranges elsewhere (see GenPool): `ms`, how long they took. */
 export interface RemoteGenerator {
-  chunk(coord: ChunkCoord): Promise<{ bytes: Uint8Array; ms: number }>;
+  /** (`buildMs`: what building the world's generator took first, if it had to.) */
+  chunk(coord: ChunkCoord): Promise<{ bytes: Uint8Array; ms: number; buildMs?: number }>;
   tile(t: TileCoord): Promise<{ bytes: Uint8Array; ms: number }>;
   column(cx: number, cz: number): Promise<ColumnRange>;
 }
@@ -580,13 +582,17 @@ export class World {
 
   /**
    * Seconds a survival player takes to mine what an edit removes (see mining.ts): the voxel at a
-   * point, or everything in a box; 0 for nothing there (or outside the world).
+   * point, or everything in a box, with `tool` (null: by hand); 0 for nothing there (or outside the world).
    */
-  miningTime(edit: { op: 'remove'; x: number; y: number; z: number } | { op: 'removeBox'; x: number; y: number; z: number; size: number }): number {
-    return editMiningTime(edit, (cx, cy, cz) => {
-      const resolved = resolveChunk(this.config, { cx, cy, cz });
-      return resolved ? this.current(resolved) : null;
-    });
+  miningTime(edit: { op: 'remove'; x: number; y: number; z: number } | { op: 'removeBox'; x: number; y: number; z: number; size: number }, tool: ItemId | null = null): number {
+    return editMiningTime(
+      edit,
+      (cx, cy, cz) => {
+        const resolved = resolveChunk(this.config, { cx, cy, cz });
+        return resolved ? this.current(resolved) : null;
+      },
+      tool,
+    );
   }
 
   private current(coord: ChunkCoord): Chunk {

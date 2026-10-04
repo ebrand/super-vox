@@ -241,7 +241,35 @@ describe('TerrainGenerator', () => {
   it('shares uniform block objects so buried chunks encode tiny', () => {
     const gen = new TerrainGenerator(FLAT_WORLD_16KM, { minVoxelSize: 1, tolerance: 4 }, src);
     const deep = gen.generateChunk({ cx: hill.cx, cy: -5, cz: hill.cz });
-    expect(new Set(deep.blocks).size).toBe(1);
+    // (One object per material: stone, and the ores in it.)
+    const shared = new Set(deep.blocks);
+    expect(shared.size).toBeLessThanOrEqual(3);
+    const materials = [...shared].map((b) => (b?.kind === 'uniform' ? b.material : -1));
+    expect(materials).toContain(Material.Stone);
+    for (const m of materials) expect([Material.Stone, Material.CoalOre, Material.IronOre] as number[]).toContain(m);
+  });
+
+  it('puts ore in the deep stone (coal, and deeper, iron), none near the surface', () => {
+    const gen = new TerrainGenerator(FLAT_WORLD_16KM, { minVoxelSize: 1, tolerance: 4 }, src);
+    const count = new Map<number, number>();
+    for (let cy = -8; cy <= -2; cy++)
+      for (let dx = 0; dx < 3; dx++)
+        for (const b of gen.generateChunk({ cx: hill.cx + dx, cy, cz: hill.cz }).blocks) if (b?.kind === 'uniform') count.set(b.material, (count.get(b.material) ?? 0) + 1);
+    expect(count.get(Material.CoalOre) ?? 0).toBeGreaterThan(0);
+    expect(count.get(Material.IronOre) ?? 0).toBeGreaterThan(0);
+    // Within 4 m of the surface: none.
+    const H = src.heights(hill.cx * CHUNK_SIZE, hill.cz * CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE);
+    const top = Math.max(...H);
+    for (let cy = Math.floor((Math.min(...H) - 4 * 16) / CHUNK_SIZE); cy <= Math.floor(top / CHUNK_SIZE); cy++) {
+      const chunk = gen.generateChunk({ cx: hill.cx, cy, cz: hill.cz });
+      chunk.blocks.forEach((b, i) => {
+        if (b?.kind !== 'uniform' || (b.material !== Material.CoalOre && b.material !== Material.IronOre)) return;
+        const bx = i % 16, bz = Math.floor(i / 16) % 16, by = Math.floor(i / 256);
+        let low = Infinity;
+        for (let z = bz * 16; z < bz * 16 + 16; z++) for (let x = bx * 16; x < bx * 16 + 16; x++) low = Math.min(low, H[x + CHUNK_SIZE * z]!);
+        expect(low - (cy * CHUNK_SIZE + by * 16 + 16)).toBeGreaterThanOrEqual(4 * 16);
+      });
+    }
   });
 
   it('returns empty chunks outside the world and above the terrain', () => {
