@@ -1,6 +1,8 @@
 import './fullscreen.js';
-import { BIOME_NAMES, Biome, DEFAULT_WORLD_SHAPE, PLATE_LIMITS, WORLD_SHAPES, defaultPlateCounts, defaultPlateTerrain, isValidWorldName, isWorldShape, validatePlateTerrain, type BiomeId, type PlateTerrainConfig, type WorldShape } from '@super-vox/shared';
+import { BIOME_NAMES, Biome, DEFAULT_WORLD_SHAPE, PLATE_LIMITS, SURFACE_SETTINGS, WORLD_SHAPES, defaultPlateCounts, defaultPlateTerrain, isValidWorldName, isWorldShape, validatePlateTerrain, type BiomeId, type PlateTerrainConfig, type WorldShape } from '@super-vox/shared';
 import type { PreviewRequest, PreviewResponse } from './generator.worker.js';
+import type { CloseUpRequest, CloseUpResponse } from './generatorArea.worker.js';
+import { Diorama } from './diorama.js';
 import type { Preview } from './generatorPreview.js';
 import { materialName } from './materials.js';
 import { renderMap } from './worldMap.js';
@@ -108,6 +110,8 @@ let shape: WorldShape = isWorldShape(hashShape) ? hashShape : DEFAULT_WORLD_SHAP
 const shapeEl = document.getElementById('shape') as HTMLSelectElement;
 shapeEl.value = shape;
 shapeEl.addEventListener('change', () => {
+  // (Another world: the close-up's area is gone with it.)
+  if (closeUp) closeCloseUp();
   // Plate counts follow the world's size, keeping their proportion to the default.
   const before = defaultPlateCounts(WORLD_SHAPES[shape]);
   shape = shapeEl.value as WorldShape;
@@ -138,10 +142,12 @@ for (const f of FIELDS) {
     section = f.section;
     const h = document.createElement('h2');
     h.textContent = section;
+    // (A section with none of the surface settings goes in the close-up too.)
+    if (!FIELDS.some((g) => g.section === f.section && SURFACE_SETTINGS.includes(g.key))) h.classList.add('world-only');
     form.appendChild(h);
   }
   const div = document.createElement('div');
-  div.className = 'field';
+  div.className = 'field' + (SURFACE_SETTINGS.includes(f.key) ? '' : ' world-only');
   const label = document.createElement('label');
   label.textContent = f.label;
   label.htmlFor = `f-${f.key}`;
@@ -214,14 +220,17 @@ function set(key: keyof PlateTerrainConfig, value: number): void {
   if (key === 'mountainHeight' && value < config.maxHeight) config.maxHeight = value;
   showForm();
   toHash(config);
-  requestPreview();
+  // (In the close-up, only it is redrawn: the map waits till it's back.)
+  if (closeUp) requestCloseUp();
+  else requestPreview();
 }
 
 document.getElementById('reset')!.addEventListener('click', () => {
   config = defaultPlateTerrain(1, WORLD_SHAPES[shape]);
   showForm();
   toHash(config);
-  requestPreview();
+  if (closeUp) requestCloseUp();
+  else requestPreview();
 });
 
 // ---- Preview: built in a worker, which drops a build once newer settings arrive.
@@ -617,3 +626,159 @@ showForm();
 toHash(config);
 requestPreview();
 void loadWorlds();
+
+// ---- The close-up: an area of the world in 3D (see generatorArea.worker.ts), made again as the
+//      settings that shape the surface change (the others shape the whole world: the map's).
+
+const cuSizeEl = document.getElementById('cu-size') as HTMLSelectElement;
+const cuStepEl = document.getElementById('cu-step') as HTMLSelectElement;
+const cuPickEl = document.getElementById('cu-pick') as HTMLButtonElement;
+const cuBackEl = document.getElementById('cu-back') as HTMLButtonElement;
+const cuFrameEl = document.getElementById('cu-frame')!;
+const closeUpNote = document.getElementById('closeup-note')!;
+const stage = document.getElementById('stage')!;
+const closeUpWorker = new Worker(new URL('./generatorArea.worker.ts', import.meta.url), { type: 'module' });
+/** The area shown (its middle, units), while the close-up is; and the diorama, once made. */
+let closeUp: { cx: number; cz: number } | null = null;
+let diorama: Diorama | null = null;
+let picking = false;
+let cuSentId = 0;
+let mapStale = false;
+/** The map's line of stats, to put back when the close-up closes. */
+let lastStats = '';
+/** Whether the close-up's frame loop is running (see frame). */
+let framing = false;
+/** The last area shown ("x0,z0,size,step"): the same again keeps the view where it is. */
+let shownArea = '';
+
+/** The close-up's size and step between samples (m), as chosen; and roughly how long it takes. */
+function cuChoice(): { sizeM: number; stepM: number } {
+  return { sizeM: Number(cuSizeEl.value), stepM: Number(cuStepEl.value) };
+}
+
+function setPicking(on: boolean): void {
+  if (on && !picking) lastStats = statsEl.textContent ?? '';
+  if (!on && picking && !closeUp) statsEl.textContent = lastStats;
+  picking = on && !closeUp;
+  cuPickEl.classList.toggle('on', picking);
+  canvas.classList.toggle('picking', picking);
+  cuFrameEl.hidden = true;
+  if (picking) statsEl.textContent = 'click the map where to look closer (Esc: never mind)';
+}
+cuPickEl.addEventListener('click', () => setPicking(!picking));
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && picking) setPicking(false);
+});
+
+/** The world position (units) under the pointer on the map. */
+function mapPoint(e: MouseEvent): { x: number; z: number } | null {
+  const r = canvas.getBoundingClientRect(), w = WORLD_SHAPES[shape];
+  const fx = (e.clientX - r.left) / r.width, fz = (e.clientY - r.top) / r.height;
+  if (fx < 0 || fz < 0 || fx > 1 || fz > 1) return null;
+  return { x: fx * w.widthUnits, z: fz * w.depthUnits };
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!picking) return;
+  const r = canvas.getBoundingClientRect(), s = stage.getBoundingClientRect(), w = WORLD_SHAPES[shape];
+  const side = (cuChoice().sizeM * 16 * r.width) / w.widthUnits;
+  Object.assign(cuFrameEl.style, { left: `${e.clientX - s.left - side / 2}px`, top: `${e.clientY - s.top - side / 2}px`, width: `${side}px`, height: `${side}px` });
+  cuFrameEl.hidden = false;
+});
+canvas.addEventListener('mouseleave', () => (cuFrameEl.hidden = true));
+canvas.addEventListener('click', (e) => {
+  if (!picking) return;
+  const p = mapPoint(e);
+  if (!p) return;
+  setPicking(false);
+  openCloseUp(p.x, p.z);
+});
+
+function openCloseUp(cx: number, cz: number): void {
+  if (!closeUp) lastStats = statsEl.textContent ?? '';
+  closeUp = { cx, cz };
+  document.body.classList.add('closeup');
+  closeUpNote.hidden = false;
+  cuPickEl.hidden = true;
+  cuBackEl.hidden = false;
+  canvas.hidden = true;
+  hoverEl.hidden = true;
+  if (diorama) diorama.canvas.hidden = false;
+  requestCloseUp();
+}
+
+function closeCloseUp(): void {
+  closeUp = null;
+  document.body.classList.remove('closeup');
+  closeUpNote.hidden = true;
+  cuPickEl.hidden = false;
+  cuBackEl.hidden = true;
+  canvas.hidden = false;
+  hoverEl.hidden = false;
+  // (Let go of it: a 4 km close-up at 2 m is millions of faces. Opened again, it's made again.)
+  if (diorama) {
+    diorama.canvas.remove();
+    diorama.dispose();
+    diorama = null;
+    shownArea = '';
+  }
+  cuSentId++; // (an answer on its way is dropped)
+  if (mapStale) {
+    mapStale = false;
+    requestPreview();
+  } else statsEl.textContent = lastStats;
+}
+cuBackEl.addEventListener('click', closeCloseUp);
+
+/** Asks for the close-up as the settings are now (the worker answers only the newest). */
+function requestCloseUp(): void {
+  if (!closeUp) return;
+  mapStale = true;
+  const w = WORLD_SHAPES[shape], { sizeM, stepM } = cuChoice();
+  const size = sizeM * 16, step = stepM * 16;
+  // On a whole number of metres, inside the world (round worlds wrap east-west).
+  let x0 = Math.round((closeUp.cx - size / 2) / 16) * 16;
+  let z0 = Math.round((closeUp.cz - size / 2) / 16) * 16;
+  if (!w.wrapX) x0 = Math.max(0, Math.min(w.widthUnits - size, x0));
+  else x0 = ((x0 % w.widthUnits) + w.widthUnits) % w.widthUnits;
+  z0 = Math.max(0, Math.min(w.depthUnits - size, z0));
+  statsEl.className = '';
+  // (4 km at 2 m is four times the samples of anything else: about 15 s.)
+  const slow = (sizeM / stepM) ** 2 > 2_000_000;
+  statsEl.textContent = `making the close-up (${sizeM / 1024} km, a sample every ${stepM} m)…${slow ? ' the finest and biggest: this takes a while' : ''}`;
+  const req: CloseUpRequest = { id: ++cuSentId, shape, config, x0, z0, size, step };
+  closeUpWorker.postMessage(req);
+}
+for (const el of [cuSizeEl, cuStepEl]) el.addEventListener('change', () => requestCloseUp());
+
+closeUpWorker.onmessage = (ev: MessageEvent<CloseUpResponse>) => {
+  const res = ev.data;
+  if (res.id !== cuSentId || !closeUp) return;
+  if (!res.ok) {
+    statsEl.className = 'bad';
+    statsEl.textContent = `close-up failed: ${res.error}`;
+    return;
+  }
+  const t0 = performance.now();
+  if (!diorama) {
+    diorama = new Diorama(res.climate, res.wrapX, res.seaLevel);
+    stage.prepend(diorama.canvas);
+    if (!framing) requestAnimationFrame(frame);
+    framing = true;
+  } else diorama.setClimate(res.climate, res.wrapX);
+  diorama.canvas.hidden = false;
+  const area = `${res.x0},${res.z0},${res.size},${res.step}`;
+  diorama.show(res.parts, res, area === shownArea);
+  diorama.setField(res.heights, res.n, res.step, res.x0, res.z0);
+  shownArea = area;
+  statsEl.textContent = `close-up: ${res.size / 16 / 1024} km at x ${Math.round((res.x0 + res.size / 2) / 16)}, z ${Math.round((res.z0 + res.size / 2) / 16)} m, a sample every ${res.step / 16} m · made in ${(res.ms / 1000).toFixed(1)} s (${Math.round(res.quads / 1000)}k faces), shown in ${Math.round(performance.now() - t0)} ms`;
+};
+closeUpWorker.onerror = (e) => {
+  statsEl.className = 'bad';
+  statsEl.textContent = `close-up failed: ${e.message}`;
+};
+
+function frame(): void {
+  if (diorama && closeUp) diorama.render();
+  requestAnimationFrame(frame);
+}

@@ -64,11 +64,24 @@ export class AreaMaker {
 
   constructor(
     readonly world: WorldConfig,
-    readonly config: PlateTerrainConfig,
+    public config: PlateTerrainConfig,
     readonly voxelize: VoxelizeConfig,
   ) {
     this.heights = new PlateHeights(world, config, this.cache);
     this.generator = new TerrainGenerator(world, voxelize, this.heights);
+  }
+
+  /**
+   * New settings (the generator's close-up): the world built again with them, reusing every stage
+   * they don't change (all of them, for SURFACE_SETTINGS). True if they were new.
+   */
+  configure(config: PlateTerrainConfig): boolean {
+    if (JSON.stringify(config) === JSON.stringify(this.config)) return false;
+    this.config = config;
+    this.strokesKey = '[]';
+    this.heights = new PlateHeights(this.world, config, this.cache);
+    this.generator = new TerrainGenerator(this.world, this.voxelize, this.heights);
+    return true;
   }
 
   /** The world built with `strokes` (rebuilt if they've changed, reusing every stage up to the heights). */

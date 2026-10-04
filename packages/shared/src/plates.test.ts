@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { voxelAt, type Chunk } from './chunk.js';
 import { Biome, BIOME_GROUND } from './biomes.js';
 import { Material } from './materials.js';
-import { PLATE_CELL, PlateHeights, PlateStageCache, defaultPlateCounts, defaultPlateTerrain, migratePlateTerrain, parsePlateTerrain, validatePlateTerrain, type PlateTerrainConfig } from './plates.js';
+import { PLATE_CELL, PlateHeights, PlateStageCache, SURFACE_SETTINGS, defaultPlateCounts, defaultPlateTerrain, migratePlateTerrain, parsePlateTerrain, validatePlateTerrain, type PlateTerrainConfig } from './plates.js';
 import { TerrainGenerator } from './terrain.js';
 import { CHUNK_SIZE, FLAT_WORLD_16KM, ROUND_WORLD_16x8KM } from './world.js';
 
@@ -1086,6 +1086,30 @@ describe('TerrainGenerator on plate heights', () => {
     }
     expect(exposed.has(Material.Dirt)).toBe(false);
     expect(exposed.get(Material.Sand) ?? 0).toBeGreaterThan(0);
+  });
+});
+
+describe('surface settings', () => {
+  it('change no stage of a build: a world built again with them changed reuses every one', () => {
+    const base = defaultPlateTerrain(5);
+    const changed: Partial<Record<keyof PlateTerrainConfig, number>> = {
+      surfaceRoughness: 90, mountainDetail: 10, beaches: 80, rockAltitude: 60, altitudeRock: 0, snowAltitude: 90, altitudeSnow: 0, snowFractal: 10,
+      rockRoughness: 90, rockVariety: 10, rockSlope: 50, altitudeCooling: 3, snowTemperature: 0, biomeBlend: 90, trees: 80, treeClumping: 10,
+    };
+    expect(Object.keys(changed).sort()).toEqual([...SURFACE_SETTINGS].sort());
+    const fresh = new PlateHeights(FLAT_WORLD_16KM, base);
+    const H0 = fresh.heights(0, 0, 256, 256, 1024), M0 = fresh.materials(0, 0, 256, 256, 1024, H0), T0 = fresh.trees(6000 * 16, 6000 * 16, 10_000 * 16, 10_000 * 16).length;
+    for (const key of SURFACE_SETTINGS) {
+      const cache = new PlateStageCache();
+      new PlateHeights(FLAT_WORLD_16KM, base, cache);
+      const before = cache.hits;
+      const p = new PlateHeights(FLAT_WORLD_16KM, { ...base, [key]: changed[key] }, cache);
+      expect(cache.hits - before, key).toBe(8);
+      // ...and it does change the surface somewhere in the world (or it wouldn't be worth offering).
+      const H = p.heights(0, 0, 256, 256, 1024), M = p.materials(0, 0, 256, 256, 1024, H);
+      const differs = H.some((h, k) => h !== H0[k]) || M.some((m, k) => m !== M0[k]) || p.trees(6000 * 16, 6000 * 16, 10_000 * 16, 10_000 * 16).length !== T0;
+      expect(differs, key).toBe(true);
+    }
   });
 });
 

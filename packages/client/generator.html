@@ -55,6 +55,15 @@
       #map.busy { opacity: 0.75; }
       #hover { position: absolute; left: 16px; bottom: 16px; background: rgba(0, 0, 0, 0.7); padding: 4px 8px; border-radius: 4px; font: 12px ui-monospace, monospace; pointer-events: none; white-space: pre; }
       #hover:empty { display: none; }
+      #stage canvas.diorama { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+      #stage canvas.diorama:active { cursor: grabbing; }
+      #map.picking { cursor: crosshair; }
+      #cu-frame { position: absolute; border: 2px dashed #ffd34d; box-shadow: 0 0 0 1px rgba(0,0,0,0.6); pointer-events: none; }
+      #closeup { display: flex; gap: 6px; align-items: center; }
+      #closeup button.on { border-color: #ffd34d; color: #ffd34d; }
+      #closeup-note { margin: 0 0 10px; padding: 8px; border: 1px solid #ffd34d55; border-radius: 4px; color: var(--dim); font-size: 12px; }
+      .field.world-only, h2.world-only { }
+      body.closeup #form .world-only { display: none; }
       @media (max-width: 760px) { body { flex-direction: column; } #panel { width: 100%; height: auto; max-height: 50vh; border-right: 0; border-bottom: 1px solid var(--line); } }
     </style>
   </head>
@@ -63,6 +72,7 @@
       <p class="back"><a href="/">← Menu</a></p>
       <h1>World generator</h1>
       <p>Changes redraw the preview. The preview is the exact terrain a new world gets.</p>
+      <p id="closeup-note" hidden>Close-up: only the settings that shape the surface are here, and the view redraws as they change. The rest shape the whole world: back to the map for those.</p>
       <form id="form" autocomplete="off"></form>
       <div class="row" style="margin-top: 8px"><button type="button" id="reset">Reset to defaults</button></div>
       <h2>Save</h2>
@@ -104,11 +114,19 @@
             <option value="biomes">biomes</option>
           </select>
         </label>
+        <span id="closeup" title="A close-up of an area in 3D (drag to move, right-drag to turn, wheel to zoom): the settings that shape the surface redraw it as they change">
+          Close-up
+          <select id="cu-size" aria-label="Close-up size"><option value="1024">1 km</option><option value="2048" selected>2 km</option><option value="4096">4 km</option></select>
+          <select id="cu-step" aria-label="Close-up detail"><option value="4" selected>every 4 m</option><option value="2">every 2 m (slower)</option></select>
+          <button type="button" id="cu-pick">Pick an area</button>
+          <button type="button" id="cu-back" hidden>← Back to the map</button>
+        </span>
         <span id="legend" hidden></span>
         <span id="stats">building…</span>
       </div>
       <div id="stage">
         <canvas id="map"></canvas>
+        <div id="cu-frame" hidden></div>
         <div id="hover"></div>
       </div>
     </div>
