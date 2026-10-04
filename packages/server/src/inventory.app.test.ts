@@ -224,9 +224,9 @@ describe('survival needs', () => {
     const hungry = healths(p.msgs).at(-1)!.food;
     p.ws.send(JSON.stringify({ type: 'eat', item: Item.Pork }));
     await p.until(() => healths(p.msgs).at(-1)!.food > hungry);
-    // Four back (or three: a point may have gone meanwhile, to the last sprint or just living).
-    expect(healths(p.msgs).at(-1)!.food).toBeGreaterThanOrEqual(hungry + 3);
-    expect(healths(p.msgs).at(-1)!.food).toBeLessThanOrEqual(hungry + 4);
+    // Raw pork: three back (or two: a point may have gone meanwhile, to the last sprint or just living).
+    expect(healths(p.msgs).at(-1)!.food).toBeGreaterThanOrEqual(hungry + 2);
+    expect(healths(p.msgs).at(-1)!.food).toBeLessThanOrEqual(hungry + 3);
     await p.until(() => (p.inventory()!.items.find(([id]) => id === Item.Pork)?.[1] ?? 0) === pork - 1);
     p.ws.close();
   }, 15_000);
