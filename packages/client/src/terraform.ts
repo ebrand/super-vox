@@ -493,7 +493,7 @@ worker.onmessage = (ev: MessageEvent<TerraformResponse>) => {
     if (res.climate) map.colors = climateTintColors(map, decodeClimate(res.climate));
     relief.setMap(map);
     if (showing === 'overview') status(`world redrawn with the draft in ${(res.ms / 1000).toFixed(1)} s`);
-  } else {
+  } else if (res.type === 'error') {
     patching = false;
     status(res.error, true);
     enterEl.disabled = !ready;

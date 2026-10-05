@@ -98,3 +98,37 @@ describe('AreaMaker', () => {
     expect(changed).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe('AreaMaker.makeDetail', () => {
+  const where = [7000, 7000] as const;
+  /** Whether any face but the bottom (any side wall) reaches down to the base (y 0 in a part). */
+  const wallToBase = (parts: { ground: { positions: Uint16Array; faces: Uint8Array; quadCount: number } | null }[]) =>
+    parts.some((p) => {
+      const g = p.ground;
+      if (!g) return false;
+      for (let q = 0; q < g.quadCount; q++) {
+        const dir = g.faces[q * 16]! & 7;
+        if (dir === 2 || dir === 3) continue;
+        for (let v = 0; v < 4; v++) if (g.positions[(q * 4 + v) * 3 + 1] === 0) return true;
+      }
+      return false;
+    });
+
+  it('makes part of an area finer, in sections lined up with its own, meeting the ground round it (no cut edges)', () => {
+    const maker = new AreaMaker(FLAT_WORLD_16KM, dry, { minVoxelSize: 1, tolerance: 4 });
+    const coarse = maker.make({ ...area(...where), step: 4 * M });
+    // (A whole area is cut off at its edges, down to its base.)
+    expect(wallToBase(coarse.parts)).toBe(true);
+    const x0 = coarse.x0 + 64 * M, z0 = coarse.z0 + 64 * M;
+    const parts = maker.makeDetail({ x0, z0, size: 128 * M, step: M, base: coarse.base, strokes: [] });
+    expect(parts).toHaveLength(4);
+    expect(parts.map((p) => [p.x, p.z]).sort()).toEqual([[x0, z0], [x0, z0 + 64 * M], [x0 + 64 * M, z0], [x0 + 64 * M, z0 + 64 * M]].sort());
+    for (const p of parts) expect(p.y).toBe(coarse.base);
+    expect(wallToBase(parts)).toBe(false);
+    // A sample every metre: far more faces than the coarse sections it stands in for.
+    const quads = (ps: typeof parts) => ps.reduce((n, p) => n + (p.ground?.quadCount ?? 0), 0);
+    const under = coarse.parts.filter((p) => p.x >= x0 && p.x < x0 + 128 * M && p.z >= z0 && p.z < z0 + 128 * M);
+    expect(under).toHaveLength(4);
+    expect(quads(parts)).toBeGreaterThan(4 * quads(under));
+  });
+});

@@ -15,7 +15,7 @@ import { createTint } from './tint.js';
 import { Birds } from './birds.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
 import { WATER_LAYER, WaterRenderer, createVoxelWaterMaterial } from './water.js';
-import type { DioramaPart } from './terraformArea.js';
+import { SECTION_M, type DioramaPart } from './terraformArea.js';
 
 /**
  * An area of a world up close, cut out like a diorama (see meshDioramaSection), drawn as the game
@@ -42,6 +42,8 @@ export class Diorama {
   private readonly water: WaterRenderer;
   private readonly waterMaterial: THREE.Material;
   private readonly meshes = new THREE.Group();
+  /** A finer look at part of it (see showDetail). */
+  private readonly detail = new THREE.Group();
   private readonly miniatureFx: MiniatureEffect;
   private readonly atmosphere: Atmosphere;
   /** The miniature effect (the tilt-shift blur): a diorama is always seen close up, so all of it. */
@@ -96,7 +98,7 @@ export class Diorama {
     this.water = new WaterRenderer(this.renderer, atmosphere);
     this.waterMaterial = createVoxelWaterMaterial(this.water.uniforms);
     this.scene.background = new THREE.Color(0x0b0d10);
-    this.scene.add(this.meshes);
+    this.scene.add(this.meshes, this.detail);
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.5, 40_000);
     this.camera.layers.enable(WATER_LAYER);
     // As the 3D map: drag to move over the ground, right-drag to turn and tilt, wheel to zoom.
@@ -432,9 +434,10 @@ export class Diorama {
   set seeThroughTrees(on: boolean) {
     this.treesSeeThrough = on;
     this.material.uniforms.treePass!.value = on ? 1 : 0;
-    this.meshes.traverse((o) => {
-      if (o.userData.trees) o.visible = on;
-    });
+    for (const g of [this.meshes, this.detail])
+      g.traverse((o) => {
+        if (o.userData.trees) o.visible = on;
+      });
   }
 
   /** Draws the measuring line, and puts its label at its middle (where the view now shows it). */
@@ -497,7 +500,7 @@ export class Diorama {
 
   /** Quads showing. */
   get quads(): number {
-    return meshQuads(this.meshes);
+    return meshQuads(this.meshes) + meshQuads(this.detail);
   }
 
   /** Draws a frame (call each animation frame while showing). */
@@ -522,12 +525,37 @@ export class Diorama {
 
   /** Replaces the parts with these keys (sections re-made by a patch), adding any new ones. */
   update(parts: readonly DioramaPart[]): void {
+    this.addParts(parts, this.meshes);
+  }
+
+  /**
+   * A finer look at part of the diorama (see AreaMaker.makeDetail): its sections, and the square
+   * they cover (metres), where they're drawn instead of the coarser ones; replaces the last. Null:
+   * none.
+   */
+  showDetail(parts: readonly DioramaPart[] | null, at: { x0: number; z0: number; size: number } | null): void {
+    for (const o of [...this.detail.children]) disposePackedMesh(o);
+    if (parts) this.addParts(parts, this.detail);
+    // The coarse sections (64 m from their origin) wholly under it, hidden.
+    for (const o of this.meshes.children) {
+      const x = o.position.x, z = o.position.z;
+      o.visible = !(at && x >= at.x0 - 0.01 && z >= at.z0 - 0.01 && x + SECTION_M <= at.x0 + at.size + 0.01 && z + SECTION_M <= at.z0 + at.size + 0.01);
+    }
+  }
+
+  /** Where the view looks (metres), and how far the camera is from it. */
+  get target(): { x: number; z: number; distance: number } {
+    const t = this.controls.target;
+    return { x: t.x, z: t.z, distance: this.camera.position.distanceTo(t) };
+  }
+
+  private addParts(parts: readonly DioramaPart[], group: THREE.Group): void {
     for (const p of parts) {
-      for (const o of [...this.meshes.children]) if (o.userData.part === p.key) disposePackedMesh(o);
+      for (const o of [...group.children]) if (o.userData.part === p.key) disposePackedMesh(o);
       const origin = { x: p.x, y: p.y, z: p.z };
       const add = (mesh: THREE.Mesh) => {
         mesh.userData.part = p.key;
-        this.meshes.add(mesh);
+        group.add(mesh);
       };
       if (p.ground) {
         const ground = createPackedMesh(p.ground, origin, this.material, 'diorama ground');
@@ -547,7 +575,7 @@ export class Diorama {
   }
 
   private clear(): void {
-    for (const o of [...this.meshes.children]) disposePackedMesh(o);
+    for (const o of [...this.meshes.children, ...this.detail.children]) disposePackedMesh(o);
   }
 
   dispose(): void {

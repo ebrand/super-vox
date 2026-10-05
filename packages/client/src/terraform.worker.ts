@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import { WORLD_SHAPES, encodeClimate, migratePlateTerrain, surfaceMap, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
-import { AreaMaker, buffersOf, type AreaRequest, type DioramaPart, type MadeArea } from './terraformArea.js';
+import { AreaMaker, buffersOf, type AreaRequest, type DetailRequest, type DioramaPart, type MadeArea } from './terraformArea.js';
 
 export type { DioramaPart } from './terraformArea.js';
 
@@ -21,6 +21,8 @@ export type TerraformRequest =
       strokes: TerrainStroke[];
       box: { x0: number; z0: number; x1: number; z1: number };
     }
+  /** A finer look at part of the area showing (see AreaMaker.makeDetail). */
+  | ({ type: 'detail'; id: number } & DetailRequest)
   | {
       /** The whole world from above, `width` samples across, with the draft (for the 3D overview). */
       type: 'map';
@@ -33,6 +35,7 @@ export type TerraformResponse =
   | { type: 'ready'; key: string; climate: Uint8Array | null; seaLevel: number | null; ms: number }
   | ({ type: 'area'; id: number; ms: number } & MadeArea)
   | { type: 'patch'; id: number; parts: DioramaPart[]; heights: Int32Array; samples: number; ms: number }
+  | { type: 'detail'; id: number; x0: number; z0: number; size: number; parts: DioramaPart[]; ms: number }
   | {
       type: 'map'; id: number; cols: number; rows: number; step: number; seaLevel: number | null;
       heights: Int16Array; materials: Uint8Array; climate: Uint8Array | null; ms: number;
@@ -64,6 +67,11 @@ self.onmessage = (ev: MessageEvent<TerraformRequest>) => {
       const c = b.heights.climate();
       const climate = c ? encodeClimate(c) : null;
       post({ type: 'map', id: req.id, ...map, climate, ms: performance.now() - t0 }, [map.heights.buffer, map.materials.buffer, ...(climate ? [climate.buffer] : [])]);
+      return;
+    }
+    if (req.type === 'detail') {
+      const parts = m.makeDetail(req);
+      post({ type: 'detail', id: req.id, x0: req.x0, z0: req.z0, size: req.size, parts, ms: performance.now() - t0 }, buffersOf(parts));
       return;
     }
     if (req.type === 'patch') {

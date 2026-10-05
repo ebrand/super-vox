@@ -3,6 +3,7 @@ import { MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, UNITS_PER_METER, WORLD_SHAPES, decodeCl
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT } from './dioramaLight.js';
 import type { TerraformRequest, TerraformResponse } from './terraform.worker.js';
+import { SECTION_M } from './terraformArea.js';
 import { climateTintColors } from './tintColors.js';
 import { decodeWorldMap } from './worldMap.js';
 import { WorldRelief, type ReliefRect } from './worldRelief.js';
@@ -86,8 +87,41 @@ let selection: Rect | null = null;
 let chosen: string | null = null;
 let areaId = 0;
 let lastAreaId = 0;
-/** The plot showing up close. */
+/** The plot showing up close, and the area made around it (units: corner, size, step, base). */
 let opened: Rect | null = null;
+let shownArea: { x0: number; z0: number; size: number; step: number; base: number } | null = null;
+
+/**
+ * The 1 m work area: in a plot shown coarser than a sample a metre, a DETAIL_M square around
+ * where the view looks is made again a sample every metre (see AreaMaker.makeDetail), following
+ * the view as it moves, once it's close enough to see the difference.
+ */
+const DETAIL_M = 512;
+let detailAt: { x0: number; z0: number } | null = null;
+let detailAsked: { x0: number; z0: number } | null = null;
+let detailId = 0;
+
+function followDetail(): void {
+  const a = shownArea;
+  if (!diorama || !a || showing !== 'diorama' || a.step <= UNITS_PER_METER || detailAsked) return;
+  const t = diorama.target;
+  if (t.distance > DETAIL_M * 1.5) return;
+  const ax0 = a.x0 / UNITS_PER_METER, az0 = a.z0 / UNITS_PER_METER, size = a.size / UNITS_PER_METER;
+  if (size < DETAIL_M) return;
+  // Lined up with the area's sections, inside it, around where the view looks.
+  const place = (c: number, a0: number) => a0 + Math.max(0, Math.min(size - DETAIL_M, Math.round((c - DETAIL_M / 2 - a0) / SECTION_M) * SECTION_M));
+  const at = { x0: place(t.x, ax0), z0: place(t.z, az0) };
+  if (detailAt && detailAt.x0 === at.x0 && detailAt.z0 === at.z0) return;
+  detailAsked = at;
+  send({ type: 'detail', id: ++detailId, x0: at.x0 * UNITS_PER_METER, z0: at.z0 * UNITS_PER_METER, size: DETAIL_M * UNITS_PER_METER, step: UNITS_PER_METER, base: a.base, strokes: applied });
+}
+setInterval(followDetail, 400);
+
+function dropDetail(): void {
+  detailAt = detailAsked = null;
+  detailId++;
+  diorama?.showDetail(null, null);
+}
 
 function status(text: string, bad = false): void {
   statusEl.textContent = text;
@@ -327,6 +361,14 @@ worker.onmessage = (ev: MessageEvent<TerraformResponse>) => {
   } else if (res.type === 'area') {
     if (res.id !== lastAreaId) return;
     showArea(res);
+  } else if (res.type === 'detail') {
+    const asked = detailAsked;
+    detailAsked = null;
+    if (res.id !== detailId || !diorama || showing !== 'diorama' || !asked) return;
+    detailAt = asked;
+    diorama.showDetail(res.parts, { x0: res.x0 / UNITS_PER_METER, z0: res.z0 / UNITS_PER_METER, size: res.size / UNITS_PER_METER });
+    status(`a sample every metre around where you look (${DETAIL_M} m), made in ${Math.round(res.ms)} ms`);
+    followDetail();
   } else if (res.type === 'error') {
     status(res.error, true);
     showSelection();
@@ -348,7 +390,7 @@ function enter(): void {
   enterEl.disabled = true;
   opened = { ...t };
   status('making the plot and around it…');
-  areaAbout.textContent = `${sizeOf(t)}, shown with ${km(sizeM)} around it, a sample every ${stepM} m.`;
+  areaAbout.textContent = `${sizeOf(t)}, shown with ${km(sizeM)} around it, a sample every ${stepM} m${stepM > 1 ? `; zoom in for a sample every metre around where you look (${DETAIL_M} m)` : ''}.`;
   lastAreaId = ++areaId;
   send({ type: 'area', id: lastAreaId, x0, z0, size, step, depth: BASE_DEPTH, strokes: applied });
 }
@@ -364,6 +406,8 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
     stage.prepend(diorama.canvas);
   }
   showing = 'diorama';
+  dropDetail();
+  shownArea = { x0: made.x0, z0: made.z0, size: made.size, step: made.step, base: made.base };
   relief!.canvas.hidden = true;
   diorama.canvas.hidden = false;
   overviewControls.hidden = true;
@@ -380,6 +424,8 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
 function showOverview(): void {
   showing = 'overview';
   opened = null;
+  shownArea = null;
+  dropDetail();
   if (relief) relief.canvas.hidden = false;
   if (diorama) diorama.canvas.hidden = true;
   overviewControls.hidden = false;

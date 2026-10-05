@@ -95,6 +95,35 @@ export class AreaMaker {
     return this;
   }
 
+  /**
+   * A finer look at part of the area (see DetailRequest): its sections, meshed against a ring of
+   * samples round it (so its edges meet the ground beside it rather than dropping to the base).
+   * Keys are "d" and the section's first sample.
+   */
+  makeDetail(req: DetailRequest): DioramaPart[] {
+    const g = this.withStrokes(req.strokes).generator;
+    const n = Math.round(req.size / req.step), cols = n + 2;
+    const fx0 = req.x0 - req.step, fz0 = req.z0 - req.step;
+    const s = sampleField(g, fx0, fz0, req.step, cols);
+    const field: DioramaField = {
+      cols, rows: cols, step: req.step, heights: s.heights, materials: s.materials,
+      canopy: s.canopy ? { top: s.canopy.top, bottom: s.canopy.bottom, material: s.canopy.material } : null,
+      water: s.water, base: req.base,
+    };
+    const per = Math.max(1, Math.round((SECTION_M * 16) / req.step));
+    const parts: DioramaPart[] = [];
+    for (let j0 = 1; j0 <= n; j0 += per)
+      for (let i0 = 1; i0 <= n; i0 += per) {
+        const m = meshDioramaSection(field, i0, j0, Math.min(per, n + 1 - i0), Math.min(per, n + 1 - j0));
+        parts.push({
+          key: `d${i0},${j0}`, x: fx0 + i0 * req.step, y: req.base, z: fz0 + j0 * req.step,
+          ground: m.ground.length ? packQuads(m.ground) : null,
+          water: m.water.length ? packQuads(m.water) : null,
+        });
+      }
+    return parts;
+  }
+
   /** Makes the area asked for, whole (with the world built with its strokes), and keeps it for patches. */
   make(req: AreaRequest): MadeArea {
     const g = this.withStrokes(req.strokes).generator;
@@ -165,6 +194,20 @@ export class AreaMaker {
     for (let sj = Math.floor(j0 / per) * per; sj <= j1; sj += per) for (let si = Math.floor(i0 / per) * per; si <= i1; si += per) parts.push(meshPart(f, a, per, si, sj));
     return { parts, heights: f.heights.slice(), samples: w * d };
   }
+}
+
+/**
+ * A finer look at part of an area showing (see AreaMaker.makeDetail): its corner and size (units,
+ * a whole number of sections, lined up with the area's), the step between its samples, the base
+ * (the area's), and the draft.
+ */
+export interface DetailRequest {
+  x0: number;
+  z0: number;
+  size: number;
+  step: number;
+  base: number;
+  strokes: TerrainStroke[];
 }
 
 /** Samples (with the sea as water) over n x n samples from (x0, z0), `step` apart (units). */
