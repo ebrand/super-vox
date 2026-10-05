@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { blockVoxels, type BlockVoxel } from './edit.js';
 import { BLOCK_SIZE, blockIndex, BLOCKS_PER_AXIS } from './chunk.js';
-import { layoutPiece, layoutPlan, wallFacing, wallSections, type LayoutDesign } from './layout.js';
+import { layoutPiece, layoutPlan, placePiece, wallFacing, wallSections, type LayoutDesign } from './layout.js';
 import { Material } from './materials.js';
 import type { Plan, PlanElement } from './plans.js';
 
@@ -36,6 +36,8 @@ function ring(): LayoutDesign {
 const wall = (over: Partial<Extract<PlanElement, { kind: 'wall' }>> = {}): PlanElement => ({ kind: 'wall', id: 'w', x0: 110, z0: 120, x1: 130, z1: 120, thickness: 2, height: 6, design: 'crenels', ...over });
 const designs = new Map([crenels(), ring()].map((d) => [d.id, d]));
 const lay = (elements: PlanElement[], ground: (x: number, z: number) => number | null = flat) => layoutPlan({ elements } as Plan, plot, (id) => designs.get(id), ground);
+/** A wall's sections (see wallSections), sizes and places in metres. */
+const secs = (w: PlanElement, along: number, across: number) => wallSections(w as Extract<PlanElement, { kind: 'wall' }>, along * B, across * B).map((s) => ({ ...s, x: s.x / B, z: s.z / B }));
 const material = (l: ReturnType<typeof lay>, x: number, y: number, z: number) => {
   const b = l.blockAt(x, y, z);
   if (!b) return null;
@@ -44,18 +46,19 @@ const material = (l: ReturnType<typeof lay>, x: number, y: number, z: number) =>
 };
 
 describe('layout', () => {
-  it('a design as a piece: the blocks its voxels take, turned', () => {
+  it('a design as a piece: what its voxels take, turned', () => {
     const p = layoutPiece(crenels(), 'n')!;
-    expect(p.span).toEqual([4, 2, 2]);
+    expect(p.size).toEqual([4 * B, 2, 2 * B]);
+    expect(p.grid).toBe(B);
     expect(p.material).toBe(S);
     // Its front (pale) at +z facing north; at -x facing east (a quarter turn clockwise), and so on.
-    const front = (f: 'n' | 'e' | 's' | 'w') => layoutPiece(crenels(), f)!.blocks.filter((b) => b.block && blockVoxels(b.block)[0]!.material === F).map((b) => [b.dx, b.dz]);
+    const front = (f: 'n' | 'e' | 's' | 'w') => placePiece(layoutPiece(crenels(), f)!, 0, 0).blocks.filter((b) => b.block && blockVoxels(b.block)[0]!.material === F).map((b) => [b.dx, b.dz]);
     expect(front('n')).toEqual([[0, 1], [2, 1]]);
-    expect(layoutPiece(crenels(), 'e')!.span).toEqual([2, 2, 4]);
+    expect(layoutPiece(crenels(), 'e')!.size).toEqual([2 * B, 2, 4 * B]);
     expect(front('e').every(([x]) => x === 0)).toBe(true);
     expect(front('s').every(([, z]) => z === 0)).toBe(true);
     expect(front('w').every(([x]) => x === 1)).toBe(true);
-    expect([...p.base]).toEqual([1, 1, 1, 1, 1, 1, 1, 1]);
+    expect(placePiece(p, 0, 0).body).toHaveLength(8); // stands on all 4 x 2 of its columns
   });
 
   it('turns walls\' fronts away from the plot\'s middle, or toward it flipped', () => {
@@ -70,7 +73,7 @@ describe('layout', () => {
   it('repeats a wall\'s design along it, on a solid wall as high as planned, into the ground', () => {
     const l = lay([wall()]);
     // 20 m, out a metre past each end: 6 pieces of 4 m, from x 108 to 132; 2 m deep, z 119-120.
-    expect(wallSections(wall() as Extract<PlanElement, { kind: 'wall' }>, 4, 2).map((s) => [s.x, s.z])).toEqual([108, 112, 116, 120, 124, 128].map((x) => [x, 119]));
+    expect(secs(wall(), 4, 2).map((s) => [s.x, s.z])).toEqual([108, 112, 116, 120, 124, 128].map((x) => [x, 119]));
     // The ground at 10: its top at 16 (6 m), the design the top 2 m; solid below, from 9 (a metre in).
     for (let x = 108; x < 132; x++)
       for (const z of [119, 120]) {
@@ -105,7 +108,7 @@ describe('layout', () => {
 
   it('lays a wall drawn at an angle as a staircase of pieces square to the nearer direction', () => {
     const w = wall({ x1: 130, z1: 130 }) as Extract<PlanElement, { kind: 'wall' }>;
-    const sections = wallSections(w, 4, 2);
+    const sections = secs(w, 4, 2);
     expect(sections.every((s) => s.alongX)).toBe(true);
     // Each across where the line is at its middle: 10 m up over 20 along, half a metre a metre.
     for (const s of sections) {
@@ -114,7 +117,7 @@ describe('layout', () => {
     }
     expect(new Set(sections.map((s) => s.z)).size).toBeGreaterThan(3);
     // Steeper than 45°: along z instead, each piece turned (2 m across in x, 4 along z).
-    const steep = wallSections(wall({ x1: 115, z1: 140 }) as Extract<PlanElement, { kind: 'wall' }>, 4, 2);
+    const steep = secs(wall({ x1: 115, z1: 140 }), 4, 2);
     expect(steep.every((s) => !s.alongX)).toBe(true);
     const l = lay([wall({ x1: 115, z1: 140 })]);
     const s0 = steep[1]!;
@@ -148,20 +151,66 @@ describe('layout', () => {
     }
     const thin: LayoutDesign = { id: 'thin', size: [4, 2, 1], states: [{ name: 's', voxels }] };
     const p = layoutPiece(thin, 'n')!;
-    expect(p.span).toEqual([4, 2, 1]);
+    expect(p.size).toEqual([4 * B, 2, B]);
+    expect(p.grid).toBe(B); // (it has whole-metre voxels too)
     // Each column's body: two half-metre voxels across, two up, in its front half (z 8).
-    const body = blockVoxels(p.body[0]!);
+    const body = blockVoxels(placePiece(p, 0, 0).body.find((c) => c.dx === 0 && c.dz === 0)!.block);
     expect(body.map((v) => [v.x, v.y, v.z, v.size, v.material]).sort()).toEqual([[0, 0, 8, 8, F], [0, 8, 8, 8, F], [8, 0, 8, 8, F], [8, 8, 8, 8, F]].sort());
     // Its lowest block filled under the bottom layer too (y 0 under y 8).
-    const lowest = p.blocks.find((b) => b.dx === 0 && b.dy === 0)!;
+    const lowest = placePiece(p, 0, 0).blocks.find((b) => b.dx === 0 && b.dz === 0 && b.dy === 0)!;
     expect(blockVoxels(lowest.block).filter((v) => v.y === 0 && v.size === 8)).toHaveLength(2);
     // Laid out (facing south, turned half about: the front half at z 0): the body is that, not solid metres.
     const l = layoutPlan({ elements: [wall({ design: 'thin', thickness: 1 })] }, plot, (id) => (id === 'thin' ? thin : undefined), flat);
-    const sec = wallSections(wall() as Extract<PlanElement, { kind: 'wall' }>, 4, 1)[0]!;
+    const sec = secs(wall(), 4, 1)[0]!;
     const b = l.blockAt(sec.x, 12, sec.z)!;
     expect(blockVoxels(b).map((v) => [v.size, v.z, v.material])).toEqual([[8, 0, F], [8, 0, F], [8, 0, F], [8, 0, F]]);
     expect(material(l, sec.x, 9, sec.z)).toBe(F); // down into the ground
     expect(material(l, sec.x, 8, sec.z)).toBeNull();
+  });
+
+  it('places pieces of small voxels as finely as their voxels: a diagonal wall in half-meter steps', () => {
+    // A 1 m x 1 m x 1 m piece of quarter-meter voxels (stone, its front row pale).
+    const voxels: BlockVoxel[] = [];
+    for (let x = 0; x < 4; x++) for (let y = 0; y < 4; y++) for (let z = 0; z < 4; z++) voxels.push({ x: x * 4, y: y * 4, z: z * 4, size: 4, material: z === 3 ? F : S });
+    const fine: LayoutDesign = { id: 'fine', size: [1, 1, 1], states: [{ name: 's', voxels }] };
+    const p = layoutPiece(fine, 'n')!;
+    expect(p.grid).toBe(4);
+    // Rising half a meter a meter: each piece half a meter on from the last, not a meter every other.
+    const w = wall({ x1: 130, z1: 130, design: 'fine', thickness: 1 }) as Extract<PlanElement, { kind: 'wall' }>;
+    const sections = wallSections(w, B, B, p.grid);
+    const steps = sections.slice(1).map((s, i) => s.z - sections[i]!.z);
+    expect(steps.filter((d) => d !== 0).every((d) => d === 8)).toBe(true);
+    expect(steps.filter((d) => d === 8).length).toBeGreaterThanOrEqual(19);
+    // Laid out: the half-meter steps share blocks, nothing lost or doubled. A level of the body
+    // holds a cubic meter of voxels for each piece.
+    const l = layoutPlan({ elements: [w] }, plot, (id) => (id === 'fine' ? fine : undefined), flat);
+    let volume = 0;
+    for (const [key] of l.cells) if (key.split(',')[1] === '12') for (const v of blockVoxels(l.blockAt(...(key.split(',').map(Number) as [number, number, number])))) volume += v.size ** 3;
+    expect(volume).toBe(sections.length * B ** 3);
+  });
+
+  it('centers a tower on its middle as finely as its voxels let it', () => {
+    // An 8 m ring of half-meter voxels drawn from half a meter in, as Centered mode draws it in a 9 m box.
+    const voxels: BlockVoxel[] = [];
+    for (let x = 0; x < 16; x++)
+      for (let z = 0; z < 16; z++) {
+        const d = Math.hypot(x + 0.5 - 8, z + 0.5 - 8);
+        if (d <= 8 && d > 6) voxels.push({ x: 8 + x * 8, y: 0, z: 8 + z * 8, size: 8, material: S });
+      }
+    const ring8: LayoutDesign = { id: 'ring8', size: [9, 1, 9], states: [{ name: 's', voxels }] };
+    const l = layoutPlan({ elements: [{ kind: 'tower', id: 't', x: 150, z: 150, radius: 4, height: 5, design: 'ring8' }] }, plot, () => ring8, flat);
+    // Every voxel at its top level, in world units: its extent exactly 146 m to 154 m.
+    let x0 = Infinity, x1 = -Infinity;
+    for (const [key] of l.cells) {
+      const [bx, by, bz] = key.split(',').map(Number) as [number, number, number];
+      if (by !== 14) continue;
+      for (const v of blockVoxels(l.blockAt(bx, by, bz))) {
+        x0 = Math.min(x0, bx * B + v.x);
+        x1 = Math.max(x1, bx * B + v.x + v.size);
+        expect(bz).toBeGreaterThanOrEqual(146);
+      }
+    }
+    expect([x0 / B, x1 / B]).toEqual([146, 154]);
   });
 
   it('keeps walls out of the towers they run into', () => {
