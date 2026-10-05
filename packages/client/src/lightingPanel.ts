@@ -7,7 +7,7 @@ export interface TimeControls {
   change(c: ClockChange): Promise<string | null>;
 }
 
-const DAY_LENGTHS: [string, number | 'real'][] = [['6 min', 6], ['12 min', 12], ['24 min', 24], ['48 min', 48], ['2 hours', 120], ['Real time', 'real']];
+const DAY_LENGTHS: [string, number | 'real'][] = [['6 min', 6], ['12 min', 12], ['24 min', 24], ['48 min', 48], ['2 hours', 120], ['Real time (Chicago)', 'real']];
 
 const FIELDS: { key: keyof Lighting; label: string; step: number; unit?: string }[] = [
   { key: 'noonSunHeight', label: 'Noon sun height', step: 1, unit: '°' },
@@ -135,7 +135,7 @@ export class LightingPanel {
     if (!this.time || !this.isOpen || !this.timeLabel) return;
     const t = this.time.read();
     if (!t) return;
-    const len = t.clock.dayMinutes === 'real' ? 'real time' : `${t.clock.dayMinutes}-min day`;
+    const len = t.clock.dayMinutes === 'real' ? 'real time (Chicago)' : `${t.clock.dayMinutes}-min day`;
     if (!this.isDragging()) {
       this.timeLabel.textContent = `${formatHours(t.hours)} · ${len}${t.clock.frozen ? ' · stopped' : ''}`;
       this.timeRange!.value = String(t.hours);

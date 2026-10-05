@@ -1,16 +1,16 @@
 /**
  * A world's time of day, kept by the server. Either a game day of `dayMinutes` real minutes, or
- * real time (the server's clock and time zone). Time is in hours, 0 (midnight) .. 24.
+ * real time (Chicago's: see the server's REAL_TIME_ZONE). Time is in hours, 0 (midnight) .. 24.
  */
 export interface DayClock {
-  /** Real minutes per game day, or 'real' to follow the server's clock. */
+  /** Real minutes per game day, or 'real' to follow the time in Chicago. */
   dayMinutes: number | 'real';
   /** The time of day (hours) at server time `at` (epoch ms); unused for real time unless frozen. */
   hours: number;
   at: number;
   /** Stopped at `hours`. */
   frozen: boolean;
-  /** Real time: the server's offset from UTC (minutes, east positive). */
+  /** Real time: Chicago's offset from UTC now (minutes, east positive; the server keeps it current). */
   utcOffsetMinutes: number;
 }
 

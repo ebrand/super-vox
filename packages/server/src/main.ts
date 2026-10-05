@@ -117,7 +117,7 @@ const opened = openWorld(dataRoot, name, specForNewWorld(), modeEnv);
 const spec = opened.file.spec;
 // Other worlds under dataRoot are served too (?world=name). In development, clients may ask for
 // other tolerances (?tolerance=N; those edits stay in memory) and new worlds can be created.
-// Day length (real minutes per game day, or "real" for the server's clock) of worlds without a clock yet.
+// Day length (real minutes per game day, or "real" for the time in Chicago) of worlds without a clock yet.
 const dayEnv = process.env.WORLD_DAY_MINUTES;
 const dayMinutes = dayEnv === undefined || dayEnv === '' ? DEFAULT_DAY_MINUTES : dayEnv === 'real' ? 'real' : Number(dayEnv);
 if (dayMinutes !== 'real' && !(dayMinutes >= DAY_MINUTES_LIMITS[0] && dayMinutes <= DAY_MINUTES_LIMITS[1])) {

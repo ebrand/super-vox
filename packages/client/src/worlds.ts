@@ -289,7 +289,7 @@ function renderWorlds(): void {
     '</tr>';
   const rows = list.worlds.map((s) => {
     const w = live.get(s.name);
-    const clock = w?.clock ? `${formatHours(w.clock.hours)} <span class="badge">${w.clock.dayMinutes === 'real' ? 'real time' : `${w.clock.dayMinutes} min day`}${w.clock.frozen ? ', stopped' : ''}</span>` : '–';
+    const clock = w?.clock ? `${formatHours(w.clock.hours)} <span class="badge">${w.clock.dayMinutes === 'real' ? 'real time (Chicago)' : `${w.clock.dayMinutes} min day`}${w.clock.frozen ? ', stopped' : ''}</span>` : '–';
     const built = `${s.editedChunks ?? 0} chunk${s.editedChunks === 1 ? '' : 's'} changed${s.strokes ? ` · ${s.strokes} terraformed` : ''}`;
     const mode = w ? modeCell(w) : (s.mode ?? '–');
     return (

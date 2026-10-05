@@ -142,9 +142,16 @@ export function terrainVersion(spec: WorldSpec, strokes: readonly TerrainStroke[
 /** A chunk column's width (metres). */
 const CHUNK_METRES = CHUNK_SIZE / 16;
 
-/** The server's offset from UTC in minutes (east positive), for real-time clocks. */
-export function localUtcOffsetMinutes(now = new Date()): number {
-  return -now.getTimezoneOffset();
+/** The time zone real-time clocks keep (see DayClock): Chicago's, daylight saving and all, wherever the server is. */
+export const REAL_TIME_ZONE = 'America/Chicago';
+
+/** `timeZone`'s offset from UTC at `now`, in minutes (east positive): Chicago's -360 in winter (CST), -300 in summer (CDT). */
+export function zoneUtcOffsetMinutes(now = new Date(), timeZone = REAL_TIME_ZONE): number {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }).formatToParts(now);
+  const get = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === type)!.value);
+  // (The wall clock there, read as if it were UTC, less the moment itself.)
+  const wall = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+  return Math.round((wall - Math.floor(now.getTime() / 1000) * 1000) / 60_000);
 }
 
 /** A catalog of exactly one world (tests, and servers without a data directory). */
@@ -155,7 +162,7 @@ export function singleWorld(
   dayMinutes: number | 'real' = DEFAULT_DAY_MINUTES,
   mode: GameMode = DEFAULT_GAME_MODE,
 ): WorldCatalog {
-  let clock = defaultClock(Date.now(), dayMinutes, localUtcOffsetMinutes());
+  let clock = defaultClock(Date.now(), dayMinutes, zoneUtcOffsetMinutes());
   return {
     dev: false,
     play: (n) => (n === undefined || n === name ? { mode, inventoryKey: `${name}@single` } : null),
@@ -309,13 +316,13 @@ export class FileWorldCatalog implements WorldCatalog {
       c = file.clock;
       if (!c) {
         // A world's first clock is saved, so its time carries on across restarts.
-        c = defaultClock(Date.now(), this.opts.dayMinutes ?? DEFAULT_DAY_MINUTES, localUtcOffsetMinutes());
+        c = defaultClock(Date.now(), this.opts.dayMinutes ?? DEFAULT_DAY_MINUTES, zoneUtcOffsetMinutes());
         saveClock(this.dataRoot, n, c);
       }
       this.clocks.set(n, c);
     }
-    // A real-time clock follows the server's current time zone (daylight saving).
-    return c.dayMinutes === 'real' ? { ...c, utcOffsetMinutes: localUtcOffsetMinutes() } : c;
+    // A real-time clock follows Chicago's time (daylight saving and all).
+    return c.dayMinutes === 'real' ? { ...c, utcOffsetMinutes: zoneUtcOffsetMinutes() } : c;
   }
 
   play(name: string | undefined): { mode: GameMode; inventoryKey: string } | null {
