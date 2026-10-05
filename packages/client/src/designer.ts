@@ -1,3 +1,4 @@
+import './header.js';
 import './fullscreen.js';
 import './envBadge.js';
 import * as THREE from 'three';

@@ -36,7 +36,7 @@ import { GenPool, startWorker } from './genPool.js';
 import { buildFile, loadBuild, saveBuild } from './plateBuilds.js';
 import type { BuildJob } from './buildWorker.js';
 import { World, tileBytes } from './world.js';
-import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, readClaims, readStrokes, readWorld, saveClock, saveMode, updateWorld, worldConfigOf, writeClaims, writeStrokes, type WorldFile, type WorldSpec } from './worldFile.js';
+import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, pictureAt, readClaims, readPicture, readStrokes, readWorld, saveClock, saveMode, updateWorld, worldConfigOf, writeClaims, writePicture, writeStrokes, type WorldFile, type WorldSpec } from './worldFile.js';
 
 /** What the HTTP API shows about a world. */
 export type WorldSummary = Pick<WorldFile, 'name' | 'createdAt' | 'updatedAt' | 'spec'> & {
@@ -46,7 +46,15 @@ export type WorldSummary = Pick<WorldFile, 'name' | 'createdAt' | 'updatedAt' | 
   strokes: number;
   /** Survival or creative. */
   mode: GameMode;
+  /** When its picture was set (ms; see WorldCatalog.picture), if it has one. */
+  pictureAt?: number;
 };
+
+/** A world's picture's time for its summary (see WorldSummary.pictureAt): none if it has none. */
+function pictured(dataRoot: string, name: string): { pictureAt?: number } {
+  const at = pictureAt(dataRoot, name);
+  return at === null ? {} : { pictureAt: Math.round(at) };
+}
 
 export class DefaultWorldError extends Error {}
 /** Terraforming built on strokes the world no longer has (someone applied others since). */
@@ -101,6 +109,10 @@ export interface WorldCatalog {
   /** World `name`'s claims (see Claim), and saving them; null if there's no such world. Absent where not kept. */
   claims?: (name: string) => Claim[] | null;
   saveClaims?: (name: string, claims: readonly Claim[]) => void;
+  /** World `name`'s picture (see readPicture); null if it has none or there's no such world. Absent where not kept. */
+  picture?: (name: string) => { type: string; data: Buffer; at: number } | null;
+  /** Gives world `name` a picture, or takes it away (null): see writePicture, which throws as it does. */
+  savePicture?: (name: string, data: Uint8Array | null) => void;
 }
 
 /** Bumped when what the disk cache holds changes form. */
@@ -336,7 +348,17 @@ export class FileWorldCatalog implements WorldCatalog {
   }
 
   private summary(f: WorldFile): WorldSummary {
-    return { name: f.name, createdAt: f.createdAt, ...(f.updatedAt ? { updatedAt: f.updatedAt } : {}), spec: f.spec, editedChunks: countEdits(this.dataRoot, f.name), strokes: this.strokes(f.name)?.length ?? 0, mode: modeOf(f) };
+    return { name: f.name, createdAt: f.createdAt, ...(f.updatedAt ? { updatedAt: f.updatedAt } : {}), spec: f.spec, editedChunks: countEdits(this.dataRoot, f.name), strokes: this.strokes(f.name)?.length ?? 0, mode: modeOf(f), ...pictured(this.dataRoot, f.name) };
+  }
+
+  picture(name: string): { type: string; data: Buffer; at: number } | null {
+    if (!isValidWorldName(name) || !readWorld(this.dataRoot, name)) return null;
+    return readPicture(this.dataRoot, name);
+  }
+
+  savePicture(name: string, data: Uint8Array | null): void {
+    if (!isValidWorldName(name)) throw new NoSuchWorldError(`no world named "${name}"`);
+    writePicture(this.dataRoot, name, data);
   }
 
   claims(name: string): Claim[] | null {

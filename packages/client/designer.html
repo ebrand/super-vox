@@ -8,10 +8,7 @@
       :root { color-scheme: dark; --bg: #0b0d10; --panel: #14181d; --line: #262c34; --text: #e6e6e6; --dim: #8b949e; --accent: #58a6ff; --bad: #ff7b72; --good: #7ee787; --warn: #e3b341; }
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.45 system-ui, sans-serif; }
-      body { display: grid; grid-template-rows: auto 1fr; }
-      header { display: flex; align-items: baseline; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
-      header h1 { margin: 0; font-size: 18px; }
-      header a { color: var(--accent); text-decoration: none; }
+      body { display: grid; grid-template-rows: 1fr; }
       #status { margin-left: auto; font-size: 12px; color: var(--dim); }
       #status.bad { color: var(--bad); } #status.good { color: var(--good); }
       .layout { display: grid; grid-template-columns: 220px 1fr 310px; min-height: 0; }
@@ -69,12 +66,7 @@
     </style>
   </head>
   <body>
-    <header>
-      <h1>Object designer</h1>
-      <a href="/">Menu</a>
-      <span id="status">loading…</span>
-      <span data-fullscreen-slot></span>
-    </header>
+    <header id="sv-header" data-title="Object designer"><span id="status">loading…</span></header>
     <div class="layout">
       <aside class="left">
         <h2>Library</h2>

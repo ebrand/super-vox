@@ -1,4 +1,6 @@
+import './header.js';
 import './fullscreen.js';
+import './envBadge.js';
 import { STROKE_KINDS, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, strokesOverColumns, type ProtectedColumn, type StrokeKind, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT, parseDioramaLight, type DioramaLight } from './dioramaLight.js';

@@ -1,28 +1,45 @@
+import './header.js';
 import './fullscreen.js';
 import './envBadge.js';
-import { SETTINGS_LIMITS, workersFor, defaultSettings, loadSettings, saveSettings, type Performance, type Settings } from './settings.js';
+import { decodeWorldMap, renderMap } from './worldMap.js';
+import { loadSettings, saveSettings, workersFor } from './settings.js';
 
-/** The entry page: pick a world, play it, change settings, or open the world generator. */
+/**
+ * The landing page: who's signed in, the world chosen (its picture: its own if it has one, else
+ * its map; and what it is), choosing another, and the way to world management, the object
+ * designer, settings, and playing it.
+ */
 
 interface WorldInfo {
   name: string;
   createdAt: string;
   mode?: 'survival' | 'creative';
+  /** When its picture was set (ms), if it has one. */
+  pictureAt?: number;
   spec: {
     generator: string;
+    shape?: string;
     plates?: { landPercent: number; majorPlates: number; minorPlates: number; minHeight: number; maxHeight: number };
   };
 }
 
 const worldEl = document.getElementById('world') as HTMLSelectElement;
+const nameEl = document.getElementById('world-name')!;
 const aboutEl = document.getElementById('about')!;
 const playEl = document.getElementById('play') as HTMLButtonElement;
 const summaryEl = document.getElementById('summary')!;
 const statusEl = document.getElementById('status')!;
+const pictureEl = document.getElementById('picture')!;
+const pictureTools = document.getElementById('picture-tools')!;
+const uploadEl = document.getElementById('picture-upload') as HTMLButtonElement;
+const clearEl = document.getElementById('picture-clear') as HTMLButtonElement;
+const fileEl = document.getElementById('picture-file') as HTMLInputElement;
 
 let settings = loadSettings();
 let worlds: WorldInfo[] = [];
 let defaultWorld = '';
+/** Whether this visitor may change worlds' pictures (an operator). */
+let canPicture = false;
 
 function status(text: string, kind: 'good' | 'bad' | '' = ''): void {
   statusEl.textContent = text;
@@ -32,7 +49,7 @@ function status(text: string, kind: 'good' | 'bad' | '' = ''): void {
 const toleranceText = (t: number | null) => (t === null ? "world's own" : `${t}/16 m`);
 
 function showSummary(): void {
-  summaryEl.textContent = `detail ${settings.detail} chunks (${settings.detail * 16} m) · view ${settings.view} m · performance ${settings.performance} (${workersFor(settings.performance, navigator.hardwareConcurrency || 0)} mesh workers) · tolerance ${toleranceText(settings.tolerance)}`;
+  summaryEl.textContent = `Settings: detail ${settings.detail} chunks (${settings.detail * 16} m) · view ${settings.view} m · performance ${settings.performance} (${workersFor(settings.performance, navigator.hardwareConcurrency || 0)} mesh workers) · tolerance ${toleranceText(settings.tolerance)}`;
 }
 
 function describe(w: WorldInfo): string {
@@ -40,44 +57,145 @@ function describe(w: WorldInfo): string {
   const created = new Date(w.createdAt);
   const when = Number.isNaN(created.getTime()) ? '' : ` · created ${created.toLocaleDateString()}`;
   const mode = w.mode ? `${w.mode[0]!.toUpperCase()}${w.mode.slice(1)} · ` : '';
-  if (!p) return `${mode}${w.spec.generator} terrain${when}`;
-  return `${mode}${p.landPercent}% land · ${p.majorPlates} major + ${p.minorPlates} minor plates · ${p.minHeight}..${p.maxHeight} m${when}`;
+  const shape = w.spec.shape ? `${w.spec.shape} · ` : '';
+  if (!p) return `${mode}${shape}${w.spec.generator} terrain${when}`;
+  return `${mode}${shape}${p.landPercent}% land · ${p.majorPlates} major + ${p.minorPlates} minor plates · ${p.minHeight}..${p.maxHeight} m${when}`;
 }
 
+const chosen = () => worlds.find((x) => x.name === worldEl.value);
+
 function showWorld(): void {
-  const w = worlds.find((x) => x.name === worldEl.value);
+  const w = chosen();
+  nameEl.textContent = w ? w.name + (w.name === defaultWorld ? ' (default)' : '') : '';
   aboutEl.textContent = w ? describe(w) : '';
+  linkTools();
+  void showPicture();
 }
+
+// ---- The world's picture
+
+/** What's shown now ("world@pictureAt", or "world@map"), so a picture's drawn once, and the last to be asked for wins. */
+let shown = '';
+const maps = new Map<string, Promise<HTMLCanvasElement | null>>();
+
+/** A world's map, drawn to a canvas (made once a visit). */
+function mapCanvas(world: string): Promise<HTMLCanvasElement | null> {
+  let p = maps.get(world);
+  if (!p) {
+    p = fetch(`/api/world/map?width=1024&world=${encodeURIComponent(world)}`)
+      .then(async (r) => {
+        if (!r.ok) return null;
+        const map = decodeWorldMap(await r.arrayBuffer());
+        const canvas = document.createElement('canvas');
+        canvas.width = map.cols;
+        canvas.height = map.rows;
+        canvas.getContext('2d')!.putImageData(new ImageData(renderMap(map), map.cols, map.rows), 0, 0);
+        canvas.setAttribute('aria-label', `map of ${world}`);
+        return canvas;
+      })
+      .catch(() => null);
+    maps.set(world, p);
+  }
+  return p;
+}
+
+function setPicture(...nodes: Node[]): void {
+  for (const n of [...pictureEl.childNodes]) if (n !== pictureTools) n.remove();
+  pictureEl.prepend(...nodes);
+}
+
+function emptyNote(text: string): HTMLElement {
+  const span = document.createElement('span');
+  span.className = 'empty';
+  span.textContent = text;
+  return span;
+}
+
+async function showPicture(): Promise<void> {
+  const w = chosen();
+  pictureTools.hidden = !w || !canPicture;
+  clearEl.hidden = !w?.pictureAt;
+  if (!w) {
+    shown = '';
+    setPicture(emptyNote(worlds.length ? '' : 'no worlds yet'));
+    return;
+  }
+  const key = `${w.name}@${w.pictureAt ?? 'map'}`;
+  if (key === shown) return;
+  shown = key;
+  if (w.pictureAt) {
+    const img = document.createElement('img');
+    img.alt = `${w.name}`;
+    img.src = `/api/worlds/${encodeURIComponent(w.name)}/picture?at=${w.pictureAt}`;
+    // (Its map if the picture won't load.)
+    img.addEventListener('error', () => {
+      if (shown === key) void mapCanvas(w.name).then((c) => shown === key && setPicture(c ?? emptyNote('no picture')));
+    });
+    setPicture(img);
+    return;
+  }
+  setPicture(emptyNote('drawing the map…'));
+  const canvas = await mapCanvas(w.name);
+  if (shown !== key) return;
+  setPicture(canvas ?? emptyNote("couldn't draw its map"));
+}
+
+uploadEl.addEventListener('click', () => fileEl.click());
+fileEl.addEventListener('change', async () => {
+  const file = fileEl.files?.[0], w = chosen();
+  fileEl.value = '';
+  if (!file || !w) return;
+  status(`Uploading ${file.name}…`);
+  const res = await fetch(`/api/worlds/${encodeURIComponent(w.name)}/picture`, { method: 'PUT', headers: { 'content-type': file.type || 'application/octet-stream' }, body: file }).catch(() => null);
+  if (!res?.ok) {
+    const why = res ? (((await res.json().catch(() => null)) as { error?: string } | null)?.error ?? `HTTP ${res.status}`) : "couldn't reach the server";
+    status(`Couldn't use that picture: ${why}.`, 'bad');
+    return;
+  }
+  status(`${w.name} has its own picture now.`, 'good');
+  await loadWorlds();
+});
+clearEl.addEventListener('click', async () => {
+  const w = chosen();
+  if (!w) return;
+  const res = await fetch(`/api/worlds/${encodeURIComponent(w.name)}/picture`, { method: 'DELETE' }).catch(() => null);
+  if (!res?.ok) {
+    status(`Couldn't take its picture away (${res ? `HTTP ${res.status}` : 'no server'}).`, 'bad');
+    return;
+  }
+  status(`${w.name} shows its map again.`, 'good');
+  await loadWorlds();
+});
+
+// ---- Worlds
 
 async function loadWorlds(): Promise<void> {
   try {
     const res = await fetch('/api/worlds');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = (await res.json()) as { default: string; worlds: WorldInfo[] };
+    const data = (await res.json()) as { default: string; canPicture?: boolean; worlds: WorldInfo[] };
     worlds = data.worlds;
     defaultWorld = data.default;
+    canPicture = !!data.canPicture;
   } catch (err) {
     worldEl.innerHTML = '<option>unavailable</option>';
+    setPicture(emptyNote('no server'));
     status(`Couldn't reach the server (${(err as Error).message}). Is it running?`, 'bad');
     return;
   }
+  const keep = worldEl.value;
   worldEl.innerHTML = '';
-  for (const w of worlds) {
-    const opt = document.createElement('option');
-    opt.value = w.name;
-    opt.textContent = w.name + (w.mode ? ` · ${w.mode}` : '') + (w.name === defaultWorld ? ' (default)' : '');
-    worldEl.appendChild(opt);
-  }
+  for (const w of worlds) worldEl.appendChild(new Option(w.name + (w.mode ? ` · ${w.mode}` : '') + (w.name === defaultWorld ? ' (default)' : ''), w.name));
   if (worlds.length === 0) {
     worldEl.innerHTML = '<option>no worlds yet</option>';
     status('No worlds yet: make one in the world generator.');
+    showWorld();
     return;
   }
-  // The world picked last time, if it still exists; otherwise the server's default.
-  const pick = worlds.some((w) => w.name === settings.world) ? settings.world! : defaultWorld;
-  if (worlds.some((w) => w.name === pick)) worldEl.value = pick;
+  // The one shown before (reloading), the one picked last time if it still exists, else the server's default.
+  const pick = [keep, settings.world, defaultWorld].find((n) => n && worlds.some((w) => w.name === n));
+  if (pick) worldEl.value = pick;
   worldEl.disabled = false;
-  linkTerraformer();
   playEl.disabled = false;
   showWorld();
 }
@@ -86,103 +204,20 @@ worldEl.addEventListener('change', () => {
   settings = { ...settings, world: worldEl.value };
   saveSettings(settings);
   showWorld();
-  linkTerraformer();
 });
 
-/** The Terraformer button opens the world chosen here. */
-function linkTerraformer(): void {
-  const link = document.getElementById('terraformer') as HTMLAnchorElement;
-  link.href = worldEl.value ? `/terraform.html#world=${encodeURIComponent(worldEl.value)}` : '/terraform.html';
-  // (And Claims, the same way.)
-  const claims = document.getElementById('claims') as HTMLAnchorElement;
-  claims.href = worldEl.value ? `/claim.html#world=${encodeURIComponent(worldEl.value)}` : '/claim.html';
+/** The tools' links open the world chosen here. */
+function linkTools(): void {
+  const hash = worldEl.value && chosen() ? `#world=${encodeURIComponent(worldEl.value)}` : '';
+  (document.getElementById('terraformer') as HTMLAnchorElement).href = `/terraform.html${hash}`;
+  (document.getElementById('sites') as HTMLAnchorElement).href = `/sites.html${hash}`;
+  (document.getElementById('claims') as HTMLAnchorElement).href = `/claim.html${hash}`;
 }
 
 playEl.addEventListener('click', () => {
   settings = { ...settings, world: worldEl.value };
   saveSettings(settings);
   location.href = `/play.html?world=${encodeURIComponent(worldEl.value)}`;
-});
-
-// ---- Settings dialog
-
-const dialog = document.getElementById('settings') as HTMLDialogElement;
-const form = document.getElementById('settings-form') as HTMLFormElement;
-const detailEl = document.getElementById('s-detail') as HTMLInputElement;
-const detailRange = document.getElementById('s-detail-range') as HTMLInputElement;
-const detailHint = document.getElementById('s-detail-hint')!;
-const viewEl = document.getElementById('s-view') as HTMLInputElement;
-const viewRange = document.getElementById('s-view-range') as HTMLInputElement;
-const toleranceEl = document.getElementById('s-tolerance') as HTMLSelectElement;
-const performanceEl = document.getElementById('s-performance') as HTMLSelectElement;
-const performanceHint = document.getElementById('s-performance-hint')!;
-const errorEl = document.getElementById('s-error')!;
-
-toleranceEl.appendChild(new Option("World's own", ''));
-for (let t = 0; t <= 16; t++) toleranceEl.appendChild(new Option(`${t}/16 m${t === 0 ? ' (exact)' : t === 16 ? ' (1 m)' : ''}`, String(t)));
-
-/** Keeps a slider and its number box in step. */
-function pair(range: HTMLInputElement, box: HTMLInputElement, onChange: () => void): void {
-  range.addEventListener('input', () => {
-    box.value = range.value;
-    onChange();
-  });
-  box.addEventListener('input', () => {
-    if (box.value !== '') range.value = box.value;
-    onChange();
-  });
-}
-const detailText = () => {
-  const n = Number(detailEl.value);
-  detailHint.textContent = `Radius of full-detail voxel terrain around you: ${Number.isFinite(n) ? n * 16 : '?'} m (16 m per chunk). Higher costs memory and loading time.`;
-};
-pair(detailRange, detailEl, detailText);
-pair(viewRange, viewEl, () => {});
-const cores = navigator.hardwareConcurrency || 0;
-if (cores) performanceHint.textContent += ` This computer has ${cores} cores.`;
-for (const o of performanceEl.options) o.textContent += ` (${workersFor(o.value as Performance, cores)} mesh worker${workersFor(o.value as Performance, cores) === 1 ? '' : 's'})`;
-
-function fillForm(s: Settings): void {
-  detailEl.value = detailRange.value = String(s.detail);
-  viewEl.value = viewRange.value = String(s.view);
-  toleranceEl.value = s.tolerance === null ? '' : String(s.tolerance);
-  performanceEl.value = s.performance;
-  detailText();
-}
-
-function readForm(): Settings | string {
-  const clamp = (v: number, [lo, hi]: readonly [number, number]) => Math.min(hi, Math.max(lo, Math.round(v)));
-  const detail = Number(detailEl.value), view = Number(viewEl.value);
-  if (detailEl.value === '' || !Number.isFinite(detail)) return 'Detail distance must be a number.';
-  if (viewEl.value === '' || !Number.isFinite(view)) return 'View distance must be a number.';
-  return {
-    ...settings,
-    detail: clamp(detail, SETTINGS_LIMITS.detail),
-    view: clamp(view, SETTINGS_LIMITS.view),
-    tolerance: toleranceEl.value === '' ? null : Number(toleranceEl.value),
-    performance: performanceEl.value as Performance,
-  };
-}
-
-document.getElementById('open-settings')!.addEventListener('click', () => {
-  fillForm(settings);
-  errorEl.textContent = '';
-  status('');
-  dialog.showModal();
-});
-document.getElementById('s-cancel')!.addEventListener('click', () => dialog.close());
-document.getElementById('s-reset')!.addEventListener('click', () => fillForm({ ...defaultSettings(), world: settings.world }));
-form.addEventListener('submit', (e) => {
-  const next = readForm();
-  if (typeof next === 'string') {
-    e.preventDefault();
-    errorEl.textContent = next;
-    return;
-  }
-  settings = next;
-  const saved = saveSettings(settings);
-  showSummary();
-  status(saved ? 'Settings saved.' : "This browser won't store settings (site storage is blocked), so the game will use the defaults.", saved ? 'good' : 'bad');
 });
 
 showSummary();
@@ -214,7 +249,7 @@ async function showAccount(): Promise<void> {
     out.type = 'button';
     out.textContent = 'Sign out';
     out.addEventListener('click', () => {
-      void fetch('/api/auth/logout', { method: 'POST' }).then(() => showAccount());
+      void fetch('/api/auth/logout', { method: 'POST' }).then(() => (void showAccount(), loadWorlds()));
     });
     el.append(who, out);
   } else {
@@ -230,4 +265,3 @@ async function showAccount(): Promise<void> {
 }
 
 void showAccount();
-

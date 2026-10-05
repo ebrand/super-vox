@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultSettings, farDetailFor, loadSettings, parseSettings, saveSettings, workersFor } from './settings.js';
+import { defaultSettings, farDetailFor, loadSettings, parseSettings, returnTo, saveSettings, workersFor } from './settings.js';
 
 /** In-memory stand-in for localStorage. */
 function memoryStorage() {
@@ -47,5 +47,13 @@ describe('settings', () => {
     const refusing = { setItem: () => { throw new Error('QuotaExceededError'); } };
     expect(saveSettings(defaultSettings(), refusing)).toBe(false);
     expect(saveSettings(defaultSettings(), null)).toBe(false);
+  });
+});
+
+describe('the settings page goes back to', () => {
+  it('pages of this site only', () => {
+    expect(returnTo('?return=%2Fclaim.html%23world%3Dhome')).toBe('/claim.html#world=home');
+    expect(returnTo('?return=%2F')).toBe('/');
+    for (const bad of ['', '?return=', '?return=https%3A%2F%2Fevil.example', '?return=%2F%2Fevil.example', '?return=%2F%5Cevil.example', '?return=javascript%3Aalert(1)']) expect(returnTo(bad)).toBeNull();
   });
 });

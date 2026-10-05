@@ -1,4 +1,6 @@
+import './header.js';
 import './fullscreen.js';
+import './envBadge.js';
 import { FACING_OUT, MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, PLAN_PIECE, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, designBase, isWorldShape, madeOf, pieceName, pieceSize, planTotals, capHeight, layoutPlan, wallFacing, type Claim, type ObjectDesign, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
 import { planGroup } from './planView.js';
 import { Diorama } from './diorama.js';

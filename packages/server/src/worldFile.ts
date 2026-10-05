@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   FLAT_WORLD_16KM,
@@ -188,6 +188,60 @@ export function writeStrokes(dataRoot: string, name: string, strokes: readonly T
   const dir = join(dataRoot, name), tmp = join(dir, `${STROKES_FILE}.tmp`);
   writeFileSync(tmp, JSON.stringify(strokes));
   renameSync(tmp, join(dir, STROKES_FILE));
+}
+
+/** Kinds of picture a world may have (see writePicture), by file extension. */
+export const PICTURE_TYPES = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' } as const;
+export type PictureKind = keyof typeof PICTURE_TYPES;
+/** The largest picture a world may have (bytes). */
+export const MAX_PICTURE_BYTES = 8 * 1024 * 1024;
+
+/** What kind of picture `data` is, by its first bytes; null if none of PICTURE_TYPES. */
+export function pictureKind(data: Uint8Array): PictureKind | null {
+  const at = (i: number, bytes: number[]) => bytes.every((b, k) => data[i + k] === b);
+  if (at(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'png';
+  if (at(0, [0xff, 0xd8, 0xff])) return 'jpg';
+  if (at(0, [0x52, 0x49, 0x46, 0x46]) && at(8, [0x57, 0x45, 0x42, 0x50])) return 'webp';
+  return null;
+}
+
+const pictureFile = (kind: PictureKind) => `picture.${kind}`;
+
+/** World `name`'s picture (shown for it on the menu page in place of its map), and when it was set (ms); null if none. */
+export function readPicture(dataRoot: string, name: string): { type: string; data: Buffer; at: number } | null {
+  checkName(name);
+  for (const kind of Object.keys(PICTURE_TYPES) as PictureKind[]) {
+    const path = join(dataRoot, name, pictureFile(kind));
+    if (existsSync(path)) return { type: PICTURE_TYPES[kind], data: readFileSync(path), at: statSync(path).mtimeMs };
+  }
+  return null;
+}
+
+/** When world `name`'s picture was set (ms); null if it has none. */
+export function pictureAt(dataRoot: string, name: string): number | null {
+  for (const kind of Object.keys(PICTURE_TYPES) as PictureKind[]) {
+    const path = join(dataRoot, name, pictureFile(kind));
+    if (existsSync(path)) return statSync(path).mtimeMs;
+  }
+  return null;
+}
+
+/**
+ * Gives world `name` a picture (a PNG, JPEG or WebP image, at most MAX_PICTURE_BYTES), or takes
+ * its picture away (null). Throws NoSuchWorldError, or RangeError for what isn't such a picture.
+ */
+export function writePicture(dataRoot: string, name: string, data: Uint8Array | null): void {
+  if (!readWorld(dataRoot, name)) throw new NoSuchWorldError(`no world named "${name}"`);
+  const kind = data && pictureKind(data);
+  if (data && !kind) throw new RangeError('a picture is a PNG, JPEG or WebP image');
+  if (data && data.byteLength > MAX_PICTURE_BYTES) throw new RangeError(`a picture is at most ${MAX_PICTURE_BYTES / 1024 / 1024} MB`);
+  const dir = join(dataRoot, name);
+  if (data && kind) {
+    const tmp = join(dir, 'picture.tmp');
+    writeFileSync(tmp, data);
+    renameSync(tmp, join(dir, pictureFile(kind)));
+  }
+  for (const other of Object.keys(PICTURE_TYPES) as PictureKind[]) if (other !== kind) rmSync(join(dir, pictureFile(other)), { force: true });
 }
 
 const CLAIMS_FILE = 'claims.json';

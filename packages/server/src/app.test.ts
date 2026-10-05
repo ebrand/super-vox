@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -677,6 +677,48 @@ describe('named worlds', () => {
     const bobs = (await list()).json().claims[0].id as string;
     expect((await drop(boss, bobs)).statusCode).toBe(200);
     expect((await list()).json().claims).toEqual([]);
+  });
+
+  it("keeps a world's picture: admins give one (a PNG, JPEG or WebP) or take it away; anyone sees it", async () => {
+    const secret = 'q'.repeat(40);
+    const accounts = new MemoryAccountStore();
+    const auth = new Auth({ googleClientId: 'c', googleClientSecret: 's', sessionSecret: secret, adminEmails: ['boss@x.com'], secureCookies: false }, accounts);
+    const { a, root } = await catalogApp(false, auth);
+    const cookieFor = async (email: string) => {
+      const acct = await accounts.signIn({ sub: email, email, name: email });
+      return `${SESSION_COOKIE}=${sessionToken(acct.id, Date.now() + 1e6, secret)}`;
+    };
+    const ann = await cookieFor('ann@x.com'), boss = await cookieFor('boss@x.com');
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+    const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9]);
+    const put = (cookie: string | null, body: Buffer, type = 'image/png', world = 'home') =>
+      a.inject({ method: 'PUT', url: `/api/worlds/${world}/picture`, payload: body, headers: { 'content-type': type, ...(cookie ? { cookie } : {}) } });
+    const get = () => a.inject({ method: 'GET', url: '/api/worlds/home/picture' });
+    expect((await get()).statusCode).toBe(404);
+    expect((await a.inject({ method: 'GET', url: '/api/worlds', headers: { cookie: ann } })).json()).toMatchObject({ canPicture: false });
+    expect((await a.inject({ method: 'GET', url: '/api/worlds', headers: { cookie: boss } })).json()).toMatchObject({ canPicture: true });
+    expect((await put(null, png)).statusCode).toBe(403);
+    expect((await put(ann, png)).statusCode).toBe(403);
+    // Not an image (by its bytes, whatever it says it is), an unknown world, a type not taken.
+    expect((await put(boss, Buffer.from('hello there'))).statusCode).toBe(400);
+    expect((await put(boss, png, 'image/png', 'nowhere')).statusCode).toBe(404);
+    expect((await put(boss, png, 'image/gif')).statusCode).toBe(415);
+    expect((await put(boss, png)).statusCode).toBe(200);
+    const seen = await get();
+    expect(seen.statusCode).toBe(200);
+    expect(seen.headers['content-type']).toBe('image/png');
+    expect(Buffer.from(seen.rawPayload)).toEqual(png);
+    const home = (await a.inject({ method: 'GET', url: '/api/worlds' })).json().worlds.find((w: { name: string }) => w.name === 'home');
+    expect(home.pictureAt).toBeGreaterThan(0);
+    // Another kind replaces it (one picture a world, on disk).
+    expect((await put(boss, jpg, 'image/jpeg')).statusCode).toBe(200);
+    expect((await get()).headers['content-type']).toBe('image/jpeg');
+    expect(readdirSync(join(root, 'home')).filter((f) => f.startsWith('picture'))).toEqual(['picture.jpg']);
+    // Taken away: the map again.
+    expect((await a.inject({ method: 'DELETE', url: '/api/worlds/home/picture', headers: { cookie: ann } })).statusCode).toBe(403);
+    expect((await a.inject({ method: 'DELETE', url: '/api/worlds/home/picture', headers: { cookie: boss } })).statusCode).toBe(200);
+    expect((await get()).statusCode).toBe(404);
+    expect((await a.inject({ method: 'GET', url: '/api/worlds' })).json().worlds.find((w: { name: string }) => w.name === 'home')).not.toHaveProperty('pictureAt');
   });
 
   it("keeps a claim's plan: its owner saves it (checked, inside the plot); others can't", async () => {

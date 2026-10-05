@@ -8,9 +8,6 @@
       :root { color-scheme: dark; --bg: #0b0d10; --panel: #14181d; --line: #262c34; --text: #e6e6e6; --dim: #8b949e; --accent: #58a6ff; --bad: #ff7b72; --good: #7ee787; --warn: #e3b341; }
       * { box-sizing: border-box; }
       html, body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 system-ui, sans-serif; }
-      header { display: flex; align-items: baseline; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 1; flex-wrap: wrap; }
-      header h1 { margin: 0; font-size: 18px; }
-      header a { color: var(--accent); text-decoration: none; }
       #meta { color: var(--dim); font-size: 12px; }
       #status { margin-left: auto; font-size: 12px; }
       #status.bad { color: var(--bad); } #status.good { color: var(--good); }
@@ -51,13 +48,7 @@
     </style>
   </head>
   <body>
-    <header>
-      <h1>World dashboard</h1>
-      <span id="meta"></span>
-      <a href="/">Menu</a>
-      <span id="status">connecting…</span>
-      <span data-fullscreen-slot></span>
-    </header>
+    <header id="sv-header" data-title="World management"><span id="meta"></span><span id="status">connecting…</span></header>
     <main>
       <section>
         <h2>Server</h2>

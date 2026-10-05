@@ -86,7 +86,7 @@ import { Explosives } from './explosives.js';
 import { RequestQueue } from './requestQueue.js';
 import { DesignLibrary } from './designs.js';
 import { HISTORY, Metrics, percentile } from './metrics.js';
-import { NoSuchWorldError, WorldExistsError } from './worldFile.js';
+import { MAX_PICTURE_BYTES, NoSuchWorldError, PICTURE_TYPES, WorldExistsError } from './worldFile.js';
 import { DefaultWorldError, StaleStrokesError, StrokesOverBuildsError, singleWorld, type WorldCatalog } from './worlds.js';
 
 export type AppOptions = (
@@ -326,7 +326,38 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   // The worlds on this server and how each was generated.
   app.get('/api/worlds', async (req) => {
     const op = await operator(req);
-    return { default: catalog.defaultName, canCreate: catalog.create !== undefined && op, canTerraform: catalog.terraform !== undefined && op, worlds: catalog.list() };
+    return { default: catalog.defaultName, canCreate: catalog.create !== undefined && op, canTerraform: catalog.terraform !== undefined && op, canPicture: catalog.savePicture !== undefined && op, worlds: catalog.list() };
+  });
+
+  // A world's picture (shown for it on the menu page in place of its map): anyone may see it;
+  // operators give one (the image itself as the body: PNG, JPEG or WebP) or take it away.
+  app.addContentTypeParser(Object.values(PICTURE_TYPES), { parseAs: 'buffer', bodyLimit: MAX_PICTURE_BYTES }, (_req, body, done) => done(null, body));
+  app.get<{ Params: { name: string } }>('/api/worlds/:name/picture', async (req, reply) => {
+    const pic = catalog.picture?.(req.params.name) ?? null;
+    if (!pic) return reply.code(404).send({ error: 'no picture' });
+    return reply.header('content-type', pic.type).header('cache-control', 'no-cache').send(pic.data);
+  });
+  app.put<{ Params: { name: string }; Body: unknown }>('/api/worlds/:name/picture', { bodyLimit: MAX_PICTURE_BYTES }, async (req, reply) => {
+    if (!(await operator(req)) || !catalog.savePicture) return reply.code(403).send(notOperator("changing a world's picture"));
+    if (!Buffer.isBuffer(req.body)) return reply.code(415).send({ error: 'send the picture itself: a PNG, JPEG or WebP image' });
+    try {
+      catalog.savePicture(req.params.name, req.body);
+    } catch (err) {
+      if (err instanceof NoSuchWorldError) return reply.code(404).send({ error: err.message });
+      if (err instanceof RangeError) return reply.code(400).send({ error: err.message });
+      throw err;
+    }
+    return { ok: true };
+  });
+  app.delete<{ Params: { name: string } }>('/api/worlds/:name/picture', async (req, reply) => {
+    if (!(await operator(req)) || !catalog.savePicture) return reply.code(403).send(notOperator("changing a world's picture"));
+    try {
+      catalog.savePicture(req.params.name, null);
+    } catch (err) {
+      if (err instanceof NoSuchWorldError) return reply.code(404).send({ error: err.message });
+      throw err;
+    }
+    return { ok: true };
   });
 
   // A world's terraforming: its strokes, in order, and the chunk columns (16 m squares, by

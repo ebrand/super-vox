@@ -9,6 +9,14 @@ void fetch('/api/health')
     const badge = document.createElement('div');
     badge.textContent = environment.toUpperCase();
     badge.title = `the ${environment} server: not the live game`;
+    // (In the header, on pages that have it: see header.ts.)
+    const header = document.querySelector('#sv-header .sv-extra');
+    if (header) {
+      badge.className = 'sv-env';
+      header.prepend(badge);
+      document.title = `[${environment}] ${document.title}`;
+      return;
+    }
     badge.style.cssText =
       'position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:1000;padding:2px 12px;border-radius:0 0 6px 6px;' +
       'background:#e3b341;color:#000;font:600 11px/1.6 system-ui,sans-serif;letter-spacing:.1em;pointer-events:none';

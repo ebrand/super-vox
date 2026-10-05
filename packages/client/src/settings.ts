@@ -89,3 +89,9 @@ function safeStorage(): Storage | null {
     return null;
   }
 }
+
+/** Where the settings page goes after (its ?return=): a page of this site; null for anything else. */
+export function returnTo(search: string): string | null {
+  const r = new URLSearchParams(search).get('return');
+  return r && r.startsWith('/') && !r.startsWith('//') && !r.startsWith('/\\') ? r : null;
+}

@@ -1,4 +1,6 @@
+import './header.js';
 import './fullscreen.js';
+import './envBadge.js';
 import { UNITS_PER_METER, formatHours } from '@super-vox/shared';
 import { chartMax, compass, formatBytes, formatDuration, formatRate } from './dashboardFormat.js';
 import { decodeWorldMap, renderMap, type MapData } from './worldMap.js';

@@ -8,96 +8,61 @@
       :root { color-scheme: dark; --bg: #0b0d10; --panel: #14181d; --line: #262c34; --text: #e6e6e6; --dim: #8b949e; --accent: #1f6feb; --bad: #ff7b72; --good: #7ee787; }
       * { box-sizing: border-box; }
       html, body { margin: 0; min-height: 100%; background: radial-gradient(ellipse at top, #1a2430, var(--bg) 70%) fixed; color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
-      body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 16px; }
-      main { width: min(420px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 24px; }
-      h1 { margin: 0 0 18px; font-size: 26px; letter-spacing: 0.02em; }
-      h1 span { color: var(--dim); font-weight: 400; font-size: 13px; margin-left: 6px; }
-      label.title { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.08em; }
-      select, input[type=number] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 6px 8px; font: inherit; }
-      #world { width: 100%; }
-      .about { color: var(--dim); font-size: 12px; min-height: 1.45em; margin: 6px 0 18px; }
-      button, a.button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: #21262d; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px; font: inherit; cursor: pointer; text-decoration: none; }
-      button:hover, a.button:hover { border-color: var(--dim); }
-      button:disabled { opacity: 0.5; cursor: default; }
-      #play { width: 100%; background: var(--accent); border-color: var(--accent); font-size: 16px; font-weight: 600; padding: 11px; }
-      .row { display: flex; gap: 8px; margin-top: 8px; }
-      .row > * { flex: 1; }
-      #summary { margin-top: 16px; font: 12px ui-monospace, monospace; color: var(--dim); }
-      #status { margin-top: 8px; font-size: 12px; min-height: 1.45em; }
-      #status.bad { color: var(--bad); } #status.good { color: var(--good); }
-      #account { display: flex; align-items: center; gap: 8px; margin: -6px 0 16px; font-size: 13px; color: var(--dim); min-height: 34px; }
+      main { width: min(1000px, 100%); margin: 0 auto; padding: 16px 16px 32px; display: flex; flex-direction: column; gap: 14px; }
+      #account { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--dim); min-height: 34px; }
       #account .who { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       #account .who b { color: var(--text); font-weight: 600; }
       #account a.button, #account button { padding: 6px 12px; }
-      dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 20px; width: min(440px, calc(100vw - 32px)); }
-      dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
-      dialog h2 { margin: 0 0 14px; font-size: 18px; }
-      .field { margin-bottom: 14px; }
-      .field .line { display: flex; gap: 8px; align-items: center; }
-      .field input[type=range] { flex: 1; accent-color: var(--accent); }
-      .field input[type=number] { width: 84px; text-align: right; }
-      .field .hint { color: var(--dim); font-size: 12px; margin-top: 3px; }
-      #s-error { color: var(--bad); font-size: 12px; min-height: 1.45em; }
-      .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
-      .actions .spacer { flex: 1; }
-      .actions .primary { background: var(--accent); border-color: var(--accent); }
+      /* The selected world's picture: its own (if it has one) or its map. */
+      #picture { width: min(100%, calc((100vh - 330px) * 2)); align-self: center; position: relative; background: #070809; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; aspect-ratio: 2 / 1; display: flex; align-items: center; justify-content: center; }
+      #picture canvas, #picture img { width: 100%; height: 100%; object-fit: contain; display: block; }
+      #picture .empty { color: var(--dim); font-size: 13px; }
+      #picture-tools { position: absolute; right: 10px; bottom: 10px; display: flex; gap: 6px; }
+      #picture-tools button { padding: 5px 10px; font-size: 12px; background: rgba(13, 17, 23, 0.8); }
+      #details h2 { margin: 0; font-size: 22px; }
+      #details .about { color: var(--dim); font-size: 13px; margin-top: 2px; min-height: 1.45em; }
+      .chooser { display: flex; gap: 10px; align-items: center; }
+      .chooser label { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; }
+      select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 7px 8px; font: inherit; }
+      #world { flex: 1; min-width: 0; }
+      button, a.button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: #21262d; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 9px 14px; font: inherit; cursor: pointer; text-decoration: none; }
+      button:hover, a.button:hover { border-color: var(--dim); }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .actions { display: grid; grid-template-columns: repeat(3, 1fr) 1.4fr; gap: 10px; }
+      .actions a.button { padding: 12px 14px; }
+      #play { background: var(--accent); border-color: var(--accent); font-size: 17px; font-weight: 700; letter-spacing: 0.06em; }
+      #tools { font-size: 12px; color: var(--dim); }
+      #tools a { color: var(--accent); text-decoration: none; margin-right: 12px; }
+      #summary { font: 12px ui-monospace, monospace; color: var(--dim); }
+      #status { font-size: 12px; min-height: 1.45em; }
+      #status.bad { color: var(--bad); } #status.good { color: var(--good); }
+      @media (max-width: 640px) { .actions { grid-template-columns: 1fr 1fr; } #play { grid-column: 1 / -1; } }
     </style>
   </head>
   <body>
+    <header id="sv-header"></header>
     <main>
-      <h1>SuperVoxel</h1>
       <div id="account" hidden></div>
-      <label class="title" for="world">World</label>
-      <select id="world" disabled><option>loading…</option></select>
-      <div class="about" id="about"></div>
-      <button id="play" disabled>Play</button>
-      <div class="row">
-        <button id="open-settings" type="button">Settings</button>
-        <a class="button" href="/generator.html">World generator</a>
-        <a class="button" id="terraformer" href="/terraform.html">Terraformer</a>
+      <div id="picture"><span class="empty">loading…</span>
+        <div id="picture-tools" hidden>
+          <button type="button" id="picture-upload" title="Show a picture of your own for this world instead of its map (PNG, JPEG or WebP, up to 8 MB)">Upload picture…</button>
+          <button type="button" id="picture-clear" hidden>Use the map</button>
+          <input type="file" id="picture-file" accept="image/png,image/jpeg,image/webp" hidden />
+        </div>
       </div>
-      <div class="row">
-        <a class="button" href="/dashboard.html">World dashboard</a>
-        <a class="button" href="/sites.html">Site finder</a>
+      <div id="details"><h2 id="world-name"></h2><div class="about" id="about"></div></div>
+      <div class="chooser"><label for="world">World</label><select id="world" disabled><option>loading…</option></select></div>
+      <div class="actions">
+        <a class="button" href="/dashboard.html">World management</a>
         <a class="button" href="/designer.html">Object designer</a>
-        <a class="button" id="claims" href="/claim.html">Claims</a>
+        <a class="button" id="settings" href="/settings.html?return=%2F">Settings</a>
+        <button id="play" disabled>PLAY</button>
       </div>
+      <!-- (Until World management lists the worlds with these: see BACKLOG #30.) -->
+      <div id="tools">For this world: <a id="terraformer" href="/terraform.html">Terraform</a><a id="sites" href="/sites.html">Find a site</a><a id="claims" href="/claim.html">Make a claim</a><a href="/generator.html">Generate a new world</a></div>
       <div id="summary"></div>
       <div id="status"></div>
     </main>
-
-    <dialog id="settings">
-      <form method="dialog" id="settings-form">
-        <h2>Settings</h2>
-        <div class="field">
-          <label class="title" for="s-detail">Detail distance</label>
-          <div class="line"><input type="range" id="s-detail-range" min="1" max="32" step="1" aria-label="Detail distance" /><input type="number" id="s-detail" min="1" max="32" step="1" /> chunks</div>
-          <div class="hint" id="s-detail-hint">Radius of full-detail voxel terrain around you (16 m per chunk). Higher costs memory and loading time.</div>
-        </div>
-        <div class="field">
-          <label class="title" for="s-view">View distance</label>
-          <div class="line"><input type="range" id="s-view-range" min="64" max="16000" step="64" aria-label="View distance" /><input type="number" id="s-view" min="64" max="16000" step="64" /> m</div>
-          <div class="hint">How far low-detail terrain reaches.</div>
-        </div>
-        <div class="field">
-          <label class="title" for="s-performance">Performance</label>
-          <div class="line"><select id="s-performance"><option value="normal">Normal</option><option value="medium">Medium</option><option value="max">Max</option></select></div>
-          <div class="hint" id="s-performance-hint">How many background threads build the terrain you see (Normal, 2; Medium, half this computer's processor cores; Max, all of them), and how fine distant terrain is (Normal a little coarser, Max finer). More loads terrain faster and shows more far away; less leaves the computer more room for other things.</div>
-        </div>
-        <div class="field">
-          <label class="title" for="s-tolerance">Terrain tolerance</label>
-          <div class="line"><select id="s-tolerance"></select></div>
-          <div class="hint">How far generated voxels may stray from the true surface; smaller is more detailed and slower. Only development servers honour it.</div>
-        </div>
-        <div id="s-error" role="alert"></div>
-        <div class="actions">
-          <button type="button" id="s-reset">Reset to defaults</button>
-          <span class="spacer"></span>
-          <button type="button" id="s-cancel">Cancel</button>
-          <button type="submit" class="primary" value="save">Save</button>
-        </div>
-      </form>
-    </dialog>
     <script type="module" src="/src/entry.ts"></script>
   </body>
 </html>

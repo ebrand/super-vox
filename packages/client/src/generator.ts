@@ -1,4 +1,6 @@
+import './header.js';
 import './fullscreen.js';
+import './envBadge.js';
 import { BIOME_NAMES, Biome, DEFAULT_WORLD_SHAPE, PLATE_LIMITS, SURFACE_SETTINGS, WORLD_SHAPES, defaultPlateCounts, defaultPlateTerrain, isValidWorldName, isWorldShape, validatePlateTerrain, type BiomeId, type PlateTerrainConfig, type WorldShape } from '@super-vox/shared';
 import type { PreviewRequest, PreviewResponse } from './generator.worker.js';
 import type { CloseUpRequest, CloseUpResponse } from './generatorArea.worker.js';
