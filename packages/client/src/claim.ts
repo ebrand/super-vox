@@ -1,5 +1,5 @@
 import './fullscreen.js';
-import { MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, PLAN_PIECE, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, madeOf, pieceName, planTotals, type Claim, type ObjectDesign, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
+import { MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, PLAN_PIECE, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, designMaterial, isWorldShape, itemName, madeOf, pieceName, planTotals, wallCap, type Claim, type ObjectDesign, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
 import { planGroup } from './planView.js';
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT } from './dioramaLight.js';
@@ -537,13 +537,17 @@ function setTool(t: PlanTool): void {
 for (const b of toolButtons) b.addEventListener('click', () => setTool(b.dataset.tool as PlanTool));
 
 const describe = (e: PlanElement): string => {
-  const made = e.design ? ` (${designOf(e.design)?.name ?? 'a design no longer there'})` : '';
-  return (e.kind === 'wall' ? `wall, ${Math.round(Math.hypot(e.x1 - e.x0, e.z1 - e.z0))} m long, ${e.height} m high` : e.kind === 'tower' ? `tower, ${e.radius * 2} m across, ${e.height} m high` : `building, ${e.x1 - e.x0} × ${e.z1 - e.z0} m, ${e.height} m to the eaves`) + made;
+  const made = e.design ? (e.kind === 'wall' && designOf(e.design) ? ` ${designOf(e.design)!.name}` : ` (${designOf(e.design)?.name ?? 'a design no longer there'})`) : '';
+  return (e.kind === 'wall' ? `wall, ${Math.round(Math.hypot(e.x1 - e.x0, e.z1 - e.z0))} m long, ${e.height} m high${e.design && designOf(e.design) ? `, topped with` : ''}` : e.kind === 'tower' ? `tower, ${e.radius * 2} m across, ${e.height} m high` : `building, ${e.x1 - e.x0} × ${e.z1 - e.z0} m, ${e.height} m to the eaves`) + made;
 };
 
 /** Draws the plan (and what's being drawn), lists it, and shows what's chosen. */
 function showPlan(): void {
-  if (diorama) diorama.showPlan(planClaim ? planGroup({ elements: drawing ? [...plan.elements, drawing] : plan.elements }, (x, z) => diorama!.groundAt(x, z), chosenEl) : null);
+  const capOf = (e: PlanElement) => {
+    const d = designOf(e.design);
+    return d ? wallCap(d) : null;
+  };
+  if (diorama) diorama.showPlan(planClaim ? planGroup({ elements: drawing ? [...plan.elements, drawing] : plan.elements }, (x, z) => diorama!.groundAt(x, z), chosenEl, capOf) : null);
   planList.replaceChildren();
   if (planClaim && !plan.elements.length) {
     const li = document.createElement('li');
@@ -575,10 +579,18 @@ function showPlan(): void {
     designEl.replaceChildren(new Option('nothing chosen yet (plain)', ''), ...fits.map((d) => new Option(`${d.name} (${d.size.join(' × ')} m)`, d.id)));
     if (chosen.design && !fits.some((d) => d.id === chosen.design)) designEl.append(new Option('a design no longer there', chosen.design));
     designEl.value = chosen.design ?? '';
-    designNote.textContent = chosen.design ? 'Its size follows its design.' : fits.length ? '' : `No ${pieceName(piece)} designs yet: make one in the Object designer (as "a ${pieceName(piece)}").`;
-    heightEl.disabled = sizeEl.disabled = !!chosen.design;
+    const made = designOf(chosen.design);
+    designNote.textContent = !chosen.design
+      ? fits.length ? '' : `No ${pieceName(piece)} designs yet: make one in the Object designer (as "a ${pieceName(piece)}").`
+      : chosen.kind === 'wall' && made
+        ? `Its top ${wallCap(made)} m is the design; below, solid ${itemName(designMaterial(made))} as high as you make it. Its thickness is the design's.`
+        : 'Its size follows its design.';
+    // (A wall's height is still yours, down to its design's; the rest follows the design.)
+    heightEl.disabled = !!chosen.design && chosen.kind !== 'wall';
+    sizeEl.disabled = !!chosen.design;
     const L = PLAN_LIMITS[chosen.kind];
-    setSlider(heightEl, L.height, chosen.height, 'pe-height-v');
+    const least = chosen.kind === 'wall' && made ? Math.max(L.height[0], wallCap(made)) : L.height[0];
+    setSlider(heightEl, [least, L.height[1]], chosen.height, 'pe-height-v');
     sizeRow.hidden = chosen.kind === 'building';
     if (chosen.kind === 'wall') {
       sizeLabel.textContent = 'Thickness';

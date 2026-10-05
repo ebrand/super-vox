@@ -80,8 +80,9 @@ export function cleanPlan(plan: Plan): Plan {
 }
 
 /**
- * An element made of `design` (a piece of its kind): its size follows it. A wall: the design's
- * height, and its depth (front to back) the wall's thickness. A tower: as high, as wide across as
+ * An element made of `design` (a piece of its kind): its size follows it. A wall: the design is its
+ * top (see wallCap), so the wall is at least as high as the design (any higher, built solid below
+ * it), and its depth (front to back) is the wall's thickness. A tower: as high, as wide across as
  * its footprint's longer side (round, for now). A building: its footprint (from the same corner)
  * and height. Null: none (`design` null takes the design away, sizes kept).
  */
@@ -91,9 +92,14 @@ export function madeOf(e: PlanElement, design: Pick<ObjectDesign, 'id' | 'size'>
     return rest as PlanElement;
   }
   const [w, h, d] = design.size;
-  if (e.kind === 'wall') return { ...e, design: design.id, height: h, thickness: d };
+  if (e.kind === 'wall') return { ...e, design: design.id, height: Math.max(e.height, h), thickness: d };
   if (e.kind === 'tower') return { ...e, design: design.id, height: h, radius: Math.max(w, d) / 2 };
   return { ...e, design: design.id, height: h, x1: e.x0 + w, z1: e.z0 + d };
+}
+
+/** How much of the top of a wall made of `design` is the design itself (m): its height; the rest, below, is built solid. */
+export function wallCap(design: Pick<ObjectDesign, 'size'>): number {
+  return design.size[1];
 }
 
 /** What a plan comes to: its walls' length, towers, and buildings' floor area (m, m²). */

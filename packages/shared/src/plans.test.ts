@@ -42,7 +42,10 @@ describe('plans', () => {
 describe('elements made of designs', () => {
   const design = (size: [number, number, number]) => ({ id: 'piece', size });
   it('take their size from the design: walls its height and depth, towers its height and footprint, buildings both', () => {
-    expect(madeOf(wall(), design([4, 8, 3]))).toEqual({ ...wall(), design: 'piece', height: 8, thickness: 3 });
+    // A wall: the design caps it, so it's at least as high; higher ones stay as high (solid below the cap).
+    expect(madeOf(wall(), design([4, 2, 3]))).toEqual({ ...wall(), design: 'piece', height: 6, thickness: 3 });
+    expect(madeOf(wall({ height: 1 }), design([4, 2, 3]))).toEqual({ ...wall(), design: 'piece', height: 2, thickness: 3 });
+    expect(madeOf(wall({ height: 12 }), design([4, 2, 3]))).toMatchObject({ height: 12 });
     expect(madeOf(tower(), design([10, 16, 6]))).toEqual({ ...tower(), design: 'piece', height: 16, radius: 5 });
     expect(madeOf(building(), design([12, 5, 9]))).toEqual({ ...building(), design: 'piece', height: 5, x1: 152, z1: 149 });
     // And back to plain: the design gone, sizes kept.

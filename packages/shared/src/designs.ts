@@ -61,7 +61,7 @@ export type DesignPiece = 'wall' | 'corner' | 'tower' | 'gatehouse' | 'building'
 
 /** The pieces of a planned keep a design can be, and how each is used. */
 export const DESIGN_PIECES: readonly { piece: DesignPiece; name: string; use: string }[] = [
-  { piece: 'wall', name: 'wall section', use: 'repeated along a planned wall: its height and thickness (front to back) the wall\'s, its width each repeat' },
+  { piece: 'wall', name: 'wall section', use: 'the top of a planned wall (crenellations, a hoarding...), repeated along it, its width each repeat; below it the wall is built solid, of what the design is mostly made of, as high as planned; its thickness (front to back) the wall\'s' },
   { piece: 'corner', name: 'wall corner', use: 'where planned walls meet or turn, and at their ends' },
   { piece: 'tower', name: 'tower', use: 'a planned tower: its footprint the tower\'s, its height the tower\'s' },
   { piece: 'gatehouse', name: 'gatehouse', use: 'set into a planned wall, its way through the wall' },

@@ -9,7 +9,7 @@ import type { Plan, PlanElement } from '@super-vox/shared';
  * ground as a wall would; towers are round; buildings have a pitched roof along their length.
  */
 const WALL_PIECE = 4;
-const COLORS = { wall: 0xc9c2b0, tower: 0xb8ae98, building: 0xe2d2a8, roof: 0x9c4a3a } as const;
+const COLORS = { wall: 0xc9c2b0, cap: 0x8f8572, tower: 0xb8ae98, building: 0xe2d2a8, roof: 0x9c4a3a } as const;
 const CHOSEN = 0xffd34d;
 
 /** Shaded by which way each face looks (no lights in the close-up's scene), see-through. */
@@ -59,8 +59,8 @@ function groundSpan(groundAt: (x: number, z: number) => number | null, points: [
 }
 
 /** Meshes (and their edges) for one element, into `out`. */
-function elementMeshes(e: PlanElement, groundAt: (x: number, z: number) => number | null, out: THREE.Group, materials: Record<string, THREE.Material>, edgeMaterial: THREE.Material): void {
-  const add = (geom: THREE.BufferGeometry, part: 'wall' | 'tower' | 'building' | 'roof') => {
+function elementMeshes(e: PlanElement, groundAt: (x: number, z: number) => number | null, out: THREE.Group, materials: Record<string, THREE.Material>, edgeMaterial: THREE.Material, cap: number | null): void {
+  const add = (geom: THREE.BufferGeometry, part: 'wall' | 'cap' | 'tower' | 'building' | 'roof') => {
     const mesh = new THREE.Mesh(geom, materials[part]!);
     mesh.renderOrder = 6;
     // (And faintly over everything, in its colour: through trees in front.)
@@ -80,10 +80,14 @@ function elementMeshes(e: PlanElement, groundAt: (x: number, z: number) => numbe
       const bottom = lo - 0.5, top = hi + e.height;
       // (The ends a little longer, by half the thickness, so walls meet at corners.)
       const extra = (i === 0 ? e.thickness / 2 : 0) + (i === n - 1 ? e.thickness / 2 : 0), shift = (i === n - 1 ? e.thickness / 4 : 0) - (i === 0 ? e.thickness / 4 : 0);
-      const g = new THREE.BoxGeometry(e.thickness, top - bottom, piece + extra)
-        .rotateY(yaw)
-        .translate(e.x0 + ux * (mid + shift), (top + bottom) / 2, e.z0 + uz * (mid + shift));
-      add(g, 'wall');
+      // (Made of a design: that's its top, `cap` high, drawn darker; solid wall below it.)
+      const capped = cap ? Math.min(cap, top - bottom) : 0, body = top - capped;
+      const box = (y0: number, y1: number) =>
+        new THREE.BoxGeometry(e.thickness, y1 - y0, piece + extra)
+          .rotateY(yaw)
+          .translate(e.x0 + ux * (mid + shift), (y0 + y1) / 2, e.z0 + uz * (mid + shift));
+      add(box(bottom, body), 'wall');
+      if (capped > 0) add(box(body, top), 'cap');
     }
   } else if (e.kind === 'tower') {
     const ring: [number, number][] = [[e.x, e.z]];
@@ -117,7 +121,7 @@ function elementMeshes(e: PlanElement, groundAt: (x: number, z: number) => numbe
 }
 
 /** A plan's meshes over the close-up: `chosen`, the element (by id) edged in gold. */
-export function planGroup(plan: Plan, groundAt: (x: number, z: number) => number | null, chosen: string | null): THREE.Group {
+export function planGroup(plan: Plan, groundAt: (x: number, z: number) => number | null, chosen: string | null, capOf: (e: PlanElement) => number | null = () => null): THREE.Group {
   const group = new THREE.Group();
   group.name = 'plan';
   const materials: Record<string, THREE.Material> = {
@@ -125,6 +129,8 @@ export function planGroup(plan: Plan, groundAt: (x: number, z: number) => number
     tower: planMaterial(COLORS.tower, 0.78),
     building: planMaterial(COLORS.building, 0.72),
     roof: planMaterial(COLORS.roof, 0.85),
+    cap: planMaterial(COLORS.cap, 0.85),
+    capGhost: planMaterial(COLORS.cap, 0.25, false),
     wallGhost: planMaterial(COLORS.wall, 0.2, false),
     towerGhost: planMaterial(COLORS.tower, 0.2, false),
     buildingGhost: planMaterial(COLORS.building, 0.18, false),
@@ -133,7 +139,7 @@ export function planGroup(plan: Plan, groundAt: (x: number, z: number) => number
   // (Edges over everything, so a plan's lines show through what's in front.)
   const edges = new THREE.LineBasicMaterial({ color: 0xf2ead8, transparent: true, opacity: 0.6, depthWrite: false, depthTest: false });
   const gold = new THREE.LineBasicMaterial({ color: CHOSEN, depthTest: false });
-  for (const e of plan.elements) elementMeshes(e, groundAt, group, materials, e.id === chosen ? gold : edges);
+  for (const e of plan.elements) elementMeshes(e, groundAt, group, materials, e.id === chosen ? gold : edges, e.kind === 'wall' ? capOf(e) : null);
   return group;
 }
 
