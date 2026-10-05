@@ -8,7 +8,7 @@ import { BLOCK_SIZE } from './chunk.js';
  * towers and buildings (footprints with a pitched roof); positions in whole metres, inside the plot.
  */
 export type PlanElement =
-  | { kind: 'wall'; id: string; x0: number; z0: number; x1: number; z1: number; thickness: number; height: number; design?: string }
+  | { kind: 'wall'; id: string; x0: number; z0: number; x1: number; z1: number; thickness: number; height: number; design?: string; flip?: boolean }
   | { kind: 'tower'; id: string; x: number; z: number; radius: number; height: number; design?: string }
   | { kind: 'building'; id: string; x0: number; z0: number; x1: number; z1: number; height: number; design?: string };
 
@@ -53,6 +53,7 @@ export function refusePlan(plan: unknown, plot: Pick<Claim, 'x0' | 'z0' | 'x1' |
       if (el.x0 === el.x1 && el.z0 === el.z1) return 'a wall needs a length';
       if (!inRange(el.thickness, L.thickness) || !inRange(el.height, L.height)) return `walls are ${L.thickness[0]}-${L.thickness[1]} m thick and ${L.height[0]}-${L.height[1]} m high`;
       if (!inside(el.x0, el.z0) || !inside(el.x1, el.z1)) return 'every wall must be inside the plot';
+      if (el.flip !== undefined && typeof el.flip !== 'boolean') return 'a wall is turned about or not';
     } else if (el.kind === 'tower') {
       const L = PLAN_LIMITS.tower;
       if (!whole(el.x, el.z)) return 'towers stand on whole metres';
@@ -73,7 +74,7 @@ export function cleanPlan(plan: Plan): Plan {
   return {
     elements: plan.elements.map((e): PlanElement => {
       const design = e.design ? { design: e.design } : {};
-      if (e.kind === 'wall') return { kind: 'wall', id: e.id, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, thickness: e.thickness, height: e.height, ...design };
+      if (e.kind === 'wall') return { kind: 'wall', id: e.id, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, thickness: e.thickness, height: e.height, ...design, ...(e.flip ? { flip: true } : {}) };
       if (e.kind === 'tower') return { kind: 'tower', id: e.id, x: e.x, z: e.z, radius: e.radius, height: e.height, ...design };
       return { kind: 'building', id: e.id, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, height: e.height, ...design };
     }),

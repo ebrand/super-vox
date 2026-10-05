@@ -63,6 +63,15 @@ describe('elements made of designs', () => {
   });
 });
 
+describe('flipped walls', () => {
+  it('are walls with flip true (or false); cleaned, kept only when flipped', () => {
+    expect(refusePlan({ elements: [wall({ flip: true })] }, plot)).toBeNull();
+    expect(refusePlan({ elements: [wall({ flip: 'yes' })] }, plot)).not.toBeNull();
+    expect(cleanPlan({ elements: [wall({ flip: true })] } as Plan).elements[0]).toMatchObject({ flip: true });
+    expect(cleanPlan({ elements: [wall({ flip: false })] } as Plan).elements[0]).not.toHaveProperty('flip');
+  });
+});
+
 describe('pieces measured by their voxels', () => {
   it('an 8 m ring tower top drawn in a 9 m box: an 8 m tower, built below as the ring is', () => {
     // A ring 1 m thick, 8 m across, 2 m high, in a 9 x 2 x 9 m box (1 m voxels, from 0.5 m in: here

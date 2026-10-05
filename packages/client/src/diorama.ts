@@ -6,10 +6,11 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
-import { UNITS_PER_METER, decodeClimate } from '@super-vox/shared';
+import { CHUNK_SIZE, UNITS_PER_METER, decodeClimate, type Chunk } from '@super-vox/shared';
 import { createAtmosphere, type Atmosphere } from './atmosphere.js';
 import { DEFAULT_DIORAMA_LIGHT, dioramaLighting, type DioramaLight } from './dioramaLight.js';
 import { createPackedMesh, disposePackedMesh, meshQuads } from './meshFactory.js';
+import { packQuads, visibleFaces } from './mesher.js';
 import { MiniatureEffect } from './miniature.js';
 import { createTint } from './tint.js';
 import { Birds } from './birds.js';
@@ -39,6 +40,9 @@ export class Diorama {
   private readonly controls: MapControls;
   private readonly material: ReturnType<typeof createVoxelMaterial>;
   private readonly treeMaterial: ReturnType<typeof createVoxelMaterial>;
+  /** What's laid out (see showLayout): its own material, never see-through or gridded as the ground and its trees are. */
+  private readonly layoutMaterial: ReturnType<typeof createVoxelMaterial>;
+  private readonly layout = new THREE.Group();
   /** Whether trees are drawn see-through (see seeThroughTrees). */
   private treesSeeThrough = false;
   private readonly water: WaterRenderer;
@@ -101,11 +105,12 @@ export class Diorama {
     Object.assign(this.treeMaterial, { transparent: true, depthWrite: true });
     this.treeMaterial.uniforms.treePass!.value = 2;
     this.treeMaterial.uniforms.treeAlpha!.value = TREE_ALPHA;
-    if (climate) for (const m of [this.material, this.treeMaterial]) m.setTint(createTint(decodeClimate(climate), wrapX));
+    this.layoutMaterial = createVoxelMaterial(atmosphere);
+    if (climate) for (const m of [this.material, this.treeMaterial, this.layoutMaterial]) m.setTint(createTint(decodeClimate(climate), wrapX));
     this.water = new WaterRenderer(this.renderer, atmosphere);
     this.waterMaterial = createVoxelWaterMaterial(this.water.uniforms);
     this.scene.background = new THREE.Color(0x0b0d10);
-    this.scene.add(this.meshes, this.detail);
+    this.scene.add(this.meshes, this.detail, this.layout);
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.5, 40_000);
     this.camera.layers.enable(WATER_LAYER);
     // As the 3D map: drag to move over the ground, right-drag to turn and tilt, wheel to zoom.
@@ -194,7 +199,7 @@ export class Diorama {
   /** Tints the ground by `climate` (see encodeClimate; null: no tint), as the world's settings have it now. */
   setClimate(climate: Uint8Array | null, wrapX: boolean): void {
     const tint = climate ? createTint(decodeClimate(climate), wrapX) : null;
-    for (const m of [this.material, this.treeMaterial]) m.setTint(tint);
+    for (const m of [this.material, this.treeMaterial, this.layoutMaterial]) m.setTint(tint);
   }
 
   /**
@@ -323,6 +328,27 @@ export class Diorama {
   }
 
   private planShown: THREE.Group | null = null;
+
+  /**
+   * Shows blocks laid out (see layoutPlan: chunks of only what's laid out) as the game draws
+   * them, replacing the last; null: none. Returns how many faces (quads) that took.
+   */
+  showLayout(chunks: readonly Chunk[] | null): number {
+    for (const o of [...this.layout.children]) disposePackedMesh(o);
+    if (!chunks) return 0;
+    const at = new Map(chunks.map((c) => [`${c.cx},${c.cy},${c.cz}`, c]));
+    const near = (c: Chunk, dx: number, dy: number, dz: number) => at.get(`${c.cx + dx},${c.cy + dy},${c.cz + dz}`) ?? null;
+    let quads = 0;
+    for (const c of chunks) {
+      // (Neighbours in the mesher's order: +x, -x, +y, -y, +z, -z.)
+      const faces = visibleFaces(c, [near(c, 1, 0, 0), near(c, -1, 0, 0), near(c, 0, 1, 0), near(c, 0, -1, 0), near(c, 0, 0, 1), near(c, 0, 0, -1)]);
+      if (!faces.length) continue;
+      quads += faces.length;
+      const origin = { x: c.cx * CHUNK_SIZE, y: c.cy * CHUNK_SIZE, z: c.cz * CHUNK_SIZE };
+      this.layout.add(createPackedMesh(packQuads(faces), origin, this.layoutMaterial, 'layout'));
+    }
+    return quads;
+  }
 
   /** What the ground at (x, z) (metres) is to animals (see Cover); null outside the area. */
   coverAt(x: number, z: number): number | null {
@@ -626,7 +652,7 @@ export class Diorama {
   }
 
   private clear(): void {
-    for (const o of [...this.meshes.children, ...this.detail.children]) disposePackedMesh(o);
+    for (const o of [...this.meshes.children, ...this.detail.children, ...this.layout.children]) disposePackedMesh(o);
   }
 
   dispose(): void {

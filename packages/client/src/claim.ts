@@ -1,5 +1,5 @@
 import './fullscreen.js';
-import { MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, PLAN_PIECE, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, designBase, designMaterial, isWorldShape, itemName, madeOf, pieceName, pieceSize, planTotals, capHeight, type Claim, type ObjectDesign, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
+import { FACING_OUT, MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, PLAN_PIECE, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, designBase, designMaterial, isWorldShape, itemName, madeOf, pieceName, pieceSize, planTotals, capHeight, layoutPlan, wallFacing, type Claim, type ObjectDesign, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
 import { planGroup } from './planView.js';
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT } from './dioramaLight.js';
@@ -436,8 +436,10 @@ function showOverview(): void {
   dropDetail();
   if (diorama) {
     diorama.showPlan(null);
+    diorama.showLayout(null);
     diorama.onPaint = null;
   }
+  laidOut = '';
   if (relief) relief.canvas.hidden = false;
   if (diorama) diorama.canvas.hidden = true;
   overviewControls.hidden = false;
@@ -477,6 +479,10 @@ const sizeLabel = document.getElementById('pe-size-label')!;
 const toolButtons = [...document.querySelectorAll<HTMLButtonElement>('.plan-tools .tool')];
 const designEl = document.getElementById('pe-design') as HTMLSelectElement;
 const designNote = document.getElementById('pe-design-note')!;
+const layoutAbout = document.getElementById('layout-about')!;
+const flipRow = document.getElementById('pe-flip-row')!;
+const flipAbout = document.getElementById('pe-flip-about')!;
+const showRadios = [...document.querySelectorAll<HTMLInputElement>('input[name="plan-show"]')];
 
 /** The designs (see the Object designer), for what plans are made of; and the last chosen for each kind, for new ones. */
 let designs: ObjectDesign[] = [];
@@ -516,6 +522,7 @@ function openPlan(claim: Claim | null): void {
   planMine = !!claim && mine(claim);
   chosenEl = null;
   drawing = null;
+  laidOut = '';
   undoStack.length = redoStack.length = 0;
   if (claim) void loadDesigns();
   planControls.hidden = !claim;
@@ -551,7 +558,10 @@ function showPlan(): void {
     const [w, , depth] = pieceSize(d);
     return { height: capHeight(d), width: w, depth, base: e.kind === 'tower' ? designBase(d) : null };
   };
-  if (diorama) diorama.showPlan(planClaim ? planGroup({ elements: drawing ? [...plan.elements, drawing] : plan.elements }, (x, z) => diorama!.groundAt(x, z), chosenEl, capOf) : null);
+  // (Laid out: the blocks instead, and only what's being drawn as the plan has it.)
+  const drawn = planShow === 'layout' ? (drawing ? [drawing] : []) : drawing ? [...plan.elements, drawing] : plan.elements;
+  if (diorama) diorama.showPlan(planClaim ? planGroup({ elements: drawn }, (x, z) => diorama!.groundAt(x, z), chosenEl, capOf) : null);
+  showLayout();
   planList.replaceChildren();
   if (planClaim && !plan.elements.length) {
     const li = document.createElement('li');
@@ -592,6 +602,8 @@ function showPlan(): void {
           ? `Its top ${capHeight(made)} m is the design; below, as high as you make it, ${itemName(designMaterial(made))} as the design's bottom layer is (a ring there: a round tower that thick). Its footprint (${pieceSize(made)[0]} × ${pieceSize(made)[2]} m) is the design's.`
         : 'Its size follows its design.';
     // (A wall's or tower's height is still yours, down to its design's; the rest follows the design.)
+    flipRow.hidden = chosen.kind !== 'wall' || !made;
+    if (chosen.kind === 'wall' && opened) flipAbout.textContent = `its front looks ${FACING_OUT[wallFacing(chosen, opened)]}${chosen.flip ? ' (turned about)' : ''}`;
     heightEl.disabled = !!chosen.design && chosen.kind === 'building';
     sizeEl.disabled = !!chosen.design;
     const L = PLAN_LIMITS[chosen.kind];
@@ -670,6 +682,52 @@ designEl.addEventListener('change', () => {
   plan.elements[i] = next;
   changed(before);
 });
+
+document.getElementById('pe-flip')!.addEventListener('click', () => {
+  const i = plan.elements.findIndex((e) => e.id === chosenEl), el = plan.elements[i];
+  if (!el || el.kind !== 'wall' || !planMine) return;
+  const before = snapshot();
+  const { flip: _, ...rest } = el;
+  plan.elements[i] = el.flip ? rest : { ...rest, flip: true };
+  changed(before);
+});
+
+/** What's shown of the plan: the plan (see-through volumes), or laid out (every block of it, see layoutPlan). */
+let planShow: 'plan' | 'layout' = 'plan';
+/** What was last laid out (the plan and designs it was of), so it's laid out again only when they change. */
+let laidOut = '';
+let layoutTimer = 0;
+function setPlanShow(to: 'plan' | 'layout'): void {
+  planShow = to;
+  for (const r of showRadios) r.checked = r.value === to;
+  showPlan();
+}
+for (const r of showRadios) r.addEventListener('change', () => r.checked && setPlanShow(r.value as 'plan' | 'layout'));
+window.addEventListener('keydown', (e) => {
+  if (e.target instanceof HTMLInputElement && e.target.type === 'text') return;
+  if (e.code === 'KeyL' && !e.metaKey && !e.ctrlKey && planClaim && showing === 'diorama') setPlanShow(planShow === 'layout' ? 'plan' : 'layout');
+});
+
+/** Lays the plan out and shows it (a moment after it last changed), when it's to be shown laid out. */
+function showLayout(): void {
+  if (!diorama || !planClaim || !opened || planShow !== 'layout') {
+    if (laidOut) diorama?.showLayout(null);
+    laidOut = '';
+    layoutAbout.textContent = '';
+    return;
+  }
+  const key = JSON.stringify(plan.elements) + '|' + designs.map((d) => d.id).join();
+  if (key === laidOut) return;
+  laidOut = key;
+  window.clearTimeout(layoutTimer);
+  layoutTimer = window.setTimeout(() => {
+    if (!diorama || !opened || planShow !== 'layout') return;
+    const t0 = performance.now();
+    const laid = layoutPlan(plan, opened, (id) => designOf(id), (x, z) => diorama!.groundAt(x, z));
+    const quads = diorama.showLayout(laid.chunks());
+    layoutAbout.textContent = plan.elements.length ? `${laid.size.toLocaleString()} blocks laid out (${Math.round(quads / 1000)}k faces), in ${Math.round(performance.now() - t0)} ms` : 'nothing planned to lay out';
+  }, 120);
+}
 
 /** An element moved (towers, buildings) to fit in the plot, if it can; null if it can't. */
 function fitIn(e: PlanElement): PlanElement | null {

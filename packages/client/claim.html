@@ -101,12 +101,18 @@
             <button type="button" class="tool" data-tool="building" aria-pressed="false" title="⌘-drag a building's footprint, corner to corner">Building</button>
           </div>
           <p id="plan-tool-about"></p>
+          <div class="row" id="plan-show" role="radiogroup" aria-label="Show">
+            <label><input type="radio" name="plan-show" value="plan" checked> The plan</label>
+            <label title="Every block of it, as it would be built: its designs repeated, solid below (key L)"><input type="radio" name="plan-show" value="layout"> Laid out, in blocks (L)</label>
+          </div>
+          <p id="layout-about"></p>
           <ul class="claims" id="plan-list"></ul>
           <div id="plan-edit" hidden>
             <div class="row" style="margin-top: 6px"><label for="pe-design" style="width: 60px; font-size: 12px">Made of</label><select id="pe-design" style="flex: 1"></select></div>
             <p id="pe-design-note"></p>
             <div class="slider"><label for="pe-height">Height</label><input type="range" id="pe-height" step="1"><span id="pe-height-v"></span></div>
             <div class="slider" id="pe-size-row"><label for="pe-size" id="pe-size-label">Thickness</label><input type="range" id="pe-size" step="1"><span id="pe-size-v"></span></div>
+            <p class="row" id="pe-flip-row" style="margin-top: 6px"><button type="button" id="pe-flip" title="Turn its design about: its front the other way">Turn about</button><span id="pe-flip-about"></span></p>
             <p class="row" style="margin-top: 6px"><button type="button" id="pe-delete">Delete (⌫)</button></p>
           </div>
           <div class="draft"><span id="plan-totals"></span><button type="button" id="plan-undo" title="⌘Z">Undo</button><button type="button" id="plan-redo" title="⇧⌘Z">Redo</button></div>
