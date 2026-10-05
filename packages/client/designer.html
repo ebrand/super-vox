@@ -116,7 +116,9 @@
           <div class="group" id="sizes"></div>
           <div class="group">
             <button id="mirror" title="Mirror left to right (M)">Mirror</button>
-            <button id="hollow" title="Hollow (H): circles as rings, domes and spheres as shells, a voxel thick">Hollow</button>
+            <button id="hollow" title="Hollow (H): circles as rings, domes and spheres as shells (as thick as set)">Hollow</button>
+            <label id="thick-wrap" hidden title="How thick rings and shells are (m); empty: a voxel">thick <input type="number" id="thickness" min="0.0625" max="16" step="0.25" placeholder="1 voxel" style="width: 64px"> m</label>
+            <button id="centred" title="Centred (O): circles, domes and spheres on the middle of the box (across their axis), so even widths come out right; drag past the box edge for exactly its width">Centred</button>
           </div>
           <div class="group" title="The working plane: aiming at empty space finds it (or the box's far walls), so lines and boxes can start in mid-air">
             <button id="plane-down" title="Plane down / back ([ or Page Down)">▼</button>

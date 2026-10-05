@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FIRST_DESIGN_ITEM, Material, parseDesign } from '@super-vox/shared';
-import { DesignEditor, aimSurface, cellsIn, clipRegion, draftOf, placeAgainst, regionBetween, shapeCells } from './designEditor.js';
+import { DesignEditor, aimSurface, cellsIn, clipRegion, draftOf, placeAgainst, regionBetween, roundCells, shapeCells } from './designEditor.js';
 
 const P = Material.Planks, S = Material.Stone;
 
@@ -265,5 +265,38 @@ describe('round shapes', () => {
     expect(e.voxels).toHaveLength(0);
     e.undo();
     expect(e.voxels).toHaveLength(placed);
+  });
+});
+
+describe('roundCells', () => {
+  it('makes an 8 m ring 1 m thick, centred in an 8 m box (an even width): it fills the box edge to edge', () => {
+    // 1/4 m voxels (4 units), centred on the box's middle (a corner between cells), 4 m out, 1 m thick.
+    const ring = roundCells({ kind: 'circle', centre: { x: 64, y: 2, z: 64 }, axis: 1, sign: 1, outer: 64, thickness: 16, size: 4 });
+    const xs = ring.map((c) => c.x), zs = ring.map((c) => c.z);
+    expect(Math.min(...xs)).toBe(0);
+    expect(Math.max(...xs)).toBe(124); // the last cell ends at 128: 8 m across
+    expect(Math.min(...zs)).toBe(0);
+    expect(Math.max(...zs)).toBe(124);
+    expect(new Set(ring.map((c) => c.y))).toEqual(new Set([0]));
+    // Symmetric about the middle, and 1 m thick: no cell's centre within 3 m of it, all within 4 m.
+    for (const c of ring) {
+      const d = Math.hypot(c.x + 2 - 64, c.z + 2 - 64);
+      expect(d).toBeGreaterThan(48);
+      expect(d).toBeLessThanOrEqual(64);
+      expect(ring.some((o) => o.x === 124 - c.x && o.z === c.z)).toBe(true);
+    }
+    // Solid, it's a disk: more cells, the middle too.
+    const disk = roundCells({ kind: 'circle', centre: { x: 64, y: 2, z: 64 }, axis: 1, sign: 1, outer: 64, thickness: null, size: 4 });
+    expect(disk.length).toBeGreaterThan(ring.length);
+    expect(disk.some((c) => c.x === 60 && c.z === 60)).toBe(true);
+  });
+
+  it('makes thick shells too (a dome 2 voxels thick)', () => {
+    const shell = roundCells({ kind: 'dome', centre: { x: 2, y: 2, z: 2 }, axis: 1, sign: 1, outer: 18, thickness: 8, size: 4 });
+    for (const c of shell) {
+      const d = Math.hypot(c.x + 2 - 2, c.y + 2 - 2, c.z + 2 - 2);
+      expect(d).toBeGreaterThan(10);
+      expect(c.y).toBeGreaterThanOrEqual(0);
+    }
   });
 });

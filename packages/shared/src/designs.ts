@@ -287,6 +287,40 @@ export function designOrigin(design: ObjectDesign, facing: Facing, bx: number, b
   return { x: bx - ax, y: by, z: bz - az };
 }
 
+/**
+ * What a design (its first state) takes up: the box around its voxels (units, from the design's
+ * corner), not the box it was drawn in. Pieces of a keep are measured by it, so an 8 m tower top
+ * drawn in a 9 m box makes an 8 m tower. Null for a design with nothing in it.
+ */
+export function designExtent(design: Pick<ObjectDesign, 'states'>): { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } | null {
+  const vs = design.states[0]?.voxels ?? [];
+  if (!vs.length) return null;
+  const e = { x0: Infinity, y0: Infinity, z0: Infinity, x1: -Infinity, y1: -Infinity, z1: -Infinity };
+  for (const v of vs) {
+    e.x0 = Math.min(e.x0, v.x); e.y0 = Math.min(e.y0, v.y); e.z0 = Math.min(e.z0, v.z);
+    e.x1 = Math.max(e.x1, v.x + v.size); e.y1 = Math.max(e.y1, v.y + v.size); e.z1 = Math.max(e.z1, v.z + v.size);
+  }
+  return e;
+}
+
+/**
+ * A design's bottom layer, as columns a metre square over its extent (see designExtent): which
+ * have anything in the lowest layer of voxels (a ring drawn there: a ring of columns). What a
+ * tower made of it (as its top) is built of below it, straight down. Width and depth in columns.
+ */
+export function designBase(design: Pick<ObjectDesign, 'states'>): { width: number; depth: number; columns: Uint8Array } | null {
+  const e = designExtent(design);
+  if (!e) return null;
+  const B = BLOCK_SIZE, width = Math.ceil((e.x1 - e.x0) / B), depth = Math.ceil((e.z1 - e.z0) / B);
+  const columns = new Uint8Array(width * depth);
+  for (const v of design.states[0]!.voxels) {
+    if (v.y !== e.y0) continue;
+    for (let x = Math.floor((v.x - e.x0) / B); x < Math.ceil((v.x + v.size - e.x0) / B); x++)
+      for (let z = Math.floor((v.z - e.z0) / B); z < Math.ceil((v.z + v.size - e.z0) / B); z++) columns[x + width * z] = 1;
+  }
+  return { width, depth, columns };
+}
+
 /** The material most of a design (its first state) is made of: its colour in inventories. */
 export function designMaterial(design: ObjectDesign): MaterialId {
   const volume = new Map<MaterialId, number>();

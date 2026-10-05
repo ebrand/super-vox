@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { cleanPlan, madeOf, planTotals, refusePlan, type Plan } from './plans.js';
+import { cleanPlan, madeOf, pieceSize, planTotals, refusePlan, type Plan } from './plans.js';
+import { designBase } from './designs.js';
 
 const plot = { x0: 100, z0: 100, x1: 300, z1: 260 };
 const wall = (over = {}) => ({ kind: 'wall' as const, id: 'w1', x0: 120, z0: 120, x1: 180, z1: 120, thickness: 2, height: 6, ...over });
@@ -40,7 +41,7 @@ describe('plans', () => {
 });
 
 describe('elements made of designs', () => {
-  const design = (size: [number, number, number]) => ({ id: 'piece', size });
+  const design = (size: [number, number, number]) => ({ id: 'piece', size, states: [] });
   it('take their size from the design: walls its height and depth, towers its height and footprint, buildings both', () => {
     // A wall: the design caps it, so it's at least as high; higher ones stay as high (solid below the cap).
     expect(madeOf(wall(), design([4, 2, 3]))).toEqual({ ...wall(), design: 'piece', height: 6, thickness: 3 });
@@ -59,5 +60,27 @@ describe('elements made of designs', () => {
     expect(refusePlan(p, plot)).toBeNull();
     expect(cleanPlan(p).elements[0]).toMatchObject({ design: 'piece' });
     expect(refusePlan({ elements: [{ ...wall(), design: 'Bad Id!' }] }, plot)).toMatch(/design/);
+  });
+});
+
+describe('pieces measured by their voxels', () => {
+  it('an 8 m ring tower top drawn in a 9 m box: an 8 m tower, built below as the ring is', () => {
+    // A ring 1 m thick, 8 m across, 2 m high, in a 9 x 2 x 9 m box (1 m voxels, from 0.5 m in: here
+    // 1 m in on the low sides, the box's last metre empty), centred on (4, 4).
+    const voxels = [];
+    for (let y = 0; y < 2; y++)
+      for (let z = 0; z < 8; z++)
+        for (let x = 0; x < 8; x++) {
+          const d = Math.hypot(x + 0.5 - 4, z + 0.5 - 4);
+          if (d <= 4 && d > 3) voxels.push({ x: x * 16, y: y * 16, z: z * 16, size: 16, material: 27 });
+        }
+    const top = { id: 'ring-top', size: [9, 2, 9] as [number, number, number], states: [{ name: 's', voxels }] };
+    expect(pieceSize(top)).toEqual([8, 2, 8]);
+    expect(madeOf(tower(), top)).toMatchObject({ radius: 4, height: 12 });
+    const base = designBase(top)!;
+    expect([base.width, base.depth]).toEqual([8, 8]);
+    // The ring's columns, not the middle.
+    expect(base.columns[0 + 8 * 4]).toBe(1);
+    expect(base.columns[4 + 8 * 4]).toBe(0);
   });
 });

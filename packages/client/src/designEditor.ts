@@ -473,32 +473,49 @@ export type RoundShape = 'circle' | 'dome' | 'sphere';
  * if its centre is within the radius (and half a cell, so a radius of 0 is the centre cell alone).
  */
 export function shapeCells(kind: RoundShape, centre: Cell, axis: 0 | 1 | 2, sign: 1 | -1, radius: number, size: number, hollow: boolean): Cell[] {
-  const out: Cell[] = [];
   const n = Math.max(0, Math.round(radius / size));
-  const outer = (n + 0.5) ** 2, inner = Math.max(0, n - 0.5) ** 2;
-  const keys = ['x', 'y', 'z'] as const;
-  // (The two axes across the shape's axis.)
-  const across = keys.filter((_, k) => k !== axis) as ['x' | 'y' | 'z', 'x' | 'y' | 'z'];
-  const flat = kind === 'circle';
-  for (let a = -n; a <= n; a++) {
-    // (Along the axis: the circle's one layer; the dome's half; the whole sphere.)
-    if (flat && a !== 0) continue;
-    if (kind === 'dome' && a * sign < 0) continue;
-    for (let b = -n; b <= n; b++) {
-      for (let c = -n; c <= n; c++) {
-        const d = a * a + b * b + c * c;
-        if (d > outer) continue;
-        if (hollow && n > 0 && d <= inner) {
-          // (A hollow dome keeps its floor's rim only, as the ring a circle would be: no lid on the bottom.)
-          continue;
-        }
-        const cell = { ...centre };
-        cell[keys[axis]] += a * size;
-        cell[across[0]] += b * size;
-        cell[across[1]] += c * size;
-        out.push(cell);
+  const mid = { x: centre.x + size / 2, y: centre.y + size / 2, z: centre.z + size / 2 };
+  return roundCells({ kind, centre: mid, axis, sign, outer: (n + 0.5) * size, thickness: hollow ? size : null, size });
+}
+
+/**
+ * A round shape (see RoundShape) as cells of `size` (units): every cell whose centre is within
+ * `outer` (units) of `centre` (any point, units: a cell's centre, or a corner between cells, so
+ * even widths come out right), across `axis` for a circle (the layer `centre` is in), all round for
+ * a sphere, on the `sign` side of `centre` (its layer included) for a dome. `thickness` (units):
+ * only the cells within that of the outside (a ring, a shell); null: solid.
+ */
+export interface RoundSpec {
+  kind: RoundShape;
+  centre: { x: number; y: number; z: number };
+  axis: 0 | 1 | 2;
+  sign: 1 | -1;
+  outer: number;
+  thickness: number | null;
+  size: number;
+}
+
+export function roundCells(r: RoundSpec): Cell[] {
+  const out: Cell[] = [];
+  const keys = ['x', 'y', 'z'] as const, ax = keys[r.axis];
+  const eps = 1e-6, outer2 = r.outer * r.outer + eps;
+  const inner = r.thickness === null ? -1 : r.outer - r.thickness, inner2 = inner > 0 ? inner * inner + eps : -1;
+  const lo = (v: number) => Math.floor((v - r.outer) / r.size) * r.size, hi = (v: number) => Math.floor((v + r.outer) / r.size) * r.size;
+  // (Along the axis: the circle's one layer, the one the centre's in.)
+  const layer = Math.floor(r.centre[ax] / r.size) * r.size;
+  const range = (k: (typeof keys)[number]) => (k === ax && r.kind === 'circle' ? [layer, layer] : [lo(r.centre[k]), hi(r.centre[k])]);
+  const [x0, x1] = range('x'), [y0, y1] = range('y'), [z0, z1] = range('z');
+  for (let y = y0!; y <= y1!; y += r.size)
+    for (let z = z0!; z <= z1!; z += r.size)
+      for (let x = x0!; x <= x1!; x += r.size) {
+        const c = { x, y, z };
+        const d = { x: x + r.size / 2 - r.centre.x, y: y + r.size / 2 - r.centre.y, z: z + r.size / 2 - r.centre.z };
+        // (A dome: its half on the sign side, the centre's own layer as its floor.)
+        if (r.kind === 'dome' && d[ax] * r.sign < -r.size / 2 + eps) continue;
+        const d2 = keys.reduce((s, k) => s + (r.kind === 'circle' && k === ax ? 0 : d[k] * d[k]), 0);
+        if (d2 > outer2) continue;
+        if (inner2 >= 0 && d2 <= inner2) continue;
+        out.push(c);
       }
-    }
-  }
   return out;
 }

@@ -59,11 +59,15 @@ function groundSpan(groundAt: (x: number, z: number) => number | null, points: [
 }
 
 /** Meshes (and their edges) for one element, into `out`. */
-/** What a design makes of an element it tops: its height, and its footprint (m). */
+/**
+ * What a design makes of an element it tops: its height, its footprint (m), and (towers) its bottom
+ * layer as metre columns over that footprint (see designBase): what's built below it.
+ */
 export interface PlanCap {
   height: number;
   width: number;
   depth: number;
+  base?: { width: number; depth: number; columns: Uint8Array } | null;
 }
 
 function elementMeshes(e: PlanElement, groundAt: (x: number, z: number) => number | null, out: THREE.Group, materials: Record<string, THREE.Material>, edgeMaterial: THREE.Material, capped: PlanCap | null): void {
@@ -105,11 +109,24 @@ function elementMeshes(e: PlanElement, groundAt: (x: number, z: number) => numbe
     const bottom = lo - 0.5, top = centre + e.height;
     if (!capped) add(new THREE.CylinderGeometry(e.radius, e.radius, top - bottom, 24).translate(e.x, (top + bottom) / 2, e.z), 'tower');
     else {
-      // Made of a design: its footprint (square-cornered), its top the design (darker), solid below.
+      // Made of a design: its top the design (darker); below it, straight down, what its bottom
+      // layer is (a ring: a round tower that thick; solid: solid), in runs of metre columns.
       const capTop = Math.min(capped.height, top - bottom), body = top - capTop;
-      const box = (y0: number, y1: number) => new THREE.BoxGeometry(capped.width, y1 - y0, capped.depth).translate(e.x, (y0 + y1) / 2, e.z);
-      add(box(bottom, body), 'tower');
-      if (capTop > 0) add(box(body, top), 'cap');
+      const base = capped.base ?? { width: Math.ceil(capped.width), depth: Math.ceil(capped.depth), columns: new Uint8Array(Math.ceil(capped.width) * Math.ceil(capped.depth)).fill(1) };
+      const x0 = e.x - base.width / 2, z0 = e.z - base.depth / 2;
+      for (let j = 0; j < base.depth; j++)
+        for (let i = 0; i < base.width; ) {
+          if (!base.columns[i + base.width * j]) {
+            i++;
+            continue;
+          }
+          let n = 1;
+          while (i + n < base.width && base.columns[i + n + base.width * j]) n++;
+          const run = (y0: number, y1: number) => new THREE.BoxGeometry(n, y1 - y0, 1).translate(x0 + i + n / 2, (y0 + y1) / 2, z0 + j + 0.5);
+          add(run(bottom, body), 'tower');
+          if (capTop > 0) add(run(body, top), 'cap');
+          i += n;
+        }
     }
   } else {
     const corners: [number, number][] = [[e.x0, e.z0], [e.x1, e.z0], [e.x1, e.z1], [e.x0, e.z1], [(e.x0 + e.x1) / 2, (e.z0 + e.z1) / 2]];

@@ -30,7 +30,7 @@ import {
   type MaterialId,
   type ObjectDesign,
 } from '@super-vox/shared';
-import { DesignEditor, aimSurface, cellsIn, clipRegion, draftOf, newDraft, placeAgainst, regionBetween, shapeCells, type Region, type RoundShape, type WorkPlane } from './designEditor.js';
+import { DesignEditor, aimSurface, cellsIn, clipRegion, draftOf, newDraft, placeAgainst, regionBetween, roundCells as roundShapeCells, type Region, type RoundShape, type RoundSpec, type WorkPlane } from './designEditor.js';
 import { materialColor } from './materials.js';
 
 /**
@@ -55,8 +55,11 @@ const ROUND: readonly Tool[] = ['circle', 'dome', 'sphere'];
 const isRound = (t: Tool | string): t is RoundShape => (ROUND as readonly string[]).includes(t);
 /** Tools that drag out a line, a box, or a round shape's radius (see drawing). */
 const drags = (t: Tool): t is 'line' | 'box' | 'select' | RoundShape => t === 'line' || t === 'box' || t === 'select' || isRound(t);
-/** Round shapes (circle, dome, sphere) as rings and shells, one voxel thick (see shapeCells). */
+/** Round shapes (circle, dome, sphere) as rings and shells (see roundCells), `thickness` metres thick (null: a voxel). */
 let hollow = false;
+let thickness: number | null = null;
+/** Round shapes centred on the middle of the box (across their axis), not on the cell they start at: even widths come out right. */
+let centred = false;
 
 let library: ObjectDesign[] = [];
 let canEdit = false;
@@ -348,14 +351,30 @@ type Cell = { x: number; y: number; z: number };
  */
 let drawing: { kind: 'line' | 'box' | 'select' | RoundShape; clear: boolean; start: Cell; axis: number; sign: 1 | -1; end: Cell; stage: 'drag' | 'raise'; depth: number; from: number } | null = null;
 
-/** A round shape's radius (units, between cell centres) as drawn: from the centre cell to the one the pointer's over, on its plane. */
-function roundRadius(d: NonNullable<typeof drawing>): number {
-  return Math.hypot(d.end.x - d.start.x, d.end.y - d.start.y, d.end.z - d.start.z);
+
+/**
+ * The round shape being drawn: centred on the cell it started at (or, centred, on the box's middle
+ * across its axis), out to the cell the pointer's over (in half voxels, so a ring of any width can
+ * be had); hollow, as thick as set.
+ */
+function roundSpec(d: NonNullable<typeof drawing>): RoundSpec {
+  const axis = d.axis as 0 | 1 | 2, ext = editor.extent;
+  const mid = { x: d.start.x + voxelSize / 2, y: d.start.y + voxelSize / 2, z: d.start.z + voxelSize / 2 };
+  if (centred) for (const k of [0, 1, 2] as const) if (k !== axis) mid[cellAxes[k]] = ext[k]! / 2;
+  const end = { x: d.end.x + voxelSize / 2, y: d.end.y + voxelSize / 2, z: d.end.z + voxelSize / 2 };
+  let dist2 = 0;
+  for (const k of [0, 1, 2] as const) if (k !== axis) dist2 += (end[cellAxes[k]] - mid[cellAxes[k]]) ** 2;
+  const half = voxelSize / 2;
+  let outer = Math.max(half, Math.round((Math.sqrt(dist2) + half) / half) * half);
+  // (Centred, it stops at the box's edge: drag past it for a shape exactly as wide as the box.)
+  if (centred) for (const k of [0, 1, 2] as const) if (k !== axis) outer = Math.min(outer, ext[k]! / 2);
+  const thick = hollow ? Math.max(voxelSize, Math.round(((thickness ?? 0) * BLOCK_SIZE) / voxelSize) * voxelSize || voxelSize) : null;
+  return { kind: d.kind as RoundShape, centre: mid, axis, sign: d.sign, outer, thickness: thick, size: voxelSize };
 }
 
 /** The cells of the round shape being drawn. */
 function roundCells(d: NonNullable<typeof drawing>): Cell[] {
-  return shapeCells(d.kind as RoundShape, d.start, d.axis as 0 | 1 | 2, d.sign, roundRadius(d), voxelSize, hollow);
+  return roundShapeCells(roundSpec(d));
 }
 
 /** Where a line or box would start: the cell a build would fill, or (clearing) the cell in what's aimed at. */
@@ -472,9 +491,9 @@ function showShape(d: NonNullable<typeof drawing>): void {
   shapePreview.instanceMatrix.needsUpdate = true;
   (shapePreview.material as THREE.MeshBasicMaterial).color.set(d.clear ? 0xff4040 : 0x40ff60);
   ghost.visible = false;
-  const radiusM = Math.round(roundRadius(d) / voxelSize) * voxelSize / BLOCK_SIZE;
+  const spec = roundSpec(d), metres = (u: number) => Math.round((u / BLOCK_SIZE) * 1000) / 1000;
   const name = d.kind === 'circle' ? (hollow ? 'ring' : 'circle') : `${hollow ? 'hollow ' : ''}${d.kind}`;
-  hoverEl.textContent = `${name}, radius ${radiusM} m of ${sizeLabel(voxelSize)}${d.clear ? ': clear it' : ` ${materialName(material)}: ${cells.length} voxels`} · let go to ${d.clear ? 'clear' : 'make'} it (Esc: stop)`;
+  hoverEl.textContent = `${name}, ${metres(spec.outer * 2)} m across${spec.thickness ? `, ${metres(spec.thickness)} m thick` : ''}${centred ? ', centred' : ''}, of ${sizeLabel(voxelSize)}${d.clear ? ': clear it' : ` ${materialName(material)}: ${cells.length} voxels`} · let go to ${d.clear ? 'clear' : 'make'} it (Esc: stop)`;
 }
 
 function hideShape(): void {
@@ -633,6 +652,19 @@ hollowEl.onclick = () => {
   if (drawing && isRound(drawing.kind)) draw();
   renderPanels();
 };
+const centredEl = $<HTMLButtonElement>('centred');
+centredEl.onclick = () => {
+  centred = !centred;
+  if (drawing && isRound(drawing.kind)) draw();
+  renderPanels();
+};
+const thicknessEl = $<HTMLInputElement>('thickness');
+thicknessEl.oninput = () => {
+  const v = Number(thicknessEl.value);
+  thickness = thicknessEl.value && v > 0 ? v : null;
+  if (drawing && isRound(drawing.kind)) draw();
+};
+thicknessEl.onkeydown = (e) => e.stopPropagation();
 const undoEl = $<HTMLButtonElement>('undo'), redoEl = $<HTMLButtonElement>('redo');
 for (const b of toolsEl.querySelectorAll<HTMLButtonElement>('button')) b.onclick = () => setTool(b.dataset.tool as Tool);
 for (const s of GRID_SIZES) {
@@ -961,6 +993,8 @@ function renderPanels(): void {
   $('material-name').textContent = materialName(material);
   mirrorEl.classList.toggle('on', editor.mirror);
   hollowEl.classList.toggle('on', hollow);
+  centredEl.classList.toggle('on', centred);
+  $('thick-wrap').hidden = !hollow;
   $('move').hidden = !editor.selection;
   undoEl.disabled = !editor.canUndo;
   redoEl.disabled = !editor.canRedo;
@@ -1208,6 +1242,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyD') setTool('dome');
   else if (e.code === 'KeyR') setTool('sphere');
   else if (e.code === 'KeyH') hollowEl.click();
+  else if (e.code === 'KeyO') centredEl.click();
   else if (e.code === 'KeyE') setTool('erase');
   else if (e.code === 'KeyP') setTool('paint');
   else if (e.code === 'KeyM') mirrorEl.click();

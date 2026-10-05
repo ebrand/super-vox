@@ -1,5 +1,6 @@
 import type { Claim } from './claims.js';
-import type { DesignPiece, ObjectDesign } from './designs.js';
+import { designExtent, type DesignPiece, type ObjectDesign } from './designs.js';
+import { BLOCK_SIZE } from './chunk.js';
 
 /**
  * A plan for a claimed plot (see Claim): what its owner means to build on it, laid out on the
@@ -86,20 +87,28 @@ export function cleanPlan(plan: Plan): Plan {
  * across as the design's footprint's longer side. A building: its footprint (from the same corner)
  * and height. Null: none (`design` null takes the design away, sizes kept).
  */
-export function madeOf(e: PlanElement, design: Pick<ObjectDesign, 'id' | 'size'> | null): PlanElement {
+export function madeOf(e: PlanElement, design: Pick<ObjectDesign, 'id' | 'size' | 'states'> | null): PlanElement {
   if (!design) {
     const { design: _, ...rest } = e;
     return rest as PlanElement;
   }
-  const [w, h, d] = design.size;
+  // (Measured by its voxels, not the box it was drawn in.)
+  const [w, h, d] = pieceSize(design);
   if (e.kind === 'wall') return { ...e, design: design.id, height: Math.max(e.height, h), thickness: d };
   if (e.kind === 'tower') return { ...e, design: design.id, height: Math.max(e.height, h), radius: Math.max(w, d) / 2 };
-  return { ...e, design: design.id, height: h, x1: e.x0 + w, z1: e.z0 + d };
+  return { ...e, design: design.id, height: h, x1: e.x0 + Math.ceil(w), z1: e.z0 + Math.ceil(d) };
+}
+
+/** A design's size as a piece of a keep (m: width, height, depth): what its voxels take, not its box (see designExtent). */
+export function pieceSize(design: Pick<ObjectDesign, 'size' | 'states'>): [number, number, number] {
+  const e = designExtent(design);
+  if (!e) return [...design.size];
+  return [(e.x1 - e.x0) / BLOCK_SIZE, (e.y1 - e.y0) / BLOCK_SIZE, (e.z1 - e.z0) / BLOCK_SIZE];
 }
 
 /** How much of the top of a wall or tower made of `design` is the design itself (m): its height; the rest, below, is built solid. */
-export function capHeight(design: Pick<ObjectDesign, 'size'>): number {
-  return design.size[1];
+export function capHeight(design: Pick<ObjectDesign, 'size' | 'states'>): number {
+  return pieceSize(design)[1];
 }
 
 /** What a plan comes to: its walls' length, towers, and buildings' floor area (m, m²). */
