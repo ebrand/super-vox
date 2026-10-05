@@ -35,7 +35,7 @@ export type TerraformResponse =
   | { type: 'ready'; key: string; climate: Uint8Array | null; seaLevel: number | null; ms: number }
   | ({ type: 'area'; id: number; ms: number } & MadeArea)
   | { type: 'patch'; id: number; parts: DioramaPart[]; heights: Int32Array; samples: number; ms: number }
-  | { type: 'detail'; id: number; x0: number; z0: number; size: number; parts: DioramaPart[]; ms: number }
+  | { type: 'detail'; id: number; x0: number; z0: number; size: number; parts: DioramaPart[]; heights: Int32Array; n: number; ms: number }
   | {
       type: 'map'; id: number; cols: number; rows: number; step: number; seaLevel: number | null;
       heights: Int16Array; materials: Uint8Array; climate: Uint8Array | null; ms: number;
@@ -45,7 +45,7 @@ export type TerraformResponse =
 let maker: { key: string; maker: AreaMaker } | null = null;
 
 const post = (res: TerraformResponse, transfer: Transferable[] = []) => self.postMessage(res, transfer);
-const postArea = (id: number, a: MadeArea, ms: number) => post({ type: 'area', id, ms, ...a }, [...buffersOf(a.parts), a.heights.buffer]);
+const postArea = (id: number, a: MadeArea, ms: number) => post({ type: 'area', id, ms, ...a }, [...buffersOf(a.parts), a.heights.buffer, a.cover.buffer]);
 
 self.onmessage = (ev: MessageEvent<TerraformRequest>) => {
   const req = ev.data;
@@ -70,8 +70,8 @@ self.onmessage = (ev: MessageEvent<TerraformRequest>) => {
       return;
     }
     if (req.type === 'detail') {
-      const parts = m.makeDetail(req);
-      post({ type: 'detail', id: req.id, x0: req.x0, z0: req.z0, size: req.size, parts, ms: performance.now() - t0 }, buffersOf(parts));
+      const { parts, heights, n } = m.makeDetail(req);
+      post({ type: 'detail', id: req.id, x0: req.x0, z0: req.z0, size: req.size, parts, heights, n, ms: performance.now() - t0 }, [...buffersOf(parts), heights.buffer]);
       return;
     }
     if (req.type === 'patch') {

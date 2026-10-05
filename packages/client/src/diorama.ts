@@ -13,6 +13,7 @@ import { createPackedMesh, disposePackedMesh, meshQuads } from './meshFactory.js
 import { MiniatureEffect } from './miniature.js';
 import { createTint } from './tint.js';
 import { Birds } from './birds.js';
+import { Wildlife } from './wildlife.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
 import { WATER_LAYER, WaterRenderer, createVoxelWaterMaterial } from './water.js';
 import { SECTION_M, type DioramaPart } from './terraformArea.js';
@@ -50,6 +51,9 @@ export class Diorama {
   miniature = true;
   /** The ground as sampled (units), to find what's under the pointer; null before anything's shown. */
   private field: { heights: Int32Array; n: number; step: number; x0: number; z0: number } | null = null;
+  /** What each sample of the field is to animals (see Cover), and the finer ground of the detail (see showDetail), metres. */
+  private cover: Uint8Array | null = null;
+  private detailField: { heights: Int32Array; n: number; x0: number; z0: number } | null = null;
   /** The brush: a ring on the ground under the pointer (its radius in metres), or none. */
   private readonly brushRing: Line2;
   /** Under the ring: a wider dark line, so its dashes stand out on any ground. */
@@ -76,6 +80,8 @@ export class Diorama {
   private readonly measureLabel: HTMLDivElement;
   /** Flocks of birds crossing the view now and then (see Birds). */
   private readonly birds: Birds;
+  /** Animals about the forests (see Wildlife). */
+  private readonly wildlife: Wildlife;
   /** The area's size (metres), for the birds. */
   private areaSize = 512;
   private lastFrame = performance.now();
@@ -149,6 +155,14 @@ export class Diorama {
       areaSize: () => this.areaSize,
     });
     this.scene.add(this.birds.group);
+    this.wildlife = new Wildlife({
+      groundAt: (x, z) => this.groundAt(x, z),
+      coverAt: (x, z) => this.coverAt(x, z),
+      target: () => this.controls.target.clone(),
+      camera: () => this.camera.position.clone(),
+      sunDir: () => this.atmosphere.uniforms.sunDir.value.clone(),
+    });
+    this.scene.add(this.wildlife.group);
     this.wireInput();
     // The scene (water and all, see WaterRenderer) into the effect's buffer, then the effect.
     const water = this.water, scene = this.scene, camera = this.camera;
@@ -199,9 +213,13 @@ export class Diorama {
     this.controls.update();
   }
 
-  /** The ground as sampled (see the worker's area reply), to find what's under the pointer. */
-  setField(heights: Int32Array, n: number, step: number, x0: number, z0: number): void {
+  /**
+   * The ground as sampled (see the worker's area reply), to find what's under the pointer, and
+   * (`cover`) what each sample is to animals (see Cover; left as it was when not given).
+   */
+  setField(heights: Int32Array, n: number, step: number, x0: number, z0: number, cover?: Uint8Array): void {
     this.field = { heights, n, step, x0, z0 };
+    if (cover) this.cover = cover;
     // (The ground's in steps of a sample: the water's foam is smoothed over them, see bottomStep.)
     this.water.uniforms.bottomStep.value = step / UNITS_PER_METER;
     this.placeBrush();
@@ -282,12 +300,28 @@ export class Diorama {
 
   /** The ground's height (metres) at (x, z) metres, from the samples; null outside the area. */
   groundAt(x: number, z: number): number | null {
+    const d = this.detailField;
+    if (d) {
+      // (A sample a metre, in the detail.)
+      const i = Math.floor(x - d.x0), j = Math.floor(z - d.z0);
+      if (i >= 0 && j >= 0 && i < d.n && j < d.n) return d.heights[i + d.n * j]! / UNITS_PER_METER;
+    }
     const f = this.field;
     if (!f) return null;
     const m = UNITS_PER_METER;
     const i = Math.floor((x * m - f.x0) / f.step), j = Math.floor((z * m - f.z0) / f.step);
     if (i < 0 || j < 0 || i >= f.n || j >= f.n) return null;
     return f.heights[i + f.n * j]! / m;
+  }
+
+  /** What the ground at (x, z) (metres) is to animals (see Cover); null outside the area. */
+  coverAt(x: number, z: number): number | null {
+    const f = this.field, c = this.cover;
+    if (!f || !c) return null;
+    const m = UNITS_PER_METER;
+    const i = Math.floor((x * m - f.x0) / f.step), j = Math.floor((z * m - f.z0) / f.step);
+    if (i < 0 || j < 0 || i >= f.n || j >= f.n) return null;
+    return c[i + f.n * j]!;
   }
 
   /** The ground under a point of the canvas (CSS pixels), metres; null if the ray misses the area. */
@@ -421,6 +455,11 @@ export class Diorama {
   }
 
   /** Whether flocks of birds come by. */
+  /** Animals about the forests (deer, boar, rabbits). */
+  set animalsOn(on: boolean) {
+    this.wildlife.enabled = on;
+  }
+
   set birdsOn(on: boolean) {
     this.birds.enabled = on;
   }
@@ -518,6 +557,7 @@ export class Diorama {
     this.placeMeasureLabel();
     const now = performance.now();
     this.birds.update((now - this.lastFrame) / 1000);
+    this.wildlife.update((now - this.lastFrame) / 1000);
     this.lastFrame = now;
     this.water.uniforms.waveScale.value = waveScaleAt(this.camera.position.distanceTo(this.controls.target));
     this.miniatureFx.render(this.miniature ? 1 : 0);
@@ -533,8 +573,9 @@ export class Diorama {
    * they cover (metres), where they're drawn instead of the coarser ones; replaces the last. Null:
    * none.
    */
-  showDetail(parts: readonly DioramaPart[] | null, at: { x0: number; z0: number; size: number } | null): void {
+  showDetail(parts: readonly DioramaPart[] | null, at: { x0: number; z0: number; size: number } | null, heights: { heights: Int32Array; n: number } | null = null): void {
     for (const o of [...this.detail.children]) disposePackedMesh(o);
+    this.detailField = at && heights ? { ...heights, x0: at.x0, z0: at.z0 } : null;
     if (parts) this.addParts(parts, this.detail);
     // The coarse sections (64 m from their origin) wholly under it, hidden.
     for (const o of this.meshes.children) {
@@ -581,6 +622,7 @@ export class Diorama {
   dispose(): void {
     this.measureLabel.remove();
     this.birds.dispose();
+    this.wildlife.dispose();
     this.clear();
     this.controls.dispose();
     this.miniatureFx.dispose();

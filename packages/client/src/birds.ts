@@ -2,12 +2,12 @@ import * as THREE from 'three';
 import { SKEIN_SHAPES, Skein, skeinSettings, type SkeinShape } from '@super-vox/shared';
 
 /**
- * Flocks of white birds crossing the terraformer's close-up, migrating: every so often 20-110 of
- * them, in groups flying as Vs, Js, echelons or single file (see Skein; one shape each time, or
- * each group its own), come in from beyond one side of the view, cross it by a bending route, and
- * fly out the other, each bird drifting about its place and flapping at its own pace, their
- * shadows on the ground. Sized for the view so they show (a real bird would be a speck from where
- * a 2 km area is seen).
+ * Birds crossing the terraformer's close-up. Most often a migrating flock: 20-110 of them, in
+ * groups flying as Vs, Js, echelons or single file (see Skein; one shape each time, or each group
+ * its own); now and then (FEW_CHANCE) just a bird, or a loose few, lower and less in order. They
+ * come in from beyond one side of the view, cross it by a bending route, and fly out the other,
+ * each bird drifting about its place and flapping at its own pace, their shadows on the ground.
+ * Sized for the view so they show (a real bird would be a speck from where a 2 km area is seen).
  */
 export interface BirdsView {
   /** The ground's height (metres) under (x, z), null where there's none. */
@@ -26,6 +26,9 @@ const BETWEEN: readonly [number, number] = [20, 60];
 /** About how long a flock takes to cross the view (seconds). */
 const CROSSING = 24;
 const MAX_BIRDS = 110;
+/** How often a crossing is a lone bird or a loose few (2-5) rather than a flock; they come sooner after. */
+const FEW_CHANCE = 0.35;
+const FEW_BETWEEN: readonly [number, number] = [8, 30];
 
 /** One V of a flock: its skein, where it flies relative to the route, and how far along the route it is. */
 interface Vee {
@@ -44,6 +47,8 @@ interface Crossing {
   near: number;
   span: number;
   age: number;
+  /** A lone bird or a few, not a flock. */
+  few: boolean;
 }
 
 const random = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
@@ -147,8 +152,9 @@ export class Birds {
         if (Math.hypot(k.pos[0]! - goal[0], k.pos[2]! - goal[2]) < c.near) v.next++;
       }
       if (c.vees.every((v) => v.next >= c.route.length) || c.age > CROSSING * 3 || !this.enabled) {
+        const [lo, hi] = c.few ? FEW_BETWEEN : BETWEEN;
         this.crossing = null;
-        this.wait = random(BETWEEN[0], BETWEEN[1]);
+        this.wait = random(lo, hi);
       }
     }
     this.draw();
@@ -173,15 +179,18 @@ export class Birds {
     const span = Math.min(30, Math.max(0.5, this.view.distance() / 150));
     const angle = Math.random() * Math.PI * 2, dir = new THREE.Vector3(Math.sin(angle), 0, Math.cos(angle));
     const side = new THREE.Vector3(dir.z, 0, -dir.x);
-    const clearance = reach * 0.05;
+    // A lone bird or a few: lower, slower, wandering more, loosely together.
+    const few = Math.random() < FEW_CHANCE;
+    const clearance = reach * (few ? random(0.015, 0.035) : 0.05);
     const groundAt = (p: THREE.Vector3) => this.view.groundAt(p.x, p.z) ?? this.view.groundAt(target.x, target.z) ?? target.y;
     const point = (along: number, across: number) => {
       const p = target.clone().addScaledVector(dir, along * reach).addScaledVector(side, across * reach);
       p.y = groundAt(p) + clearance * random(1, 2.2);
       return p;
     };
-    const route = [point(-1.3, random(-0.5, 0.5)), point(random(-0.2, 0.2), random(-0.45, 0.45)), point(1.7, random(-0.6, 0.6))];
-    const speed = (reach * 3) / CROSSING;
+    const bend = few ? 1.6 : 1;
+    const route = [point(-1.3, random(-0.5, 0.5)), point(random(-0.2, 0.2), random(-0.45, 0.45) * bend), point(1.7, random(-0.6, 0.6) * bend)];
+    const speed = ((reach * 3) / CROSSING) * (few ? 0.75 : 1);
     const settings = skeinSettings(span, speed);
     settings.turnRate = Math.max(0.2, (2 * speed) / reach);
     settings.climbRate = speed * 0.2;
@@ -189,6 +198,15 @@ export class Birds {
     const pick = (): SkeinShape => (Math.random() < 0.4 ? 'v' : SKEIN_SHAPES[Math.floor(Math.random() * SKEIN_SHAPES.length)]!);
     const mixed = Math.random() < 0.15, shape = pick();
     const vees: Vee[] = [];
+    if (few) {
+      // (One group: no formation to speak of, each well off its place and drifting widely.)
+      const n = Math.random() < 0.4 ? 1 : Math.floor(random(2, 6));
+      const start = route[0]!.clone();
+      const heading = Math.atan2(route[1]!.x - start.x, route[1]!.z - start.z);
+      const skein = new Skein(n, { ...settings, shape: 'line', speed: speed * random(0.9, 1.1), spread: random(0.8, 1), spacing: settings.spacing * random(2, 3.5), wobble: settings.wobble * 3 }, [start.x, start.y, start.z], heading);
+      vees.push({ skein, side: 0, up: 0, next: 1 });
+      return { vees, route, near: reach * 0.25, span, age: 0, few };
+    }
     let left = Math.floor(random(20, MAX_BIRDS + 1));
     while (left > 0) {
       // (Never a straggler group of one or two: what's left joins the last.)
@@ -200,7 +218,7 @@ export class Birds {
       const skein = new Skein(n, { ...settings, shape: mixed ? pick() : shape, speed: speed * random(0.92, 1.08), spread: random(0.4, 0.8), spacing: settings.spacing * random(0.85, 1.25) }, [start.x, start.y, start.z], heading);
       vees.push({ skein, side: random(-1, 1) * span * 25, up: random(-0.3, 0.6) * clearance, next: 1 });
     }
-    return { vees, route, near: reach * 0.25, span, age: 0 };
+    return { vees, route, near: reach * 0.25, span, age: 0, few };
   }
 
   private readonly m = new THREE.Matrix4();

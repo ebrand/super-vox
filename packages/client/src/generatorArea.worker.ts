@@ -64,7 +64,7 @@ async function run(): Promise<void> {
       const c = m.heights.climate();
       const climate = c ? encodeClimate(c) : null;
       const res: CloseUpResponse = { id: req.id, ok: true, ms: performance.now() - t0, climate, seaLevel: m.heights.seaLevel, wrapX: world.wrapX, ...area };
-      self.postMessage(res, [...buffersOf(area.parts), area.heights.buffer, ...(climate ? [climate.buffer as ArrayBuffer] : [])]);
+      self.postMessage(res, [...buffersOf(area.parts), area.heights.buffer, area.cover.buffer, ...(climate ? [climate.buffer as ArrayBuffer] : [])]);
     } catch (err) {
       self.postMessage({ id: req.id, ok: false, error: err instanceof Error ? err.message : String(err) } satisfies CloseUpResponse);
     }

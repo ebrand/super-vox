@@ -120,7 +120,9 @@ describe('AreaMaker.makeDetail', () => {
     // (A whole area is cut off at its edges, down to its base.)
     expect(wallToBase(coarse.parts)).toBe(true);
     const x0 = coarse.x0 + 64 * M, z0 = coarse.z0 + 64 * M;
-    const parts = maker.makeDetail({ x0, z0, size: 128 * M, step: M, base: coarse.base, strokes: [] });
+    const { parts, heights, n } = maker.makeDetail({ x0, z0, size: 128 * M, step: M, base: coarse.base, strokes: [] });
+    expect(n).toBe(128);
+    expect(heights).toHaveLength(128 * 128);
     expect(parts).toHaveLength(4);
     expect(parts.map((p) => [p.x, p.z]).sort()).toEqual([[x0, z0], [x0, z0 + 64 * M], [x0 + 64 * M, z0], [x0 + 64 * M, z0 + 64 * M]].sort());
     for (const p of parts) expect(p.y).toBe(coarse.base);

@@ -814,7 +814,7 @@ closeUpWorker.onmessage = (ev: MessageEvent<CloseUpResponse>) => {
   diorama.canvas.hidden = false;
   const area = `${res.x0},${res.z0},${res.size},${res.step}`;
   diorama.show(res.parts, res, area === shownArea);
-  diorama.setField(res.heights, res.n, res.step, res.x0, res.z0);
+  diorama.setField(res.heights, res.n, res.step, res.x0, res.z0, res.cover);
   shownArea = area;
   statsEl.textContent = `close-up: ${res.size / 16 / 1024} km at x ${Math.round((res.x0 + res.size / 2) / 16)}, z ${Math.round((res.z0 + res.size / 2) / 16)} m, a sample every ${res.step / 16} m · made in ${(res.ms / 1000).toFixed(1)} s (${Math.round(res.quads / 1000)}k faces), shown in ${Math.round(performance.now() - t0)} ms`;
 };

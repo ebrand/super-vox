@@ -47,6 +47,10 @@ const seeThroughEl = document.getElementById('see-through') as HTMLInputElement;
 seeThroughEl.addEventListener('change', () => {
   if (diorama) diorama.seeThroughTrees = seeThroughEl.checked;
 });
+const animalsEl = document.getElementById('animals') as HTMLInputElement;
+animalsEl.addEventListener('change', () => {
+  if (diorama) diorama.animalsOn = animalsEl.checked;
+});
 const birdsEl = document.getElementById('birds') as HTMLInputElement;
 birdsEl.addEventListener('change', () => {
   if (diorama) diorama.birdsOn = birdsEl.checked;
@@ -569,6 +573,7 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
     diorama.paintsAlt = brush.kind === 'plant';
     diorama.grid = gridEl.checked;
     diorama.birdsOn = birdsEl.checked;
+    diorama.animalsOn = animalsEl.checked;
     diorama.seeThroughTrees = seeThroughEl.checked;
     stage.prepend(diorama.canvas);
   }
@@ -582,7 +587,7 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
   const again = diorama.canvas.dataset.area === `${made.x0},${made.z0},${made.size},${made.step}`;
   diorama.show(made.parts, made, again);
   diorama.canvas.dataset.area = `${made.x0},${made.z0},${made.size},${made.step}`;
-  diorama.setField(made.heights, made.n, made.step, made.x0, made.z0);
+  diorama.setField(made.heights, made.n, made.step, made.x0, made.z0, made.cover);
   showProtected();
   diorama.setBrush(brush.radius, BRUSH_COLORS[brush.kind]);
   status(again ? `rivers and lakes updated in ${(made.ms / 1000).toFixed(1)} s` : `made in ${(made.ms / 1000).toFixed(1)} s (${Math.round(made.quads / 1000)}k faces), shown in ${Math.round(performance.now() - t0)} ms`);

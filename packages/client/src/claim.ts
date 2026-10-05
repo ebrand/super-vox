@@ -52,6 +52,8 @@ const dioramaControls = document.getElementById('diorama-controls')!;
 const areaAbout = document.getElementById('area-about')!;
 const miniatureEl = document.getElementById('miniature') as HTMLInputElement;
 const birdsEl = document.getElementById('birds') as HTMLInputElement;
+const animalsEl = document.getElementById('animals') as HTMLInputElement;
+animalsEl.addEventListener('change', () => diorama && (diorama.animalsOn = animalsEl.checked));
 const seeThroughEl = document.getElementById('see-through') as HTMLInputElement;
 const gridEl = document.getElementById('grid') as HTMLInputElement;
 miniatureEl.addEventListener('change', () => diorama && (diorama.miniature = miniatureEl.checked));
@@ -366,7 +368,7 @@ worker.onmessage = (ev: MessageEvent<TerraformResponse>) => {
     detailAsked = null;
     if (res.id !== detailId || !diorama || showing !== 'diorama' || !asked) return;
     detailAt = asked;
-    diorama.showDetail(res.parts, { x0: res.x0 / UNITS_PER_METER, z0: res.z0 / UNITS_PER_METER, size: res.size / UNITS_PER_METER });
+    diorama.showDetail(res.parts, { x0: res.x0 / UNITS_PER_METER, z0: res.z0 / UNITS_PER_METER, size: res.size / UNITS_PER_METER }, { heights: res.heights, n: res.n });
     status(`a sample every metre around where you look (${DETAIL_M} m), made in ${Math.round(res.ms)} ms`);
     followDetail();
   } else if (res.type === 'error') {
@@ -401,6 +403,7 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
     diorama.setLight(DEFAULT_DIORAMA_LIGHT);
     diorama.miniature = miniatureEl.checked;
     diorama.birdsOn = birdsEl.checked;
+    diorama.animalsOn = animalsEl.checked;
     diorama.seeThroughTrees = seeThroughEl.checked;
     diorama.grid = gridEl.checked;
     stage.prepend(diorama.canvas);
@@ -415,7 +418,7 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
   hintEl.textContent = HINT_DIORAMA;
   const t0 = performance.now();
   diorama.show(made.parts, made);
-  diorama.setField(made.heights, made.n, made.step, made.x0, made.z0);
+  diorama.setField(made.heights, made.n, made.step, made.x0, made.z0, made.cover);
   drawPlots();
   status(`made in ${(made.ms / 1000).toFixed(1)} s (${Math.round(made.quads / 1000)}k faces), shown in ${Math.round(performance.now() - t0)} ms`);
   enterEl.disabled = false;

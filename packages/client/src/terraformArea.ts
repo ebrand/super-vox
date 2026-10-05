@@ -1,4 +1,5 @@
 import {
+  Material,
   NO_CANOPY,
   NO_WATER,
   PlateHeights,
@@ -40,6 +41,26 @@ export interface AreaRequest {
 export interface MadeArea {
   x0: number; z0: number; size: number; base: number; top: number; parts: DioramaPart[]; quads: number;
   heights: Int32Array; n: number; step: number;
+  /** What each sample is to animals (see Cover). */
+  cover: Uint8Array;
+}
+
+/** What a sample of ground is to animals: nothing for them (water, sand, rock, snow), open grass, or forest. */
+export const Cover = { None: 0, Open: 1, Forest: 2 } as const;
+
+/** Ground that grows grass. */
+const GRASSY = new Set<number>([Material.Grass, Material.Meadow, Material.DryGrass, Material.JungleFloor, Material.TaigaFloor, Material.Tundra, Material.Dirt]);
+
+/** Each sample's Cover: under water, none; under trees, forest; on grassy ground, open; else none. */
+function coverOf(f: DioramaField): Uint8Array {
+  const out = new Uint8Array(f.cols * f.rows);
+  for (let k = 0; k < out.length; k++) {
+    const h = f.heights[k]!;
+    if (f.water && f.water[k]! !== NO_WATER && f.water[k]! > h) continue;
+    if (f.canopy && f.canopy.top[k] !== NO_CANOPY) out[k] = Cover.Forest;
+    else if (GRASSY.has(f.materials[k]!)) out[k] = Cover.Open;
+  }
+  return out;
 }
 
 export interface PatchedArea {
@@ -97,10 +118,10 @@ export class AreaMaker {
 
   /**
    * A finer look at part of the area (see DetailRequest): its sections, meshed against a ring of
-   * samples round it (so its edges meet the ground beside it rather than dropping to the base).
-   * Keys are "d" and the section's first sample.
+   * samples round it (so its edges meet the ground beside it rather than dropping to the base),
+   * and its ground heights (n x n). Keys are "d" and the section's first sample.
    */
-  makeDetail(req: DetailRequest): DioramaPart[] {
+  makeDetail(req: DetailRequest): { parts: DioramaPart[]; heights: Int32Array; n: number } {
     const g = this.withStrokes(req.strokes).generator;
     const n = Math.round(req.size / req.step), cols = n + 2;
     const fx0 = req.x0 - req.step, fz0 = req.z0 - req.step;
@@ -121,7 +142,10 @@ export class AreaMaker {
           water: m.water.length ? packQuads(m.water) : null,
         });
       }
-    return parts;
+    // Its ground heights (without the ring), for what stands on it.
+    const heights = new Int32Array(n * n);
+    for (let j = 0; j < n; j++) heights.set(s.heights.subarray(1 + cols * (j + 1), 1 + cols * (j + 1) + n), n * j);
+    return { parts, heights, n };
   }
 
   /** Makes the area asked for, whole (with the world built with its strokes), and keeps it for patches. */
@@ -142,7 +166,7 @@ export class AreaMaker {
     for (let j0 = 0; j0 < n; j0 += per) for (let i0 = 0; i0 < n; i0 += per) parts.push(meshPart(field, req, per, i0, j0));
     let top = -Infinity;
     for (let k = 0; k < n * n; k++) top = Math.max(top, field.heights[k]!, field.canopy?.top[k] ?? -Infinity, field.water?.[k] ?? -Infinity);
-    return { x0: req.x0, z0: req.z0, size: req.size, base: field.base, top, parts, quads: quadsOf(parts), heights: field.heights.slice(), n, step: req.step };
+    return { x0: req.x0, z0: req.z0, size: req.size, base: field.base, top, parts, quads: quadsOf(parts), heights: field.heights.slice(), n, step: req.step, cover: coverOf(field) };
   }
 
   /**
