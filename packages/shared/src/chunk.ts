@@ -154,6 +154,8 @@ export interface ChunkGenerator {
   readonly seaLevel: number | null;
   /** The climate for blending biome colours, or null where biomes don't blend. */
   climate?(): ClimateGrid | null;
+  /** Where caves are, roughly (see caveOverview; entrances only on land), or null for a world without. */
+  caveOverview?(): { cell: number; cols: number; rows: number; regions: Uint8Array; entrances: [number, number][] } | null;
 }
 
 /**

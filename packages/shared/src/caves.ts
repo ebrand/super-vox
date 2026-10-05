@@ -98,6 +98,10 @@ export function entranceIn(settings: CaveSettings, gx: number, gz: number): Entr
   // Fewer the lower the amount (and only in caving regions, on a tunnel).
   const a = Math.min(100, Math.max(0, settings.amount)) / 100;
   if ((hash3(gx, 7, gz, settings.seed + 31) + 1) / 2 > 0.5 + 0.5 * a) return null;
+  // Well outside a caving region: none (the region's noise changes too slowly, under 0.3 across
+  // half a square, to reach a foot's half-way-in anywhere in it; so this changes nothing).
+  const t = thresholds(settings.amount);
+  if (valueNoise3(((gx + 0.5) * ENTRANCE_GRID) / REGION, 0.5, ((gz + 0.5) * ENTRANCE_GRID) / REGION, settings.seed + 7) < t.region + 0.06 - 0.3) return null;
   for (let i = 0; i < ENTRANCE_TRIES; i++) {
     const r = (j: number) => (hash3(gx, 100 + i * 4 + j, gz, settings.seed + 31) + 1) / 2;
     // Its foot somewhere in the square, its top up a slope from it in any direction.
@@ -227,4 +231,21 @@ export function caveColumn(
       }
     }
   return any ? { lo, hi, mask } : null;
+}
+
+/**
+ * Where a world's caves are, roughly (for the map): per `cell` x `cell` blocks, 1 where it's in a
+ * caving region (caves may be under it); and every entrance (its top, blocks), on land or not.
+ */
+export function caveOverview(settings: CaveSettings, widthBlocks: number, depthBlocks: number, cell = ENTRANCE_GRID): { cell: number; cols: number; rows: number; regions: Uint8Array; entrances: [number, number][] } {
+  const cols = Math.ceil(widthBlocks / cell), rows = Math.ceil(depthBlocks / cell);
+  const regions = new Uint8Array(cols * rows);
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) if (regionFade(settings, (i + 0.5) * cell, (j + 0.5) * cell) > 0) regions[i + cols * j] = 1;
+  const entrances: [number, number][] = [];
+  for (let gz = 0; gz < Math.ceil(depthBlocks / ENTRANCE_GRID); gz++)
+    for (let gx = 0; gx < Math.ceil(widthBlocks / ENTRANCE_GRID); gx++) {
+      const e = entranceIn(settings, gx, gz);
+      if (e && e.x >= 0 && e.x < widthBlocks && e.z >= 0 && e.z < depthBlocks) entrances.push([Math.round(e.x), Math.round(e.z)]);
+    }
+  return { cell, cols, rows, regions, entrances };
 }

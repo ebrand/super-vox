@@ -1318,6 +1318,14 @@ export class World {
    * `rows` surface samples, one per `step` units at each cell's centre.
    * Cached per requested width.
    */
+  private caves: ReturnType<NonNullable<ChunkGenerator['caveOverview']>> | undefined;
+
+  /** Where the world's caves are, roughly (see caveOverview), worked out once; null without caves. */
+  caveOverview(): ReturnType<NonNullable<ChunkGenerator['caveOverview']>> {
+    if (this.caves === undefined) this.caves = this.generator.caveOverview?.() ?? null;
+    return this.caves;
+  }
+
   getMap(width: number): WorldMap {
     const hit = this.maps.get(width);
     if (hit) return hit;

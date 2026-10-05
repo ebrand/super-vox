@@ -1,4 +1,4 @@
-import { UNITS_PER_METER, type ClimateGrid } from '@super-vox/shared';
+import { BLOCK_SIZE, UNITS_PER_METER, type ClimateGrid } from '@super-vox/shared';
 import { materialColor, materialName } from './materials.js';
 import { climateTintColors } from './tintColors.js';
 import { TILE, detailTiles, fitView, niceLength, pan, screenToWorld, zoomAt, type MapView, type MapWorld } from './mapView.js';
@@ -147,7 +147,9 @@ export class WorldMapOverlay {
     this.root.innerHTML =
       '<div class="bar"><button type="button" class="mode">3D view</button>' +
       `<label class="height" hidden>height × <input type="range" min="1" max="12" step="0.5" value="${DEFAULT_EXAGGERATION}"><span>${DEFAULT_EXAGGERATION}</span></label>` +
-      '<label class="miniature" hidden><input type="checkbox" checked> miniature</label></div>' +
+      '<label class="miniature" hidden><input type="checkbox" checked> miniature</label>' +
+      // TEMPORARY (cave map): see drawCaves.
+      '<label class="caves" hidden><input type="checkbox" checked> caves</label></div>' +
       '<div class="frame"><canvas class="marks"></canvas></div><div class="info">loading map…</div>';
     document.body.appendChild(this.root);
     this.canvas = this.root.querySelector('canvas.marks')!;
@@ -208,8 +210,63 @@ export class WorldMapOverlay {
     mini.addEventListener('change', () => {
       if (this.relief) this.relief.miniature = mini.checked;
     });
+    this.cavesControl = this.root.querySelector('label.caves')!;
+    const cavesBox = this.cavesControl.querySelector('input')!;
+    cavesBox.addEventListener('change', () => this.update());
     // Keys typed on the controls stay with them (not the game).
-    for (const el of [slider, mini, this.modeButton]) el.addEventListener('keydown', (e) => e.stopPropagation());
+    for (const el of [slider, mini, cavesBox, this.modeButton]) el.addEventListener('keydown', (e) => e.stopPropagation());
+  }
+
+  /**
+   * TEMPORARY (cave map): the world's caving regions (where caves may be under the ground) shaded,
+   * and its cave entrances ringed (see /api/world/caves). Fetched once, with the map.
+   */
+  private caves: { cell: number; image: HTMLCanvasElement; entrances: [number, number][] } | null = null;
+  private readonly cavesControl: HTMLLabelElement;
+
+  private async loadCaves(): Promise<void> {
+    const res = await fetch(this.url.replace(/^\/api\/world\/map\?width=\d+/, '/api/world/caves?'));
+    if (!res.ok) return;
+    const { caves } = (await res.json()) as { caves: { cell: number; cols: number; rows: number; regions: string; entrances: [number, number][] } | null };
+    if (!caves) return;
+    const bits = Uint8Array.from(atob(caves.regions), (ch) => ch.charCodeAt(0));
+    const image = document.createElement('canvas');
+    image.width = caves.cols;
+    image.height = caves.rows;
+    const g = image.getContext('2d')!, px = g.createImageData(caves.cols, caves.rows);
+    for (let i = 0; i < caves.cols * caves.rows; i++) {
+      if (!(bits[i >> 3]! & (1 << (i & 7)))) continue;
+      px.data.set([170, 90, 255, 90], i * 4);
+    }
+    g.putImageData(px, 0, 0);
+    this.caves = { cell: caves.cell * BLOCK_SIZE, image, entrances: caves.entrances };
+    this.cavesControl.hidden = false;
+    this.info.textContent += ` · caves: ${caves.entrances.length} entrances (rings), caving regions purple`;
+    this.update();
+  }
+
+  /** Draws the caves (see loadCaves) over the map: `a`, `tx`, `ty` world units to device pixels; `copies`: x offsets of the world in view. */
+  private drawCaves(g: CanvasRenderingContext2D, a: number, tx: number, ty: number, copies: number[], left: number, right: number, top: number, bottom: number): void {
+    const caves = this.caves;
+    if (!caves || !this.cavesControl.querySelector('input')!.checked) return;
+    const dpr = window.devicePixelRatio || 1;
+    for (const off of copies) {
+      g.setTransform(a, 0, 0, a, tx + a * off, ty);
+      g.drawImage(caves.image, 0, 0, caves.image.width * caves.cell, caves.image.height * caves.cell);
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.strokeStyle = '#ffd34d';
+    g.fillStyle = '#ffd34d';
+    g.lineWidth = 1.5 * dpr;
+    const r = Math.max(2.5, Math.min(7, a * 24 * BLOCK_SIZE / dpr)) * dpr;
+    for (const off of copies)
+      for (const [bx, bz] of caves.entrances) {
+        const x = bx * BLOCK_SIZE + off, z = bz * BLOCK_SIZE;
+        if (x < left || x > right || z < top || z > bottom) continue;
+        const sx = tx + a * x, sz = ty + a * z;
+        g.beginPath(); g.arc(sx, sz, r, 0, Math.PI * 2); g.stroke();
+        g.beginPath(); g.arc(sx, sz, 1.2 * dpr, 0, Math.PI * 2); g.fill();
+      }
   }
 
   /** Whether the 3D view is showing (the game needn't draw itself behind it meanwhile). */
@@ -357,6 +414,7 @@ export class WorldMapOverlay {
         g.drawImage(t.image, t.x0, t.z0, size, t.map.rows * t.map.step);
       }
     }
+    this.drawCaves(g, a, tx, ty, copies, left, right, top0, bottom0);
     g.setTransform(1, 0, 0, 1, 0, 0);
     const toX = (x: number) => tx + a * x, toZ = (z: number) => ty + a * z;
     // Grid: lines about 120 px apart, at round distances.
@@ -420,6 +478,7 @@ export class WorldMapOverlay {
       this.paint(map, this.base);
       this.info.textContent = `map ${map.cols} x ${map.rows} (${(map.step / UNITS_PER_METER).toFixed(1)} m per pixel), ${Math.round(performance.now() - t0)} ms · ${this.hint(false)}`;
       this.update();
+      void this.loadCaves().catch(() => {});
     })().catch((err) => {
       this.info.textContent = String(err);
       this.loading = null;

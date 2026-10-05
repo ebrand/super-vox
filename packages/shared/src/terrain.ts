@@ -17,7 +17,7 @@ import {
 import { Material, type MaterialId } from './materials.js';
 import { fractalGrid, type Octave } from './noise.js';
 import { oreAt } from './ores.js';
-import { caveColumn, type CaveSettings } from './caves.js';
+import { caveColumn, caveOverview, type CaveSettings } from './caves.js';
 import type { VoxelSize } from './units.js';
 import { CHUNK_SIZE, type ChunkCoord, type WorldConfig } from './world.js';
 
@@ -301,6 +301,21 @@ export class TerrainGenerator implements ChunkGenerator {
     const water = this.source.water?.(x0, z0, n, n, step) ?? null;
     if (water && canopy) for (let k = 0; k < heights.length; k++) if (water[k]! > heights[k]!) canopy.top[k] = canopy.bottom[k] = NO_CANOPY;
     return { heights, materials, canopy, water };
+  }
+
+  /** Where caves are, roughly (see caveOverview), entrances only on dry land; null without caves. */
+  caveOverview(): ReturnType<typeof caveOverview> | null {
+    const settings = this.source.caves?.() ?? null;
+    if (!settings || settings.amount <= 0) return null;
+    const B = BLOCK_SIZE;
+    const o = caveOverview(settings, this.world.widthUnits / B, this.world.depthUnits / B);
+    const sea = this.source.seaLevel ?? -Infinity;
+    o.entrances = o.entrances.filter(([x, z]) => {
+      const h = this.source.heights(x * B, z * B, 1, 1)[0]!;
+      const w = this.source.water?.(x * B, z * B, 1, 1)?.[0];
+      return h > sea && (w === undefined || w === NO_WATER || w <= h);
+    });
+    return o;
   }
 
   columnRange(cx: number, cz: number): ColumnRange {

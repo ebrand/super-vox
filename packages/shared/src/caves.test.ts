@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BLOCK_SIZE } from './chunk.js';
-import { CAVE_DEPTH, CAVE_ROOF, CAVE_ROOF_UNDER_WATER, caveColumn } from './caves.js';
+import { CAVE_DEPTH, CAVE_ROOF, CAVE_ROOF_UNDER_WATER, caveColumn, caveOverview } from './caves.js';
 import { PlateHeights, defaultPlateTerrain } from './plates.js';
 import { TerrainGenerator, defaultVoxelize } from './terrain.js';
 import { isWater } from './materials.js';
@@ -73,6 +73,24 @@ describe('caves', () => {
       if (top - deepest >= 10 && seen.size > 1500) reached++;
     }
     expect(reached).toBeGreaterThan(0);
+  });
+
+  it('are shown on the map where they are: entrances open there, in caving regions', () => {
+    const settings = { amount: 50, seed: 5 };
+    const o = caveOverview(settings, (CX0 + 40) * 16, 40 * 16);
+    expect(o.entrances.length).toBeGreaterThan(0);
+    expect(o.regions.some((v) => v)).toBe(true);
+    const top = 3200 / 16;
+    let open = 0;
+    const tried = o.entrances.filter(([x]) => x >= CX0 * 16).slice(0, 10);
+    const cut = (x: number, z: number) => {
+      const cx = Math.floor(x / 16), cz = Math.floor(z / 16), c = caveColumn(settings, cx, cz, flat(3200), dry(), FLOOR);
+      return !!c && top - 1 >= c.lo && top - 1 < c.hi && c.mask[x - cx * 16 + 16 * (z - cz * 16) + 256 * (top - 1 - c.lo)] === 1;
+    };
+    // The surface over the entrance's top (or a block by it: it's rounded to a block) is cut.
+    for (const [x, z] of tried) if ([-1, 0, 1].some((dz) => [-1, 0, 1].some((dx) => cut(x + dx, z + dz)))) open++;
+    expect(tried.length).toBeGreaterThan(0);
+    expect(open).toBe(tried.length);
   });
 
   it('run mostly level: through any cave block, the space runs much further across than up', () => {

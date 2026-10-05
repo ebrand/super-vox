@@ -185,6 +185,20 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     return reply.type('application/octet-stream').send(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
   });
 
+  // TEMPORARY (cave map): where a world's caves are, roughly (see caveOverview): caving regions per
+  // `cell` blocks (bits, row-major, base64) and entrances (block x, z). {caves: null} without caves.
+  app.get<{ Querystring: { world?: string } }>('/api/world/caves', async (req, reply) => {
+    const world = catalog.get(req.query.world);
+    if (!world) return reply.code(404).send({ error: 'no such world' });
+    const o = world.caveOverview();
+    if (!o) return { caves: null };
+    const bits = new Uint8Array(Math.ceil(o.regions.length / 8));
+    o.regions.forEach((v, i) => {
+      if (v) bits[i >> 3]! |= 1 << (i & 7);
+    });
+    return { caves: { cell: o.cell, cols: o.cols, rows: o.rows, regions: Buffer.from(bits).toString('base64'), entrances: o.entrances } };
+  });
+
   // A closer look at part of a world's map (the zoomed-in map): cols x rows cells of `step` units
   // from (x0, z0) (units), encoded as /api/world/map. At most 512 x 512 cells, at least 1 m each.
   app.get<{ Querystring: Record<string, string | undefined> }>('/api/world/map/area', async (req, reply) => {
