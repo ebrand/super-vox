@@ -33,6 +33,7 @@ export * from './ores.js';
 export * from './caves.js';
 export * from './light.js';
 export * from './claims.js';
+export * from './plans.js';
 export * from './mining.js';
 export * from './explosives.js';
 export * from './debris.js';

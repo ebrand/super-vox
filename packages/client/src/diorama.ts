@@ -14,6 +14,7 @@ import { MiniatureEffect } from './miniature.js';
 import { createTint } from './tint.js';
 import { Birds } from './birds.js';
 import { Wildlife } from './wildlife.js';
+import { disposePlanGroup } from './planView.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
 import { WATER_LAYER, WaterRenderer, createVoxelWaterMaterial } from './water.js';
 import { SECTION_M, type DioramaPart } from './terraformArea.js';
@@ -313,6 +314,15 @@ export class Diorama {
     if (i < 0 || j < 0 || i >= f.n || j >= f.n) return null;
     return f.heights[i + f.n * j]! / m;
   }
+
+  /** Shows a plan's meshes (see planGroup) over the ground, replacing (and freeing) the last; null: none. */
+  showPlan(group: THREE.Group | null): void {
+    if (this.planShown) disposePlanGroup(this.planShown);
+    this.planShown = group;
+    if (group) this.scene.add(group);
+  }
+
+  private planShown: THREE.Group | null = null;
 
   /** What the ground at (x, z) (metres) is to animals (see Cover); null outside the area. */
   coverAt(x: number, z: number): number | null {

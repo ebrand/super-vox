@@ -679,6 +679,26 @@ describe('named worlds', () => {
     expect((await list()).json().claims).toEqual([]);
   });
 
+  it("keeps a claim's plan: its owner saves it (checked, inside the plot); others can't", async () => {
+    const secret = 'q'.repeat(40);
+    const accounts = new MemoryAccountStore();
+    const auth = new Auth({ googleClientId: 'c', googleClientSecret: 's', sessionSecret: secret, adminEmails: [], secureCookies: false }, accounts);
+    const { a } = await catalogApp(false, auth);
+    const cookieFor = async (email: string) => {
+      const acct = await accounts.signIn({ sub: email, email, name: email });
+      return `${SESSION_COOKIE}=${sessionToken(acct.id, Date.now() + 1e6, secret)}`;
+    };
+    const ann = await cookieFor('ann@x.com'), bob = await cookieFor('bob@x.com');
+    const id = (await a.inject({ method: 'POST', url: '/api/worlds/home/claims', payload: { name: 'keep', x0: 100, z0: 100, x1: 300, z1: 300 }, headers: { cookie: ann } })).json().claim.id as string;
+    const save = (cookie: string, plan: unknown) => a.inject({ method: 'PUT', url: `/api/worlds/home/claims/${id}/plan`, payload: plan as object, headers: { cookie } });
+    const plan = { elements: [{ kind: 'wall', id: 'w', x0: 110, z0: 110, x1: 200, z1: 110, thickness: 2, height: 6, extra: 'dropped' }] };
+    expect((await save(bob, plan)).statusCode).toBe(403);
+    expect((await save(ann, { elements: [{ ...plan.elements[0], x1: 900 }] })).statusCode).toBe(400);
+    expect((await save(ann, plan)).statusCode).toBe(200);
+    const claim = (await a.inject({ method: 'GET', url: '/api/worlds/home/claims' })).json().claims[0];
+    expect(claim.plan).toEqual({ elements: [{ kind: 'wall', id: 'w', x0: 110, z0: 110, x1: 200, z1: 110, thickness: 2, height: 6 }] });
+  });
+
   it('lets anyone claim on a development server without sign-in (claims belonging to no one)', async () => {
     const { a } = await catalogApp(true);
     const r = await a.inject({ method: 'POST', url: '/api/worlds/home/claims', payload: { name: 'test', x0: 0, z0: 0, x1: 64, z1: 64 } });

@@ -1,0 +1,151 @@
+import * as THREE from 'three';
+import type { Plan, PlanElement } from '@super-vox/shared';
+
+/**
+ * A plan (see Plan) drawn over the close-up: each element a see-through volume at its planned
+ * height, standing on the ground (from a little below its lowest point under it), with dark edges;
+ * the one chosen edged in gold. Where trees (or hills) stand in front, it still shows, faintly, and
+ * its edges too: a plan laid out in a forest isn't lost in it. Walls go in pieces of at most WALL_PIECE, so they step with the
+ * ground as a wall would; towers are round; buildings have a pitched roof along their length.
+ */
+const WALL_PIECE = 4;
+const COLORS = { wall: 0xc9c2b0, tower: 0xb8ae98, building: 0xe2d2a8, roof: 0x9c4a3a } as const;
+const CHOSEN = 0xffd34d;
+
+/** Shaded by which way each face looks (no lights in the close-up's scene), see-through. */
+function planMaterial(color: number, opacity: number, depthTest = true): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { color: { value: new THREE.Color(color) }, opacity: { value: opacity } },
+    transparent: true,
+    depthWrite: false,
+    depthTest,
+    // (Both sides: seen from inside a tower, or under a roof, it's still there.)
+    side: THREE.DoubleSide,
+    vertexShader: /* glsl */ `
+      #include <common>
+      #include <logdepthbuf_pars_vertex>
+      varying float vLight;
+      void main() {
+        vec3 n = normalize(mat3(modelMatrix) * normal);
+        vLight = 0.62 + 0.3 * max(dot(n, normalize(vec3(0.4, 0.8, 0.3))), 0.0) + 0.08 * n.y;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        #include <logdepthbuf_vertex>
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      #include <logdepthbuf_pars_fragment>
+      uniform vec3 color;
+      uniform float opacity;
+      varying float vLight;
+      void main() {
+        #include <logdepthbuf_fragment>
+        gl_FragColor = vec4(color * vLight, opacity);
+        #include <colorspace_fragment>
+      }
+    `,
+  });
+}
+
+/** The ground's lowest and highest points (metres) at `points`; 0 where it's unknown. */
+function groundSpan(groundAt: (x: number, z: number) => number | null, points: [number, number][]): [number, number] {
+  let lo = Infinity, hi = -Infinity;
+  for (const [x, z] of points) {
+    const g = groundAt(x, z);
+    if (g === null) continue;
+    lo = Math.min(lo, g);
+    hi = Math.max(hi, g);
+  }
+  return lo === Infinity ? [0, 0] : [lo, hi];
+}
+
+/** Meshes (and their edges) for one element, into `out`. */
+function elementMeshes(e: PlanElement, groundAt: (x: number, z: number) => number | null, out: THREE.Group, materials: Record<string, THREE.Material>, edgeMaterial: THREE.Material): void {
+  const add = (geom: THREE.BufferGeometry, part: 'wall' | 'tower' | 'building' | 'roof') => {
+    const mesh = new THREE.Mesh(geom, materials[part]!);
+    mesh.renderOrder = 6;
+    // (And faintly over everything, in its colour: through trees in front.)
+    const ghost = new THREE.Mesh(geom, materials[`${part}Ghost`]!);
+    ghost.renderOrder = 5;
+    out.add(ghost, mesh);
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 30), edgeMaterial);
+    edges.renderOrder = 7;
+    out.add(edges);
+  };
+  if (e.kind === 'wall') {
+    const dx = e.x1 - e.x0, dz = e.z1 - e.z0, len = Math.hypot(dx, dz), ux = dx / len, uz = dz / len;
+    const n = Math.max(1, Math.ceil(len / WALL_PIECE)), piece = len / n, yaw = Math.atan2(dx, dz);
+    for (let i = 0; i < n; i++) {
+      const a = i * piece, b = a + piece, mid = (a + b) / 2;
+      const [lo, hi] = groundSpan(groundAt, [[e.x0 + ux * a, e.z0 + uz * a], [e.x0 + ux * mid, e.z0 + uz * mid], [e.x0 + ux * b, e.z0 + uz * b]]);
+      const bottom = lo - 0.5, top = hi + e.height;
+      // (The ends a little longer, by half the thickness, so walls meet at corners.)
+      const extra = (i === 0 ? e.thickness / 2 : 0) + (i === n - 1 ? e.thickness / 2 : 0), shift = (i === n - 1 ? e.thickness / 4 : 0) - (i === 0 ? e.thickness / 4 : 0);
+      const g = new THREE.BoxGeometry(e.thickness, top - bottom, piece + extra)
+        .rotateY(yaw)
+        .translate(e.x0 + ux * (mid + shift), (top + bottom) / 2, e.z0 + uz * (mid + shift));
+      add(g, 'wall');
+    }
+  } else if (e.kind === 'tower') {
+    const ring: [number, number][] = [[e.x, e.z]];
+    for (let k = 0; k < 8; k++) ring.push([e.x + Math.sin((k * Math.PI) / 4) * e.radius, e.z + Math.cos((k * Math.PI) / 4) * e.radius]);
+    const [lo] = groundSpan(groundAt, ring), centre = groundAt(e.x, e.z) ?? lo;
+    const bottom = lo - 0.5, top = centre + e.height;
+    add(new THREE.CylinderGeometry(e.radius, e.radius, top - bottom, 24).translate(e.x, (top + bottom) / 2, e.z), 'tower');
+  } else {
+    const corners: [number, number][] = [[e.x0, e.z0], [e.x1, e.z0], [e.x1, e.z1], [e.x0, e.z1], [(e.x0 + e.x1) / 2, (e.z0 + e.z1) / 2]];
+    const [lo, hi] = groundSpan(groundAt, corners);
+    const w = e.x1 - e.x0, d = e.z1 - e.z0, bottom = lo - 0.5, eaves = hi + e.height;
+    add(new THREE.BoxGeometry(w, eaves - bottom, d).translate(e.x0 + w / 2, (eaves + bottom) / 2, e.z0 + d / 2), 'building');
+    // The roof: a ridge along the longer side, rising a third of the shorter.
+    const along = w >= d, span = along ? d : w, rise = span / 3;
+    const roof = new THREE.BufferGeometry();
+    const L = along ? w : d;
+    // (Built along z, centred; turned and placed after.)
+    // prettier-ignore
+    const v = [
+      -span / 2, 0, -L / 2,  span / 2, 0, -L / 2,  0, rise, -L / 2,
+      -span / 2, 0, L / 2,  0, rise, L / 2,  span / 2, 0, L / 2,
+      -span / 2, 0, -L / 2,  0, rise, -L / 2,  0, rise, L / 2,   -span / 2, 0, -L / 2,  0, rise, L / 2,  -span / 2, 0, L / 2,
+      span / 2, 0, -L / 2,  span / 2, 0, L / 2,  0, rise, L / 2,   span / 2, 0, -L / 2,  0, rise, L / 2,  0, rise, -L / 2,
+    ];
+    roof.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+    roof.computeVertexNormals();
+    if (along) roof.rotateY(Math.PI / 2);
+    roof.translate(e.x0 + w / 2, eaves, e.z0 + d / 2);
+    add(roof, 'roof');
+  }
+}
+
+/** A plan's meshes over the close-up: `chosen`, the element (by id) edged in gold. */
+export function planGroup(plan: Plan, groundAt: (x: number, z: number) => number | null, chosen: string | null): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'plan';
+  const materials: Record<string, THREE.Material> = {
+    wall: planMaterial(COLORS.wall, 0.78),
+    tower: planMaterial(COLORS.tower, 0.78),
+    building: planMaterial(COLORS.building, 0.72),
+    roof: planMaterial(COLORS.roof, 0.85),
+    wallGhost: planMaterial(COLORS.wall, 0.2, false),
+    towerGhost: planMaterial(COLORS.tower, 0.2, false),
+    buildingGhost: planMaterial(COLORS.building, 0.18, false),
+    roofGhost: planMaterial(COLORS.roof, 0.3, false),
+  };
+  // (Edges over everything, so a plan's lines show through what's in front.)
+  const edges = new THREE.LineBasicMaterial({ color: 0xf2ead8, transparent: true, opacity: 0.6, depthWrite: false, depthTest: false });
+  const gold = new THREE.LineBasicMaterial({ color: CHOSEN, depthTest: false });
+  for (const e of plan.elements) elementMeshes(e, groundAt, group, materials, e.id === chosen ? gold : edges);
+  return group;
+}
+
+/** Frees a plan group's geometry and materials. */
+export function disposePlanGroup(group: THREE.Group): void {
+  const materials = new Set<THREE.Material>();
+  group.traverse((o) => {
+    if (o instanceof THREE.Mesh || o instanceof THREE.LineSegments) {
+      o.geometry.dispose();
+      materials.add(o.material as THREE.Material);
+    }
+  });
+  for (const m of materials) m.dispose();
+  group.removeFromParent();
+}

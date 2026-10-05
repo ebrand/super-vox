@@ -1,3 +1,5 @@
+import type { Plan } from './plans.js';
+
 /**
  * Claims: plots of land players take for their own (to plan a keep, a house, an estate on, and
  * build it). A rectangle of whole metres, at most MAX_CLAIM_SIDE a side, not overlapping
@@ -17,6 +19,8 @@ export interface Claim {
   z1: number;
   /** When it was claimed (ms). */
   at: number;
+  /** What its owner plans to build on it (see Plan); none yet if absent. */
+  plan?: Plan;
 }
 
 /** Sides of a claim: 16 m (a chunk) to 4 km. */

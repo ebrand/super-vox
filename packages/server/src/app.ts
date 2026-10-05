@@ -75,6 +75,9 @@ import {
   MAX_CLAIM_NAME,
   claimsOverlap,
   refuseClaimRect,
+  cleanPlan,
+  refusePlan,
+  type Plan,
   type Claim,
 } from '@super-vox/shared';
 import type { WebSocket } from 'ws';
@@ -403,6 +406,23 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const claim: Claim = { id: randomUUID(), name: plotName, owner: who.id, ownerName: who.name, ...rect, at: Date.now() };
     catalog.saveClaims(name, [...claims, claim]);
     return { claim };
+  });
+
+  // Saves a claim's plan (see Plan): its owner only (anyone's on a development server without
+  // sign-in, where claims belong to no one). Body: the plan; 400 with why if it isn't a good one.
+  app.put<{ Params: { name: string; id: string }; Body: unknown }>('/api/worlds/:name/claims/:id/plan', { bodyLimit: 1024 * 1024 }, async (req, reply) => {
+    const { name, id } = req.params;
+    const claims = catalog.claims?.(name) ?? null;
+    if (!claims || !catalog.saveClaims) return reply.code(404).send({ error: 'no such world' });
+    const claim = claims.find((c) => c.id === id);
+    if (!claim) return reply.code(404).send({ error: 'no such claim' });
+    const who = await claimer(req);
+    if (!who || who.id !== claim.owner) return reply.code(403).send({ error: 'only its owner plans what goes on it' });
+    const why = refusePlan(req.body, claim);
+    if (why) return reply.code(400).send({ error: why });
+    const plan = cleanPlan(req.body as Plan);
+    catalog.saveClaims(name, claims.map((c) => (c.id === id ? { ...c, plan } : c)));
+    return { ok: true };
   });
 
   // Gives up a claim: its owner (or an operator).

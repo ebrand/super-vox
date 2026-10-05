@@ -59,6 +59,7 @@
       input[type=text] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px; font: inherit; width: 100%; }
       .row { display: flex; gap: 6px; align-items: center; }
       #selection { font: 12px ui-monospace, monospace; color: var(--text); }
+      .plan-tools { grid-template-columns: repeat(4, 1fr); }
     </style>
   </head>
   <body>
@@ -90,6 +91,25 @@
         <label class="check"><input type="checkbox" id="animals" checked> animals (deer, boar, rabbits)</label>
         <label class="check" title="Trees at 75%: the ground shows through"><input type="checkbox" id="see-through"> see-through trees</label>
         <label class="check"><input type="checkbox" id="grid"> grid: 1 m, ½ km and 1 km lines (G)</label>
+        <div id="plan-controls" hidden>
+          <h2>Plan</h2>
+          <p id="plan-about"></p>
+          <div class="tools plan-tools" role="radiogroup" aria-label="Plan tool">
+            <button type="button" class="tool" data-tool="look" aria-pressed="true" title="Just look (and choose what's planned from the list)">Look</button>
+            <button type="button" class="tool" data-tool="wall" aria-pressed="false" title="⌘-drag a straight run of wall; start at a wall's end to carry it on">Wall</button>
+            <button type="button" class="tool" data-tool="tower" aria-pressed="false" title="⌘-click for a tower, or ⌘-drag from its middle out to its size">Tower</button>
+            <button type="button" class="tool" data-tool="building" aria-pressed="false" title="⌘-drag a building's footprint, corner to corner">Building</button>
+          </div>
+          <p id="plan-tool-about"></p>
+          <ul class="claims" id="plan-list"></ul>
+          <div id="plan-edit" hidden>
+            <div class="slider"><label for="pe-height">Height</label><input type="range" id="pe-height" step="1"><span id="pe-height-v"></span></div>
+            <div class="slider" id="pe-size-row"><label for="pe-size" id="pe-size-label">Thickness</label><input type="range" id="pe-size" step="1"><span id="pe-size-v"></span></div>
+            <p class="row" style="margin-top: 6px"><button type="button" id="pe-delete">Delete (⌫)</button></p>
+          </div>
+          <div class="draft"><span id="plan-totals"></span><button type="button" id="plan-undo" title="⌘Z">Undo</button><button type="button" id="plan-redo" title="⇧⌘Z">Redo</button></div>
+          <p id="plan-saved"></p>
+        </div>
         <p style="margin-top: 8px"><button type="button" id="leave">Back to the world</button></p>
       </div>
       <div id="status"></div>

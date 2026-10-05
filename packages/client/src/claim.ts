@@ -1,5 +1,6 @@
 import './fullscreen.js';
-import { MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, type Claim, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
+import { MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, planTotals, type Claim, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
+import { planGroup } from './planView.js';
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT } from './dioramaLight.js';
 import type { TerraformRequest, TerraformResponse } from './terraform.worker.js';
@@ -370,6 +371,8 @@ worker.onmessage = (ev: MessageEvent<TerraformResponse>) => {
     detailAt = asked;
     diorama.showDetail(res.parts, { x0: res.x0 / UNITS_PER_METER, z0: res.z0 / UNITS_PER_METER, size: res.size / UNITS_PER_METER }, { heights: res.heights, n: res.n });
     status(`a sample every metre around where you look (${DETAIL_M} m), made in ${Math.round(res.ms)} ms`);
+    // (The plan stands on the finer ground now.)
+    showPlan();
     followDetail();
   } else if (res.type === 'error') {
     status(res.error, true);
@@ -420,6 +423,8 @@ function showArea(made: Extract<TerraformResponse, { type: 'area' }>): void {
   diorama.show(made.parts, made);
   diorama.setField(made.heights, made.n, made.step, made.x0, made.z0, made.cover);
   drawPlots();
+  // A claim's plan (a plot only marked out has none yet).
+  openPlan(selection ? null : (claims.find((c) => c.id === chosen) ?? null));
   status(`made in ${(made.ms / 1000).toFixed(1)} s (${Math.round(made.quads / 1000)}k faces), shown in ${Math.round(performance.now() - t0)} ms`);
   enterEl.disabled = false;
 }
@@ -429,6 +434,10 @@ function showOverview(): void {
   opened = null;
   shownArea = null;
   dropDetail();
+  if (diorama) {
+    diorama.showPlan(null);
+    diorama.onPaint = null;
+  }
   if (relief) relief.canvas.hidden = false;
   if (diorama) diorama.canvas.hidden = true;
   overviewControls.hidden = false;
@@ -450,6 +459,300 @@ window.addEventListener('keydown', (e) => {
     showSelection();
   }
 });
+
+// --- The plan: what the owner means to build on the plot (see Plan), drawn and edited up close. ---
+
+type PlanTool = 'look' | 'wall' | 'tower' | 'building';
+const planControls = document.getElementById('plan-controls')!;
+const planAbout = document.getElementById('plan-about')!;
+const planToolAbout = document.getElementById('plan-tool-about')!;
+const planList = document.getElementById('plan-list')!;
+const planEdit = document.getElementById('plan-edit')!;
+const planTotalsEl = document.getElementById('plan-totals')!;
+const planSaved = document.getElementById('plan-saved')!;
+const heightEl = document.getElementById('pe-height') as HTMLInputElement;
+const sizeEl = document.getElementById('pe-size') as HTMLInputElement;
+const sizeRow = document.getElementById('pe-size-row')!;
+const sizeLabel = document.getElementById('pe-size-label')!;
+const toolButtons = [...document.querySelectorAll<HTMLButtonElement>('.plan-tools .tool')];
+const TOOL_ABOUT: Record<PlanTool, string> = {
+  look: 'Move about; choose something planned from the list to change it.',
+  wall: '⌘-drag (Ctrl-drag) a straight run of wall. Start a drag at a wall\'s end to carry it on.',
+  tower: '⌘-click (Ctrl-click) for a tower, or ⌘-drag from its middle out to its size.',
+  building: '⌘-drag (Ctrl-drag) a building\'s footprint, from one corner to the other.',
+};
+
+/** The claim showing up close, if it's a claim (not a plot only marked out), its plan, and whether it's ours to change. */
+let planClaim: Claim | null = null;
+let plan: Plan = { elements: [] };
+let planMine = false;
+let tool: PlanTool = 'look';
+let chosenEl: string | null = null;
+/** What's being drawn (not in the plan yet). */
+let drawing: PlanElement | null = null;
+const undoStack: PlanElement[][] = [];
+const redoStack: PlanElement[][] = [];
+
+/** Shows the plan of the claim opened up close (or none, for a plot only marked out). */
+function openPlan(claim: Claim | null): void {
+  planClaim = claim;
+  plan = { elements: claim?.plan?.elements.map((e) => ({ ...e })) ?? [] };
+  planMine = !!claim && mine(claim);
+  chosenEl = null;
+  drawing = null;
+  undoStack.length = redoStack.length = 0;
+  planControls.hidden = !claim;
+  planAbout.textContent = !claim ? '' : planMine ? 'Lay out what you mean to build: walls, towers and buildings, inside the plot. Saved as you go.' : `${claim.ownerName}'s plan (only its owner changes it).`;
+  for (const b of toolButtons) b.disabled = !planMine;
+  setTool('look');
+  showPlan();
+}
+
+function setTool(t: PlanTool): void {
+  tool = planMine ? t : 'look';
+  for (const b of toolButtons) b.setAttribute('aria-pressed', String(b.dataset.tool === tool));
+  planToolAbout.textContent = planMine ? TOOL_ABOUT[tool] : '';
+  if (diorama) {
+    diorama.onPaint = tool === 'look' ? null : planPaint;
+    diorama.setBrush(null);
+  }
+}
+for (const b of toolButtons) b.addEventListener('click', () => setTool(b.dataset.tool as PlanTool));
+
+const describe = (e: PlanElement): string =>
+  e.kind === 'wall' ? `wall, ${Math.round(Math.hypot(e.x1 - e.x0, e.z1 - e.z0))} m long, ${e.height} m high` : e.kind === 'tower' ? `tower, ${e.radius * 2} m across, ${e.height} m high` : `building, ${e.x1 - e.x0} × ${e.z1 - e.z0} m, ${e.height} m to the eaves`;
+
+/** Draws the plan (and what's being drawn), lists it, and shows what's chosen. */
+function showPlan(): void {
+  if (diorama) diorama.showPlan(planClaim ? planGroup({ elements: drawing ? [...plan.elements, drawing] : plan.elements }, (x, z) => diorama!.groundAt(x, z), chosenEl) : null);
+  planList.replaceChildren();
+  if (planClaim && !plan.elements.length) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = planMine ? 'nothing planned yet: pick a tool' : 'nothing planned';
+    planList.append(li);
+  }
+  for (const e of plan.elements) {
+    const li = document.createElement('li');
+    if (e.id === chosenEl) li.className = 'selected';
+    const what = document.createElement('span');
+    what.className = 'what';
+    what.textContent = describe(e);
+    li.append(what);
+    li.addEventListener('click', () => {
+      chosenEl = chosenEl === e.id ? null : e.id;
+      editBase = null;
+      showPlan();
+    });
+    planList.append(li);
+  }
+  const t = planTotals(plan);
+  planTotalsEl.textContent = `${Math.round(t.wallLength)} m of wall · ${t.towers} tower${t.towers === 1 ? '' : 's'} · ${t.buildings} building${t.buildings === 1 ? '' : 's'} (${t.floorArea} m²)`;
+  const chosen = plan.elements.find((e) => e.id === chosenEl);
+  planEdit.hidden = !chosen || !planMine;
+  if (chosen && planMine) {
+    const L = PLAN_LIMITS[chosen.kind];
+    setSlider(heightEl, L.height, chosen.height, 'pe-height-v');
+    sizeRow.hidden = chosen.kind === 'building';
+    if (chosen.kind === 'wall') {
+      sizeLabel.textContent = 'Thickness';
+      setSlider(sizeEl, PLAN_LIMITS.wall.thickness, chosen.thickness, 'pe-size-v');
+    } else if (chosen.kind === 'tower') {
+      sizeLabel.textContent = 'Radius';
+      setSlider(sizeEl, PLAN_LIMITS.tower.radius, chosen.radius, 'pe-size-v');
+    }
+  }
+  (document.getElementById('plan-undo') as HTMLButtonElement).disabled = !planMine || !undoStack.length;
+  (document.getElementById('plan-redo') as HTMLButtonElement).disabled = !planMine || !redoStack.length;
+}
+
+function setSlider(el: HTMLInputElement, [lo, hi]: readonly number[], v: number, shown: string): void {
+  el.min = String(lo);
+  el.max = String(hi);
+  el.value = String(v);
+  document.getElementById(shown)!.textContent = `${v} m`;
+}
+
+/** A change to the plan: undoable, saved. */
+function changed(before: PlanElement[]): void {
+  undoStack.push(before);
+  if (undoStack.length > 200) undoStack.shift();
+  redoStack.length = 0;
+  savePlan();
+  showPlan();
+}
+const snapshot = () => plan.elements.map((e) => ({ ...e }));
+
+// Sliders change the chosen element as they move; one undo step a drag.
+let editBase: PlanElement[] | null = null;
+function editChosen(apply: (e: PlanElement, v: number) => PlanElement | null, v: number): void {
+  const i = plan.elements.findIndex((e) => e.id === chosenEl);
+  if (i < 0) return;
+  editBase ??= snapshot();
+  const next = apply(plan.elements[i]!, v);
+  if (!next) return;
+  plan.elements[i] = next;
+  showPlan();
+}
+heightEl.addEventListener('input', () => editChosen((e, v) => ({ ...e, height: v }), Number(heightEl.value)));
+sizeEl.addEventListener('input', () =>
+  editChosen((e, v) => {
+    if (e.kind === 'wall') return { ...e, thickness: v };
+    if (e.kind !== 'tower' || !opened) return null;
+    // (A tower stays inside the plot: no bigger than room for it.)
+    const room = Math.min(e.x - opened.x0, opened.x1 - e.x, e.z - opened.z0, opened.z1 - e.z);
+    return { ...e, radius: Math.min(v, room) };
+  }, Number(sizeEl.value)),
+);
+for (const el of [heightEl, sizeEl])
+  el.addEventListener('change', () => {
+    if (!editBase) return;
+    const base = editBase;
+    editBase = null;
+    changed(base);
+  });
+
+function deleteChosen(): void {
+  if (!planMine || !chosenEl) return;
+  const before = snapshot();
+  plan.elements = plan.elements.filter((e) => e.id !== chosenEl);
+  chosenEl = null;
+  changed(before);
+}
+document.getElementById('pe-delete')!.addEventListener('click', deleteChosen);
+
+function undo(): void {
+  const prev = undoStack.pop();
+  if (!prev || !planMine) return;
+  redoStack.push(snapshot());
+  plan.elements = prev;
+  if (!plan.elements.some((e) => e.id === chosenEl)) chosenEl = null;
+  savePlan();
+  showPlan();
+}
+function redo(): void {
+  const next = redoStack.pop();
+  if (!next || !planMine) return;
+  undoStack.push(snapshot());
+  plan.elements = next;
+  savePlan();
+  showPlan();
+}
+document.getElementById('plan-undo')!.addEventListener('click', undo);
+document.getElementById('plan-redo')!.addEventListener('click', redo);
+window.addEventListener('keydown', (e) => {
+  if (showing !== 'diorama' || !planMine || e.target instanceof HTMLInputElement) return;
+  if ((e.metaKey || e.ctrlKey) && e.code === 'KeyZ') {
+    e.preventDefault();
+    if (e.shiftKey) redo();
+    else undo();
+  } else if (e.code === 'Delete' || e.code === 'Backspace') deleteChosen();
+});
+
+/** Saved a moment after the last change (one request at a time). */
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let saving = false, saveAgain = false;
+function savePlan(): void {
+  if (!planClaim || !planMine) return;
+  planSaved.textContent = 'saving…';
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => void sendPlan(), 600);
+}
+async function sendPlan(): Promise<void> {
+  const claim = planClaim;
+  if (!claim) return;
+  if (saving) {
+    saveAgain = true;
+    return;
+  }
+  saving = true;
+  const body: Plan = { elements: plan.elements.map((e) => ({ ...e })) };
+  try {
+    const res = await fetch(`/api/worlds/${encodeURIComponent(current)}/claims/${encodeURIComponent(claim.id)}/plan`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const reply = (await res.json()) as { error?: string };
+    if (!res.ok) planSaved.textContent = `not saved: ${reply.error ?? res.status}`;
+    else {
+      claim.plan = body;
+      planSaved.textContent = 'saved';
+    }
+  } catch (err) {
+    planSaved.textContent = `not saved: ${(err as Error).message}`;
+  } finally {
+    saving = false;
+    if (saveAgain) {
+      saveAgain = false;
+      void sendPlan();
+    }
+  }
+}
+
+const newId = () => `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+
+/** A point (metres) to whole metres, inside the plot. */
+function snapIn(p: { x: number; z: number }): { x: number; z: number } {
+  const r = opened!;
+  return { x: Math.max(r.x0, Math.min(r.x1, Math.round(p.x))), z: Math.max(r.z0, Math.min(r.z1, Math.round(p.z))) };
+}
+
+/** ⌘-dragging with a plan tool: what it makes follows the drag, and goes into the plan when let go. */
+let drawFrom: { x: number; z: number } | null = null;
+function planPaint(phase: 'start' | 'move' | 'end', at: { x: number; y: number; z: number } | null): void {
+  if (!planMine || !opened || tool === 'look') return;
+  if (phase === 'end') {
+    const d = drawing;
+    drawing = null;
+    drawFrom = null;
+    if (d && good(d)) {
+      const before = snapshot();
+      plan.elements.push(d);
+      chosenEl = d.id;
+      changed(before);
+    } else showPlan();
+    return;
+  }
+  if (!at) return;
+  const p = snapIn(at);
+  if (phase === 'start') {
+    drawFrom = p;
+    if (tool === 'wall') {
+      // Carried on from a wall's end, if it starts near one (the last one chosen's, if like it).
+      const ends = plan.elements.flatMap((e) => (e.kind === 'wall' ? [{ x: e.x0, z: e.z0, w: e }, { x: e.x1, z: e.z1, w: e }] : []));
+      const near = ends.filter((q) => Math.hypot(q.x - p.x, q.z - p.z) <= 3).sort((a, b) => Math.hypot(a.x - p.x, a.z - p.z) - Math.hypot(b.x - p.x, b.z - p.z))[0];
+      if (near) drawFrom = { x: near.x, z: near.z };
+      const like = near?.w ?? (plan.elements.find((e) => e.id === chosenEl && e.kind === 'wall') as Extract<PlanElement, { kind: 'wall' }> | undefined);
+      drawing = { kind: 'wall', id: newId(), x0: drawFrom.x, z0: drawFrom.z, x1: drawFrom.x, z1: drawFrom.z, thickness: like?.thickness ?? PLAN_LIMITS.wall.thickness[2], height: like?.height ?? PLAN_LIMITS.wall.height[2] };
+    } else if (tool === 'tower') {
+      drawing = fitTower({ kind: 'tower', id: newId(), x: p.x, z: p.z, radius: PLAN_LIMITS.tower.radius[2], height: PLAN_LIMITS.tower.height[2] });
+    } else {
+      drawing = { kind: 'building', id: newId(), x0: p.x, z0: p.z, x1: p.x, z1: p.z, height: PLAN_LIMITS.building.height[2] };
+    }
+    showPlan();
+    return;
+  }
+  const from = drawFrom;
+  if (!drawing || !from) return;
+  if (drawing.kind === 'wall') drawing = { ...drawing, x1: p.x, z1: p.z };
+  else if (drawing.kind === 'tower') {
+    const r = Math.round(Math.hypot(at.x - from.x, at.z - from.z));
+    // (A click, or a little drag: the usual size; further, as far as the drag.)
+    if (r >= PLAN_LIMITS.tower.radius[0]) drawing = fitTower({ ...drawing, radius: Math.min(PLAN_LIMITS.tower.radius[1], r) });
+  } else drawing = { ...drawing, x0: Math.min(from.x, p.x), z0: Math.min(from.z, p.z), x1: Math.max(from.x, p.x), z1: Math.max(from.z, p.z) };
+  showPlan();
+}
+
+/** A tower moved (and if need be shrunk) to fit inside the plot. */
+function fitTower(t: Extract<PlanElement, { kind: 'tower' }>): Extract<PlanElement, { kind: 'tower' }> {
+  const r = opened!;
+  const radius = Math.max(PLAN_LIMITS.tower.radius[0], Math.min(t.radius, Math.floor(Math.min(r.x1 - r.x0, r.z1 - r.z0) / 2)));
+  return { ...t, radius, x: Math.max(r.x0 + radius, Math.min(r.x1 - radius, t.x)), z: Math.max(r.z0 + radius, Math.min(r.z1 - radius, t.z)) };
+}
+
+/** Whether what was drawn is something: a wall with length, a building at least 2 m a side. */
+function good(e: PlanElement): boolean {
+  if (e.kind === 'wall') return e.x0 !== e.x1 || e.z0 !== e.z1;
+  if (e.kind === 'building') return e.x1 - e.x0 >= 2 && e.z1 - e.z0 >= 2;
+  return true;
+}
 
 function frame(): void {
   if (showing === 'overview') relief?.render();
