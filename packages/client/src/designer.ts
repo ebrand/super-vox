@@ -776,7 +776,11 @@ function setVoxelSize(s: number): void {
 const palette = $('palette');
 for (const m of DESIGN_MATERIALS) {
   const b = document.createElement('button');
-  b.style.background = css(materialColor(m));
+  const swatch = document.createElement('i');
+  swatch.style.background = css(materialColor(m));
+  const label = document.createElement('span');
+  label.textContent = materialName(m);
+  b.append(swatch, label);
   b.title = materialName(m);
   b.dataset.material = String(m);
   b.onclick = () => {
@@ -992,6 +996,7 @@ function renderPanels(): void {
   for (const b of sizesEl.querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', Number(b.dataset.size) === voxelSize);
   for (const b of palette.querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', Number(b.dataset.material) === material);
   $('material-name').textContent = materialName(material);
+  $('material-swatch').style.background = css(materialColor(material));
   mirrorEl.classList.toggle('on', editor.mirror);
   hollowEl.classList.toggle('on', hollow);
   centredEl.classList.toggle('on', centred);
@@ -1073,7 +1078,7 @@ function setFolded(side: 'left' | 'right', folded: boolean): void {
   const btn = $<HTMLButtonElement>(`fold-${side}`);
   const toward = side === 'left' ? folded : !folded;
   btn.textContent = toward ? '›' : '‹';
-  btn.title = `${folded ? 'Show' : 'Hide'} the ${side === 'left' ? 'library' : 'object panel'}`;
+  btn.title = `${folded ? 'Show' : 'Hide'} the ${side === 'left' ? 'library and object' : 'palette'}`;
   try {
     localStorage.setItem(FOLD_KEY, JSON.stringify({ left: layoutEl.classList.contains('no-left'), right: layoutEl.classList.contains('no-right') }));
   } catch {

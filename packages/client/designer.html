@@ -11,9 +11,9 @@
       body { display: grid; grid-template-rows: 1fr; }
       #status { margin-left: auto; font-size: 12px; color: var(--dim); }
       #status.bad { color: var(--bad); } #status.good { color: var(--good); }
-      .layout { display: grid; grid-template-columns: 220px 1fr 310px; min-height: 0; }
-      .layout.no-left { grid-template-columns: 0 1fr 310px; }
-      .layout.no-right { grid-template-columns: 220px 1fr 0; }
+      .layout { display: grid; grid-template-columns: 300px 1fr 270px; min-height: 0; }
+      .layout.no-left { grid-template-columns: 0 1fr 270px; }
+      .layout.no-right { grid-template-columns: 300px 1fr 0; }
       .layout.no-left.no-right { grid-template-columns: 0 1fr 0; }
       .layout.no-left > aside.left, .layout.no-right > aside.right { display: none; }
       /* (Each in its own column, so a hidden panel's column stays and the view keeps the middle.) */
@@ -34,7 +34,7 @@
       button.danger { color: var(--bad); }
       input[type='text'] { width: 100%; }
       input[type='number'] { width: 56px; }
-      #library { list-style: none; margin: 0; padding: 0; }
+      #library { list-style: none; margin: 0; padding: 0; max-height: 32vh; overflow-y: auto; }
       #library li { padding: 6px 8px; border-radius: 5px; cursor: pointer; border: 1px solid transparent; }
       #library li:hover { background: #1b2027; }
       #library li.current { border-color: var(--accent); background: #1b2027; }
@@ -55,10 +55,17 @@
       #states li { display: flex; gap: 4px; align-items: center; margin: 3px 0; }
       #states li input[type='text'] { flex: 1; }
       #states li.current input[type='text'] { border-color: var(--accent); }
-      #palette { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
-      #palette button { height: 30px; padding: 0; border: 2px solid transparent; border-radius: 5px; }
-      #palette button.on { border-color: #fff; }
-      #material-name { color: var(--dim); font-size: 12px; margin-top: 4px; }
+      /* The palette (the right column): the material in use, big, then every material by name. */
+      #material-now { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+      #material-swatch { width: 44px; height: 44px; border-radius: 7px; border: 1px solid rgba(255, 255, 255, 0.25); flex: none; }
+      #material-name { font-size: 14px; font-weight: 600; }
+      #palette { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+      #palette button { display: flex; align-items: center; gap: 6px; padding: 3px 5px; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 5px; font-size: 12px; min-width: 0; }
+      #palette button:hover { background: #1b2027; }
+      #palette button.on { border-color: var(--accent); background: #1b2027; }
+      #palette button i { width: 18px; height: 18px; border-radius: 4px; flex: none; border: 1px solid rgba(255, 255, 255, 0.15); }
+      #palette button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .split { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 4px; }
       #recipe-rows .row select { flex: 1; min-width: 0; }
       .note { color: var(--dim); font-size: 12px; }
       .readonly { color: var(--warn); font-size: 12px; margin-bottom: 8px; }
@@ -72,6 +79,46 @@
         <h2>Library</h2>
         <button id="new" type="button">New object</button>
         <ul id="library"></ul>
+        <div id="readonly" class="readonly" hidden></div>
+        <h2>Object</h2>
+        <input id="name" type="text" maxlength="40" aria-label="Name" />
+        <div class="row">
+          <label>Size (m)</label>
+          <select id="size-x" aria-label="Width"></select> ×
+          <select id="size-y" aria-label="Height"></select> ×
+          <select id="size-z" aria-label="Depth"></select>
+        </div>
+        <div class="note">wide × tall × deep</div>
+        <div class="row"><label for="role">Stands in for</label><select id="role" style="flex: 1"></select></div>
+        <div class="readonly" id="role-warning" hidden></div>
+        <div class="note" id="role-note" hidden></div>
+        <div class="row"><label for="piece">Piece of a keep</label><select id="piece" style="flex: 1"></select></div>
+        <div class="note" id="piece-note" hidden></div>
+        <h2>States</h2>
+        <ul id="states"></ul>
+        <div class="row">
+          <button id="add-state" type="button">Add a state (a copy)</button>
+          <button id="clear" type="button" class="danger">Clear</button>
+        </div>
+        <div class="note">More than one: a right-click on it in the game steps to the next (open and shut, on and off…).</div>
+        <h2>Recipe</h2>
+        <div class="note" id="recipe-station" hidden></div>
+        <div id="recipe-own">
+        <label class="row"><input id="craftable" type="checkbox" /> Made in survival</label>
+        <div id="recipe">
+          <div id="recipe-rows"></div>
+          <div class="row"><button id="add-input" type="button">Add an ingredient</button></div>
+          <div class="row"><label for="count">Makes</label><input id="count" type="number" min="1" max="64" /></div>
+          <label class="row"><input id="table" type="checkbox" /> Only by a crafting table</label>
+        </div>
+        <div class="note" id="no-recipe">Without a recipe: creative only.</div>
+        </div>
+        <div class="actions">
+          <button id="save" class="primary" type="button">Save</button>
+          <button id="delete" class="danger" type="button">Delete</button>
+        </div>
+        <p class="note" id="stats"></p>
+        <div class="split">
         <div class="row">
           <button id="export-one" type="button" title="Download this object as a file">Export this</button>
           <button id="export-all" type="button" title="Download the whole library as a file">Export all</button>
@@ -80,10 +127,11 @@
         </div>
         <p class="note">Export here and import on another server (say, from your own computer to the live game). Importing one object opens it to look over and save; importing several saves them, leaving any already here alone.</p>
         <p class="note">One library for every world: saved objects can be placed (creative) or made (survival, by their recipe) in all of them.</p>
+        </div>
       </aside>
       <div id="view">
-        <button id="fold-left" class="fold" type="button" title="Hide the library">‹</button>
-        <button id="fold-right" class="fold" type="button" title="Hide the object panel">›</button>
+        <button id="fold-left" class="fold" type="button" title="Hide the library and object">‹</button>
+        <button id="fold-right" class="fold" type="button" title="Hide the palette">›</button>
         <div class="toolbar">
           <div class="group" id="tools">
             <button data-tool="build" title="Build (B)">Build</button>
@@ -128,48 +176,9 @@
         <div class="help">click: use the tool · shift-click: erase · Line: drag a row or column · Box: drag its base, let go, move up or down, click (Esc: stop) · shift: lines and boxes clear · Circle, Dome, Sphere: press the middle, drag out the radius, let go (Hollow: rings and shells) · Select: drag a box the same way, then arrows (shift ↑ ↓: up, down) or the buttons move what's in it (Esc: done) · plane: [ ] up and down, V turn, Home floor · alt-click: pick up a material · drag: turn · right-drag: move · wheel: zoom · 1-5: voxel size · the arrow marks its front (toward whoever places it)</div>
       </div>
       <aside class="right">
-        <div id="readonly" class="readonly" hidden></div>
-        <h2>Object</h2>
-        <input id="name" type="text" maxlength="40" aria-label="Name" />
-        <div class="row">
-          <label>Size (m)</label>
-          <select id="size-x" aria-label="Width"></select> ×
-          <select id="size-y" aria-label="Height"></select> ×
-          <select id="size-z" aria-label="Depth"></select>
-        </div>
-        <div class="note">wide × tall × deep</div>
-        <div class="row"><label for="role">Stands in for</label><select id="role" style="flex: 1"></select></div>
-        <div class="readonly" id="role-warning" hidden></div>
-        <div class="note" id="role-note" hidden></div>
-        <div class="row"><label for="piece">Piece of a keep</label><select id="piece" style="flex: 1"></select></div>
-        <div class="note" id="piece-note" hidden></div>
-        <h2>States</h2>
-        <ul id="states"></ul>
-        <div class="row">
-          <button id="add-state" type="button">Add a state (a copy)</button>
-          <button id="clear" type="button" class="danger">Clear</button>
-        </div>
-        <div class="note">More than one: a right-click on it in the game steps to the next (open and shut, on and off…).</div>
-        <h2>Material</h2>
+        <h2>Palette</h2>
+        <div id="material-now"><div id="material-swatch"></div><div><div id="material-name"></div><div class="note">alt-click a voxel to pick up its material</div></div></div>
         <div id="palette"></div>
-        <div id="material-name"></div>
-        <h2>Recipe</h2>
-        <div class="note" id="recipe-station" hidden></div>
-        <div id="recipe-own">
-        <label class="row"><input id="craftable" type="checkbox" /> Made in survival</label>
-        <div id="recipe">
-          <div id="recipe-rows"></div>
-          <div class="row"><button id="add-input" type="button">Add an ingredient</button></div>
-          <div class="row"><label for="count">Makes</label><input id="count" type="number" min="1" max="64" /></div>
-          <label class="row"><input id="table" type="checkbox" /> Only by a crafting table</label>
-        </div>
-        <div class="note" id="no-recipe">Without a recipe: creative only.</div>
-        </div>
-        <div class="actions">
-          <button id="save" class="primary" type="button">Save</button>
-          <button id="delete" class="danger" type="button">Delete</button>
-        </div>
-        <p class="note" id="stats"></p>
       </aside>
     </div>
     <script type="module" src="/src/designer.ts"></script>
