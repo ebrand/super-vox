@@ -8,7 +8,7 @@ import './header.css';
  */
 const PAGES: readonly { href: string; name: string; wide?: boolean }[] = [
   { href: '/', name: 'Home' },
-  { href: '/dashboard.html', name: 'World management', wide: true },
+  { href: '/worlds.html', name: 'World management', wide: true },
   { href: '/designer.html', name: 'Object designer', wide: true },
   { href: '/settings.html', name: 'Settings' },
 ];

@@ -4,6 +4,13 @@ import './envBadge.js';
 import { UNITS_PER_METER, formatHours } from '@super-vox/shared';
 import { chartMax, compass, formatBytes, formatDuration, formatRate } from './dashboardFormat.js';
 import { decodeWorldMap, renderMap, type MapData } from './worldMap.js';
+import { describeWorld, type WorldList, type WorldSummary } from './worldInfo.js';
+
+/**
+ * World management: every world on the server, and what can be done with each (find a castle
+ * site, make a claim; operators also switch its mode, terraform it, and generate new worlds). For
+ * operators, the server too: its status, the last five minutes, the players and recent errors.
+ */
 
 /** What /api/dashboard returns (see the server's app.ts). */
 interface Sample {
@@ -81,6 +88,7 @@ document.getElementById('worlds')!.addEventListener('click', (e) => {
   b.disabled = true;
   void fetch(`/api/worlds/${encodeURIComponent(world)}/mode`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: to }) }).then(async (res) => {
     if (!res.ok) b.textContent = ((await res.json().catch(() => ({}))) as { error?: string }).error ?? `failed: ${res.status}`;
+    else void loadList();
   });
 });
 
@@ -236,6 +244,88 @@ mapSelect.addEventListener('change', () => {
   void showMap(mapSelect.value).then(() => last && drawPlayers(last.players));
 });
 
+// ---- The worlds: everyone's list (/api/worlds), with the dashboard's figures for operators.
+
+let list: WorldList | null = null;
+/** Whether this visitor sees the server's side (the dashboard answered); null before it's asked. */
+let operator: boolean | null = null;
+const detailsEl = $('details') as HTMLInputElement;
+detailsEl.addEventListener('change', () => renderWorlds());
+
+async function loadList(): Promise<void> {
+  try {
+    const res = await fetch('/api/worlds');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    list = (await res.json()) as WorldList;
+    $('note').textContent = '';
+  } catch (err) {
+    $('note').textContent = `Couldn't get the worlds (${err instanceof Error ? err.message : String(err)}).`;
+  }
+  renderWorlds();
+}
+
+const pct = (v: number | null | undefined) => (v === null || v === undefined ? '–' : `${(v * 100).toFixed(0)}%`);
+const ms = (p?: Percentiles) => (p && p.p50 !== null ? `${p.p50.toFixed(1)} / ${p.p95!.toFixed(1)} ms` : '–');
+
+/** A world's buttons: what this visitor may do with it. */
+function actions(w: WorldSummary): string {
+  const q = `#world=${encodeURIComponent(w.name)}`;
+  return [
+    list?.canTerraform ? `<a class="act" href="/terraform.html${q}">Terraform</a>` : '',
+    `<a class="act" href="/sites.html${q}">Find a site</a>`,
+    `<a class="act" href="/claim.html${q}">Make a claim</a>`,
+    `<a class="act primary" href="/play.html?world=${encodeURIComponent(w.name)}">Play</a>`,
+  ].join('');
+}
+
+function renderWorlds(): void {
+  ($('generate') as HTMLAnchorElement).hidden = !list?.canCreate;
+  if (!list) return;
+  const live = new Map((last?.worlds ?? []).map((w) => [w.name, w]));
+  const details = !!operator && detailsEl.checked;
+  const head =
+    `<tr><th>World</th><th>Mode</th>${operator ? '<th class="num">Players</th><th>Time</th>' : ''}<th>About</th><th class="num">Built</th><th></th>` +
+    (details ? '<th class="num">On disk</th><th class="num">Edits</th><th class="num">Cached chunks / tiles</th><th class="num">Hit rate (chunks / tiles)</th><th class="num">Chunk p50 / p95</th><th class="num">Tile p50 / p95</th><th class="num">Water pending</th><th class="num">Water changes</th><th class="num">Disk cache (hits / writes)</th>' : '') +
+    '</tr>';
+  const rows = list.worlds.map((s) => {
+    const w = live.get(s.name);
+    const clock = w?.clock ? `${formatHours(w.clock.hours)} <span class="badge">${w.clock.dayMinutes === 'real' ? 'real time' : `${w.clock.dayMinutes} min day`}${w.clock.frozen ? ', stopped' : ''}</span>` : '–';
+    const built = `${s.editedChunks ?? 0} chunk${s.editedChunks === 1 ? '' : 's'} changed${s.strokes ? ` · ${s.strokes} terraformed` : ''}`;
+    const mode = w ? modeCell(w) : (s.mode ?? '–');
+    return (
+      `<tr><td>${esc(s.name)}${s.name === list!.default ? '<span class="badge">default</span>' : ''}${w ? `<span class="badge${w.open ? ' on' : ''}">${w.open ? 'open' : 'closed'}</span>` : ''}</td>` +
+      `<td>${mode}</td>${operator ? `<td class="num">${w ? w.players : '–'}</td><td>${clock}</td>` : ''}` +
+      `<td class="about">${esc(describeWorld(s, { mode: false }))}</td><td class="num">${built}</td><td class="actions"><div>${actions(s)}</div></td>` +
+      (details && w
+        ? `<td class="num">${formatBytes(w.diskBytes)}</td><td class="num">${w.edits ?? '–'}</td>` +
+          `<td class="num">${w.cache ? `${w.cache.chunks} / ${w.cache.tiles} of ${w.cache.capacity}` : '–'}</td>` +
+          `<td class="num">${w.cache ? `${pct(w.cache.chunkHitRate)} / ${pct(w.cache.tileHitRate)}` : '–'}</td>` +
+          `<td class="num">${ms(w.generation?.chunkMs)}</td><td class="num">${ms(w.generation?.tileMs)}</td>` +
+          `<td class="num">${w.water ? w.water.pending : '–'}</td><td class="num">${w.water ? w.water.changes : '–'}</td>` +
+          `<td class="num">${w.disk ? `${pct(w.disk.hits + w.disk.misses ? w.disk.hits / (w.disk.hits + w.disk.misses) : null)} / ${w.disk.writes}${w.disk.errors ? ` (${w.disk.errors} failed)` : ''}` : '–'}</td>`
+        : details
+          ? '<td colspan="9"></td>'
+          : '') +
+      '</tr>'
+    );
+  });
+  const html = head + (rows.join('') || `<tr><td class="empty" colspan="7">No worlds yet${list.canCreate ? ': generate one' : ''}.</td></tr>`);
+  // (Not while a button's being pressed: a row redrawn under it would lose the click. Next time.)
+  if (html === shownWorlds || pressing) return;
+  shownWorlds = html;
+  $('worlds').innerHTML = html;
+}
+let shownWorlds = '';
+let pressing = false;
+$('worlds').addEventListener('pointerdown', () => (pressing = true));
+window.addEventListener('pointerup', () => setTimeout(() => (pressing = false), 0));
+
+/** Shows (or hides) what only operators see. */
+function showOperator(on: boolean): void {
+  operator = on;
+  for (const el of document.querySelectorAll<HTMLElement>('.op')) el.hidden = !on;
+}
+
 // ---- Polling.
 
 let last: Dashboard | null = null;
@@ -263,26 +353,7 @@ function render(d: Dashboard): void {
   ].join('');
   for (const c of chartEls) drawChart(c, h, 300);
 
-  const pct = (v: number | null | undefined) => (v === null || v === undefined ? '–' : `${(v * 100).toFixed(0)}%`);
-  const ms = (p?: Percentiles) => (p && p.p50 !== null ? `${p.p50.toFixed(1)} / ${p.p95!.toFixed(1)} ms` : '–');
-  $('worlds').innerHTML =
-    '<tr><th>World</th><th>Mode</th><th class="num">Players</th><th>Time</th><th class="num">Edited chunks</th><th class="num">On disk</th><th class="num">Edits</th>' +
-    '<th class="num">Cached chunks / tiles</th><th class="num">Hit rate (chunks / tiles)</th><th class="num">Chunk p50 / p95</th><th class="num">Tile p50 / p95</th><th class="num">Water pending</th><th class="num">Water changes</th><th class="num">Disk cache (hits / writes)</th></tr>' +
-    d.worlds
-      .map((w) => {
-        const clock = w.clock ? `${formatHours(w.clock.hours)} <span class="badge">${w.clock.dayMinutes === 'real' ? 'real time' : `${w.clock.dayMinutes} min day`}${w.clock.frozen ? ', stopped' : ''}</span>` : '–';
-        return (
-          `<tr><td>${esc(w.name)}${w.default ? '<span class="badge">default</span>' : ''}<span class="badge${w.open ? ' on' : ''}">${w.open ? 'open' : 'closed'}</span></td>` +
-          `<td>${modeCell(w)}</td><td class="num">${w.players}</td><td>${clock}</td>` +
-          `<td class="num">${w.editedChunks ?? '–'}</td><td class="num">${formatBytes(w.diskBytes)}</td><td class="num">${w.edits ?? '–'}</td>` +
-          `<td class="num">${w.cache ? `${w.cache.chunks} / ${w.cache.tiles} of ${w.cache.capacity}` : '–'}</td>` +
-          `<td class="num">${w.cache ? `${pct(w.cache.chunkHitRate)} / ${pct(w.cache.tileHitRate)}` : '–'}</td>` +
-          `<td class="num">${ms(w.generation?.chunkMs)}</td><td class="num">${ms(w.generation?.tileMs)}</td>` +
-          `<td class="num">${w.water ? w.water.pending : '–'}</td><td class="num">${w.water ? w.water.changes : '–'}</td>` +
-          `<td class="num">${w.disk ? `${pct(w.disk.hits + w.disk.misses ? w.disk.hits / (w.disk.hits + w.disk.misses) : null)} / ${w.disk.writes}${w.disk.errors ? ` (${w.disk.errors} failed)` : ''}` : '–'}</td></tr>`
-        );
-      })
-      .join('');
+  renderWorlds();
 
   // The map: the world picked, else the busiest open one, else the default.
   const names = d.worlds.map((w) => w.name);
@@ -324,14 +395,16 @@ async function poll(): Promise<void> {
   try {
     const res = await fetch('/api/dashboard');
     if (res.status === 403) {
-      // The server says who it's for (development servers; admins where there's sign-in).
-      const why = ((await res.json().catch(() => ({}))) as { error?: string }).error;
-      statusEl.textContent = why ? why[0]!.toUpperCase() + why.slice(1) + '.' : 'The dashboard is not available here.';
-      statusEl.className = 'bad';
+      // (Not an operator: the worlds only. The server's side is for development servers, and admins where there's sign-in.)
+      showOperator(false);
+      statusEl.textContent = '';
+      $('meta').textContent = '';
+      renderWorlds();
       return; // no point asking again
     }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     last = (await res.json()) as Dashboard;
+    if (!operator) showOperator(true);
     render(last);
     statusEl.textContent = `live · ${new Date(last.now).toLocaleTimeString()}`;
     statusEl.className = 'good';
@@ -347,4 +420,7 @@ window.addEventListener('resize', () => {
   for (const c of chartEls) drawChart(c, last.history, 300);
   drawPlayers(last.players);
 });
+void loadList();
 void poll();
+// (The list now and then: worlds made, changed or dropped elsewhere.)
+setInterval(() => void loadList(), 15_000);

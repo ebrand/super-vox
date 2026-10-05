@@ -3,25 +3,13 @@ import './fullscreen.js';
 import './envBadge.js';
 import { decodeWorldMap, renderMap } from './worldMap.js';
 import { loadSettings, saveSettings, workersFor } from './settings.js';
+import { describeWorld, type WorldList, type WorldSummary } from './worldInfo.js';
 
 /**
  * The landing page: who's signed in, the world chosen (its picture: its own if it has one, else
  * its map; and what it is), choosing another, and the way to world management, the object
  * designer, settings, and playing it.
  */
-
-interface WorldInfo {
-  name: string;
-  createdAt: string;
-  mode?: 'survival' | 'creative';
-  /** When its picture was set (ms), if it has one. */
-  pictureAt?: number;
-  spec: {
-    generator: string;
-    shape?: string;
-    plates?: { landPercent: number; majorPlates: number; minorPlates: number; minHeight: number; maxHeight: number };
-  };
-}
 
 const worldEl = document.getElementById('world') as HTMLSelectElement;
 const nameEl = document.getElementById('world-name')!;
@@ -36,7 +24,7 @@ const clearEl = document.getElementById('picture-clear') as HTMLButtonElement;
 const fileEl = document.getElementById('picture-file') as HTMLInputElement;
 
 let settings = loadSettings();
-let worlds: WorldInfo[] = [];
+let worlds: WorldSummary[] = [];
 let defaultWorld = '';
 /** Whether this visitor may change worlds' pictures (an operator). */
 let canPicture = false;
@@ -52,23 +40,12 @@ function showSummary(): void {
   summaryEl.textContent = `Settings: detail ${settings.detail} chunks (${settings.detail * 16} m) · view ${settings.view} m · performance ${settings.performance} (${workersFor(settings.performance, navigator.hardwareConcurrency || 0)} mesh workers) · tolerance ${toleranceText(settings.tolerance)}`;
 }
 
-function describe(w: WorldInfo): string {
-  const p = w.spec.plates;
-  const created = new Date(w.createdAt);
-  const when = Number.isNaN(created.getTime()) ? '' : ` · created ${created.toLocaleDateString()}`;
-  const mode = w.mode ? `${w.mode[0]!.toUpperCase()}${w.mode.slice(1)} · ` : '';
-  const shape = w.spec.shape ? `${w.spec.shape} · ` : '';
-  if (!p) return `${mode}${shape}${w.spec.generator} terrain${when}`;
-  return `${mode}${shape}${p.landPercent}% land · ${p.majorPlates} major + ${p.minorPlates} minor plates · ${p.minHeight}..${p.maxHeight} m${when}`;
-}
-
 const chosen = () => worlds.find((x) => x.name === worldEl.value);
 
 function showWorld(): void {
   const w = chosen();
   nameEl.textContent = w ? w.name + (w.name === defaultWorld ? ' (default)' : '') : '';
-  aboutEl.textContent = w ? describe(w) : '';
-  linkTools();
+  aboutEl.textContent = w ? describeWorld(w) : '';
   void showPicture();
 }
 
@@ -173,7 +150,7 @@ async function loadWorlds(): Promise<void> {
   try {
     const res = await fetch('/api/worlds');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = (await res.json()) as { default: string; canPicture?: boolean; worlds: WorldInfo[] };
+    const data = (await res.json()) as WorldList;
     worlds = data.worlds;
     defaultWorld = data.default;
     canPicture = !!data.canPicture;
@@ -188,7 +165,7 @@ async function loadWorlds(): Promise<void> {
   for (const w of worlds) worldEl.appendChild(new Option(w.name + (w.mode ? ` · ${w.mode}` : '') + (w.name === defaultWorld ? ' (default)' : ''), w.name));
   if (worlds.length === 0) {
     worldEl.innerHTML = '<option>no worlds yet</option>';
-    status('No worlds yet: make one in the world generator.');
+    status('No worlds yet: make one in World management.');
     showWorld();
     return;
   }
@@ -205,14 +182,6 @@ worldEl.addEventListener('change', () => {
   saveSettings(settings);
   showWorld();
 });
-
-/** The tools' links open the world chosen here. */
-function linkTools(): void {
-  const hash = worldEl.value && chosen() ? `#world=${encodeURIComponent(worldEl.value)}` : '';
-  (document.getElementById('terraformer') as HTMLAnchorElement).href = `/terraform.html${hash}`;
-  (document.getElementById('sites') as HTMLAnchorElement).href = `/sites.html${hash}`;
-  (document.getElementById('claims') as HTMLAnchorElement).href = `/claim.html${hash}`;
-}
 
 playEl.addEventListener('click', () => {
   settings = { ...settings, world: worldEl.value };
