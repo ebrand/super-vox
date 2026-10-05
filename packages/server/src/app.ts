@@ -305,7 +305,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
 
   // Operators only: adds or replaces a design (body: the design, its id as in the URL; its item
   // number is kept or given). 400 with why, if it isn't a good one.
-  app.put<{ Params: { id: string }; Body: unknown }>('/api/designs/:id', { bodyLimit: 8 * 1024 * 1024 }, async (req, reply) => {
+  app.put<{ Params: { id: string }; Body: unknown }>('/api/designs/:id', { bodyLimit: 24 * 1024 * 1024 }, async (req, reply) => {
     if (!(await operator(req))) return reply.code(403).send(notOperator('designing objects'));
     const body = req.body as { id?: unknown } | null;
     if (typeof body !== 'object' || body === null || body.id !== req.params.id) return reply.code(400).send({ error: "the design's id must match the URL" });

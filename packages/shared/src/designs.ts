@@ -1,4 +1,4 @@
-import { BLOCK_SIZE, isGridSize } from './chunk.js';
+import { BLOCK_SIZE, GRID_SIZES, isGridSize } from './chunk.js';
 import type { BlockVoxel } from './edit.js';
 import { ALL_ITEMS, Item, isBlock, setExtraItems, type ItemId } from './items.js';
 import { Material, type MaterialId } from './materials.js';
@@ -49,6 +49,27 @@ export interface ObjectDesign {
    * and `recipe` are kept, unused).
    */
   role?: DesignRole;
+  /**
+   * The part of a planned keep it's a piece of, if any (see DESIGN_PIECES): what a plan's walls,
+   * towers and buildings can be made of (a wall section repeated along a wall, and so on). Not
+   * with a role.
+   */
+  piece?: DesignPiece;
+}
+
+export type DesignPiece = 'wall' | 'corner' | 'tower' | 'gatehouse' | 'building';
+
+/** The pieces of a planned keep a design can be, and how each is used. */
+export const DESIGN_PIECES: readonly { piece: DesignPiece; name: string; use: string }[] = [
+  { piece: 'wall', name: 'wall section', use: 'repeated along a planned wall: its height and thickness (front to back) the wall\'s, its width each repeat' },
+  { piece: 'corner', name: 'wall corner', use: 'where planned walls meet or turn, and at their ends' },
+  { piece: 'tower', name: 'tower', use: 'a planned tower: its footprint the tower\'s, its height the tower\'s' },
+  { piece: 'gatehouse', name: 'gatehouse', use: 'set into a planned wall, its way through the wall' },
+  { piece: 'building', name: 'building', use: 'a planned building: its footprint and height the building\'s' },
+];
+
+export function pieceName(piece: DesignPiece): string {
+  return DESIGN_PIECES.find((p) => p.piece === piece)!.name;
 }
 
 export type DesignRole = 'crafting-table' | 'furnace' | 'stove' | 'anvil' | 'smithing-table' | 'bed';
@@ -72,11 +93,43 @@ export function stationOf(role: DesignRole): (typeof STATIONS)[number] {
   return STATIONS.find((s) => s.role === role)!;
 }
 
-/** The biggest a design can be: 4 m a side. */
-export const DESIGN_MAX_BLOCKS = 4;
+/** The biggest a design can be: 16 m a side (a tower, a gatehouse, a stretch of wall). */
+export const DESIGN_MAX_BLOCKS = 16;
 export const DESIGN_MAX_STATES = 8;
 /** Voxels in a state, at most. */
-export const DESIGN_MAX_VOXELS = 20000;
+export const DESIGN_MAX_VOXELS = 60000;
+
+/**
+ * Which cells voxels take, to tell quickly whether another would overlap them, however big the
+ * box: voxels sit on their own size's grid (sizes GRID_SIZES, each twice the last), so two overlap
+ * just when one's cell holds the other's. Kept per size: cells taken whole, and cells a smaller
+ * voxel is in.
+ */
+export class VoxelOccupancy {
+  private readonly whole = new Set<string>();
+  private readonly part = new Set<string>();
+
+  constructor(voxels: Iterable<BlockVoxel> = []) {
+    for (const v of voxels) this.add(v);
+  }
+
+  private static key(s: number, x: number, y: number, z: number): string {
+    return `${s}:${Math.floor(x / s)},${Math.floor(y / s)},${Math.floor(z / s)}`;
+  }
+
+  /** Whether `v` would overlap a voxel added. */
+  overlaps(v: Pick<BlockVoxel, 'x' | 'y' | 'z' | 'size'>): boolean {
+    const k = VoxelOccupancy.key(v.size, v.x, v.y, v.z);
+    if (this.whole.has(k) || this.part.has(k)) return true;
+    for (const S of GRID_SIZES) if (S > v.size && this.whole.has(VoxelOccupancy.key(S, v.x, v.y, v.z))) return true;
+    return false;
+  }
+
+  add(v: Pick<BlockVoxel, 'x' | 'y' | 'z' | 'size'>): void {
+    this.whole.add(VoxelOccupancy.key(v.size, v.x, v.y, v.z));
+    for (const S of GRID_SIZES) if (S > v.size) this.part.add(VoxelOccupancy.key(S, v.x, v.y, v.z));
+  }
+}
 /** Designs' items are numbered from here. */
 export const FIRST_DESIGN_ITEM = 20000;
 /** Kinds of ingredient a recipe can take (as many as a crafting table's slots). */
@@ -140,7 +193,7 @@ export function parseDesign(raw: unknown): ObjectDesign | string {
     if (typeof st !== 'object' || st === null || !isName(st.name, 24)) return `state ${i + 1} needs a name (up to 24 characters)`;
     if (!Array.isArray(st.voxels) || st.voxels.length === 0) return `state "${st.name}" is empty`;
     if (st.voxels.length > DESIGN_MAX_VOXELS) return `state "${st.name}" has over ${DESIGN_MAX_VOXELS} voxels`;
-    const taken = new Uint8Array(W * H * D);
+    const taken = new VoxelOccupancy();
     const voxels: BlockVoxel[] = [];
     for (const raw of st.voxels as unknown[]) {
       const v = raw as Record<string, unknown> | null;
@@ -150,13 +203,8 @@ export function parseDesign(raw: unknown): ObjectDesign | string {
       const vx = v.x, vy = v.y, vz = v.z;
       if (vx % sz || vy % sz || vz % sz) return `state "${st.name}": a voxel off its grid`;
       if (!DESIGN_MATERIALS.includes(v.material as MaterialId)) return `state "${st.name}": a voxel of a material designs can't use`;
-      for (let y = vy; y < vy + sz; y++)
-        for (let z = vz; z < vz + sz; z++)
-          for (let x = vx; x < vx + sz; x++) {
-            const k = (y * D + z) * W + x;
-            if (taken[k]) return `state "${st.name}": voxels overlap`;
-            taken[k] = 1;
-          }
+      if (taken.overlaps({ x: vx, y: vy, z: vz, size: sz })) return `state "${st.name}": voxels overlap`;
+      taken.add({ x: vx, y: vy, z: vz, size: sz });
       voxels.push({ x: vx, y: vy, z: vz, size: sz, material: v.material as MaterialId });
     }
     states.push({ name: st.name.trim(), voxels });
@@ -177,7 +225,9 @@ export function parseDesign(raw: unknown): ObjectDesign | string {
     recipe = { inputs, count: r.count, table: r.table === true };
   }
   if (d.role !== undefined && d.role !== null && !DESIGN_ROLES.includes(d.role as DesignRole)) return 'it stands in for something there isn\'t';
-  return { id: d.id, name: d.name.trim(), size: [...size], states, item: d.item, recipe, ...(d.role ? { role: d.role as DesignRole } : {}) };
+  if (d.piece !== undefined && d.piece !== null && !DESIGN_PIECES.some((p) => p.piece === d.piece)) return 'it\'s a piece of something there isn\'t';
+  if (d.role && d.piece) return 'it can be a station or a piece of a keep, not both';
+  return { id: d.id, name: d.name.trim(), size: [...size], states, item: d.item, recipe, ...(d.role ? { role: d.role as DesignRole } : {}), ...(d.piece ? { piece: d.piece as DesignPiece } : {}) };
 }
 
 /** Quarter turns clockwise (seen from above) of each facing. */

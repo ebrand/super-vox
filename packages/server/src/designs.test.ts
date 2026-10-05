@@ -83,7 +83,7 @@ describe('DesignLibrary', () => {
     const b = lib.put({ ...bench(), id: 'stool', size: [1, 1, 1], states: [{ name: 's', voxels: [{ x: 0, y: 0, z: 0, size: 16, material: P }] }] }) as ObjectDesign;
     expect(b.item).toBe(FIRST_DESIGN_ITEM + 1);
     // Bad ones: why (and nothing changes).
-    expect(lib.put({ ...bench(), size: [9, 1, 1] })).toMatch(/size/);
+    expect(lib.put({ ...bench(), size: [17, 1, 1] })).toMatch(/size/);
     expect(lib.list().map((d) => d.id)).toEqual(['bench', 'stool']);
     // Deleted: gone; its number isn't given again.
     expect(lib.delete('stool')).toBe(true);

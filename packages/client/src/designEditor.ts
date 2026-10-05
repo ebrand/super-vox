@@ -3,8 +3,10 @@ import {
   DESIGN_MAX_BLOCKS,
   DESIGN_MAX_STATES,
   DESIGN_MAX_VOXELS,
+  VoxelOccupancy,
   designSlug,
   type BlockVoxel,
+  type DesignPiece,
   type DesignRecipe,
   type DesignRole,
   type DesignState,
@@ -22,11 +24,9 @@ export interface Draft {
   recipe: DesignRecipe | null;
   /** What it stands in for (see ObjectDesign.role), if anything. */
   role?: DesignRole;
+  /** The piece of a keep it is (see ObjectDesign.piece), if any. */
+  piece?: DesignPiece;
 }
-
-/** Whether two voxels (or a voxel and a box) overlap. */
-const overlaps = (a: BlockVoxel, b: { x: number; y: number; z: number; size: number }) =>
-  a.x < b.x + b.size && b.x < a.x + a.size && a.y < b.y + b.size && b.y < a.y + a.size && a.z < b.z + b.size && b.z < a.z + a.size;
 
 const copy = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
@@ -37,7 +37,7 @@ export function newDraft(): Draft {
 
 /** A saved design, to edit. */
 export function draftOf(d: ObjectDesign): Draft {
-  return copy({ id: d.id, name: d.name, size: d.size, states: d.states, recipe: d.recipe, ...(d.role ? { role: d.role } : {}) });
+  return copy({ id: d.id, name: d.name, size: d.size, states: d.states, recipe: d.recipe, ...(d.role ? { role: d.role } : {}), ...(d.piece ? { piece: d.piece } : {}) });
 }
 
 /**
@@ -77,9 +77,27 @@ export class DesignEditor {
     const [W, H, D] = this.extent;
     if (v.x < 0 || v.y < 0 || v.z < 0 || v.x + v.size > W || v.y + v.size > H || v.z + v.size > D) return 'outside the box';
     if (v.x % v.size || v.y % v.size || v.z % v.size) return 'off its grid';
-    if (this.voxels.some((o) => overlaps(o, v))) return 'something is there';
+    if (this.occupancy().overlaps(v)) return 'something is there';
     if (this.voxels.length >= DESIGN_MAX_VOXELS) return `a state can have ${DESIGN_MAX_VOXELS} voxels at most`;
     return null;
+  }
+
+  /** Which cells the state's voxels take (see VoxelOccupancy): made again when they've changed. */
+  private occ: { voxels: readonly BlockVoxel[]; length: number; version: number; occ: VoxelOccupancy } | null = null;
+  private version = 0;
+  private occupancy(): VoxelOccupancy {
+    const vs = this.voxels, o = this.occ;
+    if (o && o.voxels === vs && o.length === vs.length && o.version === this.version) return o.occ;
+    this.occ = { voxels: vs, length: vs.length, version: this.version, occ: new VoxelOccupancy(vs) };
+    return this.occ.occ;
+  }
+  /** A voxel just pushed onto the state (inside a change): into the occupancy as it is. */
+  private pushed(v: BlockVoxel): void {
+    const o = this.occ;
+    if (o && o.voxels === this.voxels && o.length === this.voxels.length - 1 && o.version === this.version) {
+      o.occ.add(v);
+      o.length++;
+    }
   }
 
   /** The voxel mirrored across the box's middle (x). */
@@ -93,8 +111,12 @@ export class DesignEditor {
     if (why) return why;
     this.change(() => {
       this.voxels_.push({ ...v });
+      this.pushed(v);
       const m = this.mirrored(v);
-      if (this.mirror && !this.refuse(m)) this.voxels_.push(m);
+      if (this.mirror && !this.refuse(m)) {
+        this.voxels_.push(m);
+        this.pushed(m);
+      }
     });
     return null;
   }
@@ -114,10 +136,12 @@ export class DesignEditor {
           continue;
         }
         this.voxels_.push(v);
+        this.pushed(v);
         placed++;
         const m = this.mirrored(v);
         if (this.mirror && !this.refuse(m)) {
           this.voxels_.push(m);
+          this.pushed(m);
           placed++;
         }
       }
@@ -209,7 +233,8 @@ export class DesignEditor {
     if (moved.some((v) => v[key] < 0 || v[key] + v.size > ext[axis])) return "it would leave the object's box";
     const picked = new Set(inside);
     const others = this.voxels.filter((_, i) => !picked.has(i));
-    if (moved.some((v) => others.some((o) => overlaps(o, v)))) return 'something is in the way';
+    const rest = new VoxelOccupancy(others);
+    if (moved.some((v) => rest.overlaps(v))) return 'something is in the way';
     const lo = (['x0', 'y0', 'z0'] as const)[axis], hi = (['x1', 'y1', 'z1'] as const)[axis];
     this.change(() => {
       this.draft.states[this.state]!.voxels = [...others, ...moved];
@@ -304,7 +329,7 @@ export class DesignEditor {
       id = base;
       for (let n = 2; taken.has(id); n++) id = `${base.slice(0, 36)}-${n}`;
     }
-    return { id, name: this.draft.name, size: [...this.draft.size], states: copy(this.draft.states), recipe: copy(this.draft.recipe), ...(this.draft.role ? { role: this.draft.role } : {}) };
+    return { id, name: this.draft.name, size: [...this.draft.size], states: copy(this.draft.states), recipe: copy(this.draft.recipe), ...(this.draft.role ? { role: this.draft.role } : {}), ...(this.draft.piece ? { piece: this.draft.piece } : {}) };
   }
 
   /** It was saved as `id`. */
@@ -330,6 +355,7 @@ export class DesignEditor {
   }
 
   private change(f: () => void): void {
+    this.version++;
     this.undos.push(this.snapshot());
     if (this.undos.length > 200) this.undos.shift();
     this.redos = [];

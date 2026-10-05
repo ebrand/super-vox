@@ -1,4 +1,5 @@
 import type { Claim } from './claims.js';
+import type { DesignPiece, ObjectDesign } from './designs.js';
 
 /**
  * A plan for a claimed plot (see Claim): what its owner means to build on it, laid out on the
@@ -6,9 +7,12 @@ import type { Claim } from './claims.js';
  * towers and buildings (footprints with a pitched roof); positions in whole metres, inside the plot.
  */
 export type PlanElement =
-  | { kind: 'wall'; id: string; x0: number; z0: number; x1: number; z1: number; thickness: number; height: number }
-  | { kind: 'tower'; id: string; x: number; z: number; radius: number; height: number }
-  | { kind: 'building'; id: string; x0: number; z0: number; x1: number; z1: number; height: number };
+  | { kind: 'wall'; id: string; x0: number; z0: number; x1: number; z1: number; thickness: number; height: number; design?: string }
+  | { kind: 'tower'; id: string; x: number; z: number; radius: number; height: number; design?: string }
+  | { kind: 'building'; id: string; x0: number; z0: number; x1: number; z1: number; height: number; design?: string };
+
+/** The piece of a keep (see DesignPiece) each kind of element is made of. */
+export const PLAN_PIECE: Record<PlanElement['kind'], DesignPiece> = { wall: 'wall', tower: 'tower', building: 'building' };
 
 export type PlanKind = PlanElement['kind'];
 
@@ -18,9 +22,9 @@ export interface Plan {
 
 /** Sizes (m): [least, most, new ones'] per kind and measure. */
 export const PLAN_LIMITS = {
-  wall: { thickness: [1, 8, 2], height: [1, 30, 6] },
-  tower: { radius: [2, 20, 4], height: [2, 50, 12] },
-  building: { height: [2, 30, 6] },
+  wall: { thickness: [1, 16, 2], height: [1, 30, 6] },
+  tower: { radius: [1, 20, 4], height: [1, 50, 12] },
+  building: { height: [1, 30, 6] },
 } as const;
 /** Most elements in a plan. */
 export const MAX_PLAN_ELEMENTS = 500;
@@ -41,6 +45,7 @@ export function refusePlan(plan: unknown, plot: Pick<Claim, 'x0' | 'z0' | 'x1' |
     if (typeof el !== 'object' || el === null || typeof el.id !== 'string' || !el.id || el.id.length > 40) return 'each element needs an id';
     if (ids.has(el.id)) return `two elements are "${el.id}"`;
     ids.add(el.id);
+    if (el.design !== undefined && (typeof el.design !== 'string' || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(el.design))) return 'an element is made of a design with no good id';
     if (el.kind === 'wall') {
       const L = PLAN_LIMITS.wall;
       if (!whole(el.x0, el.z0, el.x1, el.z1)) return 'walls run between whole metres';
@@ -54,7 +59,7 @@ export function refusePlan(plan: unknown, plot: Pick<Claim, 'x0' | 'z0' | 'x1' |
       if (!inside(el.x - el.radius, el.z - el.radius) || !inside(el.x + el.radius, el.z + el.radius)) return 'every tower must be inside the plot';
     } else if (el.kind === 'building') {
       if (!whole(el.x0, el.z0, el.x1, el.z1)) return 'buildings stand on whole metres';
-      if (el.x1 - el.x0 < 2 || el.z1 - el.z0 < 2) return 'a building is at least 2 m a side';
+      if (el.x1 - el.x0 < 1 || el.z1 - el.z0 < 1) return 'a building is at least 1 m a side';
       if (!inRange(el.height, PLAN_LIMITS.building.height)) return `buildings are ${PLAN_LIMITS.building.height[0]}-${PLAN_LIMITS.building.height[1]} m high`;
       if (!inside(el.x0, el.z0) || !inside(el.x1, el.z1)) return 'every building must be inside the plot';
     } else return `unknown element "${String((el as { kind?: unknown }).kind)}"`;
@@ -66,11 +71,29 @@ export function refusePlan(plan: unknown, plot: Pick<Claim, 'x0' | 'z0' | 'x1' |
 export function cleanPlan(plan: Plan): Plan {
   return {
     elements: plan.elements.map((e): PlanElement => {
-      if (e.kind === 'wall') return { kind: 'wall', id: e.id, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, thickness: e.thickness, height: e.height };
-      if (e.kind === 'tower') return { kind: 'tower', id: e.id, x: e.x, z: e.z, radius: e.radius, height: e.height };
-      return { kind: 'building', id: e.id, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, height: e.height };
+      const design = e.design ? { design: e.design } : {};
+      if (e.kind === 'wall') return { kind: 'wall', id: e.id, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, thickness: e.thickness, height: e.height, ...design };
+      if (e.kind === 'tower') return { kind: 'tower', id: e.id, x: e.x, z: e.z, radius: e.radius, height: e.height, ...design };
+      return { kind: 'building', id: e.id, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, height: e.height, ...design };
     }),
   };
+}
+
+/**
+ * An element made of `design` (a piece of its kind): its size follows it. A wall: the design's
+ * height, and its depth (front to back) the wall's thickness. A tower: as high, as wide across as
+ * its footprint's longer side (round, for now). A building: its footprint (from the same corner)
+ * and height. Null: none (`design` null takes the design away, sizes kept).
+ */
+export function madeOf(e: PlanElement, design: Pick<ObjectDesign, 'id' | 'size'> | null): PlanElement {
+  if (!design) {
+    const { design: _, ...rest } = e;
+    return rest as PlanElement;
+  }
+  const [w, h, d] = design.size;
+  if (e.kind === 'wall') return { ...e, design: design.id, height: h, thickness: d };
+  if (e.kind === 'tower') return { ...e, design: design.id, height: h, radius: Math.max(w, d) / 2 };
+  return { ...e, design: design.id, height: h, x1: e.x0 + w, z1: e.z0 + d };
 }
 
 /** What a plan comes to: its walls' length, towers, and buildings' floor area (m, m²). */

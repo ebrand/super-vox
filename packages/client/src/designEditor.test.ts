@@ -57,7 +57,7 @@ describe('DesignEditor', () => {
     e.remove(0);
     expect(e.resize([2, 4, 4])).toBe(1); // the far one, in the first state
     expect(e.draft.states.map((s) => s.voxels.length)).toEqual([1, 1]);
-    expect(e.resize([5, 1, 1])).toBe(0);
+    expect(e.resize([17, 1, 1])).toBe(0);
     expect(e.draft.size).toEqual([2, 4, 4]);
     e.renameState(0, 'shut');
     e.removeState(1);

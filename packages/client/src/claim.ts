@@ -1,5 +1,5 @@
 import './fullscreen.js';
-import { MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, planTotals, type Claim, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
+import { MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, PLAN_PIECE, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, isWorldShape, madeOf, pieceName, planTotals, type Claim, type ObjectDesign, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
 import { planGroup } from './planView.js';
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT } from './dioramaLight.js';
@@ -475,6 +475,22 @@ const sizeEl = document.getElementById('pe-size') as HTMLInputElement;
 const sizeRow = document.getElementById('pe-size-row')!;
 const sizeLabel = document.getElementById('pe-size-label')!;
 const toolButtons = [...document.querySelectorAll<HTMLButtonElement>('.plan-tools .tool')];
+const designEl = document.getElementById('pe-design') as HTMLSelectElement;
+const designNote = document.getElementById('pe-design-note')!;
+
+/** The designs (see the Object designer), for what plans are made of; and the last chosen for each kind, for new ones. */
+let designs: ObjectDesign[] = [];
+const lastDesign: Partial<Record<PlanElement['kind'], string>> = {};
+async function loadDesigns(): Promise<void> {
+  try {
+    const res = await fetch('/api/designs');
+    if (res.ok) designs = ((await res.json()) as { designs: ObjectDesign[] }).designs;
+  } catch {
+    // (None: elements are drawn plain.)
+  }
+  showPlan();
+}
+const designOf = (id: string | undefined) => (id ? designs.find((d) => d.id === id) : undefined);
 const TOOL_ABOUT: Record<PlanTool, string> = {
   look: 'Move about; choose something planned from the list to change it.',
   wall: '⌘-drag (Ctrl-drag) a straight run of wall. Start a drag at a wall\'s end to carry it on.',
@@ -501,6 +517,7 @@ function openPlan(claim: Claim | null): void {
   chosenEl = null;
   drawing = null;
   undoStack.length = redoStack.length = 0;
+  if (claim) void loadDesigns();
   planControls.hidden = !claim;
   planAbout.textContent = !claim ? '' : planMine ? 'Lay out what you mean to build: walls, towers and buildings, inside the plot. Saved as you go.' : `${claim.ownerName}'s plan (only its owner changes it).`;
   for (const b of toolButtons) b.disabled = !planMine;
@@ -519,8 +536,10 @@ function setTool(t: PlanTool): void {
 }
 for (const b of toolButtons) b.addEventListener('click', () => setTool(b.dataset.tool as PlanTool));
 
-const describe = (e: PlanElement): string =>
-  e.kind === 'wall' ? `wall, ${Math.round(Math.hypot(e.x1 - e.x0, e.z1 - e.z0))} m long, ${e.height} m high` : e.kind === 'tower' ? `tower, ${e.radius * 2} m across, ${e.height} m high` : `building, ${e.x1 - e.x0} × ${e.z1 - e.z0} m, ${e.height} m to the eaves`;
+const describe = (e: PlanElement): string => {
+  const made = e.design ? ` (${designOf(e.design)?.name ?? 'a design no longer there'})` : '';
+  return (e.kind === 'wall' ? `wall, ${Math.round(Math.hypot(e.x1 - e.x0, e.z1 - e.z0))} m long, ${e.height} m high` : e.kind === 'tower' ? `tower, ${e.radius * 2} m across, ${e.height} m high` : `building, ${e.x1 - e.x0} × ${e.z1 - e.z0} m, ${e.height} m to the eaves`) + made;
+};
 
 /** Draws the plan (and what's being drawn), lists it, and shows what's chosen. */
 function showPlan(): void {
@@ -551,6 +570,13 @@ function showPlan(): void {
   const chosen = plan.elements.find((e) => e.id === chosenEl);
   planEdit.hidden = !chosen || !planMine;
   if (chosen && planMine) {
+    // What it's made of: the designs that are its kind of piece.
+    const piece = PLAN_PIECE[chosen.kind], fits = designs.filter((d) => d.piece === piece);
+    designEl.replaceChildren(new Option('nothing chosen yet (plain)', ''), ...fits.map((d) => new Option(`${d.name} (${d.size.join(' × ')} m)`, d.id)));
+    if (chosen.design && !fits.some((d) => d.id === chosen.design)) designEl.append(new Option('a design no longer there', chosen.design));
+    designEl.value = chosen.design ?? '';
+    designNote.textContent = chosen.design ? 'Its size follows its design.' : fits.length ? '' : `No ${pieceName(piece)} designs yet: make one in the Object designer (as "a ${pieceName(piece)}").`;
+    heightEl.disabled = sizeEl.disabled = !!chosen.design;
     const L = PLAN_LIMITS[chosen.kind];
     setSlider(heightEl, L.height, chosen.height, 'pe-height-v');
     sizeRow.hidden = chosen.kind === 'building';
@@ -611,6 +637,34 @@ for (const el of [heightEl, sizeEl])
     editBase = null;
     changed(base);
   });
+
+designEl.addEventListener('change', () => {
+  const i = plan.elements.findIndex((e) => e.id === chosenEl);
+  if (i < 0 || !opened) return;
+  const before = snapshot(), el = plan.elements[i]!;
+  const next = fitIn(madeOf(el, designOf(designEl.value) ?? null));
+  if (!next) {
+    planSaved.textContent = "that design doesn't fit in the plot there";
+    showPlan();
+    return;
+  }
+  if (designEl.value) lastDesign[el.kind] = designEl.value;
+  plan.elements[i] = next;
+  changed(before);
+});
+
+/** An element moved (towers, buildings) to fit in the plot, if it can; null if it can't. */
+function fitIn(e: PlanElement): PlanElement | null {
+  const r = opened!;
+  if (e.kind === 'tower') return fitTower(e);
+  if (e.kind === 'building') {
+    const w = e.x1 - e.x0, d = e.z1 - e.z0;
+    if (w > r.x1 - r.x0 || d > r.z1 - r.z0) return null;
+    const x0 = Math.max(r.x0, Math.min(r.x1 - w, e.x0)), z0 = Math.max(r.z0, Math.min(r.z1 - d, e.z0));
+    return { ...e, x0, z0, x1: x0 + w, z1: z0 + d };
+  }
+  return e;
+}
 
 function deleteChosen(): void {
   if (!planMine || !chosenEl) return;
@@ -699,9 +753,11 @@ let drawFrom: { x: number; z: number } | null = null;
 function planPaint(phase: 'start' | 'move' | 'end', at: { x: number; y: number; z: number } | null): void {
   if (!planMine || !opened || tool === 'look') return;
   if (phase === 'end') {
-    const d = drawing;
+    let d = drawing;
     drawing = null;
     drawFrom = null;
+    // (New towers and buildings are made of the design last chosen for their kind; walls carried on, of the one before.)
+    if (d && d.kind !== 'wall' && lastDesign[d.kind] && designOf(lastDesign[d.kind])) d = fitIn(madeOf(d, designOf(lastDesign[d.kind])!));
     if (d && good(d)) {
       const before = snapshot();
       plan.elements.push(d);
@@ -721,6 +777,8 @@ function planPaint(phase: 'start' | 'move' | 'end', at: { x: number; y: number; 
       if (near) drawFrom = { x: near.x, z: near.z };
       const like = near?.w ?? (plan.elements.find((e) => e.id === chosenEl && e.kind === 'wall') as Extract<PlanElement, { kind: 'wall' }> | undefined);
       drawing = { kind: 'wall', id: newId(), x0: drawFrom.x, z0: drawFrom.z, x1: drawFrom.x, z1: drawFrom.z, thickness: like?.thickness ?? PLAN_LIMITS.wall.thickness[2], height: like?.height ?? PLAN_LIMITS.wall.height[2] };
+      const made = like?.design ?? lastDesign.wall;
+      if (designOf(made)) drawing = madeOf(drawing, designOf(made)!);
     } else if (tool === 'tower') {
       drawing = fitTower({ kind: 'tower', id: newId(), x: p.x, z: p.z, radius: PLAN_LIMITS.tower.radius[2], height: PLAN_LIMITS.tower.height[2] });
     } else {
@@ -750,7 +808,7 @@ function fitTower(t: Extract<PlanElement, { kind: 'tower' }>): Extract<PlanEleme
 /** Whether what was drawn is something: a wall with length, a building at least 2 m a side. */
 function good(e: PlanElement): boolean {
   if (e.kind === 'wall') return e.x0 !== e.x1 || e.z0 !== e.z1;
-  if (e.kind === 'building') return e.x1 - e.x0 >= 2 && e.z1 - e.z0 >= 2;
+  if (e.kind === 'building') return e.x1 - e.x0 >= (e.design ? 1 : 2) && e.z1 - e.z0 >= (e.design ? 1 : 2);
   return true;
 }
 

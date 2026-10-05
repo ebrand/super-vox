@@ -63,7 +63,7 @@ describe('parseDesign', () => {
     };
     expect(bad((d) => (d.id = 'Bad Id'))).toMatch(/id/);
     expect(bad((d) => (d.name = ' '))).toMatch(/name/);
-    expect(bad((d) => (d.size = [5, 1, 1]))).toMatch(/size/);
+    expect(bad((d) => (d.size = [17, 1, 1]))).toMatch(/size/);
     expect(bad((d) => (d.size = [0, 1, 1]))).toMatch(/size/);
     expect(bad((d) => (d.states = []))).toMatch(/states/);
     expect(bad((d) => (d.states[1].voxels = []))).toMatch(/empty/);
@@ -240,5 +240,39 @@ describe('placing designs', () => {
     setDesigns([]);
     expect(ALL_ITEMS).not.toContain(Item.Furnace);
     expect(recipeById('furnace')).toBeUndefined();
+  });
+});
+
+describe('VoxelOccupancy', () => {
+  it('tells whether a voxel would overlap: the same cell, inside a bigger one, or holding smaller ones', async () => {
+    const { VoxelOccupancy } = await import('./index.js');
+    const occ = new VoxelOccupancy([{ x: 16, y: 0, z: 0, size: 16, material: P }, { x: 4, y: 4, z: 4, size: 2, material: P }]);
+    expect(occ.overlaps({ x: 16, y: 0, z: 0, size: 16 })).toBe(true); // the same
+    expect(occ.overlaps({ x: 24, y: 8, z: 8, size: 4 })).toBe(true); // inside the 1 m one
+    expect(occ.overlaps({ x: 0, y: 0, z: 0, size: 8 })).toBe(true); // holds the small one
+    expect(occ.overlaps({ x: 0, y: 0, z: 0, size: 16 })).toBe(true); // holds it too
+    expect(occ.overlaps({ x: 6, y: 4, z: 4, size: 2 })).toBe(false); // beside it
+    expect(occ.overlaps({ x: 0, y: 16, z: 0, size: 16 })).toBe(false); // above
+    expect(occ.overlaps({ x: 32, y: 0, z: 0, size: 1 })).toBe(false);
+  });
+});
+
+describe('big designs and pieces of a keep', () => {
+  it('can be up to 16 m a side, checked quickly; and a piece of a keep, not also a station', async () => {
+    const { DESIGN_MAX_BLOCKS } = await import('./index.js');
+    expect(DESIGN_MAX_BLOCKS).toBe(16);
+    // A wall section 16 m wide, 8 high, 2 deep, of 1/4 m stone blocks: 16384 voxels.
+    const voxels = [];
+    for (let y = 0; y < 128; y += 4) for (let z = 0; z < 32; z += 4) for (let x = 0; x < 256; x += 4) voxels.push({ x, y, z, size: 4, material: Material.Cobblestone });
+    const wall = { id: 'wall-section', name: 'Wall section', size: [16, 8, 2], item: FIRST_DESIGN_ITEM, recipe: null, piece: 'wall', states: [{ name: 'built', voxels }] };
+    const t0 = Date.now();
+    const parsed = parseDesign(wall) as ObjectDesign;
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(parsed.piece).toBe('wall');
+    expect(parsed.states[0]!.voxels).toHaveLength(16384);
+    // Overlapping ones are still caught.
+    expect(parseDesign({ ...wall, states: [{ name: 'built', voxels: [...voxels, { x: 0, y: 0, z: 0, size: 8, material: Material.Cobblestone }] }] })).toMatch(/overlap/);
+    expect(parseDesign({ ...wall, piece: 'moat' })).toMatch(/piece/);
+    expect(parseDesign({ ...wall, role: 'furnace' })).toMatch(/not both/);
   });
 });

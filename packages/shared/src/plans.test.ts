@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanPlan, planTotals, refusePlan, type Plan } from './plans.js';
+import { cleanPlan, madeOf, planTotals, refusePlan, type Plan } from './plans.js';
 
 const plot = { x0: 100, z0: 100, x1: 300, z1: 260 };
 const wall = (over = {}) => ({ kind: 'wall' as const, id: 'w1', x0: 120, z0: 120, x1: 180, z1: 120, thickness: 2, height: 6, ...over });
@@ -22,7 +22,7 @@ describe('plans', () => {
       { elements: [wall({ thickness: 20 })] },
       { elements: [tower({ x: 102 })] }, // its radius reaches past the plot's edge
       { elements: [tower({ height: 100 })] },
-      { elements: [building({ x1: 141 })] },
+      { elements: [building({ x1: 140 })] },
       { elements: [building({ z1: 300 })] },
       { elements: [wall(), wall()] },
       { elements: [{ kind: 'moat', id: 'm' }] },
@@ -36,5 +36,23 @@ describe('plans', () => {
     const clean = cleanPlan(p);
     expect(clean.elements[0]).toEqual(wall());
     expect(planTotals(clean)).toEqual({ wallLength: 60, towers: 1, buildings: 1, floorArea: 200 });
+  });
+});
+
+describe('elements made of designs', () => {
+  const design = (size: [number, number, number]) => ({ id: 'piece', size });
+  it('take their size from the design: walls its height and depth, towers its height and footprint, buildings both', () => {
+    expect(madeOf(wall(), design([4, 8, 3]))).toEqual({ ...wall(), design: 'piece', height: 8, thickness: 3 });
+    expect(madeOf(tower(), design([10, 16, 6]))).toEqual({ ...tower(), design: 'piece', height: 16, radius: 5 });
+    expect(madeOf(building(), design([12, 5, 9]))).toEqual({ ...building(), design: 'piece', height: 5, x1: 152, z1: 149 });
+    // And back to plain: the design gone, sizes kept.
+    expect(madeOf(madeOf(wall(), design([4, 8, 3])), null)).toEqual({ ...wall(), height: 8, thickness: 3 });
+  });
+
+  it('keep the design in the plan (a good id only)', () => {
+    const p = { elements: [madeOf(wall(), design([4, 8, 3]))] };
+    expect(refusePlan(p, plot)).toBeNull();
+    expect(cleanPlan(p).elements[0]).toMatchObject({ design: 'piece' });
+    expect(refusePlan({ elements: [{ ...wall(), design: 'Bad Id!' }] }, plot)).toMatch(/design/);
   });
 });

@@ -16,8 +16,11 @@ import {
   PLAYER,
   RECIPES,
   STATIONS,
+  DESIGN_PIECES,
+  pieceName,
   stationOf,
   type DesignRole,
+  type DesignPiece,
   isBlock,
   isWater,
   itemName,
@@ -787,6 +790,35 @@ roleEl.onchange = () => {
   changed();
 };
 
+// A piece of a planned keep (see DESIGN_PIECES): what plans' walls, towers and buildings are made of.
+const pieceEl = $<HTMLSelectElement>('piece');
+pieceEl.append(new Option('no (an object of its own)', ''), ...DESIGN_PIECES.map((p) => new Option(`a ${p.name}`, p.piece)));
+pieceEl.onchange = () => {
+  const piece = (pieceEl.value || null) as DesignPiece | null;
+  editor.set((d) => {
+    if (piece) {
+      d.piece = piece;
+      // (A piece isn't a station too.)
+      delete d.role;
+    } else delete d.piece;
+  });
+  changed();
+};
+
+function renderPiece(): void {
+  const piece = editor.draft.piece;
+  pieceEl.value = piece ?? '';
+  roleEl.disabled = !!piece;
+  pieceEl.disabled = !!editor.draft.role;
+  const note = $('piece-note');
+  note.hidden = !piece;
+  if (piece) {
+    const p = DESIGN_PIECES.find((x) => x.piece === piece)!;
+    const [w, h, d] = editor.draft.size;
+    note.textContent = `As a ${p.name}: ${p.use}. This one is ${w} m wide, ${h} m high and ${d} m deep (its front, toward the outside, is +z).`;
+  }
+}
+
 /** The saved design (not this one) standing in for station `role`, if any. */
 const holderOf = (role: DesignRole) => library.find((d) => d.role === role && d.id !== editor.draft.id);
 
@@ -837,6 +869,7 @@ function ingredients(): number[] {
 function renderRecipe(): void {
   const role = editor.draft.role;
   renderRoles();
+  renderPiece();
   roleEl.value = role ?? '';
   $('role-note').hidden = $('recipe-station').hidden = !role;
   $('recipe-own').hidden = !!role;
@@ -969,7 +1002,8 @@ function renderLibrary(): void {
     li.innerHTML = '<div class="name"></div><div class="sub"></div>';
     li.querySelector('.name')!.textContent = `${name}${current && editor.dirty ? ' •' : ''}`;
     const role = current ? editor.draft.role : d.role;
-    li.querySelector('.sub')!.textContent = `${size.join(' × ')} m · ${states} state${states === 1 ? '' : 's'}${d.item === 0 ? ' · not saved' : ''}${role ? ` · the ${stationOf(role).name}` : d.item !== 0 && !d.recipe ? ' · creative only' : ''}`;
+    const piece = current ? editor.draft.piece : d.piece;
+    li.querySelector('.sub')!.textContent = `${size.join(' × ')} m · ${states} state${states === 1 ? '' : 's'}${d.item === 0 ? ' · not saved' : ''}${role ? ` · the ${stationOf(role).name}` : piece ? ` · a ${pieceName(piece)}` : d.item !== 0 && !d.recipe ? ' · creative only' : ''}`;
     li.onclick = () => d.item !== 0 && open(d);
     libraryEl.append(li);
   }
