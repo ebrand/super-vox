@@ -1,5 +1,5 @@
 import './fullscreen.js';
-import { MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, PLAN_PIECE, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, designMaterial, isWorldShape, itemName, madeOf, pieceName, planTotals, wallCap, type Claim, type ObjectDesign, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
+import { MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, PLAN_PIECE, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, designMaterial, isWorldShape, itemName, madeOf, pieceName, planTotals, capHeight, type Claim, type ObjectDesign, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
 import { planGroup } from './planView.js';
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT } from './dioramaLight.js';
@@ -537,15 +537,17 @@ function setTool(t: PlanTool): void {
 for (const b of toolButtons) b.addEventListener('click', () => setTool(b.dataset.tool as PlanTool));
 
 const describe = (e: PlanElement): string => {
-  const made = e.design ? (e.kind === 'wall' && designOf(e.design) ? ` ${designOf(e.design)!.name}` : ` (${designOf(e.design)?.name ?? 'a design no longer there'})`) : '';
-  return (e.kind === 'wall' ? `wall, ${Math.round(Math.hypot(e.x1 - e.x0, e.z1 - e.z0))} m long, ${e.height} m high${e.design && designOf(e.design) ? `, topped with` : ''}` : e.kind === 'tower' ? `tower, ${e.radius * 2} m across, ${e.height} m high` : `building, ${e.x1 - e.x0} × ${e.z1 - e.z0} m, ${e.height} m to the eaves`) + made;
+  const d = designOf(e.design);
+  // (Walls and towers are topped with their design; buildings are it.)
+  const made = !e.design ? '' : !d ? ' (a design no longer there)' : e.kind === 'building' ? ` (${d.name})` : `, topped with ${d.name}`;
+  return (e.kind === 'wall' ? `wall, ${Math.round(Math.hypot(e.x1 - e.x0, e.z1 - e.z0))} m long, ${e.height} m high` : e.kind === 'tower' ? (d ? `tower, ${d.size[0]} × ${d.size[2]} m, ${e.height} m high` : `tower, ${e.radius * 2} m across, ${e.height} m high`) : `building, ${e.x1 - e.x0} × ${e.z1 - e.z0} m, ${e.height} m to the eaves`) + made;
 };
 
 /** Draws the plan (and what's being drawn), lists it, and shows what's chosen. */
 function showPlan(): void {
   const capOf = (e: PlanElement) => {
     const d = designOf(e.design);
-    return d ? wallCap(d) : null;
+    return d ? { height: capHeight(d), width: d.size[0], depth: d.size[2] } : null;
   };
   if (diorama) diorama.showPlan(planClaim ? planGroup({ elements: drawing ? [...plan.elements, drawing] : plan.elements }, (x, z) => diorama!.groundAt(x, z), chosenEl, capOf) : null);
   planList.replaceChildren();
@@ -583,13 +585,15 @@ function showPlan(): void {
     designNote.textContent = !chosen.design
       ? fits.length ? '' : `No ${pieceName(piece)} designs yet: make one in the Object designer (as "a ${pieceName(piece)}").`
       : chosen.kind === 'wall' && made
-        ? `Its top ${wallCap(made)} m is the design; below, solid ${itemName(designMaterial(made))} as high as you make it. Its thickness is the design's.`
+        ? `Its top ${capHeight(made)} m is the design; below, solid ${itemName(designMaterial(made))} as high as you make it. Its thickness is the design's.`
+        : chosen.kind === 'tower' && made
+          ? `Its top ${capHeight(made)} m is the design; below, solid ${itemName(designMaterial(made))} as high as you make it. Its footprint (${made.size[0]} × ${made.size[2]} m) is the design's.`
         : 'Its size follows its design.';
-    // (A wall's height is still yours, down to its design's; the rest follows the design.)
-    heightEl.disabled = !!chosen.design && chosen.kind !== 'wall';
+    // (A wall's or tower's height is still yours, down to its design's; the rest follows the design.)
+    heightEl.disabled = !!chosen.design && chosen.kind === 'building';
     sizeEl.disabled = !!chosen.design;
     const L = PLAN_LIMITS[chosen.kind];
-    const least = chosen.kind === 'wall' && made ? Math.max(L.height[0], wallCap(made)) : L.height[0];
+    const least = chosen.kind !== 'building' && made ? Math.max(L.height[0], capHeight(made)) : L.height[0];
     setSlider(heightEl, [least, L.height[1]], chosen.height, 'pe-height-v');
     sizeRow.hidden = chosen.kind === 'building';
     if (chosen.kind === 'wall') {

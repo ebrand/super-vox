@@ -46,6 +46,8 @@ describe('elements made of designs', () => {
     expect(madeOf(wall(), design([4, 2, 3]))).toEqual({ ...wall(), design: 'piece', height: 6, thickness: 3 });
     expect(madeOf(wall({ height: 1 }), design([4, 2, 3]))).toEqual({ ...wall(), design: 'piece', height: 2, thickness: 3 });
     expect(madeOf(wall({ height: 12 }), design([4, 2, 3]))).toMatchObject({ height: 12 });
+    // A tower too: the design caps it (as wide as its footprint).
+    expect(madeOf(tower(), design([10, 4, 6]))).toEqual({ ...tower(), design: 'piece', height: 12, radius: 5 });
     expect(madeOf(tower(), design([10, 16, 6]))).toEqual({ ...tower(), design: 'piece', height: 16, radius: 5 });
     expect(madeOf(building(), design([12, 5, 9]))).toEqual({ ...building(), design: 'piece', height: 5, x1: 152, z1: 149 });
     // And back to plain: the design gone, sizes kept.

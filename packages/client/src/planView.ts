@@ -59,7 +59,15 @@ function groundSpan(groundAt: (x: number, z: number) => number | null, points: [
 }
 
 /** Meshes (and their edges) for one element, into `out`. */
-function elementMeshes(e: PlanElement, groundAt: (x: number, z: number) => number | null, out: THREE.Group, materials: Record<string, THREE.Material>, edgeMaterial: THREE.Material, cap: number | null): void {
+/** What a design makes of an element it tops: its height, and its footprint (m). */
+export interface PlanCap {
+  height: number;
+  width: number;
+  depth: number;
+}
+
+function elementMeshes(e: PlanElement, groundAt: (x: number, z: number) => number | null, out: THREE.Group, materials: Record<string, THREE.Material>, edgeMaterial: THREE.Material, capped: PlanCap | null): void {
+  const cap = capped?.height ?? null;
   const add = (geom: THREE.BufferGeometry, part: 'wall' | 'cap' | 'tower' | 'building' | 'roof') => {
     const mesh = new THREE.Mesh(geom, materials[part]!);
     mesh.renderOrder = 6;
@@ -92,9 +100,17 @@ function elementMeshes(e: PlanElement, groundAt: (x: number, z: number) => numbe
   } else if (e.kind === 'tower') {
     const ring: [number, number][] = [[e.x, e.z]];
     for (let k = 0; k < 8; k++) ring.push([e.x + Math.sin((k * Math.PI) / 4) * e.radius, e.z + Math.cos((k * Math.PI) / 4) * e.radius]);
+    if (capped) for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) ring.push([e.x + (sx * capped.width) / 2, e.z + (sz * capped.depth) / 2]);
     const [lo] = groundSpan(groundAt, ring), centre = groundAt(e.x, e.z) ?? lo;
     const bottom = lo - 0.5, top = centre + e.height;
-    add(new THREE.CylinderGeometry(e.radius, e.radius, top - bottom, 24).translate(e.x, (top + bottom) / 2, e.z), 'tower');
+    if (!capped) add(new THREE.CylinderGeometry(e.radius, e.radius, top - bottom, 24).translate(e.x, (top + bottom) / 2, e.z), 'tower');
+    else {
+      // Made of a design: its footprint (square-cornered), its top the design (darker), solid below.
+      const capTop = Math.min(capped.height, top - bottom), body = top - capTop;
+      const box = (y0: number, y1: number) => new THREE.BoxGeometry(capped.width, y1 - y0, capped.depth).translate(e.x, (y0 + y1) / 2, e.z);
+      add(box(bottom, body), 'tower');
+      if (capTop > 0) add(box(body, top), 'cap');
+    }
   } else {
     const corners: [number, number][] = [[e.x0, e.z0], [e.x1, e.z0], [e.x1, e.z1], [e.x0, e.z1], [(e.x0 + e.x1) / 2, (e.z0 + e.z1) / 2]];
     const [lo, hi] = groundSpan(groundAt, corners);
@@ -121,7 +137,7 @@ function elementMeshes(e: PlanElement, groundAt: (x: number, z: number) => numbe
 }
 
 /** A plan's meshes over the close-up: `chosen`, the element (by id) edged in gold. */
-export function planGroup(plan: Plan, groundAt: (x: number, z: number) => number | null, chosen: string | null, capOf: (e: PlanElement) => number | null = () => null): THREE.Group {
+export function planGroup(plan: Plan, groundAt: (x: number, z: number) => number | null, chosen: string | null, capOf: (e: PlanElement) => PlanCap | null = () => null): THREE.Group {
   const group = new THREE.Group();
   group.name = 'plan';
   const materials: Record<string, THREE.Material> = {
@@ -139,7 +155,7 @@ export function planGroup(plan: Plan, groundAt: (x: number, z: number) => number
   // (Edges over everything, so a plan's lines show through what's in front.)
   const edges = new THREE.LineBasicMaterial({ color: 0xf2ead8, transparent: true, opacity: 0.6, depthWrite: false, depthTest: false });
   const gold = new THREE.LineBasicMaterial({ color: CHOSEN, depthTest: false });
-  for (const e of plan.elements) elementMeshes(e, groundAt, group, materials, e.id === chosen ? gold : edges, e.kind === 'wall' ? capOf(e) : null);
+  for (const e of plan.elements) elementMeshes(e, groundAt, group, materials, e.id === chosen ? gold : edges, e.kind === 'building' ? null : capOf(e));
   return group;
 }
 
