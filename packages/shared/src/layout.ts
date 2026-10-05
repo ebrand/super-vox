@@ -9,8 +9,8 @@ import type { Plan, PlanElement } from './plans.js';
  * A plan laid out (see Plan): every block of what it means to build, exact. Walls are their
  * design (a piece of wall, its top) repeated along them, square to the nearest of the four
  * directions (a wall drawn at an angle: a staircase of pieces), its front (as drawn, its +Z side)
- * away from the plot's middle unless the wall is flipped, solid below it down into the ground;
- * towers their design on top, below it straight down what its bottom layer is; buildings their
+ * away from the plot's middle unless the wall is flipped; towers their design on top; below
+ * both, their design's bottom layer repeated straight down into the ground; buildings their
  * design, on a foundation. Elements of no design are plain stone. Each piece stands on the ground
  * where it is, so walls step with it. Positions are blocks (metres), y up.
  */
@@ -23,8 +23,10 @@ const FRONT: Record<'+z' | '-x' | '-z' | '+x', Facing> = { '+z': 'n', '-x': 'e',
 
 /**
  * A design as a piece of a keep, turned to `facing`: the whole blocks its voxels take (see
- * designExtent; not the box it was drawn in), each block's voxels, and its bottom layer as
- * columns (see designBase).
+ * designExtent; not the box it was drawn in), each block's voxels, and its bottom layer (its
+ * lowest voxels, at their own sizes) as each column's block of it repeated up a whole block: what's
+ * built below it, straight down. (Where the bottom layer starts partway up its lowest blocks,
+ * those are filled below it the same way, so nothing's left open between the two.)
  */
 export interface LayoutPiece {
   /** Blocks along x, y and z, turned. */
@@ -32,6 +34,8 @@ export interface LayoutPiece {
   blocks: { dx: number; dy: number; dz: number; block: Block }[];
   /** Columns (dx + span[0] * dz) its lowest layer of voxels stands on. */
   base: Uint8Array;
+  /** Per column (as base): its bottom layer repeated up a whole block; null where there's none. */
+  body: Block[];
   material: MaterialId;
 }
 
@@ -59,6 +63,15 @@ function makePiece(design: LayoutDesign, facing: Facing): LayoutPiece | null {
     voxels = voxels.map((v) => ({ ...v, x: depth - v.z - v.size, z: v.x }));
     [w, d] = [d, w];
   }
+  // The bottom layer, per column, repeated up a block (block-local); and under it, in its lowest blocks.
+  const footing: BlockVoxel[][] = Array.from({ length: w * d }, () => []);
+  for (const v of voxels) {
+    if (v.y !== bottom) continue;
+    const dx = Math.floor(v.x / B), dz = Math.floor(v.z / B), x = v.x - dx * B, z = v.z - dz * B;
+    for (let y = 0; y < B; y += v.size) footing[dx + w * dz]!.push({ x, y, z, size: v.size, material: v.material });
+  }
+  const below = footing.flatMap((list, i) => list.filter((v) => v.y < bottom).map((v) => ({ ...v, x: v.x + (i % w) * B, z: v.z + Math.floor(i / w) * B })));
+  voxels = [...below, ...voxels];
   const local = new Map<number, BlockVoxel[]>();
   const base = new Uint8Array(w * d);
   for (const v of voxels) {
@@ -67,10 +80,10 @@ function makePiece(design: LayoutDesign, facing: Facing): LayoutPiece | null {
     let list = local.get(k);
     if (!list) local.set(k, (list = []));
     list.push({ ...v, x: v.x - dx * B, y: v.y - dy * B, z: v.z - dz * B });
-    if (v.y === bottom) base[dx + w * dz] = 1;
+    if (v.y <= bottom) base[dx + w * dz] = 1;
   }
   const blocks = [...local].map(([k, list]) => ({ dx: k % w, dz: Math.floor(k / w) % d, dy: Math.floor(k / (w * d)), block: blockFromVoxels(list) }));
-  return { span: [w, h, d], blocks, base, material: designMaterial(design as ObjectDesign) };
+  return { span: [w, h, d], blocks, base, body: footing.map((list) => blockFromVoxels(list)), material: designMaterial(design as ObjectDesign) };
 }
 
 /** Which way a wall's design faces (see Facing): its front away from the plot's middle (or toward it, flipped). */
@@ -98,6 +111,16 @@ export class Layout {
         if (keep && !keep(x, z)) continue;
         for (let y = y0; y < y1; y++) this.cells.set(`${x},${y},${z}`, { solid: material });
       }
+  }
+
+  /** A piece's body (see LayoutPiece.body) with its least corner at block (x, z), from y0 up to y1 (blocks). */
+  body(p: LayoutPiece, x: number, y0: number, z: number, y1: number, keep?: (x: number, z: number) => boolean): void {
+    const w = p.span[0];
+    p.body.forEach((block, i) => {
+      const bx = x + (i % w), bz = z + Math.floor(i / w);
+      if (!block || (keep && !keep(bx, bz))) return;
+      for (let y = y0; y < y1; y++) this.cells.set(`${bx},${y},${bz}`, { block });
+    });
   }
 
   /** Places a piece with its least corner at block (x, y, z): into empty blocks, and beside what's there in others (not over it). */
@@ -221,7 +244,8 @@ export function layoutPlan(plan: Plan, plot: { x0: number; z0: number; x1: numbe
       for (const s of wallSections(e, along, across)) {
         const [lo, hi] = groundUnder(groundAt, s.x, s.z, s.x + sx, s.z + sz, outsideTowers);
         const bottom = Math.floor(lo) - LAYOUT_FOOTING, top = Math.ceil(hi) + e.height, capAt = Math.max(bottom, top - sy);
-        out.solid(s.x, bottom, s.z, s.x + sx, capAt, s.z + sz, p?.material ?? Material.Stone, outsideTowers);
+        if (p) out.body(p, s.x, bottom, s.z, capAt, outsideTowers);
+        else out.solid(s.x, bottom, s.z, s.x + sx, capAt, s.z + sz, Material.Stone, outsideTowers);
         if (p) tops.push(() => out.piece(p, s.x, capAt, s.z, outsideTowers));
       }
     } else if (e.kind === 'tower') {
@@ -231,7 +255,7 @@ export function layoutPlan(plan: Plan, plot: { x0: number; z0: number; x1: numbe
         const onBase = (bx: number, bz: number) => !!p.base[bx - x + w * (bz - z)];
         const [lo, hi] = groundUnder(groundAt, x, z, x + w, z + d, onBase);
         const bottom = Math.floor(lo) - LAYOUT_FOOTING, top = Math.ceil(hi) + e.height, capAt = Math.max(bottom, top - h);
-        out.solid(x, bottom, z, x + w, capAt, z + d, p.material, onBase);
+        out.body(p, x, bottom, z, capAt);
         tops.push(() => out.piece(p, x, capAt, z));
       } else {
         const r = e.radius, x0 = Math.floor(e.x - r), z0 = Math.floor(e.z - r), x1 = Math.ceil(e.x + r), z1 = Math.ceil(e.z + r);

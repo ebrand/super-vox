@@ -1,5 +1,5 @@
 import './fullscreen.js';
-import { FACING_OUT, MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, PLAN_PIECE, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, designBase, designMaterial, isWorldShape, itemName, madeOf, pieceName, pieceSize, planTotals, capHeight, layoutPlan, wallFacing, type Claim, type ObjectDesign, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
+import { FACING_OUT, MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, PLAN_PIECE, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, designBase, isWorldShape, madeOf, pieceName, pieceSize, planTotals, capHeight, layoutPlan, wallFacing, type Claim, type ObjectDesign, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
 import { planGroup } from './planView.js';
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT } from './dioramaLight.js';
@@ -597,9 +597,9 @@ function showPlan(): void {
     designNote.textContent = !chosen.design
       ? fits.length ? '' : `No ${pieceName(piece)} designs yet: make one in the Object designer (as "a ${pieceName(piece)}").`
       : chosen.kind === 'wall' && made
-        ? `Its top ${capHeight(made)} m is the design; below, solid ${itemName(designMaterial(made))} as high as you make it. Its thickness is the design's.`
+        ? `Its top ${capHeight(made)} m is the design; below, as high as you make it, its bottom layer repeated straight down. Its thickness is the design's.`
         : chosen.kind === 'tower' && made
-          ? `Its top ${capHeight(made)} m is the design; below, as high as you make it, ${itemName(designMaterial(made))} as the design's bottom layer is (a ring there: a round tower that thick). Its footprint (${pieceSize(made)[0]} × ${pieceSize(made)[2]} m) is the design's.`
+          ? `Its top ${capHeight(made)} m is the design; below, as high as you make it, its bottom layer repeated straight down (a ring there: a round tower that thick). Its footprint (${pieceSize(made)[0]} × ${pieceSize(made)[2]} m) is the design's.`
         : 'Its size follows its design.';
     // (A wall's or tower's height is still yours, down to its design's; the rest follows the design.)
     flipRow.hidden = chosen.kind !== 'wall' || !made;

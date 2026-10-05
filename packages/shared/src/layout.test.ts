@@ -138,6 +138,32 @@ describe('layout', () => {
     expect(material(plain, 146, 15, 150)).toBeNull(); // outside its 3 m radius
   });
 
+  it('builds below a top its bottom layer, at its own voxel sizes, repeated down (and under it, where it starts partway up)', () => {
+    // A thin ring-like wall: its bottom layer half-metre voxels (pale) along the front half of each
+    // column, starting a half metre up its block; stone 1 m voxels above.
+    const voxels: BlockVoxel[] = [];
+    for (let x = 0; x < 4; x++) {
+      for (const hx of [0, 8]) voxels.push({ x: x * B + hx, y: 8, z: 8, size: 8, material: F });
+      voxels.push(cube(x, 1, 0));
+    }
+    const thin: LayoutDesign = { id: 'thin', size: [4, 2, 1], states: [{ name: 's', voxels }] };
+    const p = layoutPiece(thin, 'n')!;
+    expect(p.span).toEqual([4, 2, 1]);
+    // Each column's body: two half-metre voxels across, two up, in its front half (z 8).
+    const body = blockVoxels(p.body[0]!);
+    expect(body.map((v) => [v.x, v.y, v.z, v.size, v.material]).sort()).toEqual([[0, 0, 8, 8, F], [0, 8, 8, 8, F], [8, 0, 8, 8, F], [8, 8, 8, 8, F]].sort());
+    // Its lowest block filled under the bottom layer too (y 0 under y 8).
+    const lowest = p.blocks.find((b) => b.dx === 0 && b.dy === 0)!;
+    expect(blockVoxels(lowest.block).filter((v) => v.y === 0 && v.size === 8)).toHaveLength(2);
+    // Laid out (facing south, turned half about: the front half at z 0): the body is that, not solid metres.
+    const l = layoutPlan({ elements: [wall({ design: 'thin', thickness: 1 })] }, plot, (id) => (id === 'thin' ? thin : undefined), flat);
+    const sec = wallSections(wall() as Extract<PlanElement, { kind: 'wall' }>, 4, 1)[0]!;
+    const b = l.blockAt(sec.x, 12, sec.z)!;
+    expect(blockVoxels(b).map((v) => [v.size, v.z, v.material])).toEqual([[8, 0, F], [8, 0, F], [8, 0, F], [8, 0, F]]);
+    expect(material(l, sec.x, 9, sec.z)).toBe(F); // down into the ground
+    expect(material(l, sec.x, 8, sec.z)).toBeNull();
+  });
+
   it('keeps walls out of the towers they run into', () => {
     const t: PlanElement = { kind: 'tower', id: 't', x: 130, z: 120, radius: 3, height: 12, design: 'ring' };
     const l = lay([wall(), t]);
