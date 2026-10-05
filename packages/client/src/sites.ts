@@ -5,7 +5,7 @@ import { DEFAULT_SITE_SEARCH, SITE_LIMITS, WORLD_SHAPES, isWorldShape, validateS
 import type { SitesRequest, SitesResponse } from './sites.worker.js';
 
 /**
- * The castle site finder page: pick a world and what makes a good site; a worker rebuilds the
+ * The site finder page: pick a world and what makes a good site; a worker rebuilds the
  * world's terrain and ranks hilltops near water (findSites); each result links into the game.
  * The settings live in the URL's hash, so a search can be bookmarked or shared.
  */
@@ -177,7 +177,13 @@ function showSites(world: WorldInfo, sites: CastleSite[], crops: Uint8ClampedArr
     go.className = 'go';
     go.href = `/play.html?world=${encodeURIComponent(world.name)}&x=${s.x}&z=${s.z}`;
     go.textContent = 'Go there';
-    head.append(rank, title, go);
+    // (Claims, looking at the site, a plot marked out around it: see claim.ts.)
+    const claim = document.createElement('a');
+    claim.className = 'claim';
+    claim.href = `/claim.html#world=${encodeURIComponent(world.name)}&site=${s.x},${s.z}&rank=${s.rank}`;
+    claim.textContent = 'Make a Claim';
+    claim.title = 'Open Claims at this site, with a plot marked out around it';
+    head.append(rank, title, go, claim);
     const tags = document.createElement('div');
     tags.className = 'tags';
     const tag = (text: string, kind = '') => {

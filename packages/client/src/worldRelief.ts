@@ -195,14 +195,18 @@ export class WorldRelief {
     this.placeRects();
   }
 
-  /** Moves the view (as it is: as far off, from the same side) to look at world point (x, z) (units). */
-  lookAt(x: number, z: number): void {
+  /**
+   * Moves the view (from the same side) to look at world point (x, z) (units): as far off as it is,
+   * or `distance` metres off.
+   */
+  lookAt(x: number, z: number, distance?: number): void {
     const t = this.controls.target, tx = x / UNITS_PER_METER, tz = z / UNITS_PER_METER, ty = Math.max(0, this.surfaceY(x, z));
     const dx = tx - t.x, dy = ty - t.y, dz = tz - t.z;
     t.set(tx, ty, tz);
     this.camera.position.x += dx;
     this.camera.position.y += dy;
     this.camera.position.z += dz;
+    if (distance !== undefined) this.camera.position.sub(t).setLength(distance).add(t);
     this.controls.update();
   }
 

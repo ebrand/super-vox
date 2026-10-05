@@ -1,8 +1,9 @@
 import './header.js';
 import './fullscreen.js';
 import './envBadge.js';
-import { FACING_OUT, MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, PLAN_PIECE, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, designBase, isWorldShape, madeOf, pieceName, pieceSize, planTotals, capHeight, layoutPlan, wallFacing, type Claim, type ObjectDesign, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
+import { FACING_OUT, MAX_CLAIM_SIDE, MIN_CLAIM_SIDE, PLAN_LIMITS, PLAN_PIECE, UNITS_PER_METER, WORLD_SHAPES, decodeClimate, designBase, isWorldShape, madeOf, pieceName, pieceSize, planTotals, capHeight, layoutPlan, wallFacing, claimsOverlap, type Claim, type ObjectDesign, type Plan, type PlanElement, type TerrainStroke, type VoxelizeConfig, type WorldShape } from '@super-vox/shared';
 import { planGroup } from './planView.js';
+import { plotAround, siteOf } from './claimSite.js';
 import { Diorama } from './diorama.js';
 import { DEFAULT_DIORAMA_LIGHT } from './dioramaLight.js';
 import type { TerraformRequest, TerraformResponse } from './terraform.worker.js';
@@ -897,6 +898,20 @@ function frame(): void {
 }
 requestAnimationFrame(frame);
 
+/** Looks at a site, with a plot (see plotAround) marked out around it (inside the world) to claim. */
+function markSite(site: { x: number; z: number; rank: number | null }): void {
+  if (!relief) return;
+  const w = worldOf();
+  selection = plotAround(site, w.widthUnits / UNITS_PER_METER, w.depthUnits / UNITS_PER_METER);
+  const side = selection.x1 - selection.x0;
+  chosen = null;
+  relief.lookAt(site.x * UNITS_PER_METER, site.z * UNITS_PER_METER, 1800);
+  if (!nameEl.value) nameEl.value = site.rank ? `Site ${site.rank}` : 'New site';
+  showSelection();
+  const over = claims.find((c) => claimsOverlap(c, selection!));
+  status(over ? `That site is in "${over.name}" (${over.ownerName}'s claim): mark out a plot beside it.` : `Site${site.rank ? ` ${site.rank}` : ''} at x ${Math.round(site.x)}, z ${Math.round(site.z)} m: a ${side} m plot is marked out around it. Claim it, or ⌘-drag (Ctrl-drag) another.`, !!over);
+}
+
 async function start(): Promise<void> {
   try {
     const res = await fetch('/api/worlds');
@@ -906,11 +921,15 @@ async function start(): Promise<void> {
     worlds = body.worlds.filter((w) => w.spec.generator === 'plates');
     if (worlds.length === 0) return status('No plate worlds here.', true);
     worldEl.replaceChildren(...worlds.map((w) => new Option(w.name, w.name)));
-    const asked = new URLSearchParams(location.hash.slice(1)).get('world');
+    const hash = new URLSearchParams(location.hash.slice(1));
+    const asked = hash.get('world');
     const pick = [asked, body.default].find((n) => n && worlds.some((w) => w.name === n)) ?? worlds[0]!.name;
     worldEl.value = pick;
     worldEl.disabled = false;
+    // (A site from the site finder: #site=x,z&rank=n. Read before opening the world puts its own hash.)
+    const site = siteOf(hash);
     await openWorld(pick);
+    if (site && pick === asked && current === pick) markSite(site);
   } catch (err) {
     status(`Couldn't list the worlds: ${(err as Error).message}`, true);
   }

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SuperVoxel castle site finder</title>
+    <title>SuperVoxel site finder</title>
     <style>
       :root { color-scheme: dark; --bg: #0b0d10; --panel: #14181d; --line: #262c34; --text: #e6e6e6; --dim: #8b949e; --accent: #6cb6ff; --bad: #ff7b72; --good: #7ee787; --pin: #e5484d; --cold: #79c0ff; }
       * { box-sizing: border-box; }
@@ -50,6 +50,8 @@
       .coords { font: 12px ui-monospace, monospace; color: var(--dim); font-variant-numeric: tabular-nums; }
       .go { margin-left: auto; background: #1f6feb; color: #fff; text-decoration: none; padding: 3px 10px; border-radius: 4px; font-size: 12px; }
       .go:hover { background: #388bfd; }
+      .claim { background: #21262d; color: #e6e6e6; text-decoration: none; padding: 3px 10px; border-radius: 4px; font-size: 12px; border: 1px solid #30363d; white-space: nowrap; }
+      .claim:hover { border-color: #8b949e; }
       .tags { display: flex; gap: 4px; flex-wrap: wrap; }
       .tag { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: #21262d; color: var(--dim); }
       .tag.good { color: var(--good); } .tag.cold { color: var(--cold); }
@@ -65,9 +67,9 @@
     </style>
   </head>
   <body>
-    <header id="sv-header" data-title="Castle site finder"></header>
+    <header id="sv-header" data-title="Site Finder"></header>
     <div id="panel">
-      <h1>Castle site finder</h1>
+      <h1>Site Finder</h1>
       <p>Hilltops near a river: flat on top, falling away on most sides, with a gentler way up. Ranked best first.</p>
       <form id="form" autocomplete="off">
         <div class="field"><label for="world">World</label><div class="value"><select id="world" disabled><option>loading…</option></select></div></div>
