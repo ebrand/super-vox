@@ -26,6 +26,7 @@ import {
   type WorldShape,
   PlateStageCache,
   type PlateStages,
+  type Claim,
 } from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
 import { createHash } from 'node:crypto';
@@ -35,7 +36,7 @@ import { GenPool, startWorker } from './genPool.js';
 import { buildFile, loadBuild, saveBuild } from './plateBuilds.js';
 import type { BuildJob } from './buildWorker.js';
 import { World, tileBytes } from './world.js';
-import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, readStrokes, readWorld, saveClock, saveMode, updateWorld, worldConfigOf, writeStrokes, type WorldFile, type WorldSpec } from './worldFile.js';
+import { NoSuchWorldError, countEdits, createWorld, deleteWorld, generatorFor, inventoryKeyOf, listWorlds, modeOf, readClaims, readStrokes, readWorld, saveClock, saveMode, updateWorld, worldConfigOf, writeClaims, writeStrokes, type WorldFile, type WorldSpec } from './worldFile.js';
 
 /** What the HTTP API shows about a world. */
 export type WorldSummary = Pick<WorldFile, 'name' | 'createdAt' | 'updatedAt' | 'spec'> & {
@@ -97,6 +98,9 @@ export interface WorldCatalog {
    * Throws NoSuchWorldError. Absent where not allowed.
    */
   terraform?: (name: string, base: number, added: readonly TerrainStroke[]) => number;
+  /** World `name`'s claims (see Claim), and saving them; null if there's no such world. Absent where not kept. */
+  claims?: (name: string) => Claim[] | null;
+  saveClaims?: (name: string, claims: readonly Claim[]) => void;
 }
 
 /** Bumped when what the disk cache holds changes form. */
@@ -333,6 +337,15 @@ export class FileWorldCatalog implements WorldCatalog {
 
   private summary(f: WorldFile): WorldSummary {
     return { name: f.name, createdAt: f.createdAt, ...(f.updatedAt ? { updatedAt: f.updatedAt } : {}), spec: f.spec, editedChunks: countEdits(this.dataRoot, f.name), strokes: this.strokes(f.name)?.length ?? 0, mode: modeOf(f) };
+  }
+
+  claims(name: string): Claim[] | null {
+    if (!isValidWorldName(name) || !readWorld(this.dataRoot, name)) return null;
+    return readClaims(this.dataRoot, name);
+  }
+
+  saveClaims(name: string, claims: readonly Claim[]): void {
+    writeClaims(this.dataRoot, name, claims);
   }
 
   strokes(name: string): TerrainStroke[] | null {

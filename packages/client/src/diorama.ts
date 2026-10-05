@@ -204,6 +204,44 @@ export class Diorama {
     this.water.uniforms.bottomStep.value = step / UNITS_PER_METER;
     this.placeBrush();
     this.placeProtected();
+    this.placeOutlines();
+  }
+
+  /** Rectangles (metres: corners; e.g. claimed plots) outlined on the ground, each in its colour. */
+  setOutlines(rects: readonly { x0: number; z0: number; x1: number; z1: number; color: number }[]): void {
+    this.outlineRects = rects;
+    this.placeOutlines();
+  }
+
+  private outlineRects: readonly { x0: number; z0: number; x1: number; z1: number; color: number }[] = [];
+  private readonly outlines = new THREE.Group();
+
+  private placeOutlines(): void {
+    for (const l of [...this.outlines.children] as LineSegments2[]) {
+      l.geometry.dispose();
+      l.material.dispose();
+      this.outlines.remove(l);
+    }
+    if (!this.field) return;
+    if (!this.outlines.parent) this.scene.add(this.outlines);
+    const y = (x: number, z: number) => (this.groundAt(x, z) ?? 0) + 0.6;
+    for (const r of this.outlineRects) {
+      const pts: number[] = [];
+      const sides: [number, number, number, number][] = [[r.x0, r.z0, r.x1, r.z0], [r.x1, r.z0, r.x1, r.z1], [r.x1, r.z1, r.x0, r.z1], [r.x0, r.z1, r.x0, r.z0]];
+      for (const [ax, az, bx, bz] of sides) {
+        // In 2 m pieces, draped over the ground.
+        const n = Math.max(1, Math.round(Math.hypot(bx - ax, bz - az) / 2));
+        for (let k = 0; k < n; k++) {
+          const px = ax + ((bx - ax) * k) / n, pz = az + ((bz - az) * k) / n, qx = ax + ((bx - ax) * (k + 1)) / n, qz = az + ((bz - az) * (k + 1)) / n;
+          pts.push(px, y(px, pz), pz, qx, y(qx, qz), qz);
+        }
+      }
+      const line = new LineSegments2(new LineSegmentsGeometry().setPositions(pts), new LineMaterial({ color: r.color, linewidth: 3, depthTest: false, transparent: true }));
+      line.layers.set(OVERLAY_LAYER);
+      line.renderOrder = 9;
+      line.frustumCulled = false;
+      this.outlines.add(line);
+    }
   }
 
   /** Squares (metres: corner and size) where players have built, outlined in red on the ground. */

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
@@ -70,6 +71,11 @@ import {
   type SavedVitals,
   type ServerMessage,
   type WorldShape,
+  MAX_CLAIMS_EACH,
+  MAX_CLAIM_NAME,
+  claimsOverlap,
+  refuseClaimRect,
+  type Claim,
 } from '@super-vox/shared';
 import type { WebSocket } from 'ws';
 import { encodeWorldMap, type EditResult, type World } from './world.js';
@@ -359,6 +365,57 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     }
     evict(name, 'world_terraformed', `the land of "${name}" was reshaped`);
     return reply.send({ strokes: total });
+  });
+
+  // A world's claims (see Claim), for everyone: `you`, the asker's account id (null signed out,
+  // or on a server without sign-in, where claims belong to no one), and whether they may claim.
+  const claimer = async (req: FastifyRequest): Promise<{ id: string | null; name: string } | null> => {
+    if (!opts.auth) return catalog.dev ? { id: null, name: 'anyone' } : null;
+    const s = await opts.auth.signedIn(req.cookies);
+    return s ? { id: s.account.id, name: s.account.name } : null;
+  };
+  app.get<{ Params: { name: string } }>('/api/worlds/:name/claims', async (req, reply) => {
+    const claims = catalog.claims?.(req.params.name) ?? null;
+    if (!claims) return reply.code(catalog.claims ? 404 : 403).send({ error: catalog.claims ? 'no such world' : 'claims are not kept on this server' });
+    const who = await claimer(req);
+    return { claims, you: who?.id ?? null, canClaim: who !== null };
+  });
+
+  // Claims a plot: body { name, x0, z0, x1, z1 } (metres). Signed-in players (anyone on a
+  // development server without sign-in); not over another claim, at most MAX_CLAIMS_EACH each.
+  app.post<{ Params: { name: string }; Body: unknown }>('/api/worlds/:name/claims', async (req, reply) => {
+    const { name } = req.params;
+    const claims = catalog.claims?.(name) ?? null;
+    if (!claims || !catalog.saveClaims) return reply.code(404).send({ error: 'no such world' });
+    const who = await claimer(req);
+    if (!who) return reply.code(403).send({ error: 'sign in (on the menu page) to claim land' });
+    const world = catalog.get(name);
+    if (!world) return reply.code(404).send({ error: 'no such world' });
+    const b = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as Record<string, unknown>;
+    const plotName = typeof b.name === 'string' ? b.name.trim().slice(0, MAX_CLAIM_NAME) : '';
+    if (!plotName) return reply.code(400).send({ error: 'give it a name' });
+    const rect = { x0: b.x0, z0: b.z0, x1: b.x1, z1: b.z1 } as { x0: number; z0: number; x1: number; z1: number };
+    const why = refuseClaimRect(rect, world.config.widthUnits / UNITS_PER_METER, world.config.depthUnits / UNITS_PER_METER);
+    if (why) return reply.code(400).send({ error: why });
+    const over = claims.find((c) => claimsOverlap(c, rect));
+    if (over) return reply.code(409).send({ error: `that land overlaps "${over.name}" (${over.ownerName}'s)` });
+    if (who.id !== null && claims.filter((c) => c.owner === who.id).length >= MAX_CLAIMS_EACH) return reply.code(409).send({ error: `you have ${MAX_CLAIMS_EACH} claims here already: give one up first` });
+    const claim: Claim = { id: randomUUID(), name: plotName, owner: who.id, ownerName: who.name, ...rect, at: Date.now() };
+    catalog.saveClaims(name, [...claims, claim]);
+    return { claim };
+  });
+
+  // Gives up a claim: its owner (or an operator).
+  app.delete<{ Params: { name: string; id: string } }>('/api/worlds/:name/claims/:id', async (req, reply) => {
+    const { name, id } = req.params;
+    const claims = catalog.claims?.(name) ?? null;
+    if (!claims || !catalog.saveClaims) return reply.code(404).send({ error: 'no such world' });
+    const claim = claims.find((c) => c.id === id);
+    if (!claim) return reply.code(404).send({ error: 'no such claim' });
+    const who = await claimer(req);
+    if (!(await operator(req)) && (!who || who.id === null || who.id !== claim.owner)) return reply.code(403).send({ error: "it isn't yours to give up" });
+    catalog.saveClaims(name, claims.filter((c) => c.id !== id));
+    return { ok: true };
   });
 
   // Operators only: create a plate world. Body: { name, plates, shape?, mode? }.

@@ -638,6 +638,56 @@ describe('named worlds', () => {
     expect((await a.inject({ method: 'GET', url: '/api/dashboard' })).statusCode).toBe(403);
   });
 
+  it('keeps claims: signed-in players claim plots (not over another, within the world), give up only their own', async () => {
+    const secret = 'q'.repeat(40);
+    const accounts = new MemoryAccountStore();
+    const auth = new Auth({ googleClientId: 'c', googleClientSecret: 's', sessionSecret: secret, adminEmails: ['boss@x.com'], secureCookies: false }, accounts);
+    const { a, root } = await catalogApp(false, auth);
+    const cookieFor = async (email: string) => {
+      const acct = await accounts.signIn({ sub: email, email, name: email });
+      return { cookie: `${SESSION_COOKIE}=${sessionToken(acct.id, Date.now() + 1e6, secret)}`, id: acct.id };
+    };
+    const ann = await cookieFor('ann@x.com'), bob = await cookieFor('bob@x.com'), boss = await cookieFor('boss@x.com');
+    const claim = (who: { cookie: string } | null, body: object) => a.inject({ method: 'POST', url: '/api/worlds/home/claims', payload: body, ...(who ? { headers: { cookie: who.cookie } } : {}) });
+    const list = (who?: { cookie: string }) => a.inject({ method: 'GET', url: '/api/worlds/home/claims', ...(who ? { headers: { cookie: who.cookie } } : {}) });
+    expect((await list()).json()).toEqual({ claims: [], you: null, canClaim: false });
+    expect((await claim(null, { name: 'x', x0: 0, z0: 0, x1: 100, z1: 100 })).statusCode).toBe(403);
+    const made = await claim(ann, { name: '  Ann\'s keep  ', x0: 1000, z0: 1000, x1: 1200, z1: 1100 });
+    expect(made.statusCode).toBe(200);
+    expect(made.json().claim).toMatchObject({ name: "Ann's keep", owner: ann.id, ownerName: 'ann@x.com', x0: 1000, x1: 1200 });
+    // Over Ann's: refused, saying whose; beside it: fine.
+    const over = await claim(bob, { name: 'b', x0: 1100, z0: 1050, x1: 1300, z1: 1300 });
+    expect(over.statusCode).toBe(409);
+    expect(over.json().error).toContain("Ann's keep");
+    expect((await claim(bob, { name: 'b', x0: 1200, z0: 1000, x1: 1300, z1: 1100 })).statusCode).toBe(200);
+    // Too big, too small, out of the world, half metres, no name.
+    for (const bad of [{ x0: 0, z0: 0, x1: 5000, z1: 100 }, { x0: 0, z0: 0, x1: 10, z1: 100 }, { x0: -10, z0: 0, x1: 100, z1: 100 }, { x0: 0.5, z0: 0, x1: 100, z1: 100 }])
+      expect((await claim(ann, { name: 'x', ...bad })).statusCode).toBe(400);
+    expect((await claim(ann, { name: '  ', x0: 0, z0: 0, x1: 100, z1: 100 })).statusCode).toBe(400);
+    const seen = (await list(ann)).json();
+    expect(seen.claims).toHaveLength(2);
+    expect(seen).toMatchObject({ you: ann.id, canClaim: true });
+    // Kept on disk.
+    expect(JSON.parse(readFileSync(join(root, 'home', 'claims.json'), 'utf8'))).toHaveLength(2);
+    // Giving up: Bob can't give up Ann's; an admin can; Ann her own.
+    const annsId = made.json().claim.id as string;
+    const drop = (who: { cookie: string }, id: string) => a.inject({ method: 'DELETE', url: `/api/worlds/home/claims/${id}`, headers: { cookie: who.cookie } });
+    expect((await drop(bob, annsId)).statusCode).toBe(403);
+    expect((await drop(ann, annsId)).statusCode).toBe(200);
+    const bobs = (await list()).json().claims[0].id as string;
+    expect((await drop(boss, bobs)).statusCode).toBe(200);
+    expect((await list()).json().claims).toEqual([]);
+  });
+
+  it('lets anyone claim on a development server without sign-in (claims belonging to no one)', async () => {
+    const { a } = await catalogApp(true);
+    const r = await a.inject({ method: 'POST', url: '/api/worlds/home/claims', payload: { name: 'test', x0: 0, z0: 0, x1: 64, z1: 64 } });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().claim).toMatchObject({ owner: null, ownerName: 'anyone' });
+    expect((await a.inject({ method: 'GET', url: '/api/worlds/home/claims' })).json().canClaim).toBe(true);
+    expect((await a.inject({ method: 'GET', url: '/api/worlds/nope/claims' })).statusCode).toBe(404);
+  });
+
   it('refuses clock changes on production servers', async () => {
     const { a } = await catalogApp(false);
     expect((await a.inject({ method: 'PUT', url: '/api/worlds/home/clock', payload: { hours: 3 } })).statusCode).toBe(403);

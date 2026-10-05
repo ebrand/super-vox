@@ -12,6 +12,18 @@ export interface ReliefPoint {
   z: number;
   height: number;
   material: number;
+  /** Exactly where the ray met the ground (units; x within the world), not the map sample's middle. */
+  hitX: number;
+  hitZ: number;
+}
+
+/** A rectangle drawn on the relief (see setRects): corners in metres, and its colour. */
+export interface ReliefRect {
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+  color: number;
 }
 
 /** Heights are drawn this many times taller by default: true to life (the slider exaggerates them). */
@@ -52,6 +64,9 @@ export class WorldRelief {
   private readonly frameLine: THREE.LineLoop;
   private frameSize: number | null = null;
   private frameAt = '';
+  /** Rectangles drawn on the ground (see setRects): what was asked for, and their lines. */
+  private rectList: readonly ReliefRect[] = [];
+  private readonly rectLines = new THREE.Group();
   private readonly miniatureFx: MiniatureEffect;
   /** Each map sample's colour, a texel apiece (sRGB). */
   private readonly colors: THREE.DataTexture;
@@ -138,6 +153,7 @@ export class WorldRelief {
     this.frameLine.frustumCulled = false;
     this.frameLine.visible = false;
     this.scene.add(this.frameLine);
+    this.scene.add(this.rectLines);
 
     this.camera = new THREE.PerspectiveCamera(45, 1, 10, Math.max(this.width, this.depth) * 8);
     this.controls = new MapControls(this.camera, this.canvas);
@@ -173,6 +189,53 @@ export class WorldRelief {
     this.frameAt = '';
   }
 
+  /** Draws these rectangles (metres) on the ground, each in its colour; replaces those drawn before. */
+  setRects(rects: readonly ReliefRect[]): void {
+    this.rectList = rects;
+    this.placeRects();
+  }
+
+  /** Moves the view (as it is: as far off, from the same side) to look at world point (x, z) (units). */
+  lookAt(x: number, z: number): void {
+    const t = this.controls.target, tx = x / UNITS_PER_METER, tz = z / UNITS_PER_METER, ty = Math.max(0, this.surfaceY(x, z));
+    const dx = tx - t.x, dy = ty - t.y, dz = tz - t.z;
+    t.set(tx, ty, tz);
+    this.camera.position.x += dx;
+    this.camera.position.y += dy;
+    this.camera.position.z += dz;
+    this.controls.update();
+  }
+
+  /** Whether dragging moves the view (off while something else uses the drag, e.g. marking out a plot). */
+  set panning(on: boolean) {
+    this.controls.enabled = on;
+  }
+
+  private placeRects(): void {
+    for (const l of [...this.rectLines.children] as THREE.LineLoop[]) {
+      l.geometry.dispose();
+      (l.material as THREE.Material).dispose();
+      this.rectLines.remove(l);
+    }
+    for (const r of this.rectList) {
+      // Each side in pieces (at most 64 a side), draped over the ground.
+      const pts: number[] = [];
+      const corners = [[r.x0, r.z0], [r.x1, r.z0], [r.x1, r.z1], [r.x0, r.z1]] as const;
+      for (let k = 0; k < 4; k++) {
+        const [ax, az] = corners[k]!, [bx, bz] = corners[(k + 1) % 4]!;
+        const per = Math.max(2, Math.min(64, Math.round(Math.hypot(bx - ax, bz - az) / 16)));
+        for (let i = 0; i < per; i++) {
+          const x = ax + ((bx - ax) * i) / per, z = az + ((bz - az) * i) / per;
+          pts.push(x, Math.max(this.surfaceY(x * UNITS_PER_METER, z * UNITS_PER_METER), 0) + 1, z);
+        }
+      }
+      const line = new THREE.LineLoop(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)), new THREE.LineBasicMaterial({ color: r.color, depthTest: false }));
+      line.renderOrder = 10;
+      line.frustumCulled = false;
+      this.rectLines.add(line);
+    }
+  }
+
   /** The point in the middle of the view (units; x within the world). */
   focus(): { x: number; z: number } {
     const t = this.controls.target;
@@ -186,6 +249,7 @@ export class WorldRelief {
     const ratio = factor / this.exaggeration;
     this.exaggeration = factor;
     this.placeVertices();
+    this.placeRects();
     // Keep looking at the same ground, from as far above it.
     const before = this.controls.target.y;
     this.controls.target.y *= ratio;
@@ -273,7 +337,7 @@ export class WorldRelief {
         if (this.world.wrapX) x = mod(x, this.world.width);
         const m = this.map, i = Math.min(m.cols - 1, Math.max(0, Math.floor(x / m.step))), j = Math.min(m.rows - 1, Math.max(0, Math.floor(z / m.step)));
         const k = i + m.cols * j;
-        return { x: (i + 0.5) * m.step, z: (j + 0.5) * m.step, height: m.heights[k]!, material: m.materials[k]! };
+        return { x: (i + 0.5) * m.step, z: (j + 0.5) * m.step, height: m.heights[k]!, material: m.materials[k]!, hitX: x, hitZ: z };
       }
       prev = t;
     }

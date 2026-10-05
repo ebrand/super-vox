@@ -93,6 +93,9 @@ worldEl.addEventListener('change', () => {
 function linkTerraformer(): void {
   const link = document.getElementById('terraformer') as HTMLAnchorElement;
   link.href = worldEl.value ? `/terraform.html#world=${encodeURIComponent(worldEl.value)}` : '/terraform.html';
+  // (And Claims, the same way.)
+  const claims = document.getElementById('claims') as HTMLAnchorElement;
+  claims.href = worldEl.value ? `/claim.html#world=${encodeURIComponent(worldEl.value)}` : '/claim.html';
 }
 
 playEl.addEventListener('click', () => {

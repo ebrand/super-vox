@@ -16,6 +16,8 @@ import {
   validatePlateTerrain,
   validateStrokes,
   validateVoxelize,
+  isClaim,
+  type Claim,
   type TerrainStroke,
   type ChunkGenerator,
   type DayClock,
@@ -186,6 +188,25 @@ export function writeStrokes(dataRoot: string, name: string, strokes: readonly T
   const dir = join(dataRoot, name), tmp = join(dir, `${STROKES_FILE}.tmp`);
   writeFileSync(tmp, JSON.stringify(strokes));
   renameSync(tmp, join(dir, STROKES_FILE));
+}
+
+const CLAIMS_FILE = 'claims.json';
+
+/** World `name`'s claims (see Claim); none if it has no file yet (or a damaged one: those it can't read are dropped). */
+export function readClaims(dataRoot: string, name: string): Claim[] {
+  checkName(name);
+  const path = join(dataRoot, name, CLAIMS_FILE);
+  if (!existsSync(path)) return [];
+  const claims = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  return Array.isArray(claims) ? claims.filter(isClaim) : [];
+}
+
+/** Saves world `name`'s claims. Throws NoSuchWorldError. */
+export function writeClaims(dataRoot: string, name: string, claims: readonly Claim[]): void {
+  if (!readWorld(dataRoot, name)) throw new NoSuchWorldError(`no world named "${name}"`);
+  const dir = join(dataRoot, name), tmp = join(dir, `${CLAIMS_FILE}.tmp`);
+  writeFileSync(tmp, JSON.stringify(claims));
+  renameSync(tmp, join(dir, CLAIMS_FILE));
 }
 
 /** Saves world `name`'s clock. Throws NoSuchWorldError. */
