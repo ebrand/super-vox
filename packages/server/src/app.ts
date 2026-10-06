@@ -643,14 +643,26 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
    * World.getEncodedChunk).
    */
   const timed = (task: string, fn: () => void) => () => {
-    const t0 = performance.now(), worlds = catalog.openWorlds().map((o) => o.world), misses = worlds.reduce((n, w) => n + w.stats.chunkMisses, 0);
+    const t0 = performance.now(), worlds = catalog.openWorlds().map((o) => o.world);
+    // (What it cost: main-thread work on the worlds, and the mobs' time, before and after.)
+    const work = () => {
+      const t = { chunksMade: 0, madeMs: 0, chunksDecoded: 0, decodedMs: 0, columnRanges: 0, rangesMs: 0, mobsMoving: 0, mobsBurning: 0, mobsSpawning: 0 };
+      for (const w of worlds) for (const k of Object.keys(w.mainThread) as (keyof World['mainThread'])[]) t[k] += w.mainThread[k];
+      for (const m of mobManagers.values()) {
+        t.mobsMoving += m.spent.moving;
+        t.mobsBurning += m.spent.burning;
+        t.mobsSpawning += m.spent.spawning;
+      }
+      return t;
+    };
+    const before = work();
     try {
       fn();
     } finally {
       const ms = performance.now() - t0;
       if (ms >= SLOW_MESSAGE_MS) {
-        const made = worlds.reduce((n, w) => n + w.stats.chunkMisses, 0) - misses;
-        app.log.warn({ task, ms: Math.round(ms), chunksMadeHere: made }, 'slow task');
+        const after = work(), cost = Object.fromEntries(Object.entries(after).map(([k, v]) => [k, Math.round(v - before[k as keyof typeof before])]));
+        app.log.warn({ task, ms: Math.round(ms), ...cost }, 'slow task');
       }
     }
   };

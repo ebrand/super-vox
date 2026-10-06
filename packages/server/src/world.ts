@@ -246,6 +246,12 @@ export class World {
     recentChunkMs: [], recentTileMs: [],
     edits: 0, waterSteps: 0, waterChanges: 0,
   };
+  /**
+   * Work done on the main thread for what looks at the world (mobs, water, light): chunks made
+   * (not to hand), decoded, and column ranges worked out, with the time each took (ms). For
+   * finding what holds the server up (see the 'slow task' log).
+   */
+  readonly mainThread = { chunksMade: 0, madeMs: 0, chunksDecoded: 0, decodedMs: 0, columnRanges: 0, rangesMs: 0 };
 
   /** Where generated chunks, tiles and column ranges are made off the main thread (see GenPool), or null: here. */
   private readonly remote: RemoteGenerator | null;
@@ -617,8 +623,17 @@ export class World {
     const edited = this.edited.get(key);
     if (edited) return edited;
     // Already made (sent to someone): decoding it is about ten times quicker than making it again.
-    const bytes = this.cache.get(key);
-    return bytes ? decodeChunk(bytes) : this.generator.generateChunk(coord);
+    const bytes = this.cache.get(key), t0 = performance.now(), m = this.mainThread;
+    if (bytes) {
+      const chunk = decodeChunk(bytes);
+      m.chunksDecoded++;
+      m.decodedMs += performance.now() - t0;
+      return chunk;
+    }
+    const chunk = this.generator.generateChunk(coord);
+    m.chunksMade++;
+    m.madeMs += performance.now() - t0;
+    return chunk;
   }
 
   /** Stores, caches, and saves edited chunks; reports widened column ranges. */
@@ -1288,7 +1303,10 @@ export class World {
   columnRange(cx: number, cz: number): ColumnRange | null {
     const resolved = resolveChunk(this.config, { cx, cy: 0, cz });
     if (!resolved) return null;
-    return this.withEdits(resolved.cx, resolved.cz, this.generator.columnRange(resolved.cx, resolved.cz));
+    const t0 = performance.now(), range = this.generator.columnRange(resolved.cx, resolved.cz);
+    this.mainThread.columnRanges++;
+    this.mainThread.rangesMs += performance.now() - t0;
+    return this.withEdits(resolved.cx, resolved.cz, range);
   }
 
   /** A generated column's range, widened over its edited chunks. */

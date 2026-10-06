@@ -76,8 +76,12 @@ export class MobManager {
    * Advances every mob by `dt` seconds at `now` (ms). `night`: zombies come out (and don't
    * burn). Returns the hits mobs made on players.
    */
+  /** Time spent (ms, all told) moving mobs, burning zombies, and spawning: for finding what's slow (see the 'slow task' log). */
+  readonly spent = { moving: 0, burning: 0, spawning: 0 };
+
   step(dt: number, now: number, players: readonly MobPlayer[], night: boolean): { player: number; damage: number }[] {
     const hits: { player: number; damage: number }[] = [];
+    let t0 = performance.now();
     const cfg = this.world.config;
     for (const m of this.mobs.values()) {
       // Players as this mob sees them: at their copy nearest it (round worlds wrap).
@@ -92,6 +96,8 @@ export class MobManager {
       // Fell out of the world.
       if (m.y < cfg.minYUnits) this.mobs.delete(m.id);
     }
+    this.spent.moving += performance.now() - t0;
+    t0 = performance.now();
     // Zombies burn in daylight, under the open sky (not in caves, or under a roof): a point a second.
     if (!night && now >= this.nextBurn) {
       this.nextBurn = now + 1000;
@@ -102,10 +108,13 @@ export class MobManager {
         if (hurtMob(m, 1, m.x, m.z, now)) this.mobs.delete(m.id);
       }
     }
+    this.spent.burning += performance.now() - t0;
+    t0 = performance.now();
     if (now >= this.nextSpawn) {
       this.nextSpawn = now + 1000;
       for (const p of players) this.spawnNear(p, night, now);
     }
+    this.spent.spawning += performance.now() - t0;
     return hits;
   }
 
