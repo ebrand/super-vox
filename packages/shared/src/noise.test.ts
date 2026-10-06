@@ -48,3 +48,19 @@ describe('ridgedGrid', () => {
     expect(gradientGap).toBeLessThan(valueGap);
   });
 });
+
+describe('fractalAt', () => {
+  it('gives exactly what fractalGrid gives at each sample, wrapping or not, any step', async () => {
+    const { fractalAt, fractalGrid } = await import('./noise.js');
+    const octaves = [
+      { spacing: 4096, weight: 1, periodX: 0, seed: 11 },
+      { spacing: 512, weight: 0.5, periodX: 8, seed: 12 },
+      { spacing: 64, weight: 0.25, periodX: 0, seed: 13 },
+      { spacing: 3, weight: 0.1, periodX: 0, seed: 14 },
+    ];
+    for (const [x0, z0, w, d, step] of [[0, 0, 40, 30, 1], [-517, 9001, 33, 17, 7], [4090, -3, 12, 12, 256], [123456, 65432, 64, 64, 16]] as const) {
+      const grid = fractalGrid(octaves, x0, z0, w, d, step);
+      for (let j = 0; j < d; j++) for (let i = 0; i < w; i++) expect(fractalAt(octaves, x0 + i * step, z0 + j * step)).toBe(grid[i + w * j]);
+    }
+  });
+});

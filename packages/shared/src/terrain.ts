@@ -40,6 +40,12 @@ export interface HeightSource {
    * it the surface is grass over dirt over stone.
    */
   materials?(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): Uint16Array;
+  /**
+   * Optionally, the same materials worked out only for the samples asked for (sample k: index
+   * k of materials()' answer), for when only a few will be: called right after heights() for the
+   * same block.
+   */
+  materialsAt?(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): (k: number) => MaterialId;
   /** Y (units) of the sea surface, if this terrain has a sea. */
   readonly seaLevel?: number;
   /** Optional forest canopy over samples (given their ground heights and materials), for distant views. */
@@ -206,7 +212,8 @@ type Node = number | Node[];
 /** Voxelizes any HeightSource adaptively into chunks. */
 interface Column {
   H: Int32Array;
-  M: Uint16Array | null;
+  /** Top material at a column (index x + CHUNK_SIZE * z), worked out as it's asked for; null: grass over dirt over stone. */
+  M: ((i: number) => MaterialId) | null;
   trees: Tree[];
   /** Water surface per column (units; NO_WATER for none), or null without any water. */
   S: Int32Array | null;
@@ -374,7 +381,9 @@ export class TerrainGenerator implements ChunkGenerator {
     }
     const x0 = cx * CHUNK_SIZE, z0 = cz * CHUNK_SIZE;
     const H = this.source.heights(x0, z0, CHUNK_SIZE, CHUNK_SIZE);
-    const M = this.source.materials?.(x0, z0, CHUNK_SIZE, CHUNK_SIZE, 1, H) ?? null;
+    // (Chunks look at only a few columns' materials: worked out as they're asked for, where the source can.)
+    const all = this.source.materialsAt ? null : (this.source.materials?.(x0, z0, CHUNK_SIZE, CHUNK_SIZE, 1, H) ?? null);
+    const M = this.source.materialsAt ? this.source.materialsAt(x0, z0, CHUNK_SIZE, CHUNK_SIZE, 1, H) : all && ((i: number) => all[i]! as MaterialId);
     // Water over the columns: the sea, raised to any river or lake above it.
     const sea = this.source.seaLevel;
     const W = this.source.water?.(x0, z0, CHUNK_SIZE, CHUNK_SIZE) ?? null;
@@ -429,10 +438,10 @@ export class TerrainGenerator implements ChunkGenerator {
     const { H, M, trees, S, SR } = this.chunkColumn(coord.cx, coord.cz);
     const caves = this.cavesOf(coord.cx, coord.cz);
     const oreX = x0 / BLOCK_SIZE, oreZ = z0 / BLOCK_SIZE;
-    // Per block column: min / max surface height, and the top material at the minimum.
+    // Per block column: min / max surface height, and where the minimum is (its top material, looked up only if it's wanted).
     const bMin = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(2 ** 31 - 1);
     const bMax = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(-(2 ** 31));
-    const bMat = new Uint16Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(Material.Grass);
+    const bMinAt = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS);
     for (let z = 0; z < CHUNK_SIZE; z++) {
       for (let x = 0; x < CHUNK_SIZE; x++) {
         const i = x + CHUNK_SIZE * z;
@@ -440,7 +449,7 @@ export class TerrainGenerator implements ChunkGenerator {
         const k = (x >> 4) + BLOCKS_PER_AXIS * (z >> 4);
         if (h < bMin[k]!) {
           bMin[k] = h;
-          if (M) bMat[k] = M[i]!;
+          bMinAt[k] = i;
         }
         if (h > bMax[k]!) bMax[k] = h;
       }
@@ -458,7 +467,7 @@ export class TerrainGenerator implements ChunkGenerator {
           if (caves && by0 / BLOCK_SIZE >= caves.lo && by0 / BLOCK_SIZE < caves.hi && caves.mask[k + 256 * (by0 / BLOCK_SIZE - caves.lo)]) continue;
           if (by0 + BLOCK_SIZE <= minH) {
             // Wholly underground: its material, and deep in the stone, maybe ore (see oreAt).
-            let m = this.materialFor(minH, by0 + BLOCK_SIZE, bMat[k]!);
+            let m = this.materialFor(minH, by0 + BLOCK_SIZE, M ? M(bMinAt[k]!) : Material.Grass);
             if (m === Material.Stone) m = oreAt(oreX + bx, by0 / BLOCK_SIZE, oreZ + bz, minH - (by0 + BLOCK_SIZE));
             block = this.uniformBlock(m);
           } else block = this.buildBlock(H, M, SR, bx * BLOCK_SIZE, by0, bz * BLOCK_SIZE);
@@ -515,7 +524,7 @@ export class TerrainGenerator implements ChunkGenerator {
    * Voxelizes the block whose corner is at chunk-local (lx, lz) and world y `y0`; open space
    * below the columns' water surfaces `S` (if any) is source water.
    */
-  private buildBlock(H: Int32Array, M: Uint16Array | null, S: WaterRanges | null, lx: number, y0: number, lz: number): Block {
+  private buildBlock(H: Int32Array, M: ((i: number) => MaterialId) | null, S: WaterRanges | null, lx: number, y0: number, lz: number): Block {
     const root = this.buildNode(H, M, lx, y0, lz, BLOCK_SIZE);
     if (typeof root === 'number') {
       if (root !== 0) return this.uniformBlock(root);
@@ -547,7 +556,7 @@ export class TerrainGenerator implements ChunkGenerator {
    * Builds the octree node for the cube at chunk-local columns [lx, lx+s) x
    * [lz, lz+s) and world heights [y, y+s).
    */
-  private buildNode(H: Int32Array, M: Uint16Array | null, lx: number, y: number, lz: number, s: number): Node {
+  private buildNode(H: Int32Array, M: ((i: number) => MaterialId) | null, lx: number, y: number, lz: number, s: number): Node {
     let minH = Infinity, maxH = -Infinity, sum = 0, minAt = 0;
     for (let z = lz; z < lz + s; z++) {
       for (let x = lx; x < lx + s; x++) {
@@ -561,7 +570,7 @@ export class TerrainGenerator implements ChunkGenerator {
         sum += h;
       }
     }
-    const surface = M ? M[minAt]! : Material.Grass;
+    const surface = M ? M(minAt) : Material.Grass;
     const top = y + s;
     const tol = this.voxelize.tolerance;
     if (minH >= top) return this.materialFor(minH, top, surface);

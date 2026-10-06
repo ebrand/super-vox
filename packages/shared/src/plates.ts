@@ -1,12 +1,12 @@
 import { BIOME_GROUND, classifyBiome, sameBiome, type BiomeId, type Ecotone } from './biomes.js';
 import type { ClimateGrid } from './climate.js';
-import { Material } from './materials.js';
+import { Material, type MaterialId } from './materials.js';
 import { TREE_REACH, canopyOver, treesIn, type Canopy, type Climate, type Clumping, type Tree, type TreeEdits } from './trees.js';
 import { RiverIndex, buildHydrology, carveRivers, type Hydrology } from './rivers.js';
 import type { CaveSettings } from './caves.js';
 import { NO_WATER } from './water.js';
 import { StrokeIndex, applyStrokes, isTreeStroke, strokesIn, treeChance, smoothAverage, smoothReach, type SmoothTarget, type TerrainStroke } from './strokes.js';
-import { fractalGrid, ridgedGrid, type Octave } from './noise.js';
+import { fractalAt, fractalGrid, ridgedGrid, type Octave } from './noise.js';
 import type { HeightSource } from './terrain.js';
 import type { WorldConfig } from './world.js';
 
@@ -427,6 +427,21 @@ const ROCK_BAND_MIN_HEIGHT = 100 * M;
 const ROCK_MOSS_MOISTURE = 0.2;
 /** Stretches the patch noises (a mean of octaves varies less than one does) to about -1..1 (see rockSurface). */
 const ROCK_PATCH_STRETCH = 3;
+
+/** pickMaterial's answer: the material, and whether it's stone for being steep (a cliff). */
+const PICKED_MATERIAL = 0x7fff, PICKED_CLIFF = 0x8000;
+
+/**
+ * Bare stone's surface at one sample (see rockSurface): `pa` and `pb` its two patch noises
+ * (stretched), on a cliff or not, and how wet it is (Infinity: no climate to say).
+ */
+function rockPatch(pa: number, pb: number, edge: number, cliff: boolean, moisture: number): MaterialId {
+  if (cliff) return pa > edge ? Material.DarkStone : Material.Stone;
+  if (pa < -edge) return Material.Gravel;
+  if (pa > edge) return Material.PaleStone;
+  if (pb > edge && moisture > ROCK_MOSS_MOISTURE) return Material.MossyStone;
+  return Material.Stone;
+}
 /** Strongest relief on bare rock ground (amplitude, units) at rockRoughness = 100 (see rockReliefAt). */
 const ROCK_DETAIL_MAX = 24 * M;
 /** Rock relief fades in across this much, either side of where bare rock starts (degrees C, units). */
@@ -1995,13 +2010,86 @@ export class PlateHeights implements HeightSource {
     return this.materialsWith(x0, z0, w, d, step, heights, this.climateSamples(x0, z0, w, d, step, heights, true));
   }
 
+  /**
+   * A block's materials, exactly as materials() gives them, but each worked out only when it's
+   * asked for (and kept): for chunks, which look at only a few of a column's (the lowest point of
+   * each square they voxelize). What's decided over the whole block (whether the coast, the snow
+   * and rock lines, or a biome border are near enough to matter) is decided now, over all of it,
+   * as materials() decides it. Call it right after heights() for the same block.
+   */
+  materialsAt(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): (k: number) => MaterialId {
+    const n = w * d, sea = this.seaLevel, e = PLATE_CELL, W = this.wrap ? this.world.widthUnits : null;
+    const base = this.climateBase(x0, z0, w, d, step, heights, true);
+    const anyWithin = (vs: ArrayLike<number>, centre: number, reach: number) => {
+      for (let k = 0; k < vs.length; k++) if (Math.abs(vs[k]! - centre) <= reach) return true;
+      return false;
+    };
+    const weightNorm = (os: readonly Octave[]) => 2 / os.reduce((a, o) => a + o.weight, 0);
+    // The coast's noise, only where some ground is near the sea (as materialsWith).
+    const coastTop = sea + Math.max(ROCKY_ABOVE, this.beachHeight) + M, coastBottom = sea - ROCKY_BELOW - M;
+    let coastal = false;
+    for (let k = 0; k < n && !coastal; k++) coastal = heights[k]! > coastBottom && heights[k]! <= coastTop;
+    const beachNorm = weightNorm(this.beachNoise);
+    // The snow and rock lines' wander: its scale where it's near enough to matter, else null.
+    const scaleNear = (wander: number, near: () => boolean, noise: readonly Octave[]) => (wander <= 0 || !near() ? null : weightNorm(noise) * 1.8 * wander);
+    const degrees = (this.snowWander / SNOW_FRACTAL_MAX) * SNOW_FRACTAL_DEGREES;
+    const byHeight = !base || this.altitudeSnow;
+    const rockBandAt = sea + ROCK_BAND_MIN_HEIGHT;
+    const tempScale = base ? scaleNear(degrees, () => anyWithin(base.temperature, this.snowTemp, degrees + ROCK_BAND_DEGREES), this.snowNoise) : null;
+    const heightScale = byHeight ? scaleNear(this.snowWander, () => anyWithin(heights, this.snowLine, this.snowWander), this.snowNoise) : null;
+    const rockScale = scaleNear(this.snowWander, () => (base !== null && anyWithin(heights, rockBandAt, this.snowWander)) || ((!base || this.altitudeRock) && anyWithin(heights, this.rockLine, this.snowWander)), this.rockNoise);
+    const wandered = (noise: readonly Octave[], scale: number, wander: number, x: number, z: number) => Math.max(-wander, Math.min(wander, fractalAt(noise, x, z) * scale));
+    // River and lake beds, and polar ice (both kept from heights()).
+    const standing = this.hydrology ? this.surface(x0, z0, w, d, step).water : null;
+    const ice = this.iceTops(x0, z0, w, d, step);
+    // The broad ground's terraforming strokes, per block as broadAround takes them.
+    const strokesOver = (bx: number, bz: number, bw: number, bd: number) => (this.strokes.length ? strokesIn(this.strokes, bx, bz, bx + (bw - 1) * step, bz + (bd - 1) * step, W) : []);
+    const apart = e % step !== 0 || (w + (2 * e) / step) * (d + (2 * e) / step) >= 4 * w * d;
+    const all = apart ? null : strokesOver(x0 - e, z0 - e, w + (2 * e) / step, d + (2 * e) / step);
+    const [eastS, westS, southS, northS] = apart ? [strokesOver(x0 + e, z0, w, d), strokesOver(x0 - e, z0, w, d), strokesOver(x0, z0 + e, w, d), strokesOver(x0, z0 - e, w, d)] : [all!, all!, all!, all!];
+    const broadAt = (x: number, z: number, strokes: TerrainStroke[]) => {
+      if (strokes.length === 0) return this.gridAt(this.elevation, x, z);
+      const v = this.gridAt(this.sampleBase, x, z);
+      const here = strokes.length > 8 ? this.strokeIndex!.at(x, z) : strokes;
+      return applyStrokes(here, x, z, v, v, sea, W, this.smoothTarget).broad;
+    };
+    const [nt, nm] = this.raggedNoise, dt = this.ragged.degrees, dm = this.ragged.moisture;
+    const st = weightNorm(nt) * dt, sm = weightNorm(nm) * dm;
+    const [na, nb] = this.rockPatches, sa = weightNorm(na), sb = weightNorm(nb), edge = 0.9 - 0.75 * this.rockVariety;
+    const memo = new Uint16Array(n);
+    return (k) => {
+      const known = memo[k]!;
+      if (known) return known;
+      const x = x0 + (k % w) * step, z = z0 + Math.floor(k / w) * step;
+      let t = NaN, moisture = Infinity, biome = -1;
+      if (base) {
+        let bt = base.temperature[k]!, bm = base.m[k]!;
+        if (base.shift) {
+          bt = bt + Math.max(-dt, Math.min(dt, fractalAt(nt, x, z) * st));
+          bm = bm + Math.max(-dm, Math.min(dm, fractalAt(nm, x, z) * sm));
+        }
+        biome = classifyBiome(bt, bm);
+        moisture = bm;
+        t = base.temperature[k]! + (tempScale !== null ? wandered(this.snowNoise, tempScale, degrees, x, z) : 0);
+      }
+      const picked = this.pickMaterial(
+        heights[k]!, ice ? ice[k]! : -Infinity, standing ? standing[k]! : -Infinity,
+        broadAt(x + e, z, eastS) - broadAt(x - e, z, westS), broadAt(x, z + e, southS) - broadAt(x, z - e, northS),
+        coastal ? fractalAt(this.beachNoise, x, z) * beachNorm : 0,
+        heightScale !== null ? wandered(this.snowNoise, heightScale, this.snowWander, x, z) : 0, t,
+        rockScale !== null ? wandered(this.rockNoise, rockScale, this.snowWander, x, z) : 0, biome,
+      );
+      let m: MaterialId = picked & PICKED_MATERIAL;
+      if (m === Material.Stone && this.rockVariety > 0) m = rockPatch(fractalAt(na, x, z) * sa * ROCK_PATCH_STRETCH, fractalAt(nb, x, z) * sb * ROCK_PATCH_STRETCH, edge, (picked & PICKED_CLIFF) !== 0, moisture);
+      return (memo[k] = m);
+    };
+  }
+
   private materialsWith(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array, climate: ReturnType<PlateHeights['climateSamples']>): Uint16Array {
     const out = new Uint16Array(w * d);
     // Coarse slope (rise over run) from the 32 m grid, via central differences one cell apart.
     const e = PLATE_CELL;
     const [east, west, south, north] = this.broadAround(x0, z0, w, d, step, e);
-    // (slope > rockSlope, squared: the rise across two cells' width squared.)
-    const rockQ = (this.rockSlope * 2 * e) ** 2;
     const sea = this.seaLevel;
     // The coast's noise (about -1..1) matters only on ground near the sea (see rocky and beachTop
     // below: at most ROCKY_ABOVE or the beach's height above it, and ROCKY_BELOW under it), so it's
@@ -2038,48 +2126,12 @@ export class PlateHeights implements HeightSource {
     // Steep stone (see rockSurface), marked only if there's any.
     let cliffs: Uint8Array | null = null;
     for (let k = 0; k < out.length; k++) {
-      const h = heights[k]!;
-      if (ice && ice[k]! >= h - M) {
-        out[k] = Material.Ice;
-        continue;
-      }
-      if (standing && standing[k]! > h) {
-        out[k] = Material.Sand;
-        continue;
-      }
-      // The slope, worked out exactly only where it's needed: near the sea, and where its square
-      // doesn't settle whether it's steeper than rockSlope.
-      const dx = east[k]! - west[k]!, dz = south[k]! - north[k]!, q = dx * dx + dz * dz;
-      const slope = () => Math.hypot(dx, dz) / (2 * e);
-      const v = vary ? vary[k]! * norm : 0; // about -1..1 (0 far from the sea: it makes no difference there)
-      // Steep coasts: bare rock at the waterline (the threshold wanders so the edge isn't a line).
-      const rocky = h > sea - ROCKY_BELOW && h <= sea + ROCKY_ABOVE && slope() + 0.02 * v > ROCKY;
-      // Gentle coasts: sand up to a height that shrinks as the coast steepens (at most the beach's height).
-      const sandy = h <= sea || (h <= sea + this.beachHeight + M && h <= sea + this.beachHeight * (1 - smoothstep(GENTLE, STEEP, slope())) * (0.6 + 0.4 * v));
-      const steep = q < rockQ * (1 - 1e-9) ? false : q > rockQ * (1 + 1e-9) ? true : slope() > this.rockSlope;
-      const high = byHeight && h >= this.snowLine + (heightShift ? heightShift[k]! : 0);
-      let snow: boolean, bare: boolean;
-      if (climate) {
-        // Colder than the snow temperature: snow; a little warmer, on high ground: bare rock.
-        // (And above the snow and rock altitudes, with altitudeSnow and altitudeRock.)
-        const t = climate.temperature[k]! + (tempShift ? tempShift[k]! : 0);
-        snow = t < this.snowTemp || high;
-        const r = rockShift ? rockShift[k]! : 0;
-        bare = (t < this.snowTemp + ROCK_BAND_DEGREES && h > rockBandAt + r) || (this.altitudeRock && h >= this.rockLine + r);
-      } else {
-        snow = high;
-        bare = h >= this.rockLine + (rockShift ? rockShift[k]! : 0);
-      }
-      // Steep ground is bare rock even above the snow line: steep faces don't hold snow.
-      out[k] =
-        rocky ? Material.Stone
-        : sandy ? Material.Sand
-        : steep ? Material.Stone
-        : snow ? Material.Snow
-        : bare ? Material.Stone
-        : climate ? BIOME_GROUND[climate.biome[k]! as BiomeId]
-        : Material.Grass;
-      if (steep && out[k] === Material.Stone) (cliffs ??= new Uint8Array(out.length))[k] = 1;
+      const picked = this.pickMaterial(
+        heights[k]!, ice ? ice[k]! : -Infinity, standing ? standing[k]! : -Infinity, east[k]! - west[k]!, south[k]! - north[k]!, vary ? vary[k]! * norm : 0,
+        heightShift ? heightShift[k]! : 0, climate ? climate.temperature[k]! + (tempShift ? tempShift[k]! : 0) : NaN, rockShift ? rockShift[k]! : 0, climate ? climate.biome[k]! : -1,
+      );
+      out[k] = picked & PICKED_MATERIAL;
+      if (picked & PICKED_CLIFF) (cliffs ??= new Uint8Array(out.length))[k] = 1;
     }
     this.rockSurface(x0, z0, w, d, step, out, cliffs, climate?.biomeMoisture ?? null);
     return out;
@@ -2101,13 +2153,53 @@ export class PlateHeights implements HeightSource {
     const edge = 0.9 - 0.75 * v;
     for (let k = 0; k < out.length; k++) {
       if (out[k] !== Material.Stone) continue;
-      const pa = a[k]! * sa * ROCK_PATCH_STRETCH, pb = b[k]! * sb * ROCK_PATCH_STRETCH;
-      if (cliffs && cliffs[k]) {
-        if (pa > edge) out[k] = Material.DarkStone;
-      } else if (pa < -edge) out[k] = Material.Gravel;
-      else if (pa > edge) out[k] = Material.PaleStone;
-      else if (pb > edge && (moisture === null || moisture[k]! > ROCK_MOSS_MOISTURE)) out[k] = Material.MossyStone;
+      out[k] = rockPatch(a[k]! * sa * ROCK_PATCH_STRETCH, b[k]! * sb * ROCK_PATCH_STRETCH, edge, !!(cliffs && cliffs[k]), moisture === null ? Infinity : moisture[k]!);
     }
+  }
+
+  /**
+   * One sample's material (see materialsWith), from what decides it there: its height `h`; the
+   * ice's top and the river or lake water over it (-Infinity: none); the broad ground's rise east
+   * and south across two cells (`dx`, `dz`); the coast's noise (`v`, about -1..1; 0 far from the
+   * sea); the snow line's wander there (`heightShift`); its temperature with its wander (NaN
+   * without climate); the rock line's wander (`rockShift`); and its biome (-1 without climate). The
+   * material, with PICKED_CLIFF set for stone that's stone for being steep.
+   */
+  private pickMaterial(h: number, iceTop: number, standing: number, dx: number, dz: number, v: number, heightShift: number, t: number, rockShift: number, biome: number): number {
+    if (iceTop >= h - M) return Material.Ice;
+    if (standing > h) return Material.Sand;
+    const e = PLATE_CELL, sea = this.seaLevel, climate = !Number.isNaN(t);
+    // The slope, worked out exactly only where it's needed: near the sea, and where its square
+    // doesn't settle whether it's steeper than rockSlope.
+    const q = dx * dx + dz * dz, rockQ = (this.rockSlope * 2 * e) ** 2;
+    const slope = () => Math.hypot(dx, dz) / (2 * e);
+    // Steep coasts: bare rock at the waterline (the threshold wanders so the edge isn't a line).
+    const rocky = h > sea - ROCKY_BELOW && h <= sea + ROCKY_ABOVE && slope() + 0.02 * v > ROCKY;
+    // Gentle coasts: sand up to a height that shrinks as the coast steepens (at most the beach's height).
+    const sandy = h <= sea || (h <= sea + this.beachHeight + M && h <= sea + this.beachHeight * (1 - smoothstep(GENTLE, STEEP, slope())) * (0.6 + 0.4 * v));
+    const steep = q < rockQ * (1 - 1e-9) ? false : q > rockQ * (1 + 1e-9) ? true : slope() > this.rockSlope;
+    const byHeight = !climate || this.altitudeSnow;
+    const high = byHeight && h >= this.snowLine + heightShift;
+    let snow: boolean, bare: boolean;
+    if (climate) {
+      // Colder than the snow temperature: snow; a little warmer, on high ground: bare rock.
+      // (And above the snow and rock altitudes, with altitudeSnow and altitudeRock.)
+      snow = t < this.snowTemp || high;
+      bare = (t < this.snowTemp + ROCK_BAND_DEGREES && h > sea + ROCK_BAND_MIN_HEIGHT + rockShift) || (this.altitudeRock && h >= this.rockLine + rockShift);
+    } else {
+      snow = high;
+      bare = h >= this.rockLine + rockShift;
+    }
+    // Steep ground is bare rock even above the snow line: steep faces don't hold snow.
+    const m =
+      rocky ? Material.Stone
+      : sandy ? Material.Sand
+      : steep ? Material.Stone
+      : snow ? Material.Snow
+      : bare ? Material.Stone
+      : climate ? BIOME_GROUND[biome as BiomeId]
+      : Material.Grass;
+    return steep && m === Material.Stone ? m | PICKED_CLIFF : m;
   }
 
   /** Caves (see caves.ts): none at 0. */
@@ -2174,12 +2266,15 @@ export class PlateHeights implements HeightSource {
    * ragged); and the biome. With `biomesOnly`, the shifted climate is left unshifted where the
    * shift can't change any biome in the block (saving the noise; the biomes are the same).
    */
-  private climateSamples(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array, biomesOnly = false): { temperature: Float64Array; biomeTemperature: Float64Array; biomeMoisture: Float64Array; biome: Uint8Array } | null {
+  /**
+   * A block's temperature (cooled with height) and moisture, and whether the ragged noise is to
+   * shift its biomes (with `biomesOnly`, not where it couldn't change any: see climateSamples).
+   */
+  private climateBase(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array, biomesOnly: boolean): { temperature: Float64Array; m: Float64Array; shift: boolean } | null {
     if (!this.temperature || !this.moisture) return null;
     const temperature = this.interpolate(this.temperature, x0, z0, w, d, step);
     const m = this.interpolate(this.moisture, x0, z0, w, d, step);
     for (let k = 0; k < temperature.length; k++) temperature[k] = temperature[k]! - this.cooling * Math.max(0, heights[k]! - this.seaLevel);
-    let biomeTemperature = temperature, biomeMoisture = m;
     let shift = this.ragged.degrees > 0;
     if (shift && biomesOnly) {
       let tLo = Infinity, tHi = -Infinity, mLo = Infinity, mHi = -Infinity;
@@ -2191,6 +2286,14 @@ export class PlateHeights implements HeightSource {
       const dt = this.ragged.degrees, dm = this.ragged.moisture;
       shift = !sameBiome(tLo - dt, tHi + dt, mLo - dm, mHi + dm);
     }
+    return { temperature, m, shift };
+  }
+
+  private climateSamples(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array, biomesOnly = false): { temperature: Float64Array; biomeTemperature: Float64Array; biomeMoisture: Float64Array; biome: Uint8Array } | null {
+    const base = this.climateBase(x0, z0, w, d, step, heights, biomesOnly);
+    if (!base) return null;
+    const { temperature, m, shift } = base;
+    let biomeTemperature = temperature, biomeMoisture = m;
     if (shift) {
       const [nt, nm] = this.raggedNoise;
       // Scaled by the octaves' weight so each spans about -1..1.

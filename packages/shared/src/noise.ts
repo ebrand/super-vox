@@ -112,6 +112,28 @@ export function fractalGrid(
 }
 
 /**
+ * fractalGrid at one sample, the column at (x, z) (units): exactly the value fractalGrid gives for
+ * that sample (the same arithmetic, octave by octave), for when only a few samples of a block are
+ * wanted.
+ */
+export function fractalAt(octaves: readonly Octave[], x: number, z: number): number {
+  let out = 0;
+  for (const o of octaves) {
+    const px = (x + 0.5) / o.spacing, pz = (z + 0.5) / o.spacing;
+    const ix = Math.floor(px), iz = Math.floor(pz);
+    const tx = fade(px - ix), tz = fade(pz - iz);
+    const gx0 = o.periodX > 0 ? ((ix % o.periodX) + o.periodX) % o.periodX : ix;
+    const gx1 = o.periodX > 0 ? (((ix + 1) % o.periodX) + o.periodX) % o.periodX : ix + 1;
+    const v00 = hash2(gx0, iz, o.seed) - 0.5, v10 = hash2(gx1, iz, o.seed) - 0.5;
+    const v01 = hash2(gx0, iz + 1, o.seed) - 0.5, v11 = hash2(gx1, iz + 1, o.seed) - 0.5;
+    const a = v00 + (v10 - v00) * tx;
+    const b = v01 + (v11 - v01) * tx;
+    out += (a + (b - a) * tz) * o.weight;
+  }
+  return out;
+}
+
+/**
  * Ridged gradient noise over a `w x d` grid of columns (sampled like fractalGrid): each octave is
  * Perlin-style gradient noise n, folded into crests as (1 - |n|)^2, and the octaves are averaged
  * by weight. Returns values in [0, 1], high along ridgelines. Gradient noise has no lattice-aligned

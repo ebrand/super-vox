@@ -1238,3 +1238,64 @@ const PINNED: Record<'defaults' | 'manyPlates' | 'islands', Record<string, strin
   manyPlates: { layout: 'f4a608b0', mountains: 'd0ba00aa', relief: '4b6d7689', coast: '9ccdcf51', heights: '1dd86c46', strokes: '756dafe9', climate: '562d1213', hydrology: 'f9e46d3b' },
   islands: { layout: '9b0f6607', mountains: '52ef197b', relief: '123642f', coast: 'b018e53a', heights: 'b32bf87a', strokes: 'f54038cf', climate: '68dbad72', hydrology: '59665a32' },
 };
+
+describe('materials worked out as asked for (materialsAt)', () => {
+  /** Every sample of a block, in a scattered order: materialsAt's answer is materials()'. */
+  const same = (p: PlateHeights, x0: number, z0: number, w: number, d: number, step: number) => {
+    const H = p.heights(x0, z0, w, d, step);
+    const at = p.materialsAt(x0, z0, w, d, step, H);
+    const full = p.materials(x0, z0, w, d, step, H);
+    let bad = 0;
+    for (let n = 0; n < w * d; n++) {
+      const k = (n * 7919) % (w * d);
+      if (at(k) !== full[k]) bad++;
+    }
+    for (let k = 0; k < w * d; k += 97) expect(at(k)).toBe(full[k]); // (asked again: the same)
+    return bad;
+  };
+  const M = 16;
+  it('matches materials() everywhere: coasts, rivers, snow and rock lines, biomes, polar ice', () => {
+    const world = ROUND_WORLD_16x8KM;
+    const p = new PlateHeights(world, { ...defaultPlateTerrain(5, world), rockAltitude: 80, snowAltitude: 140, rockVariety: 80, snowFractal: 80 });
+    // The most varied blocks found across the world (coasts, rock, snow, biome borders; the poles' ice).
+    const found: { x0: number; z0: number; kinds: Set<number> }[] = [];
+    for (let z = 0; z < world.depthUnits; z += 400 * M)
+      for (let x = 0; x < world.widthUnits; x += 400 * M) {
+        // (A chunk column's 16 m, every quarter metre.)
+        const H = p.heights(x, z, 64, 64, 4);
+        found.push({ x0: x, z0: z, kinds: new Set(p.materials(x, z, 64, 64, 4, H)) });
+      }
+    found.sort((a, b) => b.kinds.size - a.kinds.size);
+    const picked = found.slice(0, 6);
+    const icy = found.find((f) => f.kinds.has(Material.Ice) && f.kinds.size > 1);
+    if (icy) picked.push(icy);
+    const seen = new Set<number>();
+    for (const f of picked) for (const k of f.kinds) seen.add(k);
+    // (Enough going on to mean something.)
+    expect(picked[0]!.kinds.size).toBeGreaterThanOrEqual(3);
+    for (const m of [Material.Sand, Material.Stone, Material.Snow, Material.Ice]) expect(seen.has(m)).toBe(true);
+    for (const f of picked) {
+      expect(same(p, f.x0, f.z0, 256, 256, 1)).toBe(0);
+      expect(same(p, f.x0, f.z0, 64, 64, 4)).toBe(0);
+      expect(same(p, f.x0 - 50 * M, f.z0 - 50 * M, 100, 100, 16)).toBe(0); // (one block's worth of broad ground about them all)
+      expect(same(p, f.x0, f.z0, 33, 17, 7)).toBe(0);
+    }
+  });
+
+  it('matches materials() on terraformed ground, with few strokes about and many', () => {
+    const world = ROUND_WORLD_16x8KM;
+    const cfg = defaultPlateTerrain(5, world);
+    const bare = new PlateHeights(world, cfg);
+    // A spot on land, and strokes around it: a few, then a dozen (looked up by index).
+    let cx = 0, cz = 0;
+    for (let x = 1000; x < 15000 && !cx; x += 250) for (let z = 1000; z < 7000 && !cx; z += 250) if (bare.heights(x * M, z * M, 1, 1)[0]! > 30 * M) [cx, cz] = [x, z];
+    expect(cx).toBeGreaterThan(0);
+    const kinds = ['raise', 'lower', 'level', 'smooth'] as const;
+    const strokes = (n: number) => Array.from({ length: n }, (_, i) => ({ kind: kinds[i % 4]!, x: cx + ((i * 37) % 60) - 30, z: cz + ((i * 53) % 60) - 30, radius: 40 + (i % 3) * 20, amount: kinds[i % 4] === 'smooth' ? 0.6 : 20 + i, softness: 0.5 }));
+    for (const n of [3, 12]) {
+      const p = new PlateHeights(world, cfg, undefined, strokes(n));
+      expect(same(p, (cx - 40) * M, (cz - 40) * M, 128, 128, 1)).toBe(0);
+      expect(same(p, (cx - 100) * M, (cz - 100) * M, 100, 100, 16)).toBe(0);
+    }
+  });
+});
