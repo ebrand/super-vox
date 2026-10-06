@@ -17,7 +17,7 @@ import {
 import { Material, type MaterialId } from './materials.js';
 import { fractalGrid, type Octave } from './noise.js';
 import { IRON_ONLY, oreAt } from './ores.js';
-import { isGeologyRock, type Geology, type GeologyColumn } from './geology.js';
+import { isGeologyRock, isOre, type Geology, type GeologyColumn } from './geology.js';
 import { caveColumn, caveOverview, type CaveSettings } from './caves.js';
 import type { VoxelSize } from './units.js';
 import { CHUNK_SIZE, type ChunkCoord, type WorldConfig } from './world.js';
@@ -500,7 +500,8 @@ export class TerrainGenerator implements ChunkGenerator {
             // geology, coal is in its seams, so here only iron).
             let m = this.materialFor(minH, by0 + BLOCK_SIZE, M ? M(bMinAt[k]!) : Material.Grass, k, by0 + BLOCK_SIZE / 2);
             if (this.geology) {
-              if (m !== Material.CoalOre && isGeologyRock(m)) m = oreAt(oreX + bx, by0 / BLOCK_SIZE, oreZ + bz, minH - (by0 + BLOCK_SIZE), m, IRON_ONLY);
+              // (Worlds whose geology has iron in bands and at intrusions don't scatter it.)
+              if (this.geology.scatteredIron && isGeologyRock(m) && !isOre(m)) m = oreAt(oreX + bx, by0 / BLOCK_SIZE, oreZ + bz, minH - (by0 + BLOCK_SIZE), m, IRON_ONLY);
             } else if (m === Material.Stone) m = oreAt(oreX + bx, by0 / BLOCK_SIZE, oreZ + bz, minH - (by0 + BLOCK_SIZE));
             block = this.uniformBlock(m);
           } else block = this.buildBlock(H, M, SR, bx * BLOCK_SIZE, by0, bz * BLOCK_SIZE);

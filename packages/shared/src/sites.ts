@@ -296,7 +296,7 @@ export function findSites(p: PlateHeights, world: WorldConfig, search: SiteSearc
 const COLOR = new Map<number, readonly [number, number, number]>([
   [Material.Grass, [96, 150, 70]], [Material.Meadow, [120, 165, 80]], [Material.DryGrass, [170, 160, 90]],
   [Material.JungleFloor, [60, 110, 50]], [Material.TaigaFloor, [80, 110, 75]], [Material.Tundra, [140, 135, 110]],
-  [Material.Sand, [215, 200, 150]], [Material.Stone, [135, 135, 135]], [Material.Gravel, [160, 155, 150]], [Material.DarkStone, [110, 110, 115]], [Material.PaleStone, [190, 185, 178]], [Material.MossyStone, [120, 135, 105]], [Material.Sandstone, [150, 140, 125]], [Material.Shale, [125, 125, 130]], [Material.Limestone, [158, 155, 148]], [Material.Granite, [146, 136, 134]], [Material.Snow, [240, 242, 246]], [Material.Ice, [200, 225, 240]],
+  [Material.Sand, [215, 200, 150]], [Material.Stone, [135, 135, 135]], [Material.Gravel, [160, 155, 150]], [Material.DarkStone, [110, 110, 115]], [Material.PaleStone, [190, 185, 178]], [Material.MossyStone, [120, 135, 105]], [Material.Sandstone, [150, 140, 125]], [Material.Shale, [125, 125, 130]], [Material.Limestone, [158, 155, 148]], [Material.Granite, [146, 136, 134]], [Material.Basalt, [92, 92, 98]], [Material.Snow, [240, 242, 246]], [Material.Ice, [200, 225, 240]],
   [Material.Dirt, [120, 90, 60]],
 ]);
 

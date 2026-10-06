@@ -47,7 +47,12 @@ const PIECE = BLOCK_VOLUME / 8;
 /** What each station makes: from `unit` of `input` (volume, or a count), one `output`, taking `seconds`. */
 export const STATION_RECIPES: Readonly<Record<StationKind, readonly { input: ItemId; unit: number; output: ItemId; seconds: number }[]>> = {
   // (A block of raw iron: 8 ingots.)
-  furnace: [{ input: Material.RawIron, unit: PIECE, output: Item.IronIngot, seconds: 10 }],
+  furnace: [
+    { input: Material.RawIron, unit: PIECE, output: Item.IronIngot, seconds: 10 },
+    // (Coins: a piece of raw copper or gold makes one.)
+    { input: Material.RawCopper, unit: PIECE, output: Item.CopperCoin, seconds: 6 },
+    { input: Material.RawGold, unit: PIECE, output: Item.GoldCoin, seconds: 12 },
+  ],
   stove: [{ input: Item.Pork, unit: 1, output: Item.CookedPork, seconds: 10 }],
 };
 

@@ -47,6 +47,9 @@ export const HARDNESS: Partial<Record<MaterialId, number>> = {
   [Material.Sandstone]: 2.4,
   [Material.Limestone]: 3,
   [Material.Granite]: 4.2,
+  [Material.Basalt]: 4,
+  [Material.CopperOre]: 3.5,
+  [Material.GoldOre]: 4,
   [Material.CoalOre]: 3,
   [Material.IronOre]: 3.5,
 };

@@ -119,9 +119,11 @@ export interface PlateTerrainConfig {
   /** Caves (see caves.ts): 0 none (worlds made before caves) .. 100 common and big; 25 rare. */
   caves: number;
   /**
-   * Geology (see geology.ts): 2, the rock in layers (sandstone, shale, limestone, coal seams, over
-   * granite), shown on bare rock too, broken by faults; 1, the same without faults (worlds made
-   * before them); 0, plain stone with ore scattered in it (worlds made before geology).
+   * Geology (see geology.ts): 3, the rock in layers (sandstone, shale, limestone, coal seams and
+   * banded iron, over granite), shown on bare rock too, broken by faults, with granite intrusions
+   * and basalt dikes (copper and gold at their edges); 2, without intrusions, dikes or banded iron
+   * (iron scattered); 1, without faults either; 0, plain stone with ore scattered in it (each: worlds
+   * made before the next).
    */
   geology: number;
   /** Bare rock ground's own relief (ridged outcrops, knolls and gullies, 16-256 m), 0 (as smooth as any) .. 100. */
@@ -194,7 +196,7 @@ export function defaultPlateTerrain(seed = 1, world?: WorldConfig): PlateTerrain
     rockRoughness: 50,
     rockVariety: 50,
     caves: 25,
-    geology: 2,
+    geology: 3,
     islandArcs: 0,
     hotspots: 0,
     islandMinSize: 200,
@@ -370,7 +372,7 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   num(c.caves, L.caves, 'caves');
   num(c.rockVariety, L.rockVariety, 'rockVariety');
   if (c.lakesByArea !== 0 && c.lakesByArea !== 1) throw new RangeError(`lakesByArea must be 0 or 1; got ${c.lakesByArea}`);
-  if (c.geology !== 0 && c.geology !== 1 && c.geology !== 2) throw new RangeError(`geology must be 0, 1 or 2; got ${c.geology}`);
+  if (![0, 1, 2, 3].includes(c.geology)) throw new RangeError(`geology must be 0, 1, 2 or 3; got ${c.geology}`);
   num(c.islandArcs, L.islandArcs, 'islandArcs');
   int(c.hotspots, ...L.hotspots, 'hotspots');
   num(c.islandMinSize, L.islandSize, 'islandMinSize', ' m');
@@ -2237,7 +2239,7 @@ export class PlateHeights implements HeightSource {
   /** The rock's layers (see geology.ts), or null in worlds without geology. */
   geology(): Geology | null {
     if (!this.config.geology) return null;
-    return (this.geologyMade ??= new Geology(this.config.terrainSeed * 7919 + 211, this.seaLevel, this.wrap ? this.world.widthUnits : 0, this.config.geology >= 2));
+    return (this.geologyMade ??= new Geology(this.config.terrainSeed * 7919 + 211, this.seaLevel, this.wrap ? this.world.widthUnits : 0, this.config.geology));
   }
   private geologyMade: Geology | undefined;
 

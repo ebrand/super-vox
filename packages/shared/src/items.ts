@@ -71,6 +71,9 @@ export const Item = {
   Torch: 1026,
   /** Tapped on rock (left-click), names it (see rockNote): telling layered rock apart, to find ore. */
   GeologistsHammer: 1027,
+  /** Smelted in a furnace from raw copper and raw gold (see stations.ts): money, for markets (later). */
+  CopperCoin: 1028,
+  GoldCoin: 1029,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -104,6 +107,8 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.IronSword]: 'iron sword',
   [Item.Torch]: 'torch',
   [Item.GeologistsHammer]: "geologist's hammer",
+  [Item.CopperCoin]: 'copper coin',
+  [Item.GoldCoin]: 'gold coin',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */
@@ -150,13 +155,14 @@ export const PLACEABLE: readonly MaterialId[] = [
   Material.Shale,
   Material.Limestone,
   Material.Granite,
+  Material.Basalt,
   Material.TNT,
   Material.C4,
   Material.Water,
 ];
 
 /** What ores give (mined, not placed): had like blocks, by volume. */
-const MINED: readonly MaterialId[] = [Material.Coal, Material.RawIron];
+const MINED: readonly MaterialId[] = [Material.Coal, Material.RawIron, Material.RawCopper, Material.RawGold];
 
 const BUILT_IN: readonly ItemId[] = [...PLACEABLE, ...MINED, ...(Object.values(Item) as ItemId[]).filter((id) => !DESIGNED_ONLY.has(id))];
 const allItems: ItemId[] = [...BUILT_IN];

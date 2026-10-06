@@ -3,6 +3,8 @@ import { BLOCKS_PER_AXIS, blockIndex } from './chunk.js';
 import { Geology, isGeologyRock, layerSequence, rockNote, type GeologyColumn } from './geology.js';
 import { ALL_ITEMS, Item, itemName } from './items.js';
 import { RECIPES } from './recipes.js';
+import { dropOf } from './tools.js';
+import { stationRecipe } from './stations.js';
 import { Material } from './materials.js';
 import { PlateHeights, defaultPlateTerrain } from './plates.js';
 import { TerrainGenerator, defaultVoxelize } from './terrain.js';
@@ -68,9 +70,10 @@ describe('Geology', () => {
     for (let x = 0; x < 16000; x += 997) {
       const c = g.column(x * M, ((x * 7) % 16000) * M);
       const deep = atLayer(c, -c.base - 5 * M), shallow = atLayer(c, -c.base + 5 * M);
-      if (deep === null || shallow === null) continue;
+      // (Not through a dike or an intrusion: see their own tests.)
+      if (deep === null || shallow === null || c.dike !== 0 || c.haloTop > -Infinity) continue;
       expect(g.rock(deep, c, 0, 0)).toBe(Material.Granite);
-      expect([Material.Sandstone, Material.Shale, Material.Limestone, Material.CoalOre]).toContain(g.rock(shallow, c, 0, 0));
+      expect([Material.Sandstone, Material.Shale, Material.Limestone, Material.CoalOre, Material.IronOre]).toContain(g.rock(shallow, c, 0, 0));
       checked++;
       // (Basement 90-190 m down; layers folded up to about 120 m either way; stretched 0.75-1.25.)
       expect(c.base / M).toBeGreaterThan(85);
@@ -248,5 +251,115 @@ describe("the geologist's hammer", () => {
     expect(r).toBeDefined();
     expect(r!.inputs).toEqual([[Material.Cobblestone, 1], [Item.Stick, 1]]);
     expect(r!.table).toBe(true);
+  });
+});
+
+describe('intrusions, dikes and banded iron (geology 3)', () => {
+  const g = new Geology(42, 0), old = new Geology(42, 0, 0, 2);
+
+  it('banded iron deep in the stack (iron and shale in turn), only from version 3', () => {
+    const banded = layerSequence(42, true), plain = layerSequence(42);
+    const ironRows = [...banded].map((m, i) => (m === Material.IronOre ? i : -1)).filter((i) => i >= 0);
+    expect(ironRows.length).toBeGreaterThan(5);
+    // (Rows are metres from 200 m under the fold's surface: all at least 20 m under it.)
+    for (const i of ironRows) expect(i).toBeLessThan(180);
+    // (Banded: never two metres of iron together, shale between.)
+    for (const i of ironRows) expect(banded[i + 1]).not.toBe(Material.IronOre);
+    expect([...plain].includes(Material.IronOre)).toBe(false);
+    expect(g.scatteredIron).toBe(false);
+    expect(old.scatteredIron).toBe(true);
+  });
+
+  it('intrusions: in about 30% of regions, 150-600 m across, granite inside, ore at the edge (iron most, gold least)', () => {
+    const plutons = [];
+    for (let j = 0; j < 20; j++) for (let i = 0; i < 20; i++) { const p = g.plutonIn(i, j); if (p) plutons.push(p); }
+    expect(plutons.length).toBeGreaterThan(400 * 0.2);
+    expect(plutons.length).toBeLessThan(400 * 0.4);
+    for (const p of plutons) {
+      expect((2 * p.r) / M).toBeGreaterThanOrEqual(150);
+      expect((2 * p.r) / M).toBeLessThanOrEqual(600);
+    }
+    // At one: granite under its middle; just over its dome, ore (counted over many blocks).
+    const p = plutons[0]!;
+    const middle = g.column(p.x, p.z);
+    expect(g.rock(p.top - 2 * M, middle, 0, 0)).toBe(Material.Granite);
+    const counts = new Map<number, number>();
+    let blocks = 0;
+    for (let dx = -40; dx < 40; dx++)
+      for (let dz = -40; dz < 40; dz++) {
+        const c = g.column(p.x + dx * M, p.z + dz * M);
+        if (c.dike !== 0) continue;
+        const m = g.rock(c.graniteTop + 2 * M, c, Math.floor(p.x / M) + dx, Math.floor(p.z / M) + dz);
+        counts.set(m, (counts.get(m) ?? 0) + 1);
+        blocks++;
+      }
+    const iron = counts.get(Material.IronOre) ?? 0, copper = counts.get(Material.CopperOre) ?? 0, gold = counts.get(Material.GoldOre) ?? 0;
+    // (Copper and gold are only from intrusions and dikes: their shares are the edge's alone, 28% x 35% and x 10%.
+    // Iron's more: banded iron layers can meet the dome too.)
+    expect(copper / blocks).toBeGreaterThan(0.06);
+    expect(copper / blocks).toBeLessThan(0.14);
+    expect(gold / blocks).toBeGreaterThan(0.01);
+    expect(gold / blocks).toBeLessThan(0.05);
+    expect(iron).toBeGreaterThan(copper);
+  });
+
+  it('dikes: basalt in them (whatever the height), copper and gold beside them', () => {
+    let k = null;
+    for (let j = 0; j < 20 && !k; j++) for (let i = 0; i < 20 && !k; i++) k = g.dikeIn(i, j);
+    expect(k).not.toBeNull();
+    const inIt = g.column(k!.x, k!.z), beside = (off: number) => g.column(k!.x - k!.sz * off, k!.z + k!.sx * off);
+    expect(inIt.dike).toBe(1);
+    for (const y of [-100, 0, 100]) expect(g.rock(y * M, inIt, 0, 0)).toBe(Material.Basalt);
+    const side = beside(k!.width / 2 + 0.7 * M);
+    expect(side.dike).toBe(2);
+    let ore = 0;
+    for (let y = -150; y < 50; y++) {
+      const m = g.rock(y * M, side, 3, 7);
+      if (m === Material.CopperOre || m === Material.GoldOre) ore++;
+    }
+    expect(ore).toBeGreaterThan(5);
+    expect(ore).toBeLessThan(45);
+    expect(beside(k!.width / 2 + 10 * M).dike).toBe(0);
+  });
+
+  it('none of them in worlds made before (geology 1 and 2)', () => {
+    for (let x = 0; x < 16000; x += 250) {
+      const c = old.column(x * M, 5000 * M);
+      expect(c.dike).toBe(0);
+      expect(c.graniteTop).toBe(-Infinity);
+      expect(c.haloTop).toBe(-Infinity);
+    }
+  });
+
+  it('in the terrain: granite and ore where an intrusion is', () => {
+    const world = FLAT_WORLD_16KM, config = { ...defaultPlateTerrain(3, world), rivers: 0, lakes: 0, caves: 0, geology: 3 };
+    const heights = new PlateHeights(world, config), geo = heights.geology()!, gen = new TerrainGenerator(world, defaultVoxelize(), heights);
+    // An intrusion under land.
+    let p = null;
+    for (let j = 0; j < 4 && !p; j++) for (let i = 0; i < 4 && !p; i++) { const q = geo.plutonIn(i, j); if (q && heights.heights(q.x, q.z, 1, 1)[0]! > q.top + 10 * M) p = q; }
+    expect(p).not.toBeNull();
+    const counts = new Map<number, number>();
+    // (Near its crest, which is always up among the layers: its steep sides can be down by the basement's granite.)
+    const x = p!.x + p!.r * 0.3, cx = Math.floor(x / CHUNK_SIZE), cz = Math.floor(p!.z / CHUNK_SIZE), cy = Math.floor(p!.top / CHUNK_SIZE);
+    for (let dy = -2; dy <= 2; dy++) {
+      const chunk = gen.generateChunk({ cx, cy: cy + dy, cz });
+      for (const b of chunk.blocks) if (b?.kind === 'uniform') counts.set(b.material, (counts.get(b.material) ?? 0) + 1);
+    }
+    expect(counts.get(Material.Granite) ?? 0).toBeGreaterThan(0);
+    expect((counts.get(Material.IronOre) ?? 0) + (counts.get(Material.CopperOre) ?? 0) + (counts.get(Material.GoldOre) ?? 0)).toBeGreaterThan(0);
+  }, 60_000);
+});
+
+describe('copper and gold', () => {
+  it('copper wants a stone pickaxe, gold an iron one; they give raw copper and gold, smelted into coins', () => {
+    expect(dropOf(Material.CopperOre, Item.WoodenPickaxe)).toBeNull();
+    expect(dropOf(Material.CopperOre, Item.StonePickaxe)).toBe(Material.RawCopper);
+    expect(dropOf(Material.GoldOre, Item.StonePickaxe)).toBeNull();
+    expect(dropOf(Material.GoldOre, Item.IronPickaxe)).toBe(Material.RawGold);
+    expect(stationRecipe('furnace', Material.RawCopper)?.output).toBe(Item.CopperCoin);
+    expect(stationRecipe('furnace', Material.RawGold)?.output).toBe(Item.GoldCoin);
+    expect(stationRecipe('furnace', Material.RawIron)?.output).toBe(Item.IronIngot);
+    expect(rockNote(Material.Basalt)).toMatch(/^basalt.*copper and gold/);
+    expect(rockNote(Material.GoldOre)).toMatch(/^gold ore/);
   });
 });

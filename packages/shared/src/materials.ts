@@ -62,6 +62,13 @@ export const Material = {
   Shale: 48,
   Limestone: 49,
   Granite: 50,
+  /** Dark rock of dikes, cutting the layers (see geology.ts). */
+  Basalt: 51,
+  /** Ores at the edges of intrusions (see geology.ts), and what they give (smelted into coins: see stations.ts). */
+  CopperOre: 52,
+  GoldOre: 53,
+  RawCopper: 54,
+  RawGold: 55,
 } as const;
 
 /** Light (0..15, as the sky's: see the client's skyLight) given by blocks with any of these in them. */
@@ -132,6 +139,11 @@ const MATERIAL_NAMES: Record<number, string> = {
   [Material.Shale]: 'shale',
   [Material.Limestone]: 'limestone',
   [Material.Granite]: 'granite',
+  [Material.Basalt]: 'basalt',
+  [Material.CopperOre]: 'copper ore',
+  [Material.GoldOre]: 'gold ore',
+  [Material.RawCopper]: 'raw copper',
+  [Material.RawGold]: 'raw gold',
 };
 
 
