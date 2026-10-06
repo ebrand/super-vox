@@ -178,7 +178,7 @@ describe('voxel chunks while moving fast', () => {
   it('flying, loads detail as it speeds up, less of it, then none (unless detail at any speed was asked for)', () => {
     const sd = new SpeedDetail(8, { full: 25, none: 60 });
     const FLY = flySpeeds(8);
-    expect(FLY).toEqual({ full: 100, half: 250 });
+    expect(FLY).toEqual({ full: 100, half: 180 });
     expect(sd.target(0, true)).toBe(8);
     expect(sd.target(15, true)).toBe(8); // the usual flying speed: everything as built
     expect(sd.target(FLY.full, true)).toBe(8);
@@ -194,13 +194,14 @@ describe('voxel chunks while moving fast', () => {
   });
 
   it('flying, keeps up at speeds that go with the detail: a wider ring, slower', () => {
-    expect(flySpeeds(16)).toEqual({ full: 50, half: 125 });
-    expect(flySpeeds(4)).toEqual({ full: 200, half: 500 });
+    expect(flySpeeds(16)).toEqual({ full: 50, half: 90 });
+    expect(flySpeeds(4)).toEqual({ full: 200, half: 360 });
     const wide = new SpeedDetail(16), narrow = new SpeedDetail(4);
     expect(wide.target(60, true)).toBe(8);
-    expect(wide.target(130, true)).toBe(-1);
+    expect(wide.target(95, true)).toBe(-1);
     expect(narrow.target(180, true)).toBe(4);
-    expect(narrow.target(450, true)).toBe(2);
+    expect(narrow.target(350, true)).toBe(2);
+    expect(narrow.target(370, true)).toBe(-1);
   });
 });
 

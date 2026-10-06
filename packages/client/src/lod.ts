@@ -92,11 +92,11 @@ export const DETAIL_SPEEDS = { full: 25, none: 60 };
  * stay (see selectLod's `keep`). Measured on staging (12 vCPUs, 8 generation workers, 2026-10-05):
  * one player at detail 8 kept up to about 140 m/s over new ground, not 161; with room for other
  * players, 100 m/s at detail 8. The ring's leading edge grows with the radius, so the speeds go as
- * 1 / detail; half as far, half the edge: 2.5 times as fast (a little under twice that).
+ * 1 / detail. Half as far kept up at 150 m/s at detail 8, not 245: 1.8 times the full speed.
  */
 export function flySpeeds(detail: number): { full: number; half: number } {
   const full = (FLY_FULL_AT_8 * 8) / Math.max(1, detail);
-  return { full, half: full * 2.5 };
+  return { full, half: full * 1.8 };
 }
 /** flySpeeds' full speed at detail 8 (m/s). */
 export const FLY_FULL_AT_8 = 100;
