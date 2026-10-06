@@ -15,6 +15,8 @@ export interface Settings {
   world: string | null;
   /** Performance: how many mesh workers (background threads) build terrain meshes (see workersFor). */
   performance: Performance;
+  /** The game full-screen: entered when the mouse is captured (a click: browsers allow it then). */
+  fullscreen: boolean;
 }
 
 export type Performance = 'normal' | 'medium' | 'max';
@@ -41,7 +43,7 @@ export function workersFor(p: Performance, cores: number): number {
 export const SETTINGS_LIMITS = { detail: [1, 32], view: [64, 16_000] } as const;
 
 export function defaultSettings(): Settings {
-  return { detail: 4, view: 2048, tolerance: null, world: null, performance: 'medium' };
+  return { detail: 4, view: 2048, tolerance: null, world: null, performance: 'medium', fullscreen: false };
 }
 
 const KEY = 'super-vox.settings';
@@ -58,6 +60,7 @@ export function parseSettings(raw: unknown): Settings {
     tolerance: isValidTolerance(r.tolerance) ? r.tolerance : null,
     world: typeof r.world === 'string' && r.world !== '' ? r.world : null,
     performance: isPerformance(r.performance) ? r.performance : d.performance,
+    fullscreen: r.fullscreen === true,
   };
 }
 

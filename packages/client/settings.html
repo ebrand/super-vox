@@ -50,6 +50,11 @@
           <div class="hint" id="s-performance-hint">How many background threads build the terrain you see (Normal, 2; Medium, half this computer's processor cores; Max, all of them), and how fine distant terrain is (Normal a little coarser, Max finer). More loads terrain faster and shows more far away; less leaves the computer more room for other things.</div>
         </div>
         <div class="field">
+          <label class="title" for="s-fullscreen">Screen</label>
+          <div class="line"><label><input type="checkbox" id="s-fullscreen" /> Run game full-screen</label></div>
+          <div class="hint">The game fills the screen when you click into it (Esc leaves full-screen and asks whether to leave the world; Stay goes back).</div>
+        </div>
+        <div class="field">
           <label class="title" for="s-tolerance">Terrain tolerance</label>
           <div class="line"><select id="s-tolerance"></select></div>
           <div class="hint">How far generated voxels may stray from the true surface; smaller is more detailed and slower. Only development servers honor it.</div>

@@ -11,12 +11,6 @@
         font: 12px/1.4 ui-monospace, monospace; color: #e6e6e6;
         background: rgba(0, 0, 0, 0.55); border-radius: 4px; white-space: pre;
       }
-      #menu {
-        position: fixed; top: 8px; right: 8px; padding: 4px 10px; z-index: 10;
-        font: 600 12px/1.4 ui-monospace, monospace; color: #e6e6e6; text-decoration: none;
-        background: rgba(0, 0, 0, 0.55); border-radius: 4px;
-      }
-      #menu:hover { background: rgba(0, 0, 0, 0.8); }
       #leave { background: #14181d; color: #e6e6e6; border: 1px solid #262c34; border-radius: 10px; padding: 18px 20px; font: 14px/1.45 system-ui, sans-serif; min-width: 260px; }
       #leave::backdrop { background: rgba(0, 0, 0, 0.55); }
       #leave p { margin: 0 0 14px; }
@@ -25,7 +19,7 @@
       #leave button:hover { border-color: #8b949e; }
       #leave button.primary { background: #1f6feb; border-color: #1f6feb; }
       #mode {
-        position: fixed; left: 42px; bottom: 8px; padding: 4px 10px;
+        position: fixed; left: 8px; bottom: 8px; padding: 4px 10px;
         font: 600 12px/1.4 ui-monospace, monospace; letter-spacing: 0.08em;
         color: #e6e6e6; background: rgba(0, 0, 0, 0.55); border-radius: 4px;
         border-left: 4px solid #9aa4ad; pointer-events: none;
@@ -33,14 +27,6 @@
       #mode[data-mode="dig"] { border-left-color: #ff8a20; }
       #mode[data-mode="place"] { border-left-color: #40ff60; }
       #mode:empty { display: none; }
-      /* Fullscreen on and off (see main.ts), beside the mode. */
-      #fullscreen {
-        position: fixed; left: 8px; bottom: 8px; width: 28px; height: 25px; padding: 0;
-        display: flex; align-items: center; justify-content: center; cursor: pointer;
-        color: #e6e6e6; background: rgba(0, 0, 0, 0.55); border: 0; border-radius: 4px;
-      }
-      #fullscreen:hover { background: rgba(0, 0, 0, 0.75); }
-      #fullscreen[hidden] { display: none; }
       /* The size chosen (see main.ts): under the crosshair for a moment after it changes. */
       #size-badge {
         position: fixed; left: 50%; top: calc(50% + 34px); transform: translateX(-50%);
@@ -190,7 +176,6 @@
   </head>
   <body>
     <div id="status">connecting…</div>
-    <a id="menu" href="/" title="Leave the world, back to the menu (Esc frees the mouse; Esc again asks to leave)">Menu</a>
     <dialog id="leave">
       <p>Leave <b id="leave-world"></b>?</p>
       <div class="leave-buttons"><button type="button" id="leave-stay">Stay</button><button type="button" id="leave-go" class="primary" autofocus>Leave</button></div>
@@ -199,7 +184,6 @@
     <div id="size-badge"><span></span><span></span></div>
     <div id="mining" hidden></div>
     <div id="mode"></div>
-    <button id="fullscreen" type="button" title="Fullscreen" aria-label="Fullscreen" hidden></button>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

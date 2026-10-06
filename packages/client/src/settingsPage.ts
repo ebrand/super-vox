@@ -17,6 +17,7 @@ const viewEl = document.getElementById('s-view') as HTMLInputElement;
 const viewRange = document.getElementById('s-view-range') as HTMLInputElement;
 const toleranceEl = document.getElementById('s-tolerance') as HTMLSelectElement;
 const performanceEl = document.getElementById('s-performance') as HTMLSelectElement;
+const fullscreenEl = document.getElementById('s-fullscreen') as HTMLInputElement;
 const performanceHint = document.getElementById('s-performance-hint')!;
 const errorEl = document.getElementById('s-error')!;
 const statusEl = document.getElementById('s-status')!;
@@ -54,6 +55,7 @@ function fillForm(s: Settings): void {
   viewEl.value = viewRange.value = String(s.view);
   toleranceEl.value = s.tolerance === null ? '' : String(s.tolerance);
   performanceEl.value = s.performance;
+  fullscreenEl.checked = s.fullscreen;
   detailText();
 }
 
@@ -68,6 +70,7 @@ function readForm(): Settings | string {
     view: clamp(view, SETTINGS_LIMITS.view),
     tolerance: toleranceEl.value === '' ? null : Number(toleranceEl.value),
     performance: performanceEl.value as Performance,
+    fullscreen: fullscreenEl.checked,
   };
 }
 

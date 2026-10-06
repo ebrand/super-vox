@@ -8,22 +8,22 @@ function memoryStorage() {
 }
 
 describe('settings', () => {
-  it('defaults to detail 4, view 2048 m, the world tolerance, no world, medium performance', () => {
-    expect(defaultSettings()).toEqual({ detail: 4, view: 2048, tolerance: null, world: null, performance: 'medium' });
+  it('defaults to detail 4, view 2048 m, the world tolerance, no world, medium performance, not full-screen', () => {
+    expect(defaultSettings()).toEqual({ detail: 4, view: 2048, tolerance: null, world: null, performance: 'medium', fullscreen: false });
     expect(loadSettings(memoryStorage())).toEqual(defaultSettings());
     expect(loadSettings(null)).toEqual(defaultSettings());
   });
 
   it('round-trips through storage', () => {
     const store = memoryStorage();
-    const s = { detail: 7, view: 5000, tolerance: 0, world: 'archipelago', performance: 'max' as const };
+    const s = { detail: 7, view: 5000, tolerance: 0, world: 'archipelago', performance: 'max' as const, fullscreen: true };
     expect(saveSettings(s, store)).toBe(true);
     expect(loadSettings(store)).toEqual(s);
   });
 
   it('replaces anything invalid with its default, keeping the rest', () => {
-    expect(parseSettings({ detail: 99, view: 'far', tolerance: 17, world: '', performance: 'turbo' })).toEqual(defaultSettings());
-    expect(parseSettings({ detail: 2.5, view: 64, tolerance: 16, world: 'x', performance: 'normal' })).toEqual({ detail: 4, view: 64, tolerance: 16, world: 'x', performance: 'normal' });
+    expect(parseSettings({ detail: 99, view: 'far', tolerance: 17, world: '', performance: 'turbo', fullscreen: 'yes' })).toEqual(defaultSettings());
+    expect(parseSettings({ detail: 2.5, view: 64, tolerance: 16, world: 'x', performance: 'normal' })).toEqual({ detail: 4, view: 64, tolerance: 16, world: 'x', performance: 'normal', fullscreen: false });
     expect(parseSettings({ performance: 'toString' }).performance).toBe('medium');
     expect(parseSettings(null)).toEqual(defaultSettings());
     const store = memoryStorage();

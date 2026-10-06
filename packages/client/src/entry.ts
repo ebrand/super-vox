@@ -37,7 +37,7 @@ function status(text: string, kind: 'good' | 'bad' | '' = ''): void {
 const toleranceText = (t: number | null) => (t === null ? "world's own" : `${t}/16 m`);
 
 function showSummary(): void {
-  summaryEl.textContent = `Settings: detail ${settings.detail} chunks (${settings.detail * 16} m) · view ${settings.view} m · performance ${settings.performance} (${workersFor(settings.performance, navigator.hardwareConcurrency || 0)} mesh workers) · tolerance ${toleranceText(settings.tolerance)}`;
+  summaryEl.textContent = `Settings: detail ${settings.detail} chunks (${settings.detail * 16} m) · view ${settings.view} m · performance ${settings.performance} (${workersFor(settings.performance, navigator.hardwareConcurrency || 0)} mesh workers) · tolerance ${toleranceText(settings.tolerance)}${settings.fullscreen ? ' · full-screen' : ''}`;
 }
 
 const chosen = () => worlds.find((x) => x.name === worldEl.value);

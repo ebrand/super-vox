@@ -1,4 +1,3 @@
-import './fullscreen.js';
 import './envBadge.js';
 import * as THREE from 'three';
 import { BLOCK_SIZE, CHUNK_SIZE, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, lightAt, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
@@ -162,8 +161,8 @@ document.addEventListener('pointerlockchange', () => {
 // (and their world can close when it's idle). Esc asks: the browser takes the first Esc for itself
 // (it frees the mouse, and the page never hears the key), so the mouse being freed by anything but
 // the game (E, M, L, a furnace) or another window taking over asks; with the mouse already free,
-// Esc does. The Menu link leaves; so does leaving the page any way at all (closing the tab, going
-// elsewhere, or the browser keeping the page to come back to: then it starts afresh).
+// Esc does. Leaving the page any way at all leaves too (closing the tab, going elsewhere, or the
+// browser keeping the page to come back to: then it starts afresh).
 const leaveDialog = document.getElementById('leave') as HTMLDialogElement;
 /** The game itself is freeing the mouse (not the browser's Esc): no asking. */
 let freeingMouse = false;
@@ -200,10 +199,19 @@ document.getElementById('leave-go')!.addEventListener('click', () => {
 });
 document.getElementById('leave-stay')!.addEventListener('click', () => {
   leaveDialog.close();
-  // (Straight back in: the click lets the mouse be captured again.)
+  // (Straight back in: the click lets the mouse be captured again, and full-screen too.)
+  goFullscreen();
   controls.requestPointerLock();
 });
-document.getElementById('menu')!.addEventListener('click', leaveWorld);
+/**
+ * Full-screen, with the setting on (see Settings.fullscreen): only on a click or key (browsers
+ * allow it then), so as the mouse is captured. Esc leaves it (and asks to leave the world).
+ */
+function goFullscreen(): void {
+  if (!settings.fullscreen || document.fullscreenElement || !document.fullscreenEnabled) return;
+  void document.documentElement.requestFullscreen().catch(() => {});
+}
+renderer.domElement.addEventListener('click', goFullscreen);
 window.addEventListener('pagehide', leaveWorld);
 window.addEventListener('pageshow', (e) => {
   // (Back to a page the browser kept: its connection was closed on the way out, so start again.)
@@ -541,7 +549,10 @@ connection = connect({
               if (e.code === 'Escape') inventoryUi.close();
               else inventoryUi.toggle();
               // Closed with E (a key press may capture the mouse; Esc may not): straight back to playing.
-              if (closing && e.code === 'KeyE' && !inventoryUi.isOpen) controls.requestPointerLock();
+              if (closing && e.code === 'KeyE' && !inventoryUi.isOpen) {
+                goFullscreen();
+                controls.requestPointerLock();
+              }
               return;
             }
             if (/^Digit[0-9]$/.test(e.code)) {
