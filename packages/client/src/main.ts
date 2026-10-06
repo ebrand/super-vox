@@ -159,29 +159,50 @@ document.addEventListener('pointerlockchange', () => {
 });
 
 // --- Leaving the world: the connection closed properly, so the server lets go of the player at once
-// (and their world can close when it's idle). Esc, once the mouse is free (the browser's own Esc
-// frees it), asks; the Menu link leaves; so does leaving the page any way at all (closing the tab,
-// going elsewhere, or the browser keeping the page to come back to: then it starts afresh).
+// (and their world can close when it's idle). Esc asks: the browser takes the first Esc for itself
+// (it frees the mouse, and the page never hears the key), so the mouse being freed by anything but
+// the game (E, M, L, a furnace) or another window taking over asks; with the mouse already free,
+// Esc does. The Menu link leaves; so does leaving the page any way at all (closing the tab, going
+// elsewhere, or the browser keeping the page to come back to: then it starts afresh).
 const leaveDialog = document.getElementById('leave') as HTMLDialogElement;
+/** The game itself is freeing the mouse (not the browser's Esc): no asking. */
+let freeingMouse = false;
+function freeMouse(): void {
+  freeingMouse = true;
+  document.exitPointerLock();
+}
 /** When the mouse was last freed: the Esc that freed it isn't a second Esc. */
 let freedAt = 0;
+function askToLeave(): void {
+  if (leaveDialog.open || inventoryUi.isOpen || worldMap?.isOpen) return;
+  (document.getElementById('leave-world') as HTMLElement).textContent = worldName ?? 'this world';
+  leaveDialog.showModal();
+}
 document.addEventListener('pointerlockchange', () => {
-  if (!document.pointerLockElement) freedAt = performance.now();
+  if (document.pointerLockElement) return;
+  freedAt = performance.now();
+  const ours = freeingMouse;
+  freeingMouse = false;
+  // (Switching to another window frees it too: then the page has lost the focus by the time this looks.)
+  if (!ours) setTimeout(() => document.hasFocus() && document.visibilityState === 'visible' && askToLeave(), 50);
 });
 function leaveWorld(): void {
   connection?.close();
 }
 window.addEventListener('keydown', (e) => {
   if (e.code !== 'Escape' || e.repeat || typingIn(e) || controls.pointerLocked || leaveDialog.open) return;
-  if (inventoryUi.isOpen || worldMap?.isOpen || performance.now() - freedAt < 400) return;
-  (document.getElementById('leave-world') as HTMLElement).textContent = worldName ?? 'this world';
-  leaveDialog.showModal();
+  if (performance.now() - freedAt < 400) return;
+  askToLeave();
 });
 document.getElementById('leave-go')!.addEventListener('click', () => {
   leaveWorld();
   location.href = '/';
 });
-document.getElementById('leave-stay')!.addEventListener('click', () => leaveDialog.close());
+document.getElementById('leave-stay')!.addEventListener('click', () => {
+  leaveDialog.close();
+  // (Straight back in: the click lets the mouse be captured again.)
+  controls.requestPointerLock();
+});
 document.getElementById('menu')!.addEventListener('click', leaveWorld);
 window.addEventListener('pagehide', leaveWorld);
 window.addEventListener('pageshow', (e) => {
@@ -507,7 +528,7 @@ connection = connect({
             // Typing (the inventory's search box): only Esc, to close it.
             if (typingIn(e) && e.code !== 'Escape') return;
             if (e.code === 'KeyM' || (e.code === 'Escape' && worldMap?.isOpen)) {
-              if (e.code === 'KeyM' && !worldMap!.isOpen && controls.pointerLocked) document.exitPointerLock();
+              if (e.code === 'KeyM' && !worldMap!.isOpen && controls.pointerLocked) freeMouse();
               if (e.code === 'Escape') worldMap!.close();
               else worldMap!.toggle();
               return;
@@ -515,7 +536,7 @@ connection = connect({
             if (worldMap?.isOpen) return;
             // Inventory: E opens and closes it (freeing the mouse to click), Esc closes it; 1-9 and 0 pick a hotbar slot.
             if (e.code === 'KeyE' || (e.code === 'Escape' && inventoryUi.isOpen)) {
-              if (e.code === 'KeyE' && !inventoryUi.isOpen && controls.pointerLocked) document.exitPointerLock();
+              if (e.code === 'KeyE' && !inventoryUi.isOpen && controls.pointerLocked) freeMouse();
               const closing = inventoryUi.isOpen;
               if (e.code === 'Escape') inventoryUi.close();
               else inventoryUi.toggle();
@@ -532,7 +553,7 @@ connection = connect({
               return;
             }
             if (e.code === 'KeyL') {
-              if (!lightingPanel.isOpen && controls.pointerLocked) document.exitPointerLock();
+              if (!lightingPanel.isOpen && controls.pointerLocked) freeMouse();
               lightingPanel.toggle();
               return;
             }
@@ -711,7 +732,7 @@ connection = connect({
         break;
       case 'station':
         // Opened (the mouse let go of, as for the inventory), or what's in it now.
-        if (msg.state && !inventoryUi.isOpen && controls.pointerLocked) document.exitPointerLock();
+        if (msg.state && !inventoryUi.isOpen && controls.pointerLocked) freeMouse();
         inventoryUi.showStation(msg);
         break;
       case 'error':
