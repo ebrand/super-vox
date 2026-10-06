@@ -43,6 +43,8 @@ export function applyLook(yaw: number, pitch: number, dx: number, dy: number, se
  * (Shift: SPRINT times that), whatever the flying speed.
  * Collision comes from `collide`; walking needs it.
  */
+const NO_KEYS: ReadonlySet<string> = new Set();
+
 export class FlyControls {
   yaw = 0;
   pitch = 0;
@@ -65,6 +67,8 @@ export class FlyControls {
   inWater: (x: number, y: number, z: number) => boolean = () => false;
   /** Walking with the middle of the body in water, after the last update. */
   swimming = false;
+  /** Knocked down (see knockdown.ts): no moving or jumping (still falling, and looking round). */
+  stunned = false;
   private walk: WalkState = { vy: 0, grounded: false };
   private readonly keys = new Set<string>();
   private dragging = false;
@@ -177,22 +181,23 @@ export class FlyControls {
 
   /** Moves and orients the camera; `dt` in seconds. */
   update(dt: number): void {
-    const shift = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
+    const keys = this.stunned ? NO_KEYS : this.keys;
+    const shift = keys.has('ShiftLeft') || keys.has('ShiftRight');
     const step = Math.min(dt, 0.1) * this.speed * (shift ? 5 : 1);
     if (this.walking && this.collide) {
       // Walk along the ground in the facing direction; Space jumps.
-      const dir = moveDirection(this.yaw, this.keys);
+      const dir = moveDirection(this.yaw, keys);
       dir.y = 0;
       if (dir.lengthSq() > 0) dir.normalize();
       // The middle of the body (the eye is 1.62 m up a 1.8 m player).
       const p = this.camera.position;
       this.swimming = this.inWater(p.x, p.y - 0.75, p.z);
-      const swim = this.swimming ? { up: this.keys.has('Space'), down: this.keys.has('KeyC') || this.keys.has('KeyQ') } : undefined;
+      const swim = this.swimming ? { up: keys.has('Space'), down: keys.has('KeyC') || keys.has('KeyQ') } : undefined;
       // On foot: a walking pace (Shift: sprint), not the flying speed.
       const speed = WALK_SPEED * (shift ? SPRINT : 1) * (swim ? 0.5 : 1);
       const r = walkStep(
         this.walk,
-        { dx: dir.x, dz: dir.z, speed, jump: this.keys.has('Space'), ...(swim ? { swim } : {}) },
+        { dx: dir.x, dz: dir.z, speed, jump: keys.has('Space'), ...(swim ? { swim } : {}) },
         Math.min(dt, 0.1),
         this.collide,
         this.groundLoaded(),
@@ -203,7 +208,7 @@ export class FlyControls {
     } else {
       this.swimming = false;
       this.walk = { vy: 0, grounded: false };
-      const delta = moveDirection(this.yaw, this.keys).multiplyScalar(step);
+      const delta = moveDirection(this.yaw, keys).multiplyScalar(step);
       this.camera.position.add(this.collide ? new THREE.Vector3(...this.collide([delta.x, delta.y, delta.z]).delta) : delta);
     }
     if (this.camera.position.y < this.minY) this.camera.position.y = this.minY;

@@ -19,7 +19,10 @@ export class ExplosionView {
   private readonly cloudBox = shadedBox();
   private readonly pieceMesh: THREE.InstancedMesh;
   private readonly pieces: { path: [number, number, number][]; size: number; color: THREE.Color; start: number; spin: THREE.Vector3 }[] = [];
-  private shakeAmount = 0;
+  /** Shakes under way: each from when its blast reaches us (performance.now()), how hard (m) and how long (s), and its sway's frequencies and phases. */
+  private shakes: { start: number; amp: number; dur: number; freq: number[]; phase: number[] }[] = [];
+  /** Called for each blast: where it is (m), its radius (m), how far off (m). (The game knocks you down: see knockdown.ts.) */
+  onBlast: ((center: THREE.Vector3, radius: number, distance: number) => void) | null = null;
   private audio: AudioContext | null = null;
   private out: AudioNode | null = null;
   private readonly box = new THREE.BoxGeometry(1, 1, 1);
@@ -67,8 +70,17 @@ export class ExplosionView {
     this.fireballs.push({ mesh: fire, start: now, radius: r });
     // Shake and sound, by distance.
     const d = this.camera.getWorldPosition(new THREE.Vector3()).distanceTo(c);
-    this.shakeAmount = Math.max(this.shakeAmount, Math.min(0.6, (r * 0.6) / Math.max(1, d / 4)));
+    // The shake: as hard and as long as the blast is big, less the farther off it is (beyond its
+    // radius), from when it reaches us.
+    const near = 1 / (1 + Math.max(0, d - r) / (r * 1.2)) ** 1.5;
+    const amp = Math.min(0.9, 0.04 + 0.05 * r) * near;
+    if (amp > 0.005) {
+      const size = Math.max(0, Math.min(1, (r - 2.3) / 13.7));
+      const f = 7 - 3 * size;
+      this.shakes.push({ start: now + (d / 343) * 1000, amp, dur: 0.35 + 0.13 * r, freq: [f, f * 1.37, f * 0.83], phase: [Math.random() * 6.3, Math.random() * 6.3, Math.random() * 6.3] });
+    }
     this.boom(d, r);
+    this.onBlast?.(c, r, d);
   }
 
   /** A blast's debris (see DebrisPiece): each piece flies its path from now. */
@@ -149,8 +161,6 @@ export class ExplosionView {
     this.pieceMesh.count = k;
     this.pieceMesh.instanceMatrix.needsUpdate = true;
     if (this.pieceMesh.instanceColor) this.pieceMesh.instanceColor.needsUpdate = true;
-    this.shakeAmount *= Math.exp(-dt * 6);
-    if (this.shakeAmount < 0.002) this.shakeAmount = 0;
   }
   private lastFrame = performance.now();
 
@@ -206,10 +216,24 @@ vec3 transformed = turn * (position * aSize * 0.98 * life) + at;`,
     this.clouds.push({ mesh, material, time, start: startedAt, end: cloud.end + 0.1 });
   }
 
-  /** The view's shake now (metres): an offset to add to the camera for this frame. */
+  /**
+   * The view's shake now (metres): an offset to add to the camera for this frame. Each blast's is a
+   * jolt (sharp, gone in a tenth of a second or so), then a sway dying away over its length.
+   */
   shake(): THREE.Vector3 {
-    const a = this.shakeAmount;
-    return a ? new THREE.Vector3((Math.random() - 0.5) * a, (Math.random() - 0.5) * a, (Math.random() - 0.5) * a) : ZERO;
+    if (!this.shakes.length) return ZERO;
+    const now = performance.now(), out = new THREE.Vector3();
+    this.shakes = this.shakes.filter((s) => (now - s.start) / 1000 < s.dur * 5);
+    for (const s of this.shakes) {
+      const t = (now - s.start) / 1000;
+      if (t < 0) continue;
+      const jolt = s.amp * Math.exp(-t / 0.1), sway = s.amp * 0.7 * Math.exp(-t / s.dur);
+      const at = (i: number) => (Math.random() - 0.5) * 2 * jolt + Math.sin(2 * Math.PI * s.freq[i]! * t + s.phase[i]!) * sway;
+      out.x += at(0);
+      out.y += at(1) * 0.8;
+      out.z += at(2);
+    }
+    return out;
   }
 
   /** A blast's sound, `distance` m away from a blast of `radius` m (see blastSound.ts), through a limiter (so a big one near doesn't clip). */

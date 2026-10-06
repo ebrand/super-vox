@@ -6,6 +6,7 @@ import { connect } from './connection.js';
 import { EditTool, sizeLabel } from './editTool.js';
 import { FlyControls } from './flyControls.js';
 import { ExplosionView } from './explosions.js';
+import { Knockdown, knockdownFor } from './knockdown.js';
 import { sampleBlast } from './blastCloud.js';
 import type { CloudRequest, CloudResponse } from './blastCloud.worker.js';
 import { DETAIL_SPEEDS, SpeedDetail, focusLead, selectLod } from './lod.js';
@@ -105,6 +106,16 @@ scene.add(weatherView.group);
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, view * 1.5);
 const controls = new FlyControls(camera, renderer.domElement);
 const explosions = new ExplosionView(scene, camera);
+/**
+ * Knocked down by a blast near enough (see knockdown.ts): only walking (not flying or swimming), and
+ * only playing (survival, or the hybrid tool: not while building with dig or place).
+ */
+const knockdown = new Knockdown();
+explosions.onBlast = (center, radius, distance) => {
+  if (!controls.walking || controls.swimming || !(survivalMovement || editTool?.mode === 'hybrid')) return;
+  const k = knockdownFor(distance, radius, { x: center.x - camera.position.x, z: center.z - camera.position.z });
+  if (k) knockdown.begin(k);
+};
 const compassRose = createCompassRose(document.body);
 
 const material = createVoxelMaterial(atmosphere);
@@ -971,7 +982,11 @@ renderer.setAnimationLoop(() => {
   const frameStart = performance.now();
   // Movement and editing pause while the map or the inventory is open.
   const paused = worldMap?.isOpen || inventoryUi.isOpen;
+  controls.stunned = knockdown.active;
   if (!paused) controls.update((frameStart - lastFrame) / 1000);
+  // Knocked down: thrown (as far as there's room), and the view down on the ground (drawn so for this frame only, below).
+  const downPose = knockdown.update(Math.min(0.1, (frameStart - lastFrame) / 1000));
+  if (downPose && controls.collide) camera.position.add(new THREE.Vector3(...controls.collide([downPose.shove.x, 0, downPose.shove.z]).delta));
   lastFrame = frameStart;
   trackVelocity(frameStart);
   chunks?.setViewY(camera.position.y * UNITS_PER_METER);
@@ -1000,9 +1015,17 @@ renderer.setAnimationLoop(() => {
   // (Not behind the 3D map, which draws itself: the last frame stays on screen.) A blast nearby
   // shakes the view, for this frame only.
   const shake = explosions.shake();
+  const pose = camera.quaternion.clone();
   camera.position.add(shake);
+  if (downPose) {
+    camera.position.y -= downPose.drop;
+    camera.rotateZ(downPose.roll);
+    camera.rotateX(downPose.pitch);
+  }
   if (!worldMap?.showing3d) water.render(scene, camera);
   camera.position.sub(shake);
+  if (downPose) camera.position.y += downPose.drop;
+  camera.quaternion.copy(pose);
 
   frames++;
   const now = performance.now();
