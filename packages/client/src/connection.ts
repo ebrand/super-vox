@@ -18,6 +18,8 @@ export interface ConnectionHandlers {
 
 export interface Connection {
   send: (msg: ClientMessage) => void;
+  /** Closes it for good (leaving the world): the server lets go of the player at once, and onClose isn't called. */
+  close: () => void;
 }
 
 export function connect(handlers: ConnectionHandlers): Connection {
@@ -37,10 +39,17 @@ export function connect(handlers: ConnectionHandlers): Connection {
     const msg = typeof ev.data === 'string' ? decodeServerMessage(ev.data) : null;
     if (msg) handlers.onMessage(msg);
   });
-  ws.addEventListener('close', handlers.onClose);
+  let leaving = false;
+  ws.addEventListener('close', () => {
+    if (!leaving) handlers.onClose();
+  });
   return {
     send: (msg) => {
       if (ws.readyState === WebSocket.OPEN) ws.send(encodeMessage(msg));
+    },
+    close: () => {
+      leaving = true;
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close(1000, 'left');
     },
   };
 }

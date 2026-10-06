@@ -17,6 +17,13 @@
         background: rgba(0, 0, 0, 0.55); border-radius: 4px;
       }
       #menu:hover { background: rgba(0, 0, 0, 0.8); }
+      #leave { background: #14181d; color: #e6e6e6; border: 1px solid #262c34; border-radius: 10px; padding: 18px 20px; font: 14px/1.45 system-ui, sans-serif; min-width: 260px; }
+      #leave::backdrop { background: rgba(0, 0, 0, 0.55); }
+      #leave p { margin: 0 0 14px; }
+      #leave .leave-buttons { display: flex; gap: 8px; justify-content: flex-end; }
+      #leave button { background: #21262d; color: #e6e6e6; border: 1px solid #262c34; border-radius: 6px; padding: 7px 16px; font: inherit; cursor: pointer; }
+      #leave button:hover { border-color: #8b949e; }
+      #leave button.primary { background: #1f6feb; border-color: #1f6feb; }
       #mode {
         position: fixed; left: 42px; bottom: 8px; padding: 4px 10px;
         font: 600 12px/1.4 ui-monospace, monospace; letter-spacing: 0.08em;
@@ -183,7 +190,11 @@
   </head>
   <body>
     <div id="status">connecting…</div>
-    <a id="menu" href="/" title="Back to the menu (Esc frees the mouse first)">Menu</a>
+    <a id="menu" href="/" title="Leave the world, back to the menu (Esc frees the mouse; Esc again asks to leave)">Menu</a>
+    <dialog id="leave">
+      <p>Leave <b id="leave-world"></b>?</p>
+      <div class="leave-buttons"><button type="button" id="leave-stay">Stay</button><button type="button" id="leave-go" class="primary" autofocus>Leave</button></div>
+    </dialog>
     <div id="crosshair"></div>
     <div id="size-badge"><span></span><span></span></div>
     <div id="mining" hidden></div>

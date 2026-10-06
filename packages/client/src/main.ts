@@ -158,6 +158,37 @@ document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement) inventoryUi.close();
 });
 
+// --- Leaving the world: the connection closed properly, so the server lets go of the player at once
+// (and their world can close when it's idle). Esc, once the mouse is free (the browser's own Esc
+// frees it), asks; the Menu link leaves; so does leaving the page any way at all (closing the tab,
+// going elsewhere, or the browser keeping the page to come back to: then it starts afresh).
+const leaveDialog = document.getElementById('leave') as HTMLDialogElement;
+/** When the mouse was last freed: the Esc that freed it isn't a second Esc. */
+let freedAt = 0;
+document.addEventListener('pointerlockchange', () => {
+  if (!document.pointerLockElement) freedAt = performance.now();
+});
+function leaveWorld(): void {
+  connection?.close();
+}
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'Escape' || e.repeat || typingIn(e) || controls.pointerLocked || leaveDialog.open) return;
+  if (inventoryUi.isOpen || worldMap?.isOpen || performance.now() - freedAt < 400) return;
+  (document.getElementById('leave-world') as HTMLElement).textContent = worldName ?? 'this world';
+  leaveDialog.showModal();
+});
+document.getElementById('leave-go')!.addEventListener('click', () => {
+  leaveWorld();
+  location.href = '/';
+});
+document.getElementById('leave-stay')!.addEventListener('click', () => leaveDialog.close());
+document.getElementById('menu')!.addEventListener('click', leaveWorld);
+window.addEventListener('pagehide', leaveWorld);
+window.addEventListener('pageshow', (e) => {
+  // (Back to a page the browser kept: its connection was closed on the way out, so start again.)
+  if (e.persisted) location.reload();
+});
+
 const lightingPanel = new LightingPanel(
   lighting,
   (l) => {
@@ -773,7 +804,7 @@ function updateHud(): void {
     `camera ${f.x.toFixed(1)}, ${f.y.toFixed(1)}, ${f.z.toFixed(1)} m` + (controls.walking ? '' : `, flying ${controls.speed.toFixed(0)} m/s`) +
     (clock ? `, time ${formatHours(worldHours())}` : '') +
     '\n' +
-    (controls.pointerLocked ? 'mouse: look · Esc: release mouse' : 'click: capture mouse (or drag to look)') +
+    (controls.pointerLocked ? 'mouse: look · Esc: release mouse' : 'click: capture mouse (or drag to look) · Esc: leave') +
     (controls.walking
       ? controls.swimming ? ' · swimming: WASD move · Space: up · C: down' : ' · walking: WASD move · Space: jump'
       : ' · flying: WASD move · Space: up · Q/C: down') +
