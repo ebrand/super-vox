@@ -2,10 +2,10 @@ import type { Mover } from './walking.js';
 import { GRAVITY } from './walking.js';
 
 /**
- * Being knocked down by a blast (walking, near enough; see knockdownFor): thrown back away from it,
- * tumbling end over end, bouncing and rolling along the ground till you come to rest (walls and
- * slopes stop you: you move as the player does, see Mover); a moment lying there; then getting back
- * up, a little unsteadily. Moving is locked meanwhile (looking isn't). Bigger and nearer blasts
+ * Being knocked down by a blast (walking, near enough; see knockdownFor): hit and flung back away
+ * from it, your head snapping back (the sky in view), slammed down at each bounce, then skidding
+ * along on your back till you stop (walls and slopes stop you: you move as the player does, see
+ * Mover); a moment lying there, rolled to one side; then getting back up, a little unsteadily. Moving is locked meanwhile (looking isn't). Bigger and nearer blasts
  * throw you further and keep you down longer.
  */
 
@@ -20,8 +20,11 @@ export const BODY_BELOW_EYE = 0.8;
 const RISE = 1.0;
 /** The longest the tumbling lasts (s), however it's going. */
 const MOST_TUMBLING = 4;
-/** Turns (radians) per metre travelled: a body rolling over. */
-const SPIN_PER_METRE = 1.1;
+/** How far back your head's thrown (radians, looking up toward the sky): for the weakest and the hardest. */
+const HEAD_BACK = [0.6, 1.0] as const;
+/** In the air, tipping further back (radians per metre flown), at most this much more. */
+const AIR_TIP = 0.25;
+const AIR_TIP_MOST = 0.35;
 
 /** A knockdown: how hard (0..1), which way you're thrown (x, z, unit), and which side you end up rolled to. */
 export interface KnockdownStart {
@@ -71,10 +74,12 @@ export class Knockdown {
   private t = 0;
   private total = 0;
   private v = { x: 0, y: 0, z: 0 };
+  /** How far back the head is (radians), the tip it's easing to, and the jolt of the last hit (radians, dying fast). */
   private angle = 0;
-  /** At the end of tumbling: the angle to settle to (upright, a whole number of turns) from where it stopped. */
+  private tip = 0;
+  private jolt = 0;
+  /** At the end of being thrown: the angle the head settles from (to level). */
   private settleFrom = 0;
-  private settleTo = 0;
 
   /** Knocked down (a harder one takes over from one under way; one while getting up starts afresh). */
   begin(k: KnockdownStart): void {
@@ -82,6 +87,9 @@ export class Knockdown {
     this.k = k;
     this.phase = 'tumbling';
     this.t = this.total = 0;
+    // (The hit itself: a jolt, the head snapping back past where it settles.)
+    this.jolt = 0.25 + 0.2 * k.strength;
+    this.tip = 0;
     const out = 3 + 9 * k.strength, up = 3 + 5 * k.strength;
     this.v = { x: k.away.x * out, y: up, z: k.away.z * out };
   }
@@ -119,28 +127,35 @@ export class Knockdown {
         moved = r.delta;
         const [bx, by, bz] = r.blocked;
         if (by && v.y < -2.2) {
-          // A bounce (landing hard enough): up again not quite half as fast, and slowed along the ground.
-          v.y = -v.y * 0.45;
-          v.x *= 0.75;
-          v.z *= 0.75;
+          // A bounce (landing hard enough): slammed down (a jolt, by how hard), up again a third as
+          // fast, hardly slowed along the ground (a body skids).
+          this.jolt = Math.max(this.jolt, Math.min(0.3, -v.y * 0.04));
+          v.y = -v.y * 0.35;
+          v.x *= 0.88;
+          v.z *= 0.88;
         } else if (by && v.y <= 0) {
-          // On the ground: rolling to a stop.
+          // On the ground: skidding to a stop.
           v.y = 0;
-          const f = Math.exp(-dt * 1.4);
+          const f = Math.exp(-dt * 1.5);
           v.x *= f;
           v.z *= f;
         }
         if (bx) v.x *= -0.3;
         if (bz) v.z *= -0.3;
       }
+      // The head: thrown back (further, the harder), tipping further back while flying, easing
+      // back toward lying flat once on the ground; each hit a jolt on top.
+      const airborne = v.y !== 0;
       const along = Math.hypot(moved[0], moved[2]);
-      this.angle += along * SPIN_PER_METRE;
+      this.tip = airborne ? Math.min(AIR_TIP_MOST * k.strength, this.tip + along * AIR_TIP) : this.tip * Math.exp(-dt * 2);
+      const back = HEAD_BACK[0] + (HEAD_BACK[1] - HEAD_BACK[0]) * k.strength + this.tip;
+      this.angle += (back - this.angle) * (1 - Math.exp(-dt * 9));
+      this.jolt *= Math.exp(-dt * 9);
       const stopped = !move || (v.y === 0 && Math.hypot(v.x, v.z) < 0.3);
       if (stopped || this.t > MOST_TUMBLING) {
         this.phase = 'lying';
         this.t = 0;
         this.settleFrom = this.angle;
-        this.settleTo = Math.round(this.angle / (2 * Math.PI)) * 2 * Math.PI;
       }
     } else if (this.phase === 'lying' && this.t >= this.lying()) {
       this.phase = 'rising';
@@ -149,20 +164,23 @@ export class Knockdown {
       this.k = null;
       return null;
     }
-    // The pose: down low while tumbling and lying (settling upright, rolled to one side), then up.
-    const settle = this.phase === 'tumbling' ? 0 : this.phase === 'lying' ? smooth(Math.min(1, this.t / Math.min(0.5, this.lying()))) : 1;
-    const tumble = this.phase === 'tumbling' ? this.angle : this.settleFrom + (this.settleTo - this.settleFrom) * settle;
+    // The pose: down low while thrown and lying (the head coming level, rolled to one side), then up.
+    const settle = this.phase === 'tumbling' ? 0 : this.phase === 'lying' ? smooth(Math.min(1, this.t / Math.min(0.6, this.lying()))) : 1;
+    // (Skidding: the ground juddering under you, by how fast.)
+    const skid = this.phase === 'tumbling' && this.v.y === 0 ? (Math.random() - 0.5) * 0.04 * Math.min(1, Math.hypot(this.v.x, this.v.z) / 4) : 0;
+    const tumble = this.phase === 'tumbling' ? this.angle + this.jolt + skid : this.settleFrom * (1 - settle);
     const rising = this.phase === 'rising' ? this.t / RISE : 0;
     const fallen = this.phase === 'tumbling' ? smooth(Math.min(1, this.total / 0.25)) : 1;
     const down = this.phase === 'rising' ? 1 - smooth(rising) : fallen;
     const sway = rising > 0 ? Math.sin(rising * Math.PI * 3) * 0.08 * (1 - rising) : 0;
     const lyingRoll = this.phase === 'tumbling' ? 0 : settle;
     return {
-      drop: 1.2 * down,
+      // (A hit slams you lower for a moment.)
+      drop: 1.2 * down + (this.phase === 'tumbling' ? 0.25 * this.jolt : 0),
       roll: k.side * (1.0 * k.strength * lyingRoll * down + sway),
       pitch: 0.4 * k.strength * lyingRoll * down,
       tumble,
-      // (Across the way you're thrown: it turns you over backwards.)
+      // (Across the way you're thrown: it tips you over backwards.)
       axis: { x: k.away.z, z: -k.away.x },
       moved,
     };

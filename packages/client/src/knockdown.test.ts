@@ -64,10 +64,12 @@ describe('Knockdown', () => {
     expect(highest).toBeGreaterThan(0.5);
     expect(thrownFor).toBeGreaterThan(1);
     expect(thrownFor).toBeLessThan(4.1);
-    // Turned over at least once on the way, settled upright (whole turns) by the end, and the eye back up.
-    expect(Math.max(...poses.map((p) => p.tumble))).toBeGreaterThan(2 * Math.PI);
+    // Head thrown back (looking skyward) but never turned right over; level again, and the eye back up, by the end.
+    const most = Math.max(...poses.map((p) => p.tumble));
+    expect(most).toBeGreaterThan(1);
+    expect(most).toBeLessThan(Math.PI * 0.85);
     const last = poses.at(-1)!;
-    expect(Math.abs(last.tumble / (2 * Math.PI) - Math.round(last.tumble / (2 * Math.PI)))).toBeLessThan(1e-6);
+    expect(Math.abs(last.tumble)).toBeLessThan(1e-6);
     expect(last.drop).toBeLessThan(0.01);
     expect(poses.length / 60).toBeLessThan(8);
   });
