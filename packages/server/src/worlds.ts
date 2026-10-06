@@ -93,6 +93,13 @@ export interface WorldCatalog {
   play(name: string | undefined): { mode: GameMode; inventoryKey: string } | null;
   /** Worlds open now (being played or recently asked for), by name. */
   openWorlds(): { name: string; world: World }[];
+  /**
+   * Closes the worlds not asked for (see get) in the last `idleMs` and not `busy` (someone's in
+   * one, or something's still happening there), freeing what they hold (their terrain caches here
+   * and on the worker threads); each opens again as it was when next asked for. Returns the World
+   * objects let go of (with any of their tolerance variants). Absent where worlds stay open.
+   */
+  closeIdle?: (busy: (world: World) => boolean, idleMs: number, now?: number) => World[];
   /** Bytes of saved edits of world `name` on disk (0 if none or not kept on disk). */
   diskBytes(name: string): number;
   /** World `name`'s terraforming strokes, in order; null if there's no such world. */
@@ -204,6 +211,8 @@ interface Opened {
  */
 export class FileWorldCatalog implements WorldCatalog {
   private readonly open = new Map<string, Opened>();
+  /** When each open world was last asked for (ms). */
+  private readonly used = new Map<string, number>();
   readonly create?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape, mode?: GameMode) => WorldSummary;
   readonly setMode?: (name: string, mode: GameMode) => WorldSummary;
   readonly update?: (name: string, plates: PlateTerrainConfig, shape?: WorldShape) => WorldSummary;
@@ -295,6 +304,7 @@ export class FileWorldCatalog implements WorldCatalog {
       o = this.build(file);
       this.open.set(n, o);
     }
+    this.used.set(n, Date.now());
     const spec = o.file.spec;
     if (tolerance === undefined || !this.opts.dev || !o.heights || spec.generator === 'flat' || tolerance === spec.voxelize.tolerance) return o.world;
     let w = o.variants.get(tolerance);
@@ -461,6 +471,18 @@ export class FileWorldCatalog implements WorldCatalog {
   private close(name: string): void {
     this.open.get(name)?.remote?.forget();
     this.open.delete(name);
+    this.used.delete(name);
+  }
+
+  closeIdle(busy: (world: World) => boolean, idleMs: number, now = Date.now()): World[] {
+    const closed: World[] = [];
+    for (const [name, o] of [...this.open]) {
+      const worlds = [o.world, ...o.variants.values()];
+      if (now - (this.used.get(name) ?? 0) < idleMs || worlds.some(busy)) continue;
+      this.close(name);
+      closed.push(...worlds);
+    }
+    return closed;
   }
 
   private build(file: WorldFile): Opened {

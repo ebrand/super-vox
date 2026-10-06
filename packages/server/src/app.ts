@@ -152,6 +152,8 @@ interface Player {
 
 /** Time between water flow steps. */
 export const WATER_STEP_MS = 200;
+/** How long a world nobody's in or asked for stays open (see WorldCatalog.closeIdle). */
+export const IDLE_WORLD_MS = 10 * 60_000;
 /** How often a signed-in player's place is saved while they play (and always when they leave). */
 export const PLACE_SAVE_MS = 30_000;
 /** After sending a player back where they were (or back after dying), poses from before this long are ignored (their client may still report where it was). */
@@ -766,7 +768,23 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     }
   };
   blasting = setTimeout(blastTick, 50);
+  // Worlds nobody's in, or has asked for (a map, a claim, joining) in a while, are closed: their
+  // terrain caches go (here and on the worker threads, about a gigabyte a busy world). One with
+  // water still to flow or TNT still to go off stays open. Each opens again when next asked for,
+  // as it was (its edits are saved as they're made).
+  const closingIdle = catalog.closeIdle
+    ? setInterval(() => {
+        const busy = new Set<World>(clients.values());
+        for (const [world, explosives] of explosivesOf) if (explosives.count > 0) busy.add(world);
+        for (const world of catalog.closeIdle!((w) => busy.has(w) || w.waterPending > 0, IDLE_WORLD_MS)) {
+          mobManagers.delete(world);
+          stationViewers.delete(world);
+          explosivesOf.delete(world);
+        }
+      }, 60_000)
+    : null;
   app.addHook('onClose', async () => {
+    if (closingIdle) clearInterval(closingIdle);
     clearTimeout(blasting);
     clearInterval(flowing);
     clearInterval(mobbing);

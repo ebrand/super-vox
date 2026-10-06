@@ -2019,7 +2019,10 @@ export class PlateHeights implements HeightSource {
    */
   materialsAt(x0: number, z0: number, w: number, d: number, step: number, heights: Int32Array): (k: number) => MaterialId {
     const n = w * d, sea = this.seaLevel, e = PLATE_CELL, W = this.wrap ? this.world.widthUnits : null;
-    const base = this.climateBase(x0, z0, w, d, step, heights, true);
+    // (The whole block's climate decides what follows; the closure keeps none of it, only what was
+    // decided: columns are cached by the hundred, and a block's climate is a megabyte.)
+    let block = this.climateBase(x0, z0, w, d, step, heights, true);
+    const base = block && { shift: block.shift };
     const anyWithin = (vs: ArrayLike<number>, centre: number, reach: number) => {
       for (let k = 0; k < vs.length; k++) if (Math.abs(vs[k]! - centre) <= reach) return true;
       return false;
@@ -2035,9 +2038,12 @@ export class PlateHeights implements HeightSource {
     const degrees = (this.snowWander / SNOW_FRACTAL_MAX) * SNOW_FRACTAL_DEGREES;
     const byHeight = !base || this.altitudeSnow;
     const rockBandAt = sea + ROCK_BAND_MIN_HEIGHT;
-    const tempScale = base ? scaleNear(degrees, () => anyWithin(base.temperature, this.snowTemp, degrees + ROCK_BAND_DEGREES), this.snowNoise) : null;
+    const tempNear = block !== null && anyWithin(block.temperature, this.snowTemp, degrees + ROCK_BAND_DEGREES);
+    const tempScale = block ? scaleNear(degrees, () => tempNear, this.snowNoise) : null;
     const heightScale = byHeight ? scaleNear(this.snowWander, () => anyWithin(heights, this.snowLine, this.snowWander), this.snowNoise) : null;
     const rockScale = scaleNear(this.snowWander, () => (base !== null && anyWithin(heights, rockBandAt, this.snowWander)) || ((!base || this.altitudeRock) && anyWithin(heights, this.rockLine, this.snowWander)), this.rockNoise);
+    // (Let go of the block's climate: anything in this scope that a closure uses is kept with it.)
+    block = null;
     const wandered = (noise: readonly Octave[], scale: number, wander: number, x: number, z: number) => Math.max(-wander, Math.min(wander, fractalAt(noise, x, z) * scale));
     // River and lake beds, and polar ice (both kept from heights()).
     const standing = this.hydrology ? this.surface(x0, z0, w, d, step).water : null;
@@ -2063,14 +2069,16 @@ export class PlateHeights implements HeightSource {
       const x = x0 + (k % w) * step, z = z0 + Math.floor(k / w) * step;
       let t = NaN, moisture = Infinity, biome = -1;
       if (base) {
-        let bt = base.temperature[k]!, bm = base.m[k]!;
+        // (As climateBase makes them, for this sample.)
+        const temperature = this.gridAt(this.temperature!, x, z) - this.cooling * Math.max(0, heights[k]! - sea);
+        let bt = temperature, bm = this.gridAt(this.moisture!, x, z);
         if (base.shift) {
           bt = bt + Math.max(-dt, Math.min(dt, fractalAt(nt, x, z) * st));
           bm = bm + Math.max(-dm, Math.min(dm, fractalAt(nm, x, z) * sm));
         }
         biome = classifyBiome(bt, bm);
         moisture = bm;
-        t = base.temperature[k]! + (tempScale !== null ? wandered(this.snowNoise, tempScale, degrees, x, z) : 0);
+        t = temperature + (tempScale !== null ? wandered(this.snowNoise, tempScale, degrees, x, z) : 0);
       }
       const picked = this.pickMaterial(
         heights[k]!, ice ? ice[k]! : -Infinity, standing ? standing[k]! : -Infinity,

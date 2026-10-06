@@ -278,7 +278,10 @@ export class TerrainGenerator implements ChunkGenerator {
     readonly world: WorldConfig,
     readonly voxelize: VoxelizeConfig,
     readonly source: HeightSource,
-    private readonly columnCacheSize = 512,
+    // (A worker keeps one per world it generates for. Each holds its column's heights, water and
+    // materials, about a megabyte: 512 made a fully loaded world 4 GB across 8 workers; 64 is 1.3 GB,
+    // as fast, and still four times what three players flying over new ground at once need.)
+    private readonly columnCacheSize = 64,
   ) {
     validateVoxelize(voxelize);
     this.grassSlack = Math.max(voxelize.tolerance, voxelize.minVoxelSize / 2);
