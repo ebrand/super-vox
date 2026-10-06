@@ -509,6 +509,36 @@ describe('named worlds', () => {
     return voxelAt(decodeChunk(f.binary.subarray(1)), 0, 255, 0)!.size;
   }
 
+  it("lets go of a connection that stops answering pings (a tab gone without closing it), and its player", async () => {
+    const root = mkdtempSync(join(tmpdir(), 'super-vox-app-'));
+    roots.push(root);
+    createWorld(root, 'home', { generator: 'flat', resolution: 4 });
+    const a = await buildApp({ catalog: new FileWorldCatalog(root, 'home', { dev: true }), heartbeatMs: 100 });
+    const url = (await a.listen({ port: 0, host: '127.0.0.1' })).replace(/^http/, 'ws') + '/ws';
+    const players = async () => (await a.inject({ method: 'GET', url: '/api/dashboard' })).json().players.length as number;
+    // One that answers (as browsers do) and one that doesn't.
+    const alive = await hello(url, {});
+    const gone = await new Promise<WebSocket>((resolve, reject) => {
+      const s = new WebSocket(url, { autoPong: false });
+      s.once('open', () => resolve(s));
+      s.once('error', reject);
+    });
+    const welcomed = nextMessage(gone);
+    gone.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION }));
+    expect((await welcomed).type).toBe('welcome');
+    expect(await players()).toBe(2);
+    const dropped = new Promise<void>((resolve) => gone.once('close', () => resolve()));
+    await dropped;
+    // (The server's side of the close comes a moment after the client's.)
+    for (let i = 0; i < 50 && (await players()) !== 1; i++) await new Promise((r) => setTimeout(r, 20));
+    expect(await players()).toBe(1);
+    // The one answering stays (well past a few pings).
+    await new Promise((r) => setTimeout(r, 400));
+    expect(alive.ws.readyState).toBe(WebSocket.OPEN);
+    expect(await players()).toBe(1);
+    alive.ws.close();
+  });
+
   it('joins the world named in hello, or the default one', async () => {
     const { a, url } = await catalogApp();
     const home = await hello(url, {});

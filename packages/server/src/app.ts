@@ -109,6 +109,8 @@ export type AppOptions = (
   inventories?: InventoryStore;
   /** Makes a world's mob manager (tests: to place mobs themselves). */
   mobs?: (world: World) => MobManager;
+  /** How often connections are pinged (ms; see HEARTBEAT_MS). */
+  heartbeatMs?: number;
   /** Survival mining times are multiplied by this (tests: to mine quickly); default 1. */
   miningTimeScale?: number;
   /** The library of designed objects (see DesignLibrary); default: an empty one in memory. */
@@ -152,6 +154,12 @@ interface Player {
 
 /** Time between water flow steps. */
 export const WATER_STEP_MS = 200;
+/**
+ * How often every connection is pinged (browsers answer by themselves); one that hasn't answered,
+ * or sent anything, since the last is let go of: a tab closed without its connection closing (or a
+ * computer asleep) would otherwise stay a player, keeping its world open, for good.
+ */
+export const HEARTBEAT_MS = 30_000;
 /** How long a world nobody's in or asked for stays open (see WorldCatalog.closeIdle). */
 export const IDLE_WORLD_MS = 10 * 60_000;
 /** How often a signed-in player's place is saved while they play (and always when they leave). */
@@ -783,7 +791,25 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         }
       }, 60_000)
     : null;
+  // Connections still there (see HEARTBEAT_MS): whether each has answered since it was last pinged.
+  const answered = new Map<WebSocket, boolean>();
+  const beating = setInterval(() => {
+    for (const [socket, ok] of answered) {
+      if (!ok) {
+        socket.terminate(); // (its 'close' lets go of its player)
+        answered.delete(socket);
+        continue;
+      }
+      answered.set(socket, false);
+      try {
+        socket.ping();
+      } catch {
+        // (closing already)
+      }
+    }
+  }, opts.heartbeatMs ?? HEARTBEAT_MS);
   app.addHook('onClose', async () => {
+    clearInterval(beating);
     if (closingIdle) clearInterval(closingIdle);
     clearTimeout(blasting);
     clearInterval(flowing);
@@ -808,6 +834,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   };
 
   app.get('/ws', { websocket: true }, (socket, req) => {
+    answered.set(socket, true);
+    socket.on('pong', () => answered.set(socket, true));
     // Who's connecting (their session cookie came with the upgrade request).
     const whoReady: Promise<SignedIn | null> = opts.auth ? opts.auth.signedIn(req.cookies).catch(() => null) : Promise.resolve(null);
     let who: SignedIn | null = null;
@@ -878,6 +906,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       viewing = null;
     };
     socket.on('close', () => {
+      answered.delete(socket);
       stopViewing();
       queue.close();
       void inventory?.flush();
@@ -888,6 +917,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     });
 
     socket.on('message', (data, isBinary) => {
+      if (answered.has(socket)) answered.set(socket, true);
       metrics.totals.messagesIn++;
       metrics.totals.bytesIn += Array.isArray(data) ? data.reduce((a, b) => a + b.byteLength, 0) : (data as Buffer | ArrayBuffer).byteLength;
       const msg = isBinary ? null : decodeClientMessage(data.toString());
