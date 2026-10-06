@@ -62,7 +62,7 @@ Rock layers, fault lines, and ores that follow geological logic instead of rando
   - Intrusions: granite bodies rising into the stack and basalt dikes cutting it; iron, copper and gold concentrated in a band a few metres wide at their margins.
 - **Surface:** in geology worlds, cliffs and bare rock show the real layers (bands, seams outcropping) instead of random patches. Distant tiles must agree with chunks (same function), or cliffs change colour as they load.
 - **Phases** (each shipped and tested alone; each benchmarked against today's generation time per chunk before shipping):
-  1. New rocks (sandstone, shale, limestone, granite: colour, hardness, drop, inventory), tilted/folded strata, coal seams, the `geology` setting, banded cliffs. **M**
+  1. New rocks (sandstone, shale, limestone, granite: colour, hardness, drop, inventory), tilted/folded strata, coal seams, the `geology` setting, banded cliffs. **M** **Done 2026-10-06 (db39edd).**
   2. Faults. **M**
   3. Intrusions, basalt dikes, ores at their margins (iron; new: copper, gold), banded iron. **M**. Open: what copper and gold are for (items, smelting, recipes) so they're worth mining.
   4. Geologist's hammer that names the rock (a start on prospecting). **S**
