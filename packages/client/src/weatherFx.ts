@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ATMOSPHERE_GLSL, type Atmosphere } from './atmosphere.js';
+import { CALM_RAIN, HEAVY_RAIN, shapedNoiseChannels, type BandLevels } from './rainNoise.js';
 
 /**
  * What falls and what's heard in the weather (see weatherView.ts): rain as streaks and snow as
@@ -189,6 +190,43 @@ export function noiseLoop(ctx: AudioContext, len: number, white: number, brown: 
 }
 
 /**
+ * A seamless loop of noise `samples` long (a power of two at most) shaped as `table` (see
+ * shapedNoiseChannels), made here and now: slow (a few hundred ms the first time), so the game makes
+ * them in a worker (see shapedNoiseLater).
+ */
+export function shapedNoise(ctx: BaseAudioContext, table: BandLevels, samples: number): AudioBufferSourceNode {
+  return loopOf(ctx, shapedNoiseChannels(table, samples, ctx.sampleRate));
+}
+
+/** The same, made in a worker (where there are workers; else here), so nothing stalls meanwhile. */
+export function shapedNoiseLater(ctx: BaseAudioContext, table: BandLevels, samples: number): Promise<AudioBufferSourceNode> {
+  if (typeof Worker === 'undefined') return Promise.resolve(shapedNoise(ctx, table, samples));
+  noiseWorker ??= new Worker(new URL('./rainNoise.worker.ts', import.meta.url), { type: 'module' });
+  const w = noiseWorker, id = ++noiseAsked;
+  return new Promise((resolve) => {
+    const done = (e: MessageEvent<{ id: number; channels: Float32Array<ArrayBuffer>[] }>) => {
+      if (e.data.id !== id) return;
+      w.removeEventListener('message', done);
+      resolve(loopOf(ctx, e.data.channels));
+    };
+    w.addEventListener('message', done);
+    w.postMessage({ id, table, samples, rate: ctx.sampleRate });
+  });
+}
+let noiseWorker: Worker | null = null;
+let noiseAsked = 0;
+
+/** A looping source of these channels. */
+function loopOf(ctx: BaseAudioContext, channels: Float32Array<ArrayBuffer>[]): AudioBufferSourceNode {
+  const buf = ctx.createBuffer(channels.length, channels[0]!.length, ctx.sampleRate);
+  channels.forEach((c, i) => buf.copyToChannel(c, i));
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.loop = true;
+  return src;
+}
+
+/**
  * A loop `len` s long of raindrops landing, `perSecond` of them: each a short burst of noise (no
  * pitch, so no pinging), from bright ticks to duller pats, at its own loudness, placed left to right.
  */
@@ -232,8 +270,10 @@ export function dropsLoop(ctx: AudioContext, len: number, perSecond: number): Au
 export class WeatherSound {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
-  private rainNodes: { bed: GainNode; sparse: GainNode; dense: GainNode; downpour: GainNode; filter: BiquadFilterNode } | null = null;
-  /** When the storm's next gust comes (AudioContext time), and how hard the rain's driven now (0.6..1.4). */
+  private rainNodes: { calm: GainNode; heavy: GainNode; drops: GainNode; filter: BiquadFilterNode } | null = null;
+  /** When the rain's noise loops are playing (they're made in a worker: see shapedNoiseLater). */
+  rainReady: Promise<void> | null = null;
+  /** When heavy rain's next gust comes (AudioContext time), and how hard it's driven now (about 0.6..1.7). */
   private nextGust = 0;
   private gust = 1;
   private surfNodes: { level: GainNode; bed: GainNode; wave: GainNode; filter: BiquadFilterNode } | null = null;
@@ -280,7 +320,9 @@ export class WeatherSound {
 
   /**
    * Rain this hard (0..1) falling, `open`: how open to the sky the listener is (0: indoors, muffled),
-   * `storm` how stormy (0..1): a downpour on top, many more drops, harder, coming in gusts.
+   * `storm` how stormy (0..1). Light rain is a soft, even hiss with now and then a drop near by;
+   * heavy rain a deeper roar (most of it low down) coming in gusts, storms more so (both shaped on
+   * recordings of real rain: see CALM_RAIN and HEAVY_RAIN).
    */
   rain(amount: number, open: number, storm = 0): void {
     // (Nothing made until there's rain to hear.)
@@ -291,33 +333,36 @@ export class WeatherSound {
       const filter = ctx.createBiquadFilter();
       filter.type = 'lowpass';
       filter.connect(this.master);
-      const bed = this.gain(ctx, filter), sparse = this.gain(ctx, filter), dense = this.gain(ctx, filter), downpour = this.gain(ctx, filter);
+      const calm = this.gain(ctx, filter), heavy = this.gain(ctx, filter), drops = this.gain(ctx, filter);
       // (Loops of different lengths, so they never line up into an audible repeat.)
-      const hiss = noiseLoop(ctx, 4.7, 0.5, 1.5);
-      const hp = ctx.createBiquadFilter();
-      hp.type = 'highpass';
-      hp.frequency.value = 400;
-      hiss.connect(hp).connect(bed);
-      const sparseDrops = dropsLoop(ctx, 6.1, 25), denseDrops = dropsLoop(ctx, 5.3, 260), pouring = dropsLoop(ctx, 4.3, 750);
-      sparseDrops.connect(sparse);
-      denseDrops.connect(dense);
-      pouring.connect(downpour);
-      for (const src of [hiss, sparseDrops, denseDrops, pouring]) src.start();
-      this.rainNodes = { bed, sparse, dense, downpour, filter };
+      const dropLoop = dropsLoop(ctx, 6.1, 10);
+      dropLoop.connect(drops);
+      dropLoop.start();
+      // (The hiss and the roar made in a worker, about 6 s of each: they start when they come.)
+      this.rainReady = Promise.all([shapedNoiseLater(ctx, CALM_RAIN, 1 << 18), shapedNoiseLater(ctx, HEAVY_RAIN, 1 << 18)]).then(([calmLoop, heavyLoop]) => {
+        calmLoop.connect(calm);
+        heavyLoop.connect(heavy);
+        calmLoop.start();
+        heavyLoop.start();
+      });
+      this.rainNodes = { calm, heavy, drops, filter };
     }
     const r = this.rainNodes, now = ctx.currentTime, on = amount >= 0.01 ? 1 : 0;
     const heard = on * (0.4 + 0.6 * open);
-    // Storm gusts: the rain driven harder, then easing, every few seconds.
-    if (storm > 0.05 && now >= this.nextGust) {
-      this.gust = 0.6 + Math.random() * 0.8;
-      this.nextGust = now + 2 + Math.random() * 4;
+    // How heavy (0: light, 1: a downpour): the calm hiss giving way to the heavy roar.
+    const t = Math.max(0, Math.min(1, (amount - 0.35) / 0.6)), heaviness = t * t * (3 - 2 * t);
+    // Gusts in heavy rain (and more in storms): the roar swelling and easing every second or two.
+    if (now >= this.nextGust) {
+      this.gust = Math.exp((Math.random() - 0.5) * 1.7);
+      this.nextGust = now + 0.6 + Math.random() * 1.4;
     }
-    const gust = storm > 0.05 ? 1 + (this.gust - 1) * storm : 1;
-    r.bed.gain.setTargetAtTime(heard * (0.12 * amount + 0.15 * storm) * gust, now, 0.4);
-    r.sparse.gain.setTargetAtTime(heard * (0.65 + 0.45 * amount), now, 0.4);
-    r.dense.gain.setTargetAtTime(heard * 0.8 * (Math.max(0, amount - 0.25) / 0.75) * (1 + 0.4 * storm), now, 0.4);
-    r.downpour.gain.setTargetAtTime(heard * 0.6 * storm * Math.min(1, amount * 1.5) * gust, now, 0.8);
-    r.filter.frequency.setTargetAtTime(1300 + 8400 * open, now, 0.4);
+    // (Even light rain comes and goes a little.)
+    const depth = Math.min(1, 0.3 + heaviness * 0.7 + storm * 0.4);
+    const gust = 1 + (this.gust - 1) * depth;
+    r.calm.gain.setTargetAtTime(heard * 0.032 * Math.min(1, 0.4 + (amount / 0.35) * 0.6) * (1 - 0.8 * heaviness) * gust, now, 0.4);
+    r.heavy.gain.setTargetAtTime(heard * 0.07 * heaviness * (1 + 0.45 * storm) * gust, now, 0.35);
+    r.drops.gain.setTargetAtTime(heard * 0.55 * (1 - heaviness), now, 0.4);
+    r.filter.frequency.setTargetAtTime(1300 + 14700 * open, now, 0.4);
   }
 
   /** Surf as loud as `amount` (0..1: how near the shore, and how low): waves breaking now and then. */
@@ -403,6 +448,6 @@ export class WeatherSound {
   /** Quiet now (leaving the world). */
   stop(): void {
     if (!this.ctx) return;
-    for (const g of [this.rainNodes?.bed, this.rainNodes?.sparse, this.rainNodes?.dense, this.rainNodes?.downpour, this.surfNodes?.level, this.surfNodes?.bed]) g?.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
+    for (const g of [this.rainNodes?.calm, this.rainNodes?.heavy, this.rainNodes?.drops, this.surfNodes?.level, this.surfNodes?.bed]) g?.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
   }
 }
