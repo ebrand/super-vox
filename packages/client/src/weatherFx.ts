@@ -273,9 +273,6 @@ export class WeatherSound {
   private rainNodes: { calm: GainNode; heavy: GainNode; drops: GainNode; filter: BiquadFilterNode } | null = null;
   /** When the rain's noise loops are playing (they're made in a worker: see shapedNoiseLater). */
   rainReady: Promise<void> | null = null;
-  /** When heavy rain's next gust comes (AudioContext time), and how hard it's driven now (about 0.6..1.7). */
-  private nextGust = 0;
-  private gust = 1;
   private surfNodes: { level: GainNode; bed: GainNode; wave: GainNode; filter: BiquadFilterNode } | null = null;
   /** When the next wave breaks (AudioContext time). */
   private nextWave = 0;
@@ -321,7 +318,7 @@ export class WeatherSound {
   /**
    * Rain this hard (0..1) falling, `open`: how open to the sky the listener is (0: indoors, muffled),
    * `storm` how stormy (0..1). Light rain is a soft, even hiss with now and then a drop near by;
-   * heavy rain a deeper roar (most of it low down) coming in gusts, storms more so (both shaped on
+   * heavy rain a deeper roar (most of it low down), storms louder; all steady (both shaped on
    * recordings of real rain: see CALM_RAIN and HEAVY_RAIN).
    */
   rain(amount: number, open: number, storm = 0): void {
@@ -351,16 +348,9 @@ export class WeatherSound {
     const heard = on * (0.4 + 0.6 * open);
     // How heavy (0: light, 1: a downpour): the calm hiss giving way to the heavy roar.
     const t = Math.max(0, Math.min(1, (amount - 0.35) / 0.6)), heaviness = t * t * (3 - 2 * t);
-    // Gusts in heavy rain (and more in storms): the roar swelling and easing every second or two.
-    if (now >= this.nextGust) {
-      this.gust = Math.exp((Math.random() - 0.5) * 1.7);
-      this.nextGust = now + 0.6 + Math.random() * 1.4;
-    }
-    // (Even light rain comes and goes a little.)
-    const depth = Math.min(1, 0.3 + heaviness * 0.7 + storm * 0.4);
-    const gust = 1 + (this.gust - 1) * depth;
-    r.calm.gain.setTargetAtTime(heard * 0.032 * Math.min(1, 0.4 + (amount / 0.35) * 0.6) * (1 - 0.8 * heaviness) * gust, now, 0.4);
-    r.heavy.gain.setTargetAtTime(heard * 0.07 * heaviness * (1 + 0.45 * storm) * gust, now, 0.35);
+    // (Steady: no gusts. A deep roar swelling and easing sounds like surf.)
+    r.calm.gain.setTargetAtTime(heard * 0.032 * Math.min(1, 0.4 + (amount / 0.35) * 0.6) * (1 - 0.8 * heaviness), now, 0.4);
+    r.heavy.gain.setTargetAtTime(heard * 0.07 * heaviness * (1 + 0.45 * storm), now, 0.35);
     r.drops.gain.setTargetAtTime(heard * 0.55 * (1 - heaviness), now, 0.4);
     r.filter.frequency.setTargetAtTime(1300 + 14700 * open, now, 0.4);
   }
