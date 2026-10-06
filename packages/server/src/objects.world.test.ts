@@ -130,6 +130,21 @@ describe('placed objects', () => {
     expect(w.lightAt(510, -3, 510)).toEqual({ sky: 0, block: 0 });
   });
 
+  it('know where the sky is open after edits, both ways (what was looked up before is kept, so must follow them)', () => {
+    const w = flat();
+    // Looked at first: open.
+    expect(w.skyOpenAt(600, 0, 600)).toBe(true);
+    // A roof high over it: shut.
+    w.applyEdit({ op: 'place', x: 600 * 16, y: 20 * 16, z: 600 * 16, size: 16, material: Material.Stone });
+    expect(w.skyOpenAt(600, 0, 600)).toBe(false);
+    expect(w.skyOpenAt(600, 21, 600)).toBe(true);
+    expect(w.lightAt(600, 0, 600).sky).toBeLessThan(15);
+    // Taken away: open again.
+    w.applyEdit({ op: 'remove', x: 600 * 16, y: 20 * 16, z: 600 * 16 });
+    expect(w.skyOpenAt(600, 0, 600)).toBe(true);
+    expect(w.lightAt(600, 0, 600).sky).toBe(15);
+  });
+
   it('need empty room, and keep ordinary edits out of them', () => {
     const w = flat();
     expect(() => w.placeObject('fence', 50, -1, 50, 'n')).toThrow(/empty block/); // the ground

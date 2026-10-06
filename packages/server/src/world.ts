@@ -640,30 +640,37 @@ export class World {
   /** The last chunk materialAtUnit looked at (most lookups land in the same one as the last). */
   private last: { cx: number; cy: number; cz: number; chunk: Chunk | null } | null = null;
 
+  /**
+   * Chunk (cx, cy, cz) as it is now, from the recently looked-at ones (decoding one is far from
+   * free: what looks at many blocks, mobs and light, shouldn't decode it for each); null outside
+   * the world.
+   */
+  private lookedAt(cx: number, cy: number, cz: number): Chunk | null {
+    const last = this.last;
+    if (last && last.cx === cx && last.cy === cy && last.cz === cz) return last.chunk;
+    const resolved = resolveChunk(this.config, { cx, cy, cz });
+    let chunk: Chunk | null = null;
+    if (resolved) {
+      const key = chunkKey(resolved);
+      const hit = this.decoded.get(key);
+      if (hit) {
+        this.decoded.delete(key);
+        chunk = hit;
+      } else {
+        chunk = this.current(resolved);
+        if (this.decoded.size >= DECODED_KEPT) this.decoded.delete(this.decoded.keys().next().value!);
+      }
+      this.decoded.set(key, chunk);
+    }
+    this.last = { cx, cy, cz, chunk };
+    return chunk;
+  }
+
   /** The material of the unit cell (world units), from recently looked-at chunks (mobs walking about); undefined outside the world. */
   materialAtUnit(x: number, y: number, z: number): number | undefined {
     const n = CHUNK_SIZE;
     const cx = Math.floor(x / n), cy = Math.floor(y / n), cz = Math.floor(z / n);
-    const last = this.last;
-    let chunk: Chunk | null;
-    if (last && last.cx === cx && last.cy === cy && last.cz === cz) chunk = last.chunk;
-    else {
-      const resolved = resolveChunk(this.config, { cx, cy, cz });
-      if (!resolved) chunk = null;
-      else {
-        const key = chunkKey(resolved);
-        const hit = this.decoded.get(key);
-        if (hit) {
-          this.decoded.delete(key);
-          chunk = hit;
-        } else {
-          chunk = this.current(resolved);
-          if (this.decoded.size >= 256) this.decoded.delete(this.decoded.keys().next().value!);
-        }
-        this.decoded.set(key, chunk);
-      }
-      this.last = { cx, cy, cz, chunk };
-    }
+    const chunk = this.lookedAt(cx, cy, cz);
     if (!chunk) return undefined;
     return materialAt(chunk, x - cx * n, y - cy * n, z - cz * n);
   }
@@ -675,7 +682,10 @@ export class World {
   };
 
   private commit(chunks: Chunk[]): EditResult {
-    for (const c of chunks) this.decoded.delete(chunkKey(c));
+    for (const c of chunks) {
+      this.decoded.delete(chunkKey(c));
+      this.lightTops.delete(`${c.cx},${c.cz}`);
+    }
     this.last = null;
     const columns = new Map<string, { cx: number; cz: number; before: ColumnRange | null }>();
     for (const c of chunks) {
@@ -829,9 +839,9 @@ export class World {
   /** The current block at (bx, by, bz), and where it lives; null outside the world. */
   private blockAt(bx: number, by: number, bz: number): Block | undefined {
     const n = BLOCKS_PER_CHUNK_AXIS;
-    const resolved = resolveChunk(this.config, { cx: Math.floor(bx / n), cy: Math.floor(by / n), cz: Math.floor(bz / n) });
-    if (!resolved) return undefined;
-    return this.current(resolved).blocks[blockIndex(mod(bx, n), mod(by, n), mod(bz, n))] ?? null;
+    const chunk = this.lookedAt(Math.floor(bx / n), Math.floor(by / n), Math.floor(bz / n));
+    if (!chunk) return undefined;
+    return chunk.blocks[blockIndex(mod(bx, n), mod(by, n), mod(bz, n))] ?? null;
   }
 
   /**
@@ -841,7 +851,6 @@ export class World {
   lightAt(bx: number, by: number, bz: number, want: { sky?: boolean; block?: boolean; reach?: number } = { sky: true, block: true }): { sky: number; block: number } {
     const block = want.block && this.torchNear(bx, by, bz, SKY_LIGHT_LEVEL);
     if (!want.sky && !block) return { sky: 0, block: 0 };
-    const tops = new Map<string, number>();
     const world: LightWorld = {
       opaque: (x, y, z) => {
         const b = this.blockAt(x, y, z);
@@ -855,39 +864,67 @@ export class World {
         for (const m of b.materials) l = Math.max(l, LIGHT_LEVEL[m] ?? 0);
         return l;
       },
-      skyOpen: (x, y, z) => y > this.lightTop(x, z, tops),
+      skyOpen: (x, y, z) => y > this.lightTop(x, z),
     };
     return lightAt(world, bx, by, bz, { sky: want.sky ?? false, block: !!block, ...(want.reach !== undefined ? { reach: want.reach } : {}) });
   }
 
   /** Whether block (bx, by, bz) is open to the sky (nothing above it stops light). */
   skyOpenAt(bx: number, by: number, bz: number): boolean {
-    return by > this.lightTop(bx, bz, new Map());
+    return by > this.lightTop(bx, bz);
   }
 
-  /** The highest block (y) stopping light in column (bx, bz), memoized in `tops`; -Infinity for none. */
-  private lightTop(bx: number, bz: number, tops: Map<string, number>): number {
-    const k = `${bx},${bz}`;
-    const known = tops.get(k);
-    if (known !== undefined) return known;
-    const n = BLOCKS_PER_CHUNK_AXIS;
-    const range = this.columnRange(Math.floor(bx / n), Math.floor(bz / n));
-    let top = -Infinity;
-    if (range) {
-      const bottom = Math.floor(range.minY / BLOCK_SIZE) - 1;
-      for (let y = Math.floor(range.maxY / BLOCK_SIZE); y >= bottom; y--) {
-        const b = this.blockAt(bx, y, bz);
-        if (b === undefined || (b !== null && b.kind === 'uniform' && blocksLight(b.material))) {
-          top = y;
-          break;
+  /** The highest block (y) stopping light in column (bx, bz) (see lightTops); -Infinity for none. */
+  private lightTop(bx: number, bz: number): number {
+    const n = BLOCKS_PER_CHUNK_AXIS, cx = Math.floor(bx / n), cz = Math.floor(bz / n);
+    const resolved = resolveChunk(this.config, { cx, cy: 0, cz });
+    if (!resolved) return -Infinity;
+    const key = `${resolved.cx},${resolved.cz}`;
+    let tops = this.lightTops.get(key);
+    if (tops) {
+      this.lightTops.delete(key);
+    } else {
+      tops = this.columnLightTops(resolved.cx, resolved.cz);
+      if (this.lightTops.size >= LIGHT_TOPS_KEPT) this.lightTops.delete(this.lightTops.keys().next().value!);
+    }
+    this.lightTops.set(key, tops);
+    return tops[mod(bx, n) + n * mod(bz, n)]!;
+  }
+
+  /**
+   * The highest block (y) stopping light in each of a chunk column's 16 x 16 block columns (index
+   * x + 16 z): looked for top down through its range, a chunk at a time, each chunk decoded once
+   * (block by block, a tall column decoded each of its chunks once a block). Below its range, rock;
+   * -Infinity outside the world. Kept until an edit there (see commit).
+   */
+  private columnLightTops(cx: number, cz: number): Float64Array {
+    const n = BLOCKS_PER_CHUNK_AXIS, tops = new Float64Array(n * n).fill(-Infinity);
+    const range = this.columnRange(cx, cz);
+    if (!range) return tops;
+    const bottom = Math.floor(range.minY / BLOCK_SIZE) - 1;
+    let left = n * n;
+    const found = new Uint8Array(n * n);
+    for (let cy = Math.floor(Math.floor(range.maxY / BLOCK_SIZE) / n); cy * n + n - 1 >= bottom && left > 0; cy--) {
+      const chunk = this.lookedAt(cx, cy, cz);
+      const yTop = Math.min(cy * n + n - 1, Math.floor(range.maxY / BLOCK_SIZE)), yBottom = Math.max(cy * n, bottom);
+      for (let i = 0; i < n * n; i++) {
+        if (found[i]) continue;
+        for (let y = yTop; y >= yBottom; y--) {
+          const b = chunk ? (chunk.blocks[blockIndex(i % n, y - cy * n, Math.floor(i / n))] ?? null) : undefined;
+          if (b === undefined || (b !== null && b.kind === 'uniform' && blocksLight(b.material))) {
+            tops[i] = y;
+            found[i] = 1;
+            left--;
+            break;
+          }
         }
       }
-      // (Nothing in the column's range: rock below it.)
-      if (top === -Infinity) top = bottom;
     }
-    tops.set(k, top);
-    return top;
+    // (Nothing in the column's range: rock below it.)
+    for (let i = 0; i < n * n; i++) if (!found[i]) tops[i] = bottom;
+    return tops;
   }
+  private readonly lightTops = new Map<string, Float64Array>();
 
   /** Whether a torch is within `reach` blocks (each way) of block (bx, by, bz). */
   private torchNear(bx: number, by: number, bz: number, reach: number): boolean {
@@ -1410,6 +1447,10 @@ export class World {
     return this.cache.size;
   }
 }
+
+/** Decoded chunks kept for looking at blocks (mobs, light: see lookedAt), and chunk columns' light tops (see lightTops, 1 KB each). */
+const DECODED_KEPT = 512;
+const LIGHT_TOPS_KEPT = 4096;
 
 /** Zoomed-in maps kept (see encodedMapArea): each up to 768 KB. */
 const MAP_AREAS_KEPT = 24;
