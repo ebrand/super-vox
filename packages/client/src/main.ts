@@ -299,9 +299,17 @@ function surfHere(now: number): number {
     }
     if (nearest !== Infinity) break;
   }
+  shoreNear = nearest === Infinity ? null : { distance: nearest, onSea: here };
   if (nearest === Infinity) return 0;
   const above = Math.max(0, p.y - atmosphere.uniforms.seaLevelM.value);
   return (1 - nearest / (SHORE_REACH * 1.15)) ** 2 * Math.exp(-above / 150);
+}
+/** Where the shore was found last (see surfHere), for the info panel: how far, and whether we're over the sea. */
+let shoreNear: { distance: number; onSea: boolean } | null = null;
+/** The surf, for the info panel: ", surf 40% (shore 70 m)". */
+function surfLine(): string {
+  if (!shoreNear || weatherView.surf < 0.01) return '';
+  return `, surf ${Math.round(weatherView.surf * 100)}% (${shoreNear.onSea ? 'land' : 'sea'} ${shoreNear.distance} m)`;
 }
 /** How far up something keeps the rain off (units): the tallest trees and then some. */
 const COVER_REACH = 128 * UNITS_PER_METER;
@@ -543,11 +551,16 @@ connection = connect({
           pool = new MeshWorkerPool(workers);
           chunks = new ChunkManager(w, scene, material, voxelWater, send, pool, 64, onProgress);
           const waterAt = waterAtFor(chunks);
-          // (Sea at (x, z) m: the chunks' water just under sea level, else the tiles' ground below it.)
+          // (Sea at (x, z) m: the chunks' water just under sea level, open to the sky (not a flooded
+          // cave under the land), else the tiles' ground below sea level.)
           seaAt = (x, z) => {
             const seaM = atmosphere.uniforms.seaLevelM.value;
             const w = waterAt(x * UNITS_PER_METER, (seaM - 0.3) * UNITS_PER_METER, z * UNITS_PER_METER);
-            if (w !== undefined) return w;
+            if (w === false) return false;
+            if (w === true) {
+              const block = BLOCK_SIZE / UNITS_PER_METER;
+              return chunks!.lightWorld().skyOpen(Math.floor(x / block), Math.floor((seaM - 0.3) / block), Math.floor(z / block));
+            }
             const g = tiles?.groundAt(x * UNITS_PER_METER, z * UNITS_PER_METER);
             return g === undefined ? undefined : g < seaM * UNITS_PER_METER;
           };
@@ -930,6 +943,7 @@ function updateHud(): void {
     `camera ${f.x.toFixed(1)}, ${f.y.toFixed(1)}, ${f.z.toFixed(1)} m` + (controls.walking ? '' : `, flying ${controls.speed.toFixed(0)} m/s`) +
     (clock ? `, time ${formatHours(worldHours())}` : '') +
     weatherLine() +
+    surfLine() +
     '\n' +
     (controls.pointerLocked ? 'mouse: look · Esc: release mouse' : 'click: capture mouse (or drag to look) · Esc: leave') +
     (controls.walking
