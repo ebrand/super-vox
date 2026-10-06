@@ -26,7 +26,7 @@ import { InventoryUi } from './inventory.js';
 import { EntityView } from './entities.js';
 import type { Footprint } from './coverage.js';
 import { createCompassRose } from './compassRose.js';
-import { solidAtFor, waterAtFor } from './worldQuery.js';
+import { coveredAboveFor, solidAtFor, waterAtFor } from './worldQuery.js';
 
 const statusEl = document.getElementById('status')!;
 
@@ -265,6 +265,34 @@ async function startWeather(seed: number, seaLevel: number): Promise<void> {
   };
 }
 let weatherFrame = performance.now();
+/** Whether (x, z) (m) is sea (undefined: not known), once there's a world with a sea. */
+let seaAt: ((x: number, z: number) => boolean | undefined) | null = null;
+const SHORE_REACH = 300;
+let shoreAt = 0;
+/**
+ * How loud the surf is here (0..1): from how near the nearest place the sea meets land is (within
+ * SHORE_REACH m, either side of it), and how low (it fades going up). Worked out every half second.
+ */
+function surfHere(now: number): number {
+  if (now - shoreAt < 500) return weatherView.surf;
+  shoreAt = now;
+  const p = camera.position;
+  if (!sea || !seaAt) return 0;
+  const here = seaAt(p.x, p.z) ?? false;
+  let nearest = Infinity;
+  for (const r of [8, 20, 40, 70, 110, 160, 230, SHORE_REACH]) {
+    for (let k = 0; k < 16 && nearest === Infinity; k++) {
+      const a = (k / 16) * Math.PI * 2, s = seaAt(p.x + Math.cos(a) * r, p.z + Math.sin(a) * r);
+      if (s !== undefined && s !== here) nearest = r;
+    }
+    if (nearest !== Infinity) break;
+  }
+  if (nearest === Infinity) return 0;
+  const above = Math.max(0, p.y - atmosphere.uniforms.seaLevelM.value);
+  return (1 - nearest / (SHORE_REACH * 1.15)) ** 2 * Math.exp(-above / 150);
+}
+/** How far up something keeps the rain off (units): the tallest trees and then some. */
+const COVER_REACH = 128 * UNITS_PER_METER;
 /** The ground under a point (world units) where chunks are loaded (the tiles leave it to them): the top of the first solid block below, within 64 m. */
 function groundUnder(p: THREE.Vector3): number | undefined {
   if (!chunks) return undefined;
@@ -498,6 +526,14 @@ connection = connect({
           pool = new MeshWorkerPool(workers);
           chunks = new ChunkManager(w, scene, material, voxelWater, send, pool, 64, onProgress);
           const waterAt = waterAtFor(chunks);
+          // (Sea at (x, z) m: the chunks' water just under sea level, else the tiles' ground below it.)
+          seaAt = (x, z) => {
+            const seaM = atmosphere.uniforms.seaLevelM.value;
+            const w = waterAt(x * UNITS_PER_METER, (seaM - 0.3) * UNITS_PER_METER, z * UNITS_PER_METER);
+            if (w !== undefined) return w;
+            const g = tiles?.groundAt(x * UNITS_PER_METER, z * UNITS_PER_METER);
+            return g === undefined ? undefined : g < seaM * UNITS_PER_METER;
+          };
           inWaterAt = (x, y, z) => waterAt(x * UNITS_PER_METER, y * UNITS_PER_METER, z * UNITS_PER_METER) ?? y < atmosphere.uniforms.waterLevel.value;
           controls.inWater = (x, y, z) => inWaterAt(x, y, z);
           tiles = new TileManager(scene, material, voxelWater, send, pool, 32, onProgress);
@@ -944,9 +980,11 @@ renderer.setAnimationLoop(() => {
   {
     const p = camera.position;
     const ground = tiles?.groundAt(p.x * UNITS_PER_METER, p.z * UNITS_PER_METER) ?? groundUnder(p);
-    // (Open to the sky: nothing above the camera's block, and not underwater.)
-    const open = inWaterAt(p.x, p.y, p.z) ? 0 : !chunks || chunks.lightWorld().skyOpen(Math.floor((p.x * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.y * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.z * UNITS_PER_METER) / BLOCK_SIZE)) ? 1 : 0;
+    // (Open to the sky: nothing above the camera (leaves too), and not underwater.)
+    const covered = () => !!chunks && (!chunks.lightWorld().skyOpen(Math.floor((p.x * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.y * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.z * UNITS_PER_METER) / BLOCK_SIZE)) || coveredAboveFor(chunks)(p.x * UNITS_PER_METER, p.y * UNITS_PER_METER, p.z * UNITS_PER_METER, COVER_REACH));
+    const open = inWaterAt(p.x, p.y, p.z) || covered() ? 0 : 1;
     const pixelScale = renderer.domElement.height / Math.tan((camera.fov * Math.PI) / 360);
+    weatherView.surf = surfHere(frameStart);
     weatherView.update(weatherTime(Date.now() + serverOffset) + weatherShift, worldHours(), p, ground === undefined ? null : ground / UNITS_PER_METER, view, (frameStart - weatherFrame) / 1000, open, pixelScale);
     weatherFrame = frameStart;
     weatherView.applyTo(atmosphere);

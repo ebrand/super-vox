@@ -1,4 +1,4 @@
-import { CHUNK_SIZE, isWater, voxelAt } from '@super-vox/shared';
+import { BLOCK_SIZE, CHUNK_SIZE, blockIndex, blockVoxelAt, isWater, voxelAt } from '@super-vox/shared';
 import type { ChunkManager } from './chunkManager.js';
 import type { SolidAt } from './picking.js';
 
@@ -30,5 +30,38 @@ export function waterAtFor(chunks: ChunkManager): SolidAt {
   return (x, y, z) => {
     const m = at(Math.floor(x), Math.floor(y), Math.floor(z));
     return m === undefined ? undefined : isWater(m);
+  };
+}
+
+/**
+ * Whether anything but air and water is straight above world unit (x, y, z), up to `reach` units
+ * higher, in the loaded chunks (leaves too, unlike the sky light's skyOpen: rain doesn't fall
+ * through a tree). Chunks not loaded count as open.
+ */
+export function coveredAboveFor(chunks: Pick<ChunkManager, 'chunkAt'>): (x: number, y: number, z: number, reach: number) => boolean {
+  return (x, y, z, reach) => {
+    x = Math.floor(x);
+    z = Math.floor(z);
+    const cx = floorDiv(x, CHUNK_SIZE), cz = floorDiv(z, CHUNK_SIZE), lx = mod(x, CHUNK_SIZE), lz = mod(z, CHUNK_SIZE);
+    const top = Math.floor(y) + reach;
+    let at = Math.floor(y) + 1;
+    while (at <= top) {
+      const cy = floorDiv(at, CHUNK_SIZE), chunk = chunks.chunkAt({ cx, cy, cz });
+      // (Empty or not loaded: on to the next chunk up.)
+      if (!chunk) {
+        at = (cy + 1) * CHUNK_SIZE;
+        continue;
+      }
+      const ly = mod(at, CHUNK_SIZE);
+      const block = chunk.blocks[blockIndex(Math.floor(lx / BLOCK_SIZE), Math.floor(ly / BLOCK_SIZE), Math.floor(lz / BLOCK_SIZE))] ?? null;
+      if (!block) {
+        at += BLOCK_SIZE - (ly % BLOCK_SIZE);
+        continue;
+      }
+      const v = blockVoxelAt(block, lx % BLOCK_SIZE, ly % BLOCK_SIZE, lz % BLOCK_SIZE);
+      if (v && !isWater(v.material)) return true;
+      at++;
+    }
+    return false;
   };
 }

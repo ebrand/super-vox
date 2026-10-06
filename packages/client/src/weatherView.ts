@@ -59,6 +59,8 @@ export class WeatherView {
   private boltLeft = 0;
   /** The ground's height under the camera (m), as last known. */
   private groundHeight = 0;
+  /** How loud the surf is where the camera is (0..1: how near the shore, and how low; set by the game). */
+  surf = 0;
   /** The ground's height at (x, z) (m), as far as known (null: not known: the sea's taken). */
   groundAt: (x: number, z: number) => number | null = () => null;
 
@@ -251,6 +253,8 @@ export class WeatherView {
     const falling = w2.precipitation * this.open;
     this.precipitation.update(falling * (1 - w2.snow), falling * w2.snow, w2.wind, dt, pixelScale);
     this.sound.rain(w2.precipitation * (1 - w2.snow), this.open);
+    // (Rougher seas in stormy weather.)
+    this.sound.surf(Math.min(1, this.surf * (0.8 + 0.5 * w2.storm + 0.2 * w2.cover)));
     this.lightning(t, camera, dt);
   }
 

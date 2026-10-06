@@ -160,12 +160,76 @@ export class Precipitation {
   }
 }
 
-/** The weather's sound: rain's hiss, thunder's crack and rumble. Quiet until the page has been interacted with (browsers' rule). */
+/** A noise loop `len` s long (stereo, each side its own): white and brown (deeper) noise mixed. */
+function noiseLoop(ctx: AudioContext, len: number, white: number, brown: number): AudioBufferSourceNode {
+  const buf = ctx.createBuffer(2, Math.floor(ctx.sampleRate * len), ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    let b = 0;
+    for (let i = 0; i < d.length; i++) {
+      const w = Math.random() * 2 - 1;
+      b = (b + 0.02 * w) / 1.02;
+      d[i] = w * white + b * brown;
+    }
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.loop = true;
+  return src;
+}
+
+/**
+ * A loop `len` s long of raindrops landing, `perSecond` of them: each a tick (a short burst of
+ * bright noise) or a plink (a short high tone), at its own loudness, placed left to right.
+ */
+function dropsLoop(ctx: AudioContext, len: number, perSecond: number): AudioBufferSourceNode {
+  const rate = ctx.sampleRate, n = Math.floor(rate * len);
+  const buf = ctx.createBuffer(2, n, rate);
+  const left = buf.getChannelData(0), right = buf.getChannelData(1);
+  const count = Math.round(perSecond * len);
+  for (let k = 0; k < count; k++) {
+    const at = Math.floor(Math.random() * n);
+    // (Mostly quiet, a few loud: near drops among many further off.)
+    const loud = 0.15 + 0.85 * Math.random() ** 3;
+    const pan = Math.random();
+    const plink = Math.random() < 0.3;
+    const freq = 1800 + Math.random() * 4500, decay = (plink ? 0.012 : 0.004) + Math.random() * 0.006;
+    const span = Math.floor(rate * decay * 5);
+    let hp = 0, last = 0;
+    for (let i = 0; i < span; i++) {
+      const t = i / rate, env = Math.exp(-t / decay);
+      let v: number;
+      if (plink) v = Math.sin(2 * Math.PI * freq * t * (1 - 0.3 * t / decay / 5));
+      else {
+        // (High-passed noise: a tick, not a thud.)
+        const w = Math.random() * 2 - 1;
+        hp = 0.7 * (hp + w - last);
+        last = w;
+        v = hp;
+      }
+      const j = (at + i) % n, x = v * env * loud;
+      left[j] = left[j]! + x * (1 - pan);
+      right[j] = right[j]! + x * pan;
+    }
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.loop = true;
+  return src;
+}
+
+/**
+ * The weather's sound: rain (a hiss with drops landing in it, sparse and distinct in light rain,
+ * dense in a downpour), surf where the sea meets land (a deep roar rising and falling as waves
+ * break), thunder's crack and rumble. Quiet until the page has been interacted with (browsers' rule).
+ */
 export class WeatherSound {
   private ctx: AudioContext | null = null;
-  private rainGain: GainNode | null = null;
-  private rainFilter: BiquadFilterNode | null = null;
   private master: GainNode | null = null;
+  private rainNodes: { bed: GainNode; sparse: GainNode; dense: GainNode; filter: BiquadFilterNode } | null = null;
+  private surfNodes: { level: GainNode; wave: GainNode; filter: BiquadFilterNode } | null = null;
+  /** When the next wave breaks (AudioContext time). */
+  private nextWave = 0;
   /** Thunder still to sound (at AudioContext times): only a few at once. */
   private thunders: number[] = [];
 
@@ -183,27 +247,6 @@ export class WeatherSound {
         this.ctx = new AudioContext();
         this.master = this.ctx.createGain();
         this.master.connect(this.ctx.destination);
-        // Rain: a loop of noise, through a low-pass (muffled indoors).
-        const len = 4, buf = this.ctx.createBuffer(2, this.ctx.sampleRate * len, this.ctx.sampleRate);
-        for (let ch = 0; ch < 2; ch++) {
-          const d = buf.getChannelData(ch);
-          let brown = 0;
-          for (let i = 0; i < d.length; i++) {
-            const white = Math.random() * 2 - 1;
-            brown = (brown + 0.02 * white) / 1.02;
-            d[i] = white * 0.5 + brown * 3;
-          }
-        }
-        const src = this.ctx.createBufferSource();
-        src.buffer = buf;
-        src.loop = true;
-        this.rainFilter = this.ctx.createBiquadFilter();
-        this.rainFilter.type = 'lowpass';
-        this.rainFilter.frequency.value = 3500;
-        this.rainGain = this.ctx.createGain();
-        this.rainGain.gain.value = 0;
-        src.connect(this.rainFilter).connect(this.rainGain).connect(this.master);
-        src.start();
       }
       if (this.ctx.state === 'suspended' && !document.hidden) void this.ctx.resume();
       return this.ctx;
@@ -212,15 +255,78 @@ export class WeatherSound {
     }
   }
 
+  private gain(ctx: AudioContext, to: AudioNode): GainNode {
+    const g = ctx.createGain();
+    g.gain.value = 0;
+    g.connect(to);
+    return g;
+  }
+
   /** Rain this hard (0..1) falling, `open`: how open to the sky the listener is (0: indoors, muffled). */
   rain(amount: number, open: number): void {
     // (Nothing made until there's rain to hear.)
-    if (amount < 0.01 && !this.ctx) return;
+    if (amount < 0.01 && !this.rainNodes) return;
     const ctx = this.audio();
-    if (!ctx || !this.rainGain || !this.rainFilter) return;
-    const gain = amount < 0.01 ? 0 : 0.05 + 0.3 * amount * (0.4 + 0.6 * open);
-    this.rainGain.gain.setTargetAtTime(gain, ctx.currentTime, 0.4);
-    this.rainFilter.frequency.setTargetAtTime(600 + 3400 * open, ctx.currentTime, 0.4);
+    if (!ctx || !this.master) return;
+    if (!this.rainNodes) {
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.connect(this.master);
+      const bed = this.gain(ctx, filter), sparse = this.gain(ctx, filter), dense = this.gain(ctx, filter);
+      // (Loops of different lengths, so they never line up into an audible repeat.)
+      const hiss = noiseLoop(ctx, 4.7, 0.5, 1.5);
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 400;
+      hiss.connect(hp).connect(bed);
+      const sparseDrops = dropsLoop(ctx, 6.1, 25), denseDrops = dropsLoop(ctx, 5.3, 260);
+      sparseDrops.connect(sparse);
+      denseDrops.connect(dense);
+      for (const src of [hiss, sparseDrops, denseDrops]) src.start();
+      this.rainNodes = { bed, sparse, dense, filter };
+    }
+    const r = this.rainNodes, now = ctx.currentTime, on = amount >= 0.01 ? 1 : 0;
+    const heard = on * (0.4 + 0.6 * open);
+    r.bed.gain.setTargetAtTime(heard * 0.12 * amount, now, 0.4);
+    r.sparse.gain.setTargetAtTime(heard * (0.35 + 0.25 * amount), now, 0.4);
+    r.dense.gain.setTargetAtTime(heard * 0.45 * Math.max(0, amount - 0.25) / 0.75, now, 0.4);
+    r.filter.frequency.setTargetAtTime(1300 + 8400 * open, now, 0.4);
+  }
+
+  /** Surf as loud as `amount` (0..1: how near the shore, and how low): waves breaking now and then. */
+  surf(amount: number): void {
+    if (amount < 0.01 && !this.surfNodes) return;
+    const ctx = this.audio();
+    if (!ctx || !this.master) return;
+    if (!this.surfNodes) {
+      const level = this.gain(ctx, this.master);
+      const wave = ctx.createGain();
+      wave.gain.value = 0.15;
+      wave.connect(level);
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 500;
+      filter.connect(wave);
+      const src = noiseLoop(ctx, 5.9, 0.5, 3);
+      src.connect(filter);
+      src.start();
+      this.surfNodes = { level, wave, filter };
+      this.nextWave = ctx.currentTime;
+    }
+    const s = this.surfNodes, now = ctx.currentTime;
+    s.level.gain.setTargetAtTime(amount < 0.01 ? 0 : 0.35 * amount, now, 0.8);
+    // Each wave: a rise as it breaks (the roar brightening), then a long wash dying back.
+    if (amount >= 0.01 && now >= this.nextWave - 0.2) {
+      const at = Math.max(now, this.nextWave), big = 0.6 + 0.4 * Math.random();
+      const rise = 1.2 + Math.random() * 1.2, wash = 3 + Math.random() * 2.5;
+      s.wave.gain.cancelScheduledValues(at);
+      s.wave.gain.setTargetAtTime(big, at, rise / 3);
+      s.wave.gain.setTargetAtTime(0.12, at + rise, wash / 3);
+      s.filter.frequency.cancelScheduledValues(at);
+      s.filter.frequency.setTargetAtTime(500 + 900 * big, at, rise / 3);
+      s.filter.frequency.setTargetAtTime(350, at + rise, wash / 3);
+      this.nextWave = at + 7 + Math.random() * 5;
+    }
   }
 
   /** Thunder from a strike `distance` m off, which flashed `ago` s ago: sounds when the sound arrives. */
@@ -260,6 +366,7 @@ export class WeatherSound {
 
   /** Quiet now (leaving the world). */
   stop(): void {
-    if (this.rainGain && this.ctx) this.rainGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
+    if (!this.ctx) return;
+    for (const g of [this.rainNodes?.bed, this.rainNodes?.sparse, this.rainNodes?.dense, this.surfNodes?.level]) g?.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
   }
 }
