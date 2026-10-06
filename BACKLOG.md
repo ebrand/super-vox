@@ -47,21 +47,27 @@ Tracks the player lays, and closed cars they ride in.
 
 ## 4. 
 
-## 5. Geological strata, faults and ore veins — L
+## 5. Geological strata, faults and ore veins — L (planned 2026-10-06)
 
-Rock layers, fault lines, and ores that follow geological logic (ores near intrusions, for example) instead of random blobs.
+Rock layers, fault lines, and ores that follow geological logic instead of random blobs: ore found by reading the rock.
 
-- **Builds on:** ore generation (`TerrainGenerator.oreBlobs`), structural integrity (different rocks could have different spans).
-- **Parts:**
-  - Layered sedimentary rock (sandstone, limestone, shale), tilted and folded by low-frequency noise.
-  - Fault planes that offset the layers.
-  - Igneous intrusions (granite bodies, dikes) with ore concentrated at their margins.
-  - Coal in seams within sedimentary layers.
-  - Iron in banded layers or near intrusions.
-  - New stone types, each with its own colour, drop and reach.
-- **Cost:** same world-compatibility question as biomes. Performance must stay within the generation budget; the ore rewrite showed how easily 1–2 ms per chunk creeps in. Ore placement must stay cheap to look up (painted per chunk, as it is now).
-- **Nice to have:** a way to see strata, such as cliffs showing bands or a geologist's hammer that reports the rock.
-- **Prospecting as a skill** (added later): once ore follows geology, finding it is a matter of reading the ground (which strata you're in, where the intrusions and faults are, float ore in streams below a vein). Tools could help: a hammer that names the rock, a pan for stream gravel, a map that marks what you've found. Ties in with the strata of relics in item 16.
+- **Today:** `ores.ts` scatters coal (from 4 m down) and iron (from 12 m) in 2 m clumps, by hashing; `TerrainGenerator.generateChunk` paints each wholly-underground 1 m block one material (`materialFor`, then `oreAt` for stone). Bare surface rock is random patches (`rockSurface`).
+- **Approach:** a pure `rockAt(bx, by, bz)` replaces "stone, then maybe ore" (painted per chunk as now, no stored state). A world setting `geology` (like `caves`): absent = worlds made before it, which keep today's ore unchanged; on by default for new worlds, with a toggle in the generator settings.
+- **Model, bottom up:**
+  - Basement: granite, deep down.
+  - Sedimentary stack above: sandstone, shale, limestone, layers 2-12 m, a sequence varying by region; tilted and gently folded (wavelengths ~1-3 km), so layers rise, dip and outcrop on hillsides. Layer surfaces worked out per block column, not per block.
+  - Coal seams: thin continuous layers (0.5-2 m) in the stack, followable.
+  - Banded iron: iron-rich layers deep in the stack.
+  - Faults: a few planes per few-km region, offsetting the layers 5-40 m (a seam ends at a wall, carries on above or below).
+  - Intrusions: granite bodies rising into the stack and basalt dikes cutting it; iron, copper and gold concentrated in a band a few metres wide at their margins.
+- **Surface:** in geology worlds, cliffs and bare rock show the real layers (bands, seams outcropping) instead of random patches. Distant tiles must agree with chunks (same function), or cliffs change colour as they load.
+- **Phases** (each shipped and tested alone; each benchmarked against today's generation time per chunk before shipping):
+  1. New rocks (sandstone, shale, limestone, granite: colour, hardness, drop, inventory), tilted/folded strata, coal seams, the `geology` setting, banded cliffs. **M**
+  2. Faults. **M**
+  3. Intrusions, basalt dikes, ores at their margins (iron; new: copper, gold), banded iron. **M**. Open: what copper and gold are for (items, smelting, recipes) so they're worth mining.
+  4. Geologist's hammer that names the rock (a start on prospecting). **S**
+- **Decided (2026-10-06):** 4 rocks in phase 1 (basalt with dikes in phase 3); add copper and gold; new worlds on, existing unchanged; cliffs show layers.
+- **Later:** prospecting as a skill: reading strata, intrusions and faults; float ore in streams below a vein; a pan for stream gravel; a map marking finds. Ties in with the strata of relics in item 16. Structural integrity (different rocks, different spans) when that exists.
 
 ## 6. NPCs who build markets and buy goods — XL (not done)
 
