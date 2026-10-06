@@ -637,15 +637,32 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       metrics.totals.chunksOut += frames.length;
     }
   };
+  /**
+   * A periodic task timed: one over SLOW_MESSAGE_MS is logged ('slow task'), with how many chunks it
+   * had to make on the main thread (a chunk not to hand when something looked at it: see
+   * World.getEncodedChunk).
+   */
+  const timed = (task: string, fn: () => void) => () => {
+    const t0 = performance.now(), worlds = catalog.openWorlds().map((o) => o.world), misses = worlds.reduce((n, w) => n + w.stats.chunkMisses, 0);
+    try {
+      fn();
+    } finally {
+      const ms = performance.now() - t0;
+      if (ms >= SLOW_MESSAGE_MS) {
+        const made = worlds.reduce((n, w) => n + w.stats.chunkMisses, 0) - misses;
+        app.log.warn({ task, ms: Math.round(ms), chunksMadeHere: made }, 'slow task');
+      }
+    }
+  };
   // Water flows a step five times a second in worlds someone is in.
-  const flowing = setInterval(() => {
+  const flowing = setInterval(timed('water', () => {
     for (const world of new Set(clients.values())) {
       const before = world.stats.waterChanges;
       const result = world.stepWater();
       metrics.totals.waterChanges += world.stats.waterChanges - before;
       if (result) broadcast(world, result);
     }
-  }, WATER_STEP_MS);
+  }), WATER_STEP_MS);
   // Mobs: ten steps a second in worlds someone is in; each player sees what's within VIEW.
   const mobManagers = new Map<World, MobManager>();
   const VIEW = 96 * UNITS_PER_METER;
@@ -693,7 +710,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     for (const s of viewers) sendTo(s, msg);
     if (gone) stationViewers.get(world)?.delete(stationKey(o));
   };
-  const stationTicking = setInterval(() => {
+  const stationTicking = setInterval(timed('stations', () => {
     const now = Date.now();
     for (const [world, byKey] of stationViewers) {
       for (const [key, viewers] of byKey) {
@@ -709,8 +726,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         if (advance(st.kind, st.state, now)) showStation(world, o, now);
       }
     }
-  }, 1000);
-  const mobbing = setInterval(() => {
+  }), 1000);
+  const mobbing = setInterval(timed('mobs', () => {
     const now = Date.now();
     const byWorld = new Map<World, WebSocket[]>();
     for (const [client, w] of clients) byWorld.set(w, [...(byWorld.get(w) ?? []), client]);
@@ -742,7 +759,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         sendTo(s, { type: 'entities', entities });
       }
     }
-  }, 100);
+  }), 100);
   // A stall (the main thread busy, everything waiting) of more than STALL_MS is logged: with the
   // slow messages and requests logged too, what caused it can be found.
   {
@@ -768,7 +785,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   let blasting: ReturnType<typeof setTimeout>;
   const blastTick = () => {
     try {
-      blastStep();
+      timed('explosives', blastStep)();
     } finally {
       blasting = setTimeout(blastTick, 50); // (whatever happened: the next one's still due)
     }
@@ -805,7 +822,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   // water still to flow or TNT still to go off stays open. Each opens again when next asked for,
   // as it was (its edits are saved as they're made).
   const closingIdle = catalog.closeIdle
-    ? setInterval(() => {
+    ? setInterval(timed('closing idle worlds', () => {
         const busy = new Set<World>(clients.values());
         for (const [world, explosives] of explosivesOf) if (explosives.count > 0) busy.add(world);
         const closing = catalog.closeIdle!((w) => busy.has(w) || w.waterPending > 0, opts.idleWorldMs ?? IDLE_WORLD_MS);
@@ -820,8 +837,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         // What they held goes soon (once what was still finishing with them has), not whenever an
         // idle server next allocates enough to collect garbage: meanwhile it's memory in use, and
         // charged for. Only with node --expose-gc.
-        if (closing.length) setTimeout(collectGarbage, 3000).unref();
-      }, Math.min(60_000, Math.max(1000, (opts.idleWorldMs ?? IDLE_WORLD_MS) / 4)))
+        if (closing.length) setTimeout(timed('collecting garbage', collectGarbage), 3000).unref();
+      }), Math.min(60_000, Math.max(1000, (opts.idleWorldMs ?? IDLE_WORLD_MS) / 4)))
     : null;
   // Connections still there (see HEARTBEAT_MS): whether each has answered since it was last pinged.
   const answered = new Map<WebSocket, boolean>();
