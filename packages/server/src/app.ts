@@ -174,6 +174,10 @@ export const PLACE_SAVE_MS = 30_000;
 /** After sending a player back where they were (or back after dying), poses from before this long are ignored (their client may still report where it was). */
 export const PLACE_SETTLE_MS = 1500;
 
+/** Logged: a message whose handling holds up the server this long (ms), and a stall this long. */
+const SLOW_MESSAGE_MS = 100;
+const STALL_MS = 300;
+
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
   await app.register(fastifyCookie);
@@ -739,6 +743,18 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       }
     }
   }, 100);
+  // A stall (the main thread busy, everything waiting) of more than STALL_MS is logged: with the
+  // slow messages and requests logged too, what caused it can be found.
+  {
+    let last = performance.now();
+    const watch = setInterval(() => {
+      const now = performance.now(), late = now - last - 100;
+      last = now;
+      if (late > STALL_MS) app.log.warn({ ms: Math.round(late) }, 'event loop stalled');
+    }, 100);
+    watch.unref();
+    app.addHook('onClose', async () => clearInterval(watch));
+  }
   // Monitoring: a sample every second (see /api/dashboard).
   const sampling = setInterval(() => metrics.tick(players.size), 1000);
   // Lit TNT: what's due blows (see Explosives), twenty times a second.
@@ -932,6 +948,17 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       players.delete(socket);
     });
 
+    // (Each message timed: one that holds up the server more than SLOW_MESSAGE_MS is logged, with its
+    // type, so a stall can be put down to what caused it. Microtasks run once the handler's done.)
+    socket.on('message', (data) => {
+      const t0 = performance.now();
+      queueMicrotask(() => {
+        const ms = performance.now() - t0;
+        if (ms < SLOW_MESSAGE_MS) return;
+        const text = Array.isArray(data) ? '' : (Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)).subarray(0, 80).toString();
+        app.log.warn({ type: /"type":"(\w+)"/.exec(text)?.[1] ?? '?', ms: Math.round(ms), world: clientWorld.get(socket) ?? null }, 'slow message');
+      });
+    });
     socket.on('message', (data, isBinary) => {
       if (answered.has(socket)) answered.set(socket, true);
       metrics.totals.messagesIn++;
