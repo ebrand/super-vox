@@ -69,6 +69,8 @@ export class FlyControls {
   swimming = false;
   /** Knocked down (see knockdown.ts): no moving or jumping (still falling, and looking round). */
   stunned = false;
+  /** Being thrown (see knockdown.ts, which moves the camera): no walking or falling of our own; looking round still. */
+  held = false;
   private walk: WalkState = { vy: 0, grounded: false };
   private readonly keys = new Set<string>();
   private dragging = false;
@@ -181,6 +183,12 @@ export class FlyControls {
 
   /** Moves and orients the camera; `dt` in seconds. */
   update(dt: number): void {
+    if (this.held) {
+      this.walk = { vy: 0, grounded: false };
+      this.swimming = false;
+      this.apply();
+      return;
+    }
     const keys = this.stunned ? NO_KEYS : this.keys;
     const shift = keys.has('ShiftLeft') || keys.has('ShiftRight');
     const step = Math.min(dt, 0.1) * this.speed * (shift ? 5 : 1);

@@ -984,10 +984,14 @@ renderer.setAnimationLoop(() => {
   // Movement and editing pause while the map or the inventory is open.
   const paused = worldMap?.isOpen || inventoryUi.isOpen;
   controls.stunned = knockdown.active;
+  controls.held = knockdown.thrown;
   if (!paused) controls.update((frameStart - lastFrame) / 1000);
-  // Knocked down: thrown (as far as there's room), and the view down on the ground (drawn so for this frame only, below).
-  const downPose = knockdown.update(Math.min(0.1, (frameStart - lastFrame) / 1000));
-  if (downPose && controls.collide) camera.position.add(new THREE.Vector3(...controls.collide([downPose.shove.x, 0, downPose.shove.z]).delta));
+  // Knocked down: thrown, tumbling and bouncing (moved as the player is: walls stop it), and the
+  // view down on the ground (drawn so for this frame only, below).
+  const wasThrown = knockdown.thrown;
+  const downPose = paused ? null : knockdown.update(Math.min(0.05, (frameStart - lastFrame) / 1000), controls.collide);
+  if (downPose) camera.position.add(new THREE.Vector3(...downPose.moved));
+  if (wasThrown && !knockdown.thrown) controls.stopFalling();
   lastFrame = frameStart;
   trackVelocity(frameStart);
   chunks?.setViewY(camera.position.y * UNITS_PER_METER);
@@ -1020,6 +1024,8 @@ renderer.setAnimationLoop(() => {
   camera.position.add(shake);
   if (downPose) {
     camera.position.y -= downPose.drop;
+    // (Tumbling: turned over about the level axis across the way you're thrown; then rolled and tipped as you lie.)
+    camera.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(downPose.axis.x, 0, downPose.axis.z), downPose.tumble));
     camera.rotateZ(downPose.roll);
     camera.rotateX(downPose.pitch);
   }
