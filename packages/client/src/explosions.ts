@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { DEBRIS_FPS, GRAVITY, UNITS_PER_METER, unpackDebris, type DebrisPiece } from '@super-vox/shared';
 import type { Cloud } from './blastCloud.js';
+import { playBlast } from './blastSound.js';
 import { materialColor } from './materials.js';
 
 /**
@@ -20,6 +21,7 @@ export class ExplosionView {
   private readonly pieces: { path: [number, number, number][]; size: number; color: THREE.Color; start: number; spin: THREE.Vector3 }[] = [];
   private shakeAmount = 0;
   private audio: AudioContext | null = null;
+  private out: AudioNode | null = null;
   private readonly box = new THREE.BoxGeometry(1, 1, 1);
   private readonly ball = new THREE.SphereGeometry(1, 20, 14);
   private readonly fuseMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, depthWrite: false });
@@ -210,28 +212,22 @@ vec3 transformed = turn * (position * aSize * 0.98 * life) + at;`,
     return a ? new THREE.Vector3((Math.random() - 0.5) * a, (Math.random() - 0.5) * a, (Math.random() - 0.5) * a) : ZERO;
   }
 
-  /** A boom `distance` m away from a blast of `radius` m: noise through a falling low-pass, after the sound's travel time. */
+  /** A blast's sound, `distance` m away from a blast of `radius` m (see blastSound.ts), through a limiter (so a big one near doesn't clip). */
   private boom(distance: number, radius: number): void {
     try {
-      this.audio ??= new AudioContext();
-      const ctx = this.audio;
-      if (ctx.state === 'suspended') void ctx.resume();
-      const at = ctx.currentTime + distance / 343;
-      const len = 1.6, buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * len), ctx.sampleRate), data = buf.getChannelData(0);
-      for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.35));
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      const lp = ctx.createBiquadFilter();
-      lp.type = 'lowpass';
-      lp.frequency.setValueAtTime(900 * Math.min(1, 6 / Math.max(1, distance / 10)), at);
-      lp.frequency.exponentialRampToValueAtTime(60, at + 1.2);
-      const gain = ctx.createGain();
-      const loud = Math.min(1, (radius / 4) * (12 / Math.max(12, distance)));
-      gain.gain.setValueAtTime(0.0001, at);
-      gain.gain.exponentialRampToValueAtTime(0.9 * loud + 0.0001, at + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, at + len);
-      src.connect(lp).connect(gain).connect(ctx.destination);
-      src.start(at);
+      if (!this.audio) {
+        this.audio = new AudioContext();
+        const limit = this.audio.createDynamicsCompressor();
+        limit.threshold.value = -6;
+        limit.knee.value = 4;
+        limit.ratio.value = 16;
+        limit.attack.value = 0.002;
+        limit.release.value = 0.3;
+        limit.connect(this.audio.destination);
+        this.out = limit;
+      }
+      if (this.audio.state === 'suspended') void this.audio.resume();
+      playBlast(this.audio, this.out!, distance, radius);
     } catch {
       // No sound here: fine.
     }
