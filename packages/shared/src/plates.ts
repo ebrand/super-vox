@@ -2324,8 +2324,9 @@ export class PlateHeights implements HeightSource {
    * The climate on the terrain grid, for blending biome colours, or null where biomes don't blend
    * (no biomes, or sharp borders).
    */
-  climate(): ClimateGrid | null {
-    if (!this.temperature || !this.moisture || this.ecotone.degrees <= 0) return null;
+  climate(forWeather = false): ClimateGrid | null {
+    // (Weather wants it wherever there are biomes, blending or not.)
+    if (!this.temperature || !this.moisture || (!forWeather && this.ecotone.degrees <= 0)) return null;
     return {
       cols: this.cols,
       rows: this.rows,

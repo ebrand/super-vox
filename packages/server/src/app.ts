@@ -77,6 +77,7 @@ import {
   refuseClaimRect,
   cleanPlan,
   refusePlan,
+  weatherSeed,
   type Plan,
   type Claim,
 } from '@super-vox/shared';
@@ -239,12 +240,13 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     return reply.type('application/octet-stream').send(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
   });
 
-  // A world's climate for blending biome colours (see encodeClimate); 204 where biomes don't
-  // blend. ?world=name (the default world when omitted).
-  app.get<{ Querystring: { world?: string } }>('/api/world/climate', async (req, reply) => {
+  // A world's climate: for blending biome colours (see encodeClimate; 204 where they don't blend),
+  // or with ?for=weather, for its weather (wherever there are biomes; see weather.ts). ?world=name
+  // (the default world when omitted).
+  app.get<{ Querystring: { world?: string; for?: string } }>('/api/world/climate', async (req, reply) => {
     const world = catalog.get(req.query.world);
     if (!world) return reply.code(404).send({ error: 'no such world' });
-    const bytes = world.getEncodedClimate();
+    const bytes = world.getEncodedClimate(req.query.for === 'weather');
     if (!bytes) return reply.code(204).send();
     return reply.type('application/octet-stream').send(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
   });
@@ -992,6 +994,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               player: who ? { name: who.account.name, admin: who.admin } : null,
               canEdit: canEdit(),
               mode: catalog.play(msg.world)?.mode ?? 'creative',
+              weather: { seed: weatherSeed(msg.world ?? catalog.defaultName) },
             });
             const play = catalog.play(msg.world);
             const store = opts.inventories;

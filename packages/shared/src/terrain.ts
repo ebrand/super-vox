@@ -56,7 +56,7 @@ export interface HeightSource {
    */
   water?(x0: number, z0: number, w: number, d: number, step?: number): Int32Array | null;
   /** Optional climate for blending biome colours (null where biomes don't blend). */
-  climate?(): ClimateGrid | null;
+  climate?(forWeather?: boolean): ClimateGrid | null;
   /** Optional trees with any part in the box [x0, x1) x [z0, z1) (units), in a fixed order. */
   trees?(x0: number, z0: number, x1: number, z1: number): Tree[];
   /** Optional caves carved out of the rock (see caves.ts), or null for none. */
@@ -298,8 +298,8 @@ export class TerrainGenerator implements ChunkGenerator {
     return this.source.heights(x, z, 1, 1)[0]!;
   }
 
-  climate(): ClimateGrid | null {
-    return this.source.climate?.() ?? null;
+  climate(forWeather = false): ClimateGrid | null {
+    return this.source.climate?.(forWeather) ?? null;
   }
 
   surfaceSamples(x0: number, z0: number, step: number, n: number): { heights: Int32Array; materials: Uint16Array; canopy: Canopy | null; water: Int32Array | null } {

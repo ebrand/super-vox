@@ -152,8 +152,8 @@ export interface ChunkGenerator {
   columnRange(cx: number, cz: number): ColumnRange;
   /** Y (units) of the sea surface, or null for worlds without a sea. */
   readonly seaLevel: number | null;
-  /** The climate for blending biome colours, or null where biomes don't blend. */
-  climate?(): ClimateGrid | null;
+  /** The climate for blending biome colours, or null where biomes don't blend; `forWeather`, wherever there are biomes (see weather.ts). */
+  climate?(forWeather?: boolean): ClimateGrid | null;
   /** Where caves are, roughly (see caveOverview; entrances only on land), or null for a world without. */
   caveOverview?(): { cell: number; cols: number; rows: number; regions: Uint8Array; entrances: [number, number][] } | null;
 }

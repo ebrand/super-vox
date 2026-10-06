@@ -1305,13 +1305,21 @@ export class World {
   private climateBytes: Uint8Array | null | undefined;
 
   /** The climate for blending biome colours (see encodeClimate), or null where biomes don't blend. */
-  getEncodedClimate(): Uint8Array | null {
+  getEncodedClimate(forWeather = false): Uint8Array | null {
+    if (forWeather) {
+      if (this.weatherClimateBytes === undefined) {
+        const c = this.generator.climate?.(true) ?? null;
+        this.weatherClimateBytes = c ? encodeClimate(c) : null;
+      }
+      return this.weatherClimateBytes;
+    }
     if (this.climateBytes === undefined) {
       const c = this.generator.climate?.() ?? null;
       this.climateBytes = c ? encodeClimate(c) : null;
     }
     return this.climateBytes;
   }
+  private weatherClimateBytes: Uint8Array | null | undefined;
 
   /**
    * A top-down map of generated terrain (edits aren't included): `cols` x

@@ -1239,6 +1239,16 @@ const PINNED: Record<'defaults' | 'manyPlates' | 'islands', Record<string, strin
   islands: { layout: '9b0f6607', mountains: '52ef197b', relief: '123642f', coast: 'b018e53a', heights: 'b32bf87a', strokes: 'f54038cf', climate: '68dbad72', hydrology: '59665a32' },
 };
 
+describe('climate for weather', () => {
+  it('is there wherever there are biomes, blending or not; none without biomes', () => {
+    const sharp = plates({ biomes: 1, biomeBlend: 0 });
+    expect(sharp.climate()).toBeNull();
+    const forWeather = sharp.climate(true)!;
+    expect(forWeather.temperature.length).toBe(forWeather.cols * forWeather.rows);
+    expect(plates({ biomes: 0 }).climate(true)).toBeNull();
+  });
+});
+
 describe('materials worked out as asked for (materialsAt)', () => {
   /** Every sample of a block, in a scattered order: materialsAt's answer is materials()'. */
   const same = (p: PlateHeights, x0: number, z0: number, w: number, d: number, step: number) => {

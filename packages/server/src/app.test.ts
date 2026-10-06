@@ -20,6 +20,7 @@ import {
   encodeChunk,
   defaultPlateTerrain,
   voxelAt,
+  weatherSeed,
   type ServerMessage,
   type TerrainStroke,
 } from '@super-vox/shared';
@@ -207,6 +208,8 @@ describe('WebSocket handshake', () => {
       canEdit: true,
       // (Worlds are survival unless made creative.)
       mode: 'survival',
+      // Its weather, worked out from this and the time (see weather.ts).
+      weather: { seed: weatherSeed('default') },
     });
     ws.close();
   });

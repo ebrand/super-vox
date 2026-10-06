@@ -106,6 +106,8 @@ export type ServerMessage =
       /** The world's time of day, and the server's time now (epoch ms) to read it against. */
       clock: DayClock;
       serverTime: number;
+      /** The world's weather (see weather.ts: worked out from this and the server's time); absent from servers before weather. */
+      weather?: { seed: number };
       /** Who this connection is signed in as (null: not signed in). */
       player: { name: string; admin: boolean } | null;
       /** Whether this connection may edit (signing in is required where the server has accounts). */

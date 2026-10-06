@@ -1,6 +1,6 @@
 import './envBadge.js';
 import * as THREE from 'three';
-import { BLOCK_SIZE, CHUNK_SIZE, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, lightAt, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
+import { BLOCK_SIZE, CHUNK_SIZE, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, weatherTime, lightAt, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool, sizeLabel } from './editTool.js';
@@ -15,6 +15,7 @@ import { createAtmosphere, createSky } from './atmosphere.js';
 import { WATER_LAYER, WaterRenderer, createSeaMaterial, createVoxelWaterMaterial } from './water.js';
 import { createTint } from './tint.js';
 import { applyLighting, loadLighting, saveLighting } from './lighting.js';
+import { WeatherView } from './weatherView.js';
 import { LightingPanel } from './lightingPanel.js';
 import { PLAYER, intersectsSolid, liftOut, moveAabb, playerBox, type SolidAt } from './physics.js';
 import { farDetailFor, loadSettings, workersFor } from './settings.js';
@@ -97,6 +98,9 @@ const atmosphere = createAtmosphere(view);
 const scene = new THREE.Scene();
 scene.background = atmosphere.uniforms.horizonColor.value;
 scene.add(createSky(atmosphere));
+/** The weather (see weatherView.ts), once the world says what its weather is. */
+const weatherView = new WeatherView(atmosphere);
+scene.add(weatherView.group);
 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, view * 1.5);
 const controls = new FlyControls(camera, renderer.domElement);
@@ -187,6 +191,7 @@ document.addEventListener('pointerlockchange', () => {
 });
 function leaveWorld(): void {
   connection?.close();
+  weatherView.stop();
 }
 window.addEventListener('keydown', (e) => {
   if (e.code !== 'Escape' || e.repeat || typingIn(e) || controls.pointerLocked || leaveDialog.open) return;
@@ -243,6 +248,41 @@ const lightingPanel = new LightingPanel(
   },
 );
 document.body.append(lightingPanel.root);
+
+/** The world's weather: its seed (from the server) and its climate (none: temperate everywhere). */
+async function startWeather(seed: number, seaLevel: number): Promise<void> {
+  let climate: ReturnType<typeof decodeClimate> | null = null;
+  try {
+    const res = await fetch(`/api/world/climate?for=weather${worldName !== undefined ? `&world=${encodeURIComponent(worldName)}` : ''}`);
+    if (res.status === 200) climate = decodeClimate(new Uint8Array(await res.arrayBuffer()));
+  } catch {
+    // (No climate: temperate weather.)
+  }
+  weatherView.setWorld(seed, climate, seaLevel);
+  weatherView.groundAt = (x, z) => {
+    const g = tiles?.groundAt(x * UNITS_PER_METER, z * UNITS_PER_METER);
+    return g === undefined ? null : g / UNITS_PER_METER;
+  };
+}
+let weatherFrame = performance.now();
+/** The ground under a point (world units) where chunks are loaded (the tiles leave it to them): the top of the first solid block below, within 64 m. */
+function groundUnder(p: THREE.Vector3): number | undefined {
+  if (!chunks) return undefined;
+  const lw = chunks.lightWorld(), block = BLOCK_SIZE / UNITS_PER_METER;
+  const bx = Math.floor(p.x / block), bz = Math.floor(p.z / block), top = Math.floor(p.y / block);
+  for (let by = top; by > top - 64 / block; by--) if (lw.opaque(bx, by, bz)) return (by + 1) * BLOCK_SIZE;
+  return undefined;
+}
+/** ?weatherShift=S: the weather S seconds later (or earlier, negative) than now, to see what's coming. */
+const weatherShift = numberParam('weatherShift', 0, -1e7, 1e7);
+/** The weather, for the info panel: ", overcast 80%, rain 40%, 12°C". */
+function weatherLine(): string {
+  const w = weatherView.now;
+  if (!w) return '';
+  const pct = (v: number) => `${Math.round(v * 100)}%`;
+  const falling = w.precipitation > 0.02 ? `, ${w.snow > 0.5 ? 'snow' : 'rain'} ${pct(w.precipitation)}` : '';
+  return `\nweather: cloud ${pct(w.cover)}${falling}${w.storm > 0.02 ? `, storm ${pct(w.storm)}` : ''}${w.fog > 0.05 ? `, fog ${pct(w.fog)}` : ''}, ${Math.round(w.temperature)}°C` + (weatherShift ? ` (${weatherShift} s ahead)` : '');
+}
 
 /** Biome colours blend where the world's climate says so (no data: plain material colours). */
 async function loadTint(wrapX: boolean): Promise<void> {
@@ -438,6 +478,7 @@ connection = connect({
         clock = msg.clock;
         serverOffset = msg.serverTime - Date.now();
         inventoryUi.enabled = msg.canEdit;
+        if (msg.weather) void startWeather(msg.weather.seed, msg.seaLevel === null ? 0 : msg.seaLevel / UNITS_PER_METER);
         if (!chunks) {
           world = w;
           if (msg.seaLevel !== null) addSea(msg.seaLevel);
@@ -835,6 +876,7 @@ function updateHud(): void {
     `${worldLine || 'connecting…'}\n` +
     `camera ${f.x.toFixed(1)}, ${f.y.toFixed(1)}, ${f.z.toFixed(1)} m` + (controls.walking ? '' : `, flying ${controls.speed.toFixed(0)} m/s`) +
     (clock ? `, time ${formatHours(worldHours())}` : '') +
+    weatherLine() +
     '\n' +
     (controls.pointerLocked ? 'mouse: look · Esc: release mouse' : 'click: capture mouse (or drag to look) · Esc: leave') +
     (controls.walking
@@ -899,6 +941,16 @@ renderer.setAnimationLoop(() => {
   worldMap?.update();
   if (sea) sea.position.set(camera.position.x, sea.position.y, camera.position.z);
   applyLighting(lighting, worldHours(), atmosphere, lightingUniforms, view);
+  {
+    const p = camera.position;
+    const ground = tiles?.groundAt(p.x * UNITS_PER_METER, p.z * UNITS_PER_METER) ?? groundUnder(p);
+    // (Open to the sky: nothing above the camera's block, and not underwater.)
+    const open = inWaterAt(p.x, p.y, p.z) ? 0 : !chunks || chunks.lightWorld().skyOpen(Math.floor((p.x * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.y * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.z * UNITS_PER_METER) / BLOCK_SIZE)) ? 1 : 0;
+    const pixelScale = renderer.domElement.height / Math.tan((camera.fov * Math.PI) / 360);
+    weatherView.update(weatherTime(Date.now() + serverOffset) + weatherShift, worldHours(), p, ground === undefined ? null : ground / UNITS_PER_METER, view, (frameStart - weatherFrame) / 1000, open, pixelScale);
+    weatherFrame = frameStart;
+    weatherView.applyTo(atmosphere);
+  }
   lightingPanel.updateTime();
   atmosphere.uniforms.underwater.value = inWaterAt(camera.position.x, camera.position.y, camera.position.z) ? 1 : 0;
   explosions.frame();
