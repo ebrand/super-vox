@@ -47,7 +47,7 @@ Tracks the player lays, and closed cars they ride in.
 
 ## 4. 
 
-## 5. Geological strata, faults and ore veins — L (planned 2026-10-06)
+## 5. Geological strata, faults and ore veins — L (done 2026-10-06: phases 1-4)
 
 Rock layers, fault lines, and ores that follow geological logic instead of random blobs: ore found by reading the rock.
 
@@ -64,7 +64,7 @@ Rock layers, fault lines, and ores that follow geological logic instead of rando
 - **Phases** (each shipped and tested alone; each benchmarked against today's generation time per chunk before shipping):
   1. New rocks (sandstone, shale, limestone, granite: colour, hardness, drop, inventory), tilted/folded strata, coal seams, the `geology` setting, banded cliffs. **M** **Done 2026-10-06 (db39edd).**
   2. Faults. **M**
-  3. Intrusions, basalt dikes, ores at their margins (iron; new: copper, gold), banded iron. **M**. Copper and gold are smelted into coins (decided 2026-10-06), to be spent in the marketplaces of item 6 later.
+  3. Intrusions, basalt dikes, ores at their margins (iron; new: copper, gold), banded iron. **M**. **Done 2026-10-06 (6cd0203).** Copper and gold are smelted into coins (decided 2026-10-06), to be spent in the marketplaces of item 6 later.
   4. Geologist's hammer that names the rock (a start on prospecting). **S** **Done 2026-10-06 (bcf8ac5, ad5bbb4), before phase 3.** Phase 2 (faults) done too (2a1e790).
 - **Decided (2026-10-06):** 4 rocks in phase 1 (basalt with dikes in phase 3); add copper and gold; new worlds on, existing unchanged; cliffs show layers.
 - **Later:** prospecting as a skill: reading strata, intrusions and faults; float ore in streams below a vein; a pan for stream gravel; a map marking finds. Ties in with the strata of relics in item 16. Structural integrity (different rocks, different spans) when that exists.
