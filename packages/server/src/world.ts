@@ -209,6 +209,8 @@ export interface RemoteGenerator {
   chunk(coord: ChunkCoord): Promise<{ bytes: Uint8Array; ms: number; buildMs?: number }>;
   tile(t: TileCoord): Promise<{ bytes: Uint8Array; ms: number }>;
   column(cx: number, cz: number): Promise<ColumnRange>;
+  /** A map of part of the world, encoded (see surfaceMap, encodeWorldMap). */
+  map?(x0: number, z0: number, step: number, cols: number, rows: number): Promise<Uint8Array>;
 }
 
 export class World {
@@ -1351,10 +1353,48 @@ export class World {
     return surfaceMap(this.generator, x0, z0, step, cols, rows);
   }
 
+  /**
+   * The world's map `width` cells across (see getMap), encoded (see encodeWorldMap): made off the
+   * main thread where there's a remote generator (a whole map takes about a second, which would
+   * hold up everyone's edits), once (asking again while it's being made shares it).
+   */
+  encodedMap(width: number): Promise<Uint8Array> {
+    let p = this.mapBytes.get(width);
+    if (!p) {
+      const step = Math.ceil(this.config.widthUnits / width);
+      p = this.encodedMapArea(0, 0, step, Math.ceil(this.config.widthUnits / step), Math.ceil(this.config.depthUnits / step), false);
+      this.mapBytes.set(width, p);
+      p.catch(() => this.mapBytes.delete(width));
+    }
+    return p;
+  }
+  private readonly mapBytes = new Map<number, Promise<Uint8Array>>();
+
+  /**
+   * A map of part of the world (see mapArea), encoded: off the main thread where there's a remote
+   * generator (half a second or more each); the last few kept (`keep`), so panning back is free.
+   */
+  encodedMapArea(x0: number, z0: number, step: number, cols: number, rows: number, keep = true): Promise<Uint8Array> {
+    const key = `${x0},${z0},${step},${cols},${rows}`;
+    const hit = this.areaBytes.get(key);
+    if (hit) return hit;
+    const p = this.remote?.map ? this.remote.map(x0, z0, step, cols, rows) : Promise.resolve(encodeWorldMap(this.mapArea(x0, z0, step, cols, rows)));
+    if (keep) {
+      this.areaBytes.set(key, p);
+      p.catch(() => this.areaBytes.delete(key));
+      while (this.areaBytes.size > MAP_AREAS_KEPT) this.areaBytes.delete(this.areaBytes.keys().next().value!);
+    }
+    return p;
+  }
+  private readonly areaBytes = new Map<string, Promise<Uint8Array>>();
+
   get cachedChunkCount(): number {
     return this.cache.size;
   }
 }
+
+/** Zoomed-in maps kept (see encodedMapArea): each up to 768 KB. */
+const MAP_AREAS_KEPT = 24;
 
 /** How far around the chosen land to look for high ground, and how densely (units). */
 const SPAWN_SEARCH_RADIUS = 1000 * 16;

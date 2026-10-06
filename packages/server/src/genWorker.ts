@@ -1,6 +1,6 @@
 import { parentPort } from 'node:worker_threads';
-import { PlateStageCache, encodeChunk, type ChunkCoord, type ChunkGenerator, type PlateStages, type TerrainStroke, type TileCoord, type WorldConfig } from '@super-vox/shared';
-import { tileBytes } from './world.js';
+import { PlateStageCache, encodeChunk, surfaceMap, type ChunkCoord, type ChunkGenerator, type PlateStages, type TerrainStroke, type TileCoord, type WorldConfig } from '@super-vox/shared';
+import { encodeWorldMap, tileBytes } from './world.js';
 import { generatorFor, type WorldSpec } from './worldFile.js';
 
 /**
@@ -14,7 +14,12 @@ export type GenRequest =
   | { type: 'forget'; key: string }
   | { type: 'job'; id: number; key: string; job: GenJob };
 
-export type GenJob = { kind: 'chunk'; coord: ChunkCoord } | { kind: 'tile'; t: TileCoord } | { kind: 'column'; cx: number; cz: number };
+export type GenJob =
+  | { kind: 'chunk'; coord: ChunkCoord }
+  | { kind: 'tile'; t: TileCoord }
+  | { kind: 'column'; cx: number; cz: number }
+  /** A map of part of the world (see surfaceMap), encoded (see encodeWorldMap). */
+  | { kind: 'map'; x0: number; z0: number; step: number; cols: number; rows: number };
 
 /** `ms`: the job's time; `buildMs`: what building the world's generator for it took first (0 if already built). */
 export type GenResponse = { id: number; ok: true; bytes?: Uint8Array; range?: unknown; ms: number; buildMs: number } | { id: number; ok: false; error: string };
@@ -65,7 +70,10 @@ parentPort!.on('message', (req: GenRequest) => {
       parentPort!.postMessage({ id: req.id, ok: true, range, ms: performance.now() - t0, buildMs } satisfies GenResponse);
       return;
     }
-    const bytes = j.kind === 'chunk' ? encodeChunk(g.generateChunk(j.coord)) : tileBytes(g, worlds.get(req.key)!.config, j.t);
+    const bytes =
+      j.kind === 'chunk' ? encodeChunk(g.generateChunk(j.coord))
+      : j.kind === 'map' ? encodeWorldMap(surfaceMap(g, j.x0, j.z0, j.step, j.cols, j.rows))
+      : tileBytes(g, worlds.get(req.key)!.config, j.t);
     parentPort!.postMessage({ id: req.id, ok: true, bytes, ms: performance.now() - t0, buildMs } satisfies GenResponse, [bytes.buffer as ArrayBuffer]);
   } catch (err) {
     parentPort!.postMessage({ id: req.id, ok: false, error: err instanceof Error ? err.message : String(err) } satisfies GenResponse);

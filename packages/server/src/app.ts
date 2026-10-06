@@ -82,7 +82,7 @@ import {
   type Claim,
 } from '@super-vox/shared';
 import type { WebSocket } from 'ws';
-import { encodeWorldMap, type EditResult, type World } from './world.js';
+import type { EditResult, World } from './world.js';
 import { Explosives } from './explosives.js';
 import { RequestQueue } from './requestQueue.js';
 import { DesignLibrary } from './designs.js';
@@ -207,7 +207,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     }
     const world = catalog.get(req.query.world);
     if (!world) return reply.code(404).send({ error: 'no such world' });
-    const bytes = encodeWorldMap(world.getMap(width));
+    const bytes = await world.encodedMap(width);
     return reply.type('application/octet-stream').send(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
   });
 
@@ -236,7 +236,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (Math.abs(x0!) > 2 ** 30 || Math.abs(z0!) > 2 ** 30) return reply.code(400).send({ error: 'out of range' });
     const world = catalog.get(q.world);
     if (!world) return reply.code(404).send({ error: 'no such world' });
-    const bytes = encodeWorldMap(world.mapArea(x0!, z0!, step!, cols!, rows!));
+    const bytes = await world.encodedMapArea(x0!, z0!, step!, cols!, rows!);
     return reply.type('application/octet-stream').send(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
   });
 

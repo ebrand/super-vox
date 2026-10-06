@@ -64,6 +64,7 @@ export class GenPool {
       chunk: (c: ChunkCoord) => run(columnWorker(c.cx, c.cz, n), { kind: 'chunk', coord: c }).then((r) => ({ bytes: r.bytes!, ms: r.ms, buildMs: r.buildMs })),
       tile: (t: TileCoord) => run(spread(t.level * 7919 + t.tx, t.tz, n), { kind: 'tile', t }).then((r) => ({ bytes: r.bytes!, ms: r.ms })),
       column: (cx: number, cz: number) => run(columnWorker(cx, cz, n), { kind: 'column', cx, cz }).then((r) => r.range as ColumnRange),
+      map: (x0: number, z0: number, step: number, cols: number, rows: number) => run(spread(x0 + step, z0 + cols, n), { kind: 'map', x0, z0, step, cols, rows }).then((r) => r.bytes!),
       forget: () => {
         if (!this.worlds.delete(key)) return;
         if (this.worlds.size === 0) return this.stop();
