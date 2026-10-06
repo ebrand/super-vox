@@ -40,10 +40,12 @@ const COLORS: Record<number, readonly [number, number, number]> = {
   [Material.DarkStone]: [0.17, 0.17, 0.19],
   [Material.PaleStone]: [0.55, 0.53, 0.5],
   [Material.MossyStone]: [0.24, 0.3, 0.2],
-  [Material.Sandstone]: [0.56, 0.45, 0.31],
-  [Material.Shale]: [0.21, 0.22, 0.25],
-  [Material.Limestone]: [0.63, 0.61, 0.55],
-  [Material.Granite]: [0.46, 0.4, 0.39],
+  // (Layered rock: close to stone and to each other, a tint each, so layers show as faint striations,
+  // not stripes: telling them apart is a geologist's job. Coal stays black: a seam shows.)
+  [Material.Sandstone]: [0.4, 0.37, 0.32],
+  [Material.Shale]: [0.3, 0.3, 0.32],
+  [Material.Limestone]: [0.42, 0.41, 0.39],
+  [Material.Granite]: [0.38, 0.35, 0.35],
   [Material.TorchWood]: [0.3, 0.18, 0.08],
   // (Drawn at full brightness, whatever the light: see voxelMaterial.)
   [Material.TorchFlame]: [1.0, 0.62, 0.18],
