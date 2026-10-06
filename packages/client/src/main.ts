@@ -781,8 +781,17 @@ connection = connect({
           };
           controls.onClick = (button, mods) => editTool?.click(button, mods);
           controls.onRelease = (button) => editTool?.release(button);
-          // Survival: a hard landing hurts (the server works out how much).
           editTool.onTap = () => footsteps.tap();
+          // What the tool says (a hammer's reading, an edit refused): under the crosshair for a few seconds.
+          const note = document.getElementById('note')!;
+          let noteTimer: ReturnType<typeof setTimeout> | undefined;
+          editTool.onSay = (text) => {
+            note.textContent = text;
+            note.classList.add('shown');
+            clearTimeout(noteTimer);
+            noteTimer = setTimeout(() => note.classList.remove('shown'), 4000);
+          };
+          // Survival: a hard landing hurts (the server works out how much).
           controls.onLand = (speed) => {
             if (survivalMovement && fallDamage(speed) > 0) send({ type: 'fell', speed });
             // A landing: a step, harder the faster.

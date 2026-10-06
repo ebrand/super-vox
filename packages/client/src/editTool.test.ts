@@ -180,8 +180,9 @@ describe('EditTool mining (survival)', () => {
 
   it("a geologist's hammer taps and names what it hits, never mining it (survival or creative)", () => {
     held = Item.GeologistsHammer;
-    const said = vi.spyOn(tool, 'say'), tapped: number[] = [];
+    const said = vi.spyOn(tool, 'say'), tapped: number[] = [], shown: string[] = [];
     tool.onTap = (m) => tapped.push(m);
+    tool.onSay = (t) => shown.push(t);
     for (const survival of [true, false]) {
       tool.survival = survival;
       now = 0;
@@ -191,6 +192,8 @@ describe('EditTool mining (survival)', () => {
     }
     expect(said).toHaveBeenCalledWith('stone');
     expect(tapped).toEqual([Material.Stone, Material.Stone]);
+    // (Said on screen too, not only in the info panel.)
+    expect(shown).toEqual(['stone', 'stone']);
     expect(edits()).toEqual([]);
     expect(sent.some((m) => m.type === 'mine')).toBe(false);
   });

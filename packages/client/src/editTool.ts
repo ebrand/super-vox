@@ -174,6 +174,8 @@ export class EditTool {
   survival = false;
   /** Right-clicked a furnace or stove (see stations.ts): to open it. */
   onStation: ((o: PlacedObject) => void) | null = null;
+  /** Whenever the tool says something (see say): to show it on screen. */
+  onSay: ((text: string) => void) | null = null;
   /** A geologist's hammer tapped on `material` (for its sound). */
   onTap: ((material: MaterialId) => void) | null = null;
   onMiningProgress: ((fraction: number | null) => void) | null = null;
@@ -562,6 +564,7 @@ export class EditTool {
   say(text: string): void {
     this.message = text;
     this.messageUntil = performance.now() + 4000;
+    this.onSay?.(text);
   }
 
   dispose(): void {
