@@ -87,18 +87,26 @@ export function focusLead(vx: number, vz: number, radius: number): { dx: number;
 /** Speeds (m/s) between which voxel chunks give way to tiles while moving fast (see SpeedDetail). */
 export const DETAIL_SPEEDS = { full: 25, none: 60 };
 /**
- * Flying speeds (m/s) up to which voxel chunks are loaded all round, or half as far; none beyond
- * (faster, they'd only arrive once we'd passed: measured locally, half kept up to 100 m/s, not 120).
- * Those already drawn stay (see selectLod's `keep`).
+ * Flying speeds (m/s) up to which voxel chunks are loaded all round, or half as far, at a chunk
+ * radius of `detail`; none beyond (faster, they'd only arrive once we'd passed). Those already drawn
+ * stay (see selectLod's `keep`). Measured on staging (12 vCPUs, 8 generation workers, 2026-10-05):
+ * one player at detail 8 kept up to about 140 m/s over new ground, not 161; with room for other
+ * players, 100 m/s at detail 8. The ring's leading edge grows with the radius, so the speeds go as
+ * 1 / detail; half as far, half the edge: 2.5 times as fast (a little under twice that).
  */
-export const FLY_SPEEDS = { full: 60, half: 100 };
+export function flySpeeds(detail: number): { full: number; half: number } {
+  const full = (FLY_FULL_AT_8 * 8) / Math.max(1, detail);
+  return { full, half: full * 2.5 };
+}
+/** flySpeeds' full speed at detail 8 (m/s). */
+export const FLY_FULL_AT_8 = 100;
 /** How long (ms) a lower speed must last before more voxel chunks come back. */
 export const DETAIL_GROW_MS = 300;
 
 /**
  * Voxel-chunk radius for the current speed, in three steps (few, so ordinary speed changes don't
  * keep rebuilding terrain): the full `detail` up to `full` m/s, half of it up to `none` m/s, none
- * (-1) beyond. Flying (faster), in three steps (FLY_SPEEDS): all, half, none (so loading keeps up with
+ * (-1) beyond. Flying (faster), in three steps (flySpeeds, by detail): all, half, none (so loading keeps up with
  * the edge of the view, not voxel chunks we're about to leave; those already drawn stay). It
  * shrinks at once but grows back only after the lower speed has lasted DETAIL_GROW_MS, so speed
  * wobbles don't rebuild terrain.
@@ -106,6 +114,7 @@ export const DETAIL_GROW_MS = 300;
 export class SpeedDetail {
   private current: number;
   private higherSince: number | null = null;
+  private readonly fly: { full: number; half: number };
 
   constructor(
     private readonly detail: number,
@@ -113,6 +122,7 @@ export class SpeedDetail {
     private readonly growMs = DETAIL_GROW_MS,
   ) {
     this.current = detail;
+    this.fly = flySpeeds(detail);
   }
 
   /** The chunk radius wanted at `speed` (m/s), flying or not, ignoring how long it has lasted. */
@@ -120,8 +130,8 @@ export class SpeedDetail {
     const { full, none } = this.speeds;
     // (Unless detail at any speed was asked for.)
     if (flying && Number.isFinite(none)) {
-      if (speed <= FLY_SPEEDS.full) return this.detail;
-      if (speed <= FLY_SPEEDS.half) return Math.ceil(this.detail / 2);
+      if (speed <= this.fly.full) return this.detail;
+      if (speed <= this.fly.half) return Math.ceil(this.detail / 2);
       return -1;
     }
     if (speed <= full) return this.detail;

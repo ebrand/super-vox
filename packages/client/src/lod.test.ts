@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CHUNK_SIZE, FLAT_WORLD_16KM, tileSizeUnits } from '@super-vox/shared';
-import { DETAIL_GROW_MS, FLY_SPEEDS, SpeedDetail, focusLead, selectLod } from './lod.js';
+import { DETAIL_GROW_MS, SpeedDetail, flySpeeds, focusLead, selectLod } from './lod.js';
 
 const FAR = 2048 * 16;
 
@@ -177,18 +177,30 @@ describe('voxel chunks while moving fast', () => {
 
   it('flying, loads detail as it speeds up, less of it, then none (unless detail at any speed was asked for)', () => {
     const sd = new SpeedDetail(8, { full: 25, none: 60 });
+    const FLY = flySpeeds(8);
+    expect(FLY).toEqual({ full: 100, half: 250 });
     expect(sd.target(0, true)).toBe(8);
     expect(sd.target(15, true)).toBe(8); // the usual flying speed: everything as built
-    expect(sd.target(FLY_SPEEDS.full, true)).toBe(8);
-    expect(sd.target(75, true)).toBe(4); // (Shift)
-    expect(sd.target(FLY_SPEEDS.half, true)).toBe(4);
-    expect(sd.target(FLY_SPEEDS.half + 1, true)).toBe(-1);
+    expect(sd.target(FLY.full, true)).toBe(8);
+    expect(sd.target(150, true)).toBe(4); // (Shift)
+    expect(sd.target(FLY.half, true)).toBe(4);
+    expect(sd.target(FLY.half + 1, true)).toBe(-1);
     expect(sd.target(40, false)).toBe(4); // on foot: as before
     expect(sd.update(750, 0, true)).toBe(-1); // at once
     expect(sd.update(15, 100, true)).toBe(-1); // slowed down: not yet
     expect(sd.update(15, 100 + DETAIL_GROW_MS, true)).toBe(8);
     const always = new SpeedDetail(8, { full: Infinity, none: Infinity });
     expect(always.target(300, true)).toBe(8);
+  });
+
+  it('flying, keeps up at speeds that go with the detail: a wider ring, slower', () => {
+    expect(flySpeeds(16)).toEqual({ full: 50, half: 125 });
+    expect(flySpeeds(4)).toEqual({ full: 200, half: 500 });
+    const wide = new SpeedDetail(16), narrow = new SpeedDetail(4);
+    expect(wide.target(60, true)).toBe(8);
+    expect(wide.target(130, true)).toBe(-1);
+    expect(narrow.target(180, true)).toBe(4);
+    expect(narrow.target(450, true)).toBe(2);
   });
 });
 
