@@ -319,7 +319,7 @@ export class WeatherSound {
     }
     const s = this.surfNodes, now = ctx.currentTime;
     s.level.gain.setTargetAtTime(amount < 0.01 ? 0 : 0.35 * amount, now, 0.8);
-    s.bed.gain.setTargetAtTime(amount < 0.01 ? 0 : 0.012 * amount, now, 0.8);
+    s.bed.gain.setTargetAtTime(amount < 0.01 ? 0 : 0.03 * amount, now, 0.8);
     // Each wave: a rise as it breaks (the roar brightening), then a long wash dying back.
     if (amount >= 0.01 && now >= this.nextWave - 0.2) {
       const at = Math.max(now, this.nextWave), big = 0.6 + 0.4 * Math.random();
