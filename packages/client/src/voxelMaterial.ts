@@ -175,8 +175,10 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
         // Shade underground: sky light 0..15 (vSkyLight 0..1), each step down 80% as bright, so
         // the depths of a cave are nearly black (as Minecraft's).
         light *= pow(0.8, 15.0 * (1.0 - vSkyLight));
-        // Torchlight (block light 0..15, the same falloff), warm, whatever the time of day.
-        float torch = vBlockLight > 0.002 ? pow(0.8, 15.0 * (1.0 - vBlockLight)) : 0.0;
+        // Torchlight (block light 0..15, the same falloff), warm, whatever the time of day; faded
+        // to nothing over its last few levels (that falloff alone ends at 4% of a torch's light, a
+        // hard edge where its reach ends: plain in the dark of night, a diamond of straight lines).
+        float torch = pow(0.8, 15.0 * (1.0 - vBlockLight)) * smoothstep(0.0, 0.3, vBlockLight);
         light += vec3(1.0, 0.7, 0.4) * torch * ao;
         if (vGlows > 0.5) light = vec3(1.0);
         // Below the water, light that reached down through it (red is lost first).
