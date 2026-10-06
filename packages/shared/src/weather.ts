@@ -75,7 +75,7 @@ export function weatherTime(ms: number): number {
 }
 
 /** How fast weather systems drift (m/s) on the prevailing wind. */
-export const WIND_SPEED = 9;
+export const WIND_SPEED = 15;
 /** How long one shape of the cloud field lasts before it has become the next (s). */
 const EVOLVE = 3600;
 
