@@ -15,18 +15,27 @@ const deflateRawAsync = promisify(deflateRaw), inflateRawAsync = promisify(infla
  *
  * Kept compressed in region files (chunk columns REGION x REGION; tiles likewise by tile), each
  * a log of records appended as things are made, read whole the first time the region is asked
- * about and then kept in memory (the `keep` regions used most recently). A torn last record (a
- * crash while writing) is ignored.
+ * about and then kept in memory: the regions used most recently, at most `keep` of them and
+ * `maxBytes` of their records (one let go of is read again if it's wanted: a file read, in the
+ * background). A torn last record (a crash while writing) is ignored.
  */
 export class DiskCache {
   private readonly regions = new Map<string, Region>();
-  /** Bytes kept in memory, and how many reads and writes there have been. */
+  /** How many reads and writes there have been. */
   readonly stats = { hits: 0, misses: 0, writes: 0, errors: 0 };
+  /** Bytes of records the regions in memory hold. */
+  private held = 0;
 
   constructor(
     readonly dir: string,
     private readonly keep = 4096,
+    private readonly maxBytes = DISK_CACHE_MEMORY,
   ) {}
+
+  /** Bytes of records kept in memory now. */
+  get bytesHeld(): number {
+    return this.held;
+  }
 
   /** An encoded chunk, or null if it isn't here. */
   chunk(cx: number, cy: number, cz: number): Promise<Uint8Array | null> {
@@ -78,15 +87,20 @@ export class DiskCache {
   }
 
   private put(region: string, key: string, bytes: Uint8Array): void {
-    const done: Promise<void> = Promise.all([deflateRawAsync(bytes, { level: 1 }), this.region(region)]).then(([z, r]) => {
+    const done: Promise<void> = Promise.all([deflateRawAsync(bytes, { level: 1 }), this.region(region)]).then(([out, r]) => {
+      // (A copy of its own: zlib's answer is a little of a far bigger buffer, all of it kept while
+      // the record is: twenty times the memory.)
+      const z = Buffer.from(out);
       if (r.entries.has(key)) return; // (two askers made it at once: one copy)
       r.entries.set(key, z);
+      this.hold(r, z.length);
       const k = Buffer.from(key, 'utf8');
       const head = Buffer.alloc(6);
       head.writeUInt16LE(k.length, 0);
       head.writeUInt32LE(z.length, 2);
       const record = Buffer.concat([head, k, z]);
       // One write at a time per region, in order.
+      r.pending++;
       r.writing = r.writing.then(async () => {
         try {
           await (this.made ??= mkdir(this.dir, { recursive: true }));
@@ -95,6 +109,8 @@ export class DiskCache {
         } catch {
           this.made = null;
           this.stats.errors++; // (a full or missing disk: the terrain is just made again next time)
+        } finally {
+          r.pending--;
         }
       });
       return r.writing;
@@ -111,26 +127,61 @@ export class DiskCache {
       this.regions.set(name, hit);
       return hit.loaded;
     }
-    const r: Region = { entries: new Map(), writing: Promise.resolve(), loaded: null! };
+    const r: Region = { name, entries: new Map(), writing: Promise.resolve(), loaded: null!, bytes: 0, pending: 0 };
     r.loaded = readFile(join(this.dir, `${name}.cache`)).then(
       (buf) => {
         for (const [key, z] of parseRecords(buf)) r.entries.set(key, z);
+        this.hold(r, buf.length);
         return r;
       },
       () => r, // (none yet)
     );
     this.regions.set(name, r);
-    while (this.regions.size > this.keep) this.regions.delete(this.regions.keys().next().value!);
+    this.trim(r);
     return r.loaded;
+  }
+
+  /** Counts `bytes` more held by region `r` (if it's still kept), and lets go of others if that's too many. */
+  private hold(r: Region, bytes: number): void {
+    if (this.regions.get(r.name) !== r) return; // (let go of already: nothing held)
+    r.bytes += bytes;
+    this.held += bytes;
+    this.trim(r);
+  }
+
+  /**
+   * Lets go of the regions used longest ago while there are more than `keep` or they hold more
+   * than `maxBytes` (never `except`, the one in use; nor one still being written to, which would
+   * be read again without what it's writing).
+   */
+  private trim(except: Region): void {
+    for (const [name, r] of this.regions) {
+      if (this.regions.size <= this.keep && this.held <= this.maxBytes) return;
+      if (r === except || r.pending > 0) continue;
+      this.regions.delete(name);
+      this.held -= r.bytes;
+      r.bytes = 0;
+    }
   }
 }
 
 interface Region {
+  name: string;
   entries: Map<string, Buffer>;
-  /** Appends to its file, one after another. */
+  /** Appends to its file, one after another, and how many are still to finish. */
   writing: Promise<void>;
+  pending: number;
   loaded: Promise<Region>;
+  /** Bytes of records it holds (counted while it's kept). */
+  bytes: number;
 }
+
+/**
+ * Most bytes of generated terrain (compressed) a world's disk cache keeps in memory: a few dozen
+ * regions, about a square kilometre or two, read again from disk beyond that. (Kept by count only,
+ * a long flight held gigabytes, and a server holds on to memory once it's had it.)
+ */
+export const DISK_CACHE_MEMORY = 256 * 1024 * 1024;
 
 /** Chunk columns (and tiles) per region side. */
 export const REGION = 16;

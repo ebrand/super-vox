@@ -61,6 +61,29 @@ describe('DiskCache', () => {
     expect(cache.stats.errors).toBe(1);
   });
 
+  it('keeps at most so many bytes in memory, reading regions it let go of from disk again', async () => {
+    const dir = join(tmp(), 'cache');
+    // 20 regions' worth of chunks (a region is 16 x 16 columns), about 2 kB each, kept to 10 kB.
+    const cache = new DiskCache(dir, 4096, 10_000);
+    // (Random-looking, so they don't compress below the 2 kB.)
+    const bytes = (i: number) => {
+      let r = i * 2654435761 + 1;
+      return Uint8Array.from({ length: 2000 }, () => ((r = (Math.imul(r, 1103515245) + 12345) >>> 0) >>> 16) & 255);
+    };
+    for (let i = 0; i < 20; i++) {
+      cache.putChunk(i * 16, 0, 0, bytes(i));
+      await cache.flush();
+      expect(cache.bytesHeld).toBeLessThanOrEqual(10_000 + 4000); // (the region in use, besides)
+    }
+    // All of it there still: from memory, or read again.
+    for (let i = 0; i < 20; i++) expect(await cache.chunk(i * 16, 0, 0)).toEqual(bytes(i));
+    expect(cache.bytesHeld).toBeLessThanOrEqual(10_000 + 4000);
+    // Without the cap, the same holds them all.
+    const all = new DiskCache(dir);
+    for (let i = 0; i < 20; i++) await all.chunk(i * 16, 0, 0);
+    expect(all.bytesHeld).toBeGreaterThan(20 * 1900);
+  });
+
   it('ignores a record cut short (a crash while writing), keeping those before it', async () => {
     const dir = join(tmp(), 'v1');
     const a = new DiskCache(dir);
