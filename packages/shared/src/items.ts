@@ -69,6 +69,8 @@ export const Item = {
   IronSword: 1025,
   /** Placed on floors and walls (see objects.ts): it lights what's around it. */
   Torch: 1026,
+  /** Tapped on rock (left-click), names it (see rockNote): telling layered rock apart, to find ore. */
+  GeologistsHammer: 1027,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -101,6 +103,7 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.IronShovel]: 'iron shovel',
   [Item.IronSword]: 'iron sword',
   [Item.Torch]: 'torch',
+  [Item.GeologistsHammer]: "geologist's hammer",
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */

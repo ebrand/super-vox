@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { BLOCKS_PER_AXIS, blockIndex } from './chunk.js';
-import { Geology, isGeologyRock, layerSequence, type GeologyColumn } from './geology.js';
+import { Geology, isGeologyRock, layerSequence, rockNote, type GeologyColumn } from './geology.js';
+import { ALL_ITEMS, Item, itemName } from './items.js';
+import { RECIPES } from './recipes.js';
 import { Material } from './materials.js';
 import { PlateHeights, defaultPlateTerrain } from './plates.js';
 import { TerrainGenerator, defaultVoxelize } from './terrain.js';
@@ -226,5 +228,25 @@ describe('geology in the terrain', () => {
     expect(new Set(rock).size).toBeGreaterThan(1);
     const at = heights.materialsAt(0, 0, 256, 256, 1024, H);
     for (let k = 0; k < mats.length; k += 7) expect(at(k)).toBe(mats[k]);
+  });
+});
+
+describe("the geologist's hammer", () => {
+  it('names each rock, with what to know (shale: where coal is); anything else, its name', () => {
+    expect(rockNote(Material.Sandstone)).toMatch(/^sandstone/);
+    expect(rockNote(Material.Limestone)).toMatch(/^limestone/);
+    expect(rockNote(Material.Granite)).toMatch(/^granite/);
+    expect(rockNote(Material.Shale)).toMatch(/^shale.*coal/);
+    expect(rockNote(Material.CoalOre)).toMatch(/coal.*seam/);
+    expect(rockNote(Material.Grass)).toBe('grass');
+  });
+
+  it('is an item (in creative), made cheaply at a crafting table (in survival)', () => {
+    expect(ALL_ITEMS).toContain(Item.GeologistsHammer);
+    expect(itemName(Item.GeologistsHammer)).toBe("geologist's hammer");
+    const r = RECIPES.find((q) => q.output[0] === Item.GeologistsHammer);
+    expect(r).toBeDefined();
+    expect(r!.inputs).toEqual([[Material.Cobblestone, 1], [Item.Stick, 1]]);
+    expect(r!.table).toBe(true);
   });
 });

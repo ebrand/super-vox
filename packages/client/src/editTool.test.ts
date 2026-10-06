@@ -177,6 +177,23 @@ describe('EditTool mining (survival)', () => {
     expect(edits()).toMatchObject([{ edit: { op: 'remove', x: 0, y: 0, z: 0 } }]);
     expect(sent.some((m) => m.type === 'mine')).toBe(false);
   });
+
+  it("a geologist's hammer taps and names what it hits, never mining it (survival or creative)", () => {
+    held = Item.GeologistsHammer;
+    const said = vi.spyOn(tool, 'say'), tapped: number[] = [];
+    tool.onTap = (m) => tapped.push(m);
+    for (const survival of [true, false]) {
+      tool.survival = survival;
+      now = 0;
+      tool.click(0, { meta: false, alt: false });
+      now = 20_000;
+      tool.update();
+    }
+    expect(said).toHaveBeenCalledWith('stone');
+    expect(tapped).toEqual([Material.Stone, Material.Stone]);
+    expect(edits()).toEqual([]);
+    expect(sent.some((m) => m.type === 'mine')).toBe(false);
+  });
 });
 
 describe('EditTool big boxes (creative)', () => {

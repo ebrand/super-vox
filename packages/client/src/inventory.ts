@@ -71,6 +71,7 @@ const ITEM_LOOK: Record<number, { color: readonly [number, number, number]; glyp
   [Item.IronIngot]: { color: [0.62, 0.62, 0.64], glyph: '▬' },
   [Item.CookedPork]: { color: [0.55, 0.3, 0.15], glyph: 'p' },
   [Item.Torch]: { color: [1.0, 0.62, 0.18], glyph: 'i' },
+  [Item.GeologistsHammer]: { color: [0.62, 0.5, 0.36], glyph: 'T' },
 };
 
 /** How an item looks in slots: built-in ones as ITEM_LOOK has them; designed objects, the colour of what they're mostly made of, and their initial. */

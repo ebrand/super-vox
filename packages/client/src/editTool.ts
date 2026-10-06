@@ -35,6 +35,7 @@ import {
   isBed,
   isStationKind,
   isSword,
+  rockNote,
   SWORDS,
   objectStation,
   type PlacedObject,
@@ -173,6 +174,8 @@ export class EditTool {
   survival = false;
   /** Right-clicked a furnace or stove (see stations.ts): to open it. */
   onStation: ((o: PlacedObject) => void) | null = null;
+  /** A geologist's hammer tapped on `material` (for its sound). */
+  onTap: ((material: MaterialId) => void) | null = null;
   onMiningProgress: ((fraction: number | null) => void) | null = null;
   /** The left button held to mine; what's being mined (and since when, needing how long, ms); what was last mined. */
   private miningHeld = false;
@@ -441,7 +444,10 @@ export class EditTool {
         // Explosives light; a sword cuts leaves (a sweep); otherwise left-click removes.
         if (this.target && this.targetMaterial !== null && isExplosive(this.targetMaterial)) this.ignite();
         else if (held !== null && isSword(held) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) this.cut(held);
-        else if (this.survival) this.miningHeld = true; // (mined as it's held: see stepMining)
+        // A geologist's hammer taps what it's aimed at, and names it, instead of mining it.
+        else if (held === Item.GeologistsHammer) {
+          if (this.target && this.targetMaterial !== null) this.tap(this.targetMaterial);
+        } else if (this.survival) this.miningHeld = true; // (mined as it's held: see stepMining)
         else this.remove();
       } else if (button === 2) {
         // Right-click: with a bucket, fills it at water or pours it out; makes a bed ours; opens and
@@ -544,6 +550,12 @@ export class EditTool {
       `${actions} · middle-click: break smaller · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-9: hotbar · E: inventory` +
       msg
     );
+  }
+
+  /** A geologist's hammer tapped on `material`: what it is, said. */
+  private tap(material: MaterialId): void {
+    this.say(rockNote(material));
+    this.onTap?.(material);
   }
 
   /** Shows a message on the overlay for a few seconds. */

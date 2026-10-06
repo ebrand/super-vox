@@ -25,7 +25,7 @@ describe('crafting table', () => {
   it('says what what is on it could become', () => {
     const ids = (t: Table) => couldMake(t).map((r) => r.id);
     expect(ids([[Item.Stick, 1]])).toEqual(expect.arrayContaining(['wooden-sword', 'stone-sword', 'fences', 'gate']));
-    expect(ids([[Item.Stick, 1], [Material.Cobblestone, 1]])).toEqual(['stone-sword', 'stone-pickaxe', 'stone-axe', 'stone-shovel']);
+    expect(ids([[Item.Stick, 1], [Material.Cobblestone, 1]])).toEqual(['stone-sword', 'stone-pickaxe', 'stone-axe', 'stone-shovel', 'geologists-hammer']);
     expect(ids([[Material.Dirt, 1]])).toEqual([]);
     expect(ids([])).toEqual([]);
   });

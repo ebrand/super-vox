@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Material, SPRINT, WALK_SPEED } from '@super-vox/shared';
-import { FootstepWeather, STRIDE, SPRINT_STRIDE, StepCounter, stepSound, surfaceOf, underSnow, type Surface } from './footsteps.js';
+import { FootstepWeather, STRIDE, SPRINT_STRIDE, StepCounter, stepSound, surfaceOf, tapSound, underSnow, type Surface } from './footsteps.js';
 
 /** A seeded random (so a sound's the same each run). */
 function seeded(seed: number) {
@@ -111,6 +111,13 @@ describe('stepSound', () => {
   it('no two steps quite alike', () => {
     const a = stepSound('soft', 0, 0.4, rate), b = stepSound('soft', 0, 0.4, rate);
     expect(a.some((v, i) => v !== b[i])).toBe(true);
+  });
+
+  it("a hammer's tap: short, heard, never clipping", () => {
+    const m = measure(tapSound(rate, seeded(5)));
+    expect(m.peak).toBeGreaterThan(0.05);
+    expect(m.peak).toBeLessThan(1);
+    expect(m.lasts).toBeLessThan(0.2);
   });
 
   it('cheap enough to make on the spot', () => {

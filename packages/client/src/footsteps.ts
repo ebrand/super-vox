@@ -210,6 +210,16 @@ export function stepSound(surface: Surface, wet: number, hard: number, rate: num
   return out;
 }
 
+/** A geologist's hammer on rock (mono, `rate` Hz): a sharp tick and a short, bright ring. */
+export function tapSound(rate: number, random: Random = Math.random): Float32Array {
+  const out = new Float32Array(Math.floor(0.25 * rate));
+  grains(out, rate, 0, 0.004, 3, 0.0006, 0.5, 2500, 7000, random);
+  const f = 2200 + 600 * random();
+  for (let i = 0; i < Math.floor(0.2 * rate); i++) out[i] = out[i]! + Math.sin((2 * Math.PI * f * i) / rate) * Math.exp(-i / (0.035 * rate)) * 0.18;
+  thud(out, rate, 0, 0.15, 1200, 0.01, random);
+  return out;
+}
+
 /** Plays footsteps (see stepSound), through a limiter. Quiet until the page has been interacted with (browsers' rule). */
 export class FootstepSound {
   private ctx: AudioContext | null = null;
@@ -250,6 +260,19 @@ export class FootstepSound {
     this.left = !this.left;
     pan.pan.value = this.left ? -0.15 : 0.15;
     src.connect(pan).connect(this.out);
+    src.start();
+  }
+
+  /** A geologist's hammer's tap (see tapSound). */
+  tap(): void {
+    const ctx = this.audio();
+    if (!ctx || !this.out) return;
+    const data = tapSound(ctx.sampleRate);
+    const buf = ctx.createBuffer(1, data.length, ctx.sampleRate);
+    buf.copyToChannel(data as Float32Array<ArrayBuffer>, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(this.out);
     src.start();
   }
 

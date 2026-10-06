@@ -1,5 +1,5 @@
 import { CHUNK_SIZE } from './world.js';
-import { Material, type MaterialId } from './materials.js';
+import { Material, materialName, type MaterialId } from './materials.js';
 import { fractalAt, hash2, type Octave } from './noise.js';
 
 /**
@@ -264,6 +264,22 @@ export class Geology {
     if (m === Material.CoalOre && hash2(bx, bz, Math.imul(Math.floor(y / UNITS_PER_METRE), 0x2c1b3c6d) ^ this.seed) >= SEAM_FILL) return Material.Shale;
     return m;
   }
+}
+
+/** What a geologist's hammer says of each rock (and ore): its name, and what to know about it. */
+const ROCK_NOTES: Readonly<Partial<Record<MaterialId, string>>> = {
+  [Material.Sandstone]: 'sandstone: sand, pressed into stone',
+  [Material.Shale]: 'shale: mud, pressed into stone (coal seams lie on it)',
+  [Material.Limestone]: 'limestone: the shells of a sea long gone',
+  [Material.Granite]: 'granite: the deep rock, under all the layers',
+  [Material.CoalOre]: 'coal, in a seam: follow it along the layer',
+  [Material.IronOre]: 'iron ore',
+  [Material.Stone]: 'stone',
+};
+
+/** What a geologist's hammer says of `m` tapped (anything not rock: just its name). */
+export function rockNote(m: MaterialId): string {
+  return ROCK_NOTES[m] ?? materialName(m);
 }
 
 /** Rock as geology has it (what bare rock's surface can be in a world with geology). */

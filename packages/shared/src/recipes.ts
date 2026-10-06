@@ -76,6 +76,8 @@ const BUILT_IN: readonly Recipe[] = [
   r('iron-axe', 'tools', [[Item.IronIngot, 3], [Item.Stick, 2]], [Item.IronAxe, 1], true),
   r('iron-shovel', 'tools', [[Item.IronIngot, 1], [Item.Stick, 2]], [Item.IronShovel, 1], true),
   r('iron-sword', 'tools', [[Item.IronIngot, 2], [Item.Stick, 1]], [Item.IronSword, 1], true),
+  // (Early, and cheap: for finding ore before there's iron.)
+  r('geologists-hammer', 'tools', [[Material.Cobblestone, 1], [Item.Stick, 1]], [Item.GeologistsHammer, 1], true),
   // (An eighth of a block of coal: a lump.)
   r('torches', 'building', [[Material.Coal, 1 / 8], [Item.Stick, 1]], [Item.Torch, 4]),
   r('tnt', 'explosives', [[Material.Sand, 4], [Material.Planks, 1]], [Material.TNT, 1], true),

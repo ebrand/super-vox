@@ -782,6 +782,7 @@ connection = connect({
           controls.onClick = (button, mods) => editTool?.click(button, mods);
           controls.onRelease = (button) => editTool?.release(button);
           // Survival: a hard landing hurts (the server works out how much).
+          editTool.onTap = () => footsteps.tap();
           controls.onLand = (speed) => {
             if (survivalMovement && fallDamage(speed) > 0) send({ type: 'fell', speed });
             // A landing: a step, harder the faster.
