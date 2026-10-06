@@ -1,5 +1,5 @@
 /**
- * Rain's noise (see weatherFx.ts): loops of noise shaped as recordings of real rain are, made in
+ * Rain's and surf's noise (see weatherFx.ts): loops of noise shaped as recordings of them are, made in
  * the frequency domain. Plain arithmetic, for a worker (rainNoise.worker.ts) as well as the page.
  */
 
@@ -13,6 +13,8 @@ export type BandLevels = readonly (readonly [number, number])[];
  */
 export const CALM_RAIN: BandLevels = [[63, -4.2], [125, -4.5], [250, -3.7], [500, -1.5], [1000, -0.3], [2000, 0], [4000, -1.1], [8000, -2.2], [16000, -9.2]];
 export const HEAVY_RAIN: BandLevels = [[63, 0], [125, -0.3], [250, -1.9], [500, -2.4], [1000, -2.8], [2000, -4.3], [4000, -7.9], [8000, -13.4], [16000, -24.8]];
+/** Surf on a shore, from a recording of it: most around 1 to 2 kHz, little low down (the same at a wave's peak as between waves). (Set so what's made measures as the recording did.) */
+export const SHORE: BandLevels = [[63, -31], [125, -23.3], [250, -13.6], [500, -3.6], [1000, 0], [2000, -0.9], [4000, -4.9], [8000, -9.8], [16000, -21]];
 
 /** In-place FFT (radix 2; `inverse`: the other way, unscaled) of re + i im, a power of two long. */
 export function fft(re: Float64Array, im: Float64Array, inverse: boolean): void {

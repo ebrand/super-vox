@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { ATMOSPHERE_GLSL, type Atmosphere } from './atmosphere.js';
-import { CALM_RAIN, HEAVY_RAIN, shapedNoiseChannels, type BandLevels } from './rainNoise.js';
+import { CALM_RAIN, HEAVY_RAIN, SHORE, shapedNoiseChannels, type BandLevels } from './rainNoise.js';
+
+/** The surf's loudness between waves, a wave's peak being 1: about 11 dB down (as recorded). */
+const SURF_LULL = 0.2;
 
 /**
  * What falls and what's heard in the weather (see weatherView.ts): rain as streaks and snow as
@@ -263,9 +266,8 @@ export function dropsLoop(ctx: AudioContext, len: number, perSecond: number): Au
 }
 
 /**
- * The weather's sound: rain (a hiss with drops landing in it, sparse and distinct in light rain,
- * dense in a downpour), surf where the sea meets land (a deep roar rising and falling as waves
- * break), thunder's crack and rumble. Quiet until the page has been interacted with (browsers' rule).
+ * The weather's sound: rain (see rain), surf where the sea meets land (see surf), thunder's crack
+ * and rumble. Quiet until the page has been interacted with (browsers' rule).
  */
 export class WeatherSound {
   private ctx: AudioContext | null = null;
@@ -273,7 +275,7 @@ export class WeatherSound {
   private rainNodes: { calm: GainNode; heavy: GainNode; drops: GainNode; filter: BiquadFilterNode } | null = null;
   /** When the rain's noise loops are playing (they're made in a worker: see shapedNoiseLater). */
   rainReady: Promise<void> | null = null;
-  private surfNodes: { level: GainNode; bed: GainNode; wave: GainNode; filter: BiquadFilterNode } | null = null;
+  private surfNodes: { level: GainNode; wave: GainNode } | null = null;
   /** When the next wave breaks (AudioContext time). */
   private nextWave = 0;
   /** Thunder still to sound (at AudioContext times): only a few at once. */
@@ -355,7 +357,12 @@ export class WeatherSound {
     r.filter.frequency.setTargetAtTime(1300 + 14700 * open, now, 0.4);
   }
 
-  /** Surf as loud as `amount` (0..1: how near the shore, and how low): waves breaking now and then. */
+  /**
+   * Surf as loud as `amount` (0..1: how near the shore, and how low): a wash of noise shaped as a
+   * recording of surf is (see SHORE), swelling as each wave comes in (slowly, over 2 to 5 s) and
+   * falling back faster, a wave every 5 to 10 s; between them about 11 dB quieter. (Only its
+   * loudness changes, as the recording's: its balance is the same at the peaks and between them.)
+   */
   surf(amount: number): void {
     if (amount < 0.01 && !this.surfNodes) return;
     const ctx = this.audio();
@@ -363,40 +370,37 @@ export class WeatherSound {
     if (!this.surfNodes) {
       const level = this.gain(ctx, this.master);
       const wave = ctx.createGain();
-      wave.gain.value = 0.15;
+      wave.gain.value = SURF_LULL;
       wave.connect(level);
-      const filter = ctx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.value = 500;
-      filter.connect(wave);
-      const src = noiseLoop(ctx, 5.9, 0.5, 3);
-      src.connect(filter);
-      // A steady wash under the waves: soft white noise, its harshest top taken off.
-      const bed = this.gain(ctx, this.master);
-      const soft = ctx.createBiquadFilter();
-      soft.type = 'lowpass';
-      soft.frequency.value = 4500;
-      soft.connect(bed);
-      const wash = noiseLoop(ctx, 6.7, 1, 0);
-      wash.connect(soft);
-      for (const n of [src, wash]) n.start();
-      this.surfNodes = { level, bed, wave, filter };
+      // (Made in a worker, as the rain's: it starts when it comes.)
+      void shapedNoiseLater(ctx, SHORE, 1 << 18).then((src) => {
+        src.connect(wave);
+        src.start();
+      });
+      this.surfNodes = { level, wave };
       this.nextWave = ctx.currentTime;
     }
     const s = this.surfNodes, now = ctx.currentTime;
-    s.level.gain.setTargetAtTime(amount < 0.01 ? 0 : 0.35 * amount, now, 0.8);
-    s.bed.gain.setTargetAtTime(amount < 0.01 ? 0 : 0.03 * amount, now, 0.8);
-    // Each wave: a rise as it breaks (the roar brightening), then a long wash dying back.
-    if (amount >= 0.01 && now >= this.nextWave - 0.2) {
-      const at = Math.max(now, this.nextWave), big = 0.6 + 0.4 * Math.random();
-      const rise = 1.2 + Math.random() * 1.2, wash = 3 + Math.random() * 2.5;
-      s.wave.gain.cancelScheduledValues(at);
-      s.wave.gain.setTargetAtTime(big, at, rise / 3);
-      s.wave.gain.setTargetAtTime(0.12, at + rise, wash / 3);
-      s.filter.frequency.cancelScheduledValues(at);
-      s.filter.frequency.setTargetAtTime(500 + 900 * big, at, rise / 3);
-      s.filter.frequency.setTargetAtTime(350, at + rise, wash / 3);
-      this.nextWave = at + 7 + Math.random() * 5;
+    s.level.gain.setTargetAtTime(amount < 0.01 ? 0 : 0.06 * amount, now, 0.8);
+    if (amount >= 0.01 && now >= this.nextWave - 0.1) {
+      // A wave: swelling (eased in and out) to its peak, then falling back faster to the lull.
+      const at = Math.max(now, this.nextWave), big = 0.75 + 0.25 * Math.random();
+      const rise = 2.2 + Math.random() * 2.8, fall = 2.5 + Math.random() * 2;
+      const swell = new Float32Array(32), ebb = new Float32Array(32);
+      for (let i = 0; i < 32; i++) {
+        const t = i / 31, eased = t * t * (3 - 2 * t);
+        swell[i] = SURF_LULL + (big - SURF_LULL) * eased;
+        ebb[i] = big + (SURF_LULL - big) * (1 - (1 - t) ** 2);
+      }
+      try {
+        s.wave.gain.cancelScheduledValues(at);
+        s.wave.gain.setValueCurveAtTime(swell, at, rise);
+        s.wave.gain.setValueCurveAtTime(ebb, at + rise + 0.01, fall);
+      } catch {
+        // (Never two at once, as they're spaced: but a wave missed is better than an error.)
+      }
+      // (The next once this one's gone, 5 to 10 s apart.)
+      this.nextWave = at + Math.max(rise + fall + 0.3, 5 + Math.random() * 5);
     }
   }
 
@@ -438,6 +442,6 @@ export class WeatherSound {
   /** Quiet now (leaving the world). */
   stop(): void {
     if (!this.ctx) return;
-    for (const g of [this.rainNodes?.calm, this.rainNodes?.heavy, this.rainNodes?.drops, this.surfNodes?.level, this.surfNodes?.bed]) g?.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
+    for (const g of [this.rainNodes?.calm, this.rainNodes?.heavy, this.rainNodes?.drops, this.surfNodes?.level]) g?.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
   }
 }
