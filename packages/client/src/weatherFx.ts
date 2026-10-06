@@ -22,13 +22,15 @@ const SHARED_GLSL = /* glsl */ `
   uniform float time;
   uniform vec3 box;
   uniform vec3 velocity;
+  uniform vec3 travel;
   uniform float amount;
   attribute vec4 seed;
-  // Where this one is now: fixed in the world, drifting with velocity, wrapped into the box round the camera.
-  // (back: s ago, as an offset from where it is now, so a streak's two ends are never wrapped apart.)
+  // Where this one is now: fixed in the world, moved as far as they've all travelled, wrapped into the
+  // box round the camera. (back: s ago, as an offset from where it is now, so a streak's two ends are
+  // never wrapped apart.)
   vec3 placed(float back) {
     vec3 corner = cameraPosition - box * 0.5;
-    vec3 p = seed.xyz * box + velocity * time;
+    vec3 p = seed.xyz * box + travel;
     return corner + mod(p - corner, box) - velocity * back;
   }
 `;
@@ -127,6 +129,7 @@ export class Precipitation {
         time: { value: 0 },
         box: { value: new THREE.Vector3(BOX, BOX_HIGH, BOX) },
         velocity: { value: new THREE.Vector3() },
+        travel: { value: new THREE.Vector3() },
         amount: { value: 0 },
         ...extra,
       },
@@ -141,15 +144,18 @@ export class Precipitation {
    * Shows `rain` and `snow` (0..1: how hard each falls here), blown by `wind` (m/s), `dt` s on;
    * `pixelScale`: the canvas's height in pixels over tan(half the field of view) (how big a flake looks).
    */
-  update(rain: number, snow: number, wind: { x: number; z: number }, dt: number, pixelScale: number): void {
-    this.time = (this.time + Math.min(dt, 1)) % 3600;
-    // (Gusts carry rain less far sideways than the weather drifts; snow more.)
-    this.set(this.rain, rain, new THREE.Vector3(wind.x * 0.35, -RAIN_SPEED, wind.z * 0.35));
-    this.set(this.snow, snow, new THREE.Vector3(wind.x * 0.25, -SNOW_SPEED, wind.z * 0.25));
+  update(rain: number, snow: number, wind: { x: number; z: number }, dt: number, pixelScale: number, storm = 0): void {
+    dt = Math.min(dt, 1);
+    this.time = (this.time + dt) % 3600;
+    // (Gusts carry rain less far sideways than the weather drifts; snow more. Storms drive it down
+    // harder and further sideways.)
+    const side = 0.35 + 0.6 * storm;
+    this.set(this.rain, rain, new THREE.Vector3(wind.x * side, -RAIN_SPEED * (1 + 0.5 * storm), wind.z * side), dt);
+    this.set(this.snow, snow, new THREE.Vector3(wind.x * 0.25, -SNOW_SPEED, wind.z * 0.25), dt);
     this.snow.material.uniforms.pixelScale!.value = pixelScale;
   }
 
-  private set(o: THREE.LineSegments<THREE.BufferGeometry, THREE.ShaderMaterial> | THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial>, amount: number, velocity: THREE.Vector3): void {
+  private set(o: THREE.LineSegments<THREE.BufferGeometry, THREE.ShaderMaterial> | THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial>, amount: number, velocity: THREE.Vector3, dt: number): void {
     // (A light shower shows a few: the share shown is a little ahead of how hard it falls.)
     const shown = amount < 0.02 ? 0 : Math.min(1, 0.08 + amount * 0.92);
     o.visible = shown > 0;
@@ -157,6 +163,10 @@ export class Precipitation {
     u.amount!.value = shown;
     u.time!.value = this.time;
     u.velocity!.value.copy(velocity);
+    // (How far they've moved, kept within the box: it wraps anyway, and stays precise.)
+    const travel = u.travel!.value as THREE.Vector3, box = u.box!.value as THREE.Vector3;
+    travel.addScaledVector(velocity, dt);
+    travel.set(((travel.x % box.x) + box.x) % box.x, ((travel.y % box.y) + box.y) % box.y, ((travel.z % box.z) + box.z) % box.z);
   }
 }
 
@@ -222,7 +232,10 @@ export function dropsLoop(ctx: AudioContext, len: number, perSecond: number): Au
 export class WeatherSound {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
-  private rainNodes: { bed: GainNode; sparse: GainNode; dense: GainNode; filter: BiquadFilterNode } | null = null;
+  private rainNodes: { bed: GainNode; sparse: GainNode; dense: GainNode; downpour: GainNode; filter: BiquadFilterNode } | null = null;
+  /** When the storm's next gust comes (AudioContext time), and how hard the rain's driven now (0.6..1.4). */
+  private nextGust = 0;
+  private gust = 1;
   private surfNodes: { level: GainNode; bed: GainNode; wave: GainNode; filter: BiquadFilterNode } | null = null;
   /** When the next wave breaks (AudioContext time). */
   private nextWave = 0;
@@ -242,7 +255,14 @@ export class WeatherSound {
       if (!this.ctx) {
         this.ctx = new AudioContext();
         this.master = this.ctx.createGain();
-        this.master.connect(this.ctx.destination);
+        // (A limiter last: a downpour with thunder on top never clips.)
+        const limit = this.ctx.createDynamicsCompressor();
+        limit.threshold.value = -8;
+        limit.knee.value = 6;
+        limit.ratio.value = 12;
+        limit.attack.value = 0.003;
+        limit.release.value = 0.25;
+        this.master.connect(limit).connect(this.ctx.destination);
       }
       if (this.ctx.state === 'suspended' && !document.hidden) void this.ctx.resume();
       return this.ctx;
@@ -258,8 +278,11 @@ export class WeatherSound {
     return g;
   }
 
-  /** Rain this hard (0..1) falling, `open`: how open to the sky the listener is (0: indoors, muffled). */
-  rain(amount: number, open: number): void {
+  /**
+   * Rain this hard (0..1) falling, `open`: how open to the sky the listener is (0: indoors, muffled),
+   * `storm` how stormy (0..1): a downpour on top, many more drops, harder, coming in gusts.
+   */
+  rain(amount: number, open: number, storm = 0): void {
     // (Nothing made until there's rain to hear.)
     if (amount < 0.01 && !this.rainNodes) return;
     const ctx = this.audio();
@@ -268,24 +291,32 @@ export class WeatherSound {
       const filter = ctx.createBiquadFilter();
       filter.type = 'lowpass';
       filter.connect(this.master);
-      const bed = this.gain(ctx, filter), sparse = this.gain(ctx, filter), dense = this.gain(ctx, filter);
+      const bed = this.gain(ctx, filter), sparse = this.gain(ctx, filter), dense = this.gain(ctx, filter), downpour = this.gain(ctx, filter);
       // (Loops of different lengths, so they never line up into an audible repeat.)
       const hiss = noiseLoop(ctx, 4.7, 0.5, 1.5);
       const hp = ctx.createBiquadFilter();
       hp.type = 'highpass';
       hp.frequency.value = 400;
       hiss.connect(hp).connect(bed);
-      const sparseDrops = dropsLoop(ctx, 6.1, 25), denseDrops = dropsLoop(ctx, 5.3, 260);
+      const sparseDrops = dropsLoop(ctx, 6.1, 25), denseDrops = dropsLoop(ctx, 5.3, 260), pouring = dropsLoop(ctx, 4.3, 750);
       sparseDrops.connect(sparse);
       denseDrops.connect(dense);
-      for (const src of [hiss, sparseDrops, denseDrops]) src.start();
-      this.rainNodes = { bed, sparse, dense, filter };
+      pouring.connect(downpour);
+      for (const src of [hiss, sparseDrops, denseDrops, pouring]) src.start();
+      this.rainNodes = { bed, sparse, dense, downpour, filter };
     }
     const r = this.rainNodes, now = ctx.currentTime, on = amount >= 0.01 ? 1 : 0;
     const heard = on * (0.4 + 0.6 * open);
-    r.bed.gain.setTargetAtTime(heard * 0.12 * amount, now, 0.4);
+    // Storm gusts: the rain driven harder, then easing, every few seconds.
+    if (storm > 0.05 && now >= this.nextGust) {
+      this.gust = 0.6 + Math.random() * 0.8;
+      this.nextGust = now + 2 + Math.random() * 4;
+    }
+    const gust = storm > 0.05 ? 1 + (this.gust - 1) * storm : 1;
+    r.bed.gain.setTargetAtTime(heard * (0.12 * amount + 0.15 * storm) * gust, now, 0.4);
     r.sparse.gain.setTargetAtTime(heard * (0.65 + 0.45 * amount), now, 0.4);
-    r.dense.gain.setTargetAtTime(heard * 0.8 * Math.max(0, amount - 0.25) / 0.75, now, 0.4);
+    r.dense.gain.setTargetAtTime(heard * 0.8 * (Math.max(0, amount - 0.25) / 0.75) * (1 + 0.4 * storm), now, 0.4);
+    r.downpour.gain.setTargetAtTime(heard * 0.6 * storm * Math.min(1, amount * 1.5) * gust, now, 0.8);
     r.filter.frequency.setTargetAtTime(1300 + 8400 * open, now, 0.4);
   }
 
@@ -372,6 +403,6 @@ export class WeatherSound {
   /** Quiet now (leaving the world). */
   stop(): void {
     if (!this.ctx) return;
-    for (const g of [this.rainNodes?.bed, this.rainNodes?.sparse, this.rainNodes?.dense, this.surfNodes?.level, this.surfNodes?.bed]) g?.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
+    for (const g of [this.rainNodes?.bed, this.rainNodes?.sparse, this.rainNodes?.dense, this.rainNodes?.downpour, this.surfNodes?.level, this.surfNodes?.bed]) g?.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
   }
 }

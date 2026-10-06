@@ -264,8 +264,9 @@ export class WeatherView {
     this.open += (open - this.open) * (1 - Math.exp(-dt / 0.3));
     const w2 = this.shown!;
     const falling = w2.precipitation * this.open;
-    this.precipitation.update(falling * (1 - w2.snow), falling * w2.snow, w2.wind, dt, pixelScale);
-    this.sound.rain(w2.precipitation * (1 - w2.snow), this.open);
+    const storm = w2.storm * (1 - w2.snow);
+    this.precipitation.update(falling * (1 - w2.snow), falling * w2.snow, w2.wind, dt, pixelScale, storm);
+    this.sound.rain(w2.precipitation * (1 - w2.snow), this.open, storm);
     // (Rougher seas in stormy weather.)
     this.sound.surf(Math.min(1, this.surf * (0.8 + 0.5 * w2.storm + 0.2 * w2.cover)));
     this.lightning(t, camera, dt);
