@@ -32,7 +32,8 @@ describe('closing idle worlds', () => {
     // A while later: a's busy (someone's in it), b isn't.
     const later = now + 11 * 60_000;
     const closed = catalog.closeIdle((w) => w === a, 10 * 60_000, later);
-    expect(closed).toEqual([b]);
+    expect(closed.map((c) => [c.name, c.worlds])).toEqual([['b', [b]]]);
+    expect(closed[0]!.idleMs).toBeGreaterThanOrEqual(11 * 60_000);
     expect(catalog.openWorlds().map((o) => o.name)).toEqual(['a']);
     // b opens again when asked for: a new World, its edit still there.
     const again = catalog.get('b')!;

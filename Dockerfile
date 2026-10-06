@@ -12,11 +12,16 @@ RUN npm run build && npm prune --omit=dev
 
 FROM node:22-slim
 # (UV_THREADPOOL_SIZE: Node's background threads, for compressing messages and the disk cache.)
+# (MALLOC_MMAP_THRESHOLD_: blocks of 128 kB and more (terrain's columns and buffers) come straight
+# from the system and go straight back when freed, rather than staying with the process after a
+# world closes: measured in this image, 0.47 GB after a busy world closed instead of 0.95, about 3%
+# slower to make terrain. The adaptive default lets the threshold climb, and then they don't.)
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=8787 \
     WORLD_DATA_DIR=/data \
-    UV_THREADPOOL_SIZE=16
+    UV_THREADPOOL_SIZE=16 \
+    MALLOC_MMAP_THRESHOLD_=131072
 WORKDIR /app
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules node_modules
@@ -29,4 +34,6 @@ COPY --from=build /app/packages/client/dist packages/client/dist
 # Worlds (settings and saved edits) live in /data: mount a volume there (Railway: a service
 # volume; Railway rejects the VOLUME instruction).
 EXPOSE 8787
-CMD ["node", "packages/server/dist/main.js"]
+# (--expose-gc: the server collects garbage when it closes an idle world, so what the world held is
+# given back then, not kept, and charged for, until the idle server next collects by itself.)
+CMD ["node", "--expose-gc", "packages/server/dist/main.js"]

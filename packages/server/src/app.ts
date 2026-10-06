@@ -111,6 +111,8 @@ export type AppOptions = (
   mobs?: (world: World) => MobManager;
   /** How often connections are pinged (ms; see HEARTBEAT_MS). */
   heartbeatMs?: number;
+  /** How long a world nobody's in or asked for stays open (ms; see IDLE_WORLD_MS). */
+  idleWorldMs?: number;
   /** Survival mining times are multiplied by this (tests: to mine quickly); default 1. */
   miningTimeScale?: number;
   /** The library of designed objects (see DesignLibrary); default: an empty one in memory. */
@@ -160,6 +162,10 @@ export const WATER_STEP_MS = 200;
  * computer asleep) would otherwise stay a player, keeping its world open, for good.
  */
 export const HEARTBEAT_MS = 30_000;
+/** A full garbage collection now, where node was started with --expose-gc (as the server image is); else nothing. */
+export function collectGarbage(): void {
+  (globalThis as { gc?: () => void }).gc?.();
+}
 /** How long a world nobody's in or asked for stays open (see WorldCatalog.closeIdle). */
 export const IDLE_WORLD_MS = 10 * 60_000;
 /** How often a signed-in player's place is saved while they play (and always when they leave). */
@@ -784,12 +790,20 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     ? setInterval(() => {
         const busy = new Set<World>(clients.values());
         for (const [world, explosives] of explosivesOf) if (explosives.count > 0) busy.add(world);
-        for (const world of catalog.closeIdle!((w) => busy.has(w) || w.waterPending > 0, IDLE_WORLD_MS)) {
-          mobManagers.delete(world);
-          stationViewers.delete(world);
-          explosivesOf.delete(world);
+        const closing = catalog.closeIdle!((w) => busy.has(w) || w.waterPending > 0, opts.idleWorldMs ?? IDLE_WORLD_MS);
+        for (const closed of closing) {
+          app.log.info({ world: closed.name, idleMinutes: Math.round(closed.idleMs / 6_000) / 10 }, 'closed an idle world');
+          for (const world of closed.worlds) {
+            mobManagers.delete(world);
+            stationViewers.delete(world);
+            explosivesOf.delete(world);
+          }
         }
-      }, 60_000)
+        // What they held goes soon (once what was still finishing with them has), not whenever an
+        // idle server next allocates enough to collect garbage: meanwhile it's memory in use, and
+        // charged for. Only with node --expose-gc.
+        if (closing.length) setTimeout(collectGarbage, 3000).unref();
+      }, Math.min(60_000, Math.max(1000, (opts.idleWorldMs ?? IDLE_WORLD_MS) / 4)))
     : null;
   // Connections still there (see HEARTBEAT_MS): whether each has answered since it was last pinged.
   const answered = new Map<WebSocket, boolean>();

@@ -96,10 +96,11 @@ export interface WorldCatalog {
   /**
    * Closes the worlds not asked for (see get) in the last `idleMs` and not `busy` (someone's in
    * one, or something's still happening there), freeing what they hold (their terrain caches here
-   * and on the worker threads); each opens again as it was when next asked for. Returns the World
-   * objects let go of (with any of their tolerance variants). Absent where worlds stay open.
+   * and on the worker threads); each opens again as it was when next asked for. Returns those
+   * closed: their names, how long they'd been idle, and the World objects let go of (with any of
+   * their tolerance variants). Absent where worlds stay open.
    */
-  closeIdle?: (busy: (world: World) => boolean, idleMs: number, now?: number) => World[];
+  closeIdle?: (busy: (world: World) => boolean, idleMs: number, now?: number) => { name: string; idleMs: number; worlds: World[] }[];
   /** Bytes of saved edits of world `name` on disk (0 if none or not kept on disk). */
   diskBytes(name: string): number;
   /** World `name`'s terraforming strokes, in order; null if there's no such world. */
@@ -474,13 +475,13 @@ export class FileWorldCatalog implements WorldCatalog {
     this.used.delete(name);
   }
 
-  closeIdle(busy: (world: World) => boolean, idleMs: number, now = Date.now()): World[] {
-    const closed: World[] = [];
+  closeIdle(busy: (world: World) => boolean, idleMs: number, now = Date.now()): { name: string; idleMs: number; worlds: World[] }[] {
+    const closed: { name: string; idleMs: number; worlds: World[] }[] = [];
     for (const [name, o] of [...this.open]) {
-      const worlds = [o.world, ...o.variants.values()];
-      if (now - (this.used.get(name) ?? 0) < idleMs || worlds.some(busy)) continue;
+      const worlds = [o.world, ...o.variants.values()], idle = now - (this.used.get(name) ?? 0);
+      if (idle < idleMs || worlds.some(busy)) continue;
       this.close(name);
-      closed.push(...worlds);
+      closed.push({ name, idleMs: idle, worlds });
     }
     return closed;
   }

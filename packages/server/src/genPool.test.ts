@@ -78,6 +78,26 @@ describe('GenPool', () => {
     made.forEach((m, i) => expect(m.bytes).toEqual(encodeChunk(main.generateChunk(coords[i]!))));
   });
 
+  it('stops its threads when its last world is forgotten, and starts them again for the next', async () => {
+    const pool = new GenPool(2);
+    pools.push(pool);
+    const main = generatorFor(spec, config).generator, c: ChunkCoord = { cx: 437, cy: 0, cz: 187 };
+    const a = pool.remote('a', spec, config, []), b = pool.remote('b', spec, config, []);
+    expect(pool.running).toBe(true);
+    // One of two forgotten: still running, the other still served.
+    a.forget();
+    expect(pool.running).toBe(true);
+    expect(Buffer.from((await b.chunk(c)).bytes)).toEqual(Buffer.from(encodeChunk(main.generateChunk(c))));
+    // The last: stopped.
+    b.forget();
+    expect(pool.running).toBe(false);
+    await expect(b.chunk(c)).rejects.toThrow(/no world/);
+    // A world again: running again, and serving.
+    const again = pool.remote('a', spec, config, []);
+    expect(pool.running).toBe(true);
+    expect(Buffer.from((await again.chunk(c)).bytes)).toEqual(Buffer.from(encodeChunk(main.generateChunk(c))));
+  });
+
   it("fails the requests for a world it's forgotten, rather than hanging", async () => {
     const pool = new GenPool(1);
     pools.push(pool);

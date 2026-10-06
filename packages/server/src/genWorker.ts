@@ -49,6 +49,9 @@ parentPort!.on('message', (req: GenRequest) => {
   if (req.type === 'forget') {
     worlds.delete(req.key);
     built.delete(req.key);
+    // (Its generator's memory goes now: an idle worker otherwise keeps it. Only with --expose-gc,
+    // which workers take from the main thread's node options.)
+    (globalThis as { gc?: () => void }).gc?.();
     return;
   }
   try {

@@ -23,7 +23,29 @@ export class GenPool {
   private closed = false;
 
   constructor(readonly size: number) {
-    for (let i = 0; i < size; i++) this.workers.push(this.spawn(i));
+    this.start();
+  }
+
+  /** Whether its worker threads are running (they stop when no world is left on it: see forget). */
+  get running(): boolean {
+    return this.workers.length > 0;
+  }
+
+  private start(): void {
+    for (let i = 0; i < this.size; i++) this.workers.push(this.spawn(i));
+  }
+
+  /**
+   * Stops every worker thread (the last world on the pool was let go of): all they held goes back
+   * to the system, as nothing else gives a thread's memory back. Started again for the next world.
+   */
+  private stop(): void {
+    const workers = this.workers.splice(0);
+    for (const [id, p] of this.waiting) {
+      this.waiting.delete(id);
+      p.reject(new Error('generation pool stopped: its world was closed'));
+    }
+    for (const w of workers) void w.terminate();
   }
 
   /**
@@ -33,6 +55,7 @@ export class GenPool {
   remote(name: string, spec: WorldSpec, config: WorldConfig, strokes: readonly TerrainStroke[], stages: PlateStages | null = null): RemoteGenerator & { forget(): void } {
     const key = `${name}#${this.nextKey++}`;
     const msg: GenRequest & { type: 'world' } = { type: 'world', key, spec, config, strokes: [...strokes], stages };
+    if (!this.running && !this.closed) this.start();
     this.worlds.set(key, msg);
     for (const w of this.workers) w.postMessage(msg);
     const n = this.size;
@@ -42,7 +65,8 @@ export class GenPool {
       tile: (t: TileCoord) => run(spread(t.level * 7919 + t.tx, t.tz, n), { kind: 'tile', t }).then((r) => ({ bytes: r.bytes!, ms: r.ms })),
       column: (cx: number, cz: number) => run(columnWorker(cx, cz, n), { kind: 'column', cx, cz }).then((r) => r.range as ColumnRange),
       forget: () => {
-        this.worlds.delete(key);
+        if (!this.worlds.delete(key)) return;
+        if (this.worlds.size === 0) return this.stop();
         for (const w of this.workers) w.postMessage({ type: 'forget', key } satisfies GenRequest);
       },
     };
@@ -59,6 +83,7 @@ export class GenPool {
 
   private run(worker: number, key: string, job: GenJob): Promise<GenResponse & { ok: true }> {
     if (this.closed) return Promise.reject(new Error('generation pool closed'));
+    if (!this.worlds.has(key) || !this.running) return Promise.reject(new Error(`no world ${key} here`));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.waiting.set(id, { worker, resolve, reject });
