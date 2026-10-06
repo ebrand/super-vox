@@ -4,6 +4,7 @@ import { Material, type MaterialId } from './materials.js';
 import { TREE_REACH, canopyOver, treesIn, type Canopy, type Climate, type Clumping, type Tree, type TreeEdits } from './trees.js';
 import { RiverIndex, buildHydrology, carveRivers, type Hydrology } from './rivers.js';
 import type { CaveSettings } from './caves.js';
+import { Geology } from './geology.js';
 import { NO_WATER } from './water.js';
 import { StrokeIndex, applyStrokes, isTreeStroke, strokesIn, treeChance, smoothAverage, smoothReach, type SmoothTarget, type TerrainStroke } from './strokes.js';
 import { fractalAt, fractalGrid, ridgedGrid, type Octave } from './noise.js';
@@ -117,6 +118,11 @@ export interface PlateTerrainConfig {
   lakesByArea: number;
   /** Caves (see caves.ts): 0 none (worlds made before caves) .. 100 common and big; 25 rare. */
   caves: number;
+  /**
+   * Geology (see geology.ts): 1, the rock in layers (sandstone, shale, limestone, coal seams, over
+   * granite), shown on bare rock too; 0, plain stone with ore scattered in it (worlds made before).
+   */
+  geology: number;
   /** Bare rock ground's own relief (ridged outcrops, knolls and gullies, 16-256 m), 0 (as smooth as any) .. 100. */
   rockRoughness: number;
   /** Bare rock ground's surface: 0 all one stone .. 100 patches of gravel, dark, pale and (where wet) mossy stone. */
@@ -187,6 +193,7 @@ export function defaultPlateTerrain(seed = 1, world?: WorldConfig): PlateTerrain
     rockRoughness: 50,
     rockVariety: 50,
     caves: 25,
+    geology: 1,
     islandArcs: 0,
     hotspots: 0,
     islandMinSize: 200,
@@ -202,7 +209,7 @@ export function defaultPlateTerrain(seed = 1, world?: WorldConfig): PlateTerrain
  */
 export const SURFACE_SETTINGS: readonly (keyof PlateTerrainConfig)[] = [
   'surfaceRoughness', 'mountainDetail', 'beaches', 'rockAltitude', 'altitudeRock', 'snowAltitude', 'altitudeSnow', 'snowFractal',
-  'rockRoughness', 'rockVariety', 'rockSlope', 'altitudeCooling', 'snowTemperature', 'biomeBlend', 'trees', 'treeClumping',
+  'rockRoughness', 'rockVariety', 'rockSlope', 'altitudeCooling', 'snowTemperature', 'biomeBlend', 'trees', 'treeClumping', 'geology',
 ];
 
 export const PLATE_LIMITS = {
@@ -292,6 +299,8 @@ export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   if (r.lakesByArea === undefined) r.lakesByArea = 0;
   // There were no caves.
   if (r.caves === undefined) r.caves = 0;
+  // Nor geology: plain stone, ore scattered in it.
+  if (r.geology === undefined) r.geology = 0;
   // With biomes, the snow and rock altitudes didn't count (temperature alone decided).
   if (r.altitudeSnow === undefined) r.altitudeSnow = 0;
   if (r.altitudeRock === undefined) r.altitudeRock = 0;
@@ -360,6 +369,7 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   num(c.caves, L.caves, 'caves');
   num(c.rockVariety, L.rockVariety, 'rockVariety');
   if (c.lakesByArea !== 0 && c.lakesByArea !== 1) throw new RangeError(`lakesByArea must be 0 or 1; got ${c.lakesByArea}`);
+  if (c.geology !== 0 && c.geology !== 1) throw new RangeError(`geology must be 0 or 1; got ${c.geology}`);
   num(c.islandArcs, L.islandArcs, 'islandArcs');
   int(c.hotspots, ...L.hotspots, 'hotspots');
   num(c.islandMinSize, L.islandSize, 'islandMinSize', ' m');
@@ -2088,7 +2098,10 @@ export class PlateHeights implements HeightSource {
         rockScale !== null ? wandered(this.rockNoise, rockScale, this.snowWander, x, z) : 0, biome,
       );
       let m: MaterialId = picked & PICKED_MATERIAL;
-      if (m === Material.Stone && this.rockVariety > 0) m = rockPatch(fractalAt(na, x, z) * sa * ROCK_PATCH_STRETCH, fractalAt(nb, x, z) * sb * ROCK_PATCH_STRETCH, edge, (picked & PICKED_CLIFF) !== 0, moisture);
+      // (With geology, bare rock is the layers' rock where its ground is: as rockSurface.)
+      const geology = this.geology();
+      if (m === Material.Stone && geology) m = geology.rock(heights[k]! - 8, geology.column(x, z), Math.floor(x / 16), Math.floor(z / 16));
+      else if (m === Material.Stone && this.rockVariety > 0) m = rockPatch(fractalAt(na, x, z) * sa * ROCK_PATCH_STRETCH, fractalAt(nb, x, z) * sb * ROCK_PATCH_STRETCH, edge, (picked & PICKED_CLIFF) !== 0, moisture);
       return (memo[k] = m);
     };
   }
@@ -2141,7 +2154,7 @@ export class PlateHeights implements HeightSource {
       out[k] = picked & PICKED_MATERIAL;
       if (picked & PICKED_CLIFF) (cliffs ??= new Uint8Array(out.length))[k] = 1;
     }
-    this.rockSurface(x0, z0, w, d, step, out, cliffs, climate?.biomeMoisture ?? null);
+    this.rockSurface(x0, z0, w, d, step, out, cliffs, climate?.biomeMoisture ?? null, heights);
     return out;
   }
 
@@ -2150,7 +2163,17 @@ export class PlateHeights implements HeightSource {
    * by two noises: on steep faces (`cliffs`), dark bands; elsewhere gravel (scree), pale stone and,
    * where it's wet (`moisture`), mossy stone.
    */
-  private rockSurface(x0: number, z0: number, w: number, d: number, step: number, out: Uint16Array, cliffs: Uint8Array | null, moisture: ArrayLike<number> | null): void {
+  private rockSurface(x0: number, z0: number, w: number, d: number, step: number, out: Uint16Array, cliffs: Uint8Array | null, moisture: ArrayLike<number> | null, heights: Int32Array): void {
+    // With geology: the layers' rock where each sample's ground is (bands on cliffs, seams outcropping).
+    const geology = this.geology();
+    if (geology) {
+      for (let k = 0; k < out.length; k++) {
+        if (out[k] !== Material.Stone) continue;
+        const x = x0 + (k % w) * step, z = z0 + Math.floor(k / w) * step;
+        out[k] = geology.rock(heights[k]! - 8, geology.column(x, z), Math.floor(x / 16), Math.floor(z / 16));
+      }
+      return;
+    }
     const v = this.rockVariety;
     if (v <= 0 || !out.includes(Material.Stone)) return;
     const [na, nb] = this.rockPatches;
@@ -2209,6 +2232,13 @@ export class PlateHeights implements HeightSource {
       : Material.Grass;
     return steep && m === Material.Stone ? m | PICKED_CLIFF : m;
   }
+
+  /** The rock's layers (see geology.ts), or null in worlds without geology. */
+  geology(): Geology | null {
+    if (!this.config.geology) return null;
+    return (this.geologyMade ??= new Geology(this.config.terrainSeed * 7919 + 211, this.seaLevel, this.wrap ? this.world.widthUnits : 0));
+  }
+  private geologyMade: Geology | undefined;
 
   /** Caves (see caves.ts): none at 0. */
   caves(): CaveSettings | null {

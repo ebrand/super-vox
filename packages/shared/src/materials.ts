@@ -57,6 +57,11 @@ export const Material = {
   /** A torch (see objects.ts): its stick, and its flame, which gives light (see LIGHT_LEVEL). */
   TorchWood: 45,
   TorchFlame: 46,
+  /** Rock in layers (see geology.ts): sedimentary sandstone, shale and limestone over a granite basement. */
+  Sandstone: 47,
+  Shale: 48,
+  Limestone: 49,
+  Granite: 50,
 } as const;
 
 /** Light (0..15, as the sky's: see the client's skyLight) given by blocks with any of these in them. */
@@ -123,6 +128,10 @@ const MATERIAL_NAMES: Record<number, string> = {
   [Material.DarkStone]: 'dark stone',
   [Material.PaleStone]: 'pale stone',
   [Material.MossyStone]: 'mossy stone',
+  [Material.Sandstone]: 'sandstone',
+  [Material.Shale]: 'shale',
+  [Material.Limestone]: 'limestone',
+  [Material.Granite]: 'granite',
 };
 
 

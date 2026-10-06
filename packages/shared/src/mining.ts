@@ -42,6 +42,11 @@ export const HARDNESS: Partial<Record<MaterialId, number>> = {
   [Material.DarkStone]: 3,
   [Material.PaleStone]: 3,
   [Material.MossyStone]: 3,
+  // (Shale splits easily, sandstone crumbles, limestone's as stone, granite the hardest.)
+  [Material.Shale]: 1.8,
+  [Material.Sandstone]: 2.4,
+  [Material.Limestone]: 3,
+  [Material.Granite]: 4.2,
   [Material.CoalOre]: 3,
   [Material.IronOre]: 3.5,
 };

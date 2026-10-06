@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { FLAT_WORLD_16KM, Material, ROUND_WORLD_16x8KM, defaultPlateTerrain, type TerrainStroke, type WorldConfig } from '@super-vox/shared';
 import { AreaMaker, type AreaRequest, type MadeArea, type PatchedArea } from './terraformArea.js';
 
+/** The default settings without geology: plain stone (these tests are about where bare rock is, not what it's made of). */
+const plainTerrain = (...a: Parameters<typeof defaultPlateTerrain>) => ({ ...defaultPlateTerrain(...a), geology: 0 });
+
 const M = 16;
-const dry = { ...defaultPlateTerrain(9), rivers: 0, lakes: 0 };
+const dry = { ...plainTerrain(9), rivers: 0, lakes: 0 };
 const stroke = (over: Partial<TerrainStroke>): TerrainStroke => ({ kind: 'raise', x: 0, z: 0, radius: 30, amount: 12, softness: 0.5, ...over });
 /** A 256 m area every 2 m around (x, z) metres. */
 const area = (x: number, z: number, strokes: TerrainStroke[] = []): AreaRequest => ({ x0: (x - 128) * M, z0: (z - 128) * M, size: 256 * M, step: 2 * M, depth: 16 * M, strokes });
@@ -63,7 +66,7 @@ describe('AreaMaker', () => {
 
   it('patches across the seam of a round world', () => {
     const world: WorldConfig = ROUND_WORLD_16x8KM;
-    const cfg = { ...defaultPlateTerrain(3, world), rivers: 0, lakes: 0 };
+    const cfg = { ...plainTerrain(3, world), rivers: 0, lakes: 0 };
     const W = world.widthUnits / M;
     const maker = new AreaMaker(world, cfg, { minVoxelSize: 1, tolerance: 4 });
     // An area straddling the seam (its corner west of x 0), a stroke just east of the seam's far side.

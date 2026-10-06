@@ -32,6 +32,7 @@ export * from './tools.js';
 export * from './stations.js';
 export * from './ores.js';
 export * from './caves.js';
+export * from './geology.js';
 export * from './light.js';
 export * from './claims.js';
 export * from './plans.js';

@@ -85,7 +85,7 @@ describe('trees', () => {
     const p = world();
     const gen = new TerrainGenerator(FLAT_WORLD_16KM, { minVoxelSize: 1, tolerance: 4 }, p);
     // The same terrain without trees.
-    const bare: HeightSource = { minHeight: p.minHeight, maxHeight: p.maxHeight, seaLevel: p.seaLevel, heights: p.heights.bind(p), materials: p.materials.bind(p) };
+    const bare: HeightSource = { minHeight: p.minHeight, maxHeight: p.maxHeight, seaLevel: p.seaLevel, heights: p.heights.bind(p), materials: p.materials.bind(p), geology: p.geology.bind(p) };
     const plain = new TerrainGenerator(FLAT_WORLD_16KM, { minVoxelSize: 1, tolerance: 4 }, bare);
     const t = p.trees(...BOX).find((q) => q.kind === TreeKind.Conifer)!;
     const cx = Math.floor(t.x / CHUNK_SIZE), cz = Math.floor(t.z / CHUNK_SIZE);

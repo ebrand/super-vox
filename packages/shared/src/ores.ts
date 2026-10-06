@@ -17,15 +17,18 @@ export const VEIN_FILL = 0.55;
 
 const hash3 = (x: number, y: number, z: number, salt: number) => hash2(x, z, Math.imul(y | 0, 0x2c1b3c6d) ^ salt);
 
+/** Iron alone (worlds with geology, where coal is in seams: see geology.ts). */
+export const IRON_ONLY = ORES.filter((o) => o.material === Material.IronOre);
+
 /**
- * What the 1 m block at (bx, by, bz) (block coordinates) is, if it's stone `depth` units below the
- * ground's surface: an ore, or stone.
+ * What the 1 m block at (bx, by, bz) (block coordinates) is, if it's `rock` (stone, unless said)
+ * `depth` units below the ground's surface: an ore (of `ores`), or the rock.
  */
-export function oreAt(bx: number, by: number, bz: number, depth: number): MaterialId {
+export function oreAt(bx: number, by: number, bz: number, depth: number, rock: MaterialId = Material.Stone, ores = ORES): MaterialId {
   const cx = bx >> 1, cy = by >> 1, cz = bz >> 1;
-  for (const o of ORES) {
+  for (const o of ores) {
     if (depth < o.minDepth) continue;
     if (hash3(cx, cy, cz, o.salt) < o.chance && hash3(bx, by, bz, o.salt + 1) < VEIN_FILL) return o.material;
   }
-  return Material.Stone;
+  return rock;
 }

@@ -41,7 +41,7 @@ const GROUNDS = [Material.Grass, Material.Meadow, Material.JungleFloor, Material
 
 /** Which tool mines each material faster (anything not listed: none does). */
 const TOOL_FOR: Readonly<Partial<Record<MaterialId, ToolKind>>> = {
-  ...Object.fromEntries([Material.Stone, Material.Cobblestone, Material.CoalOre, Material.IronOre, Material.Ice, Material.DarkStone, Material.PaleStone, Material.MossyStone].map((m) => [m, 'pickaxe'])),
+  ...Object.fromEntries([Material.Stone, Material.Cobblestone, Material.CoalOre, Material.IronOre, Material.Ice, Material.DarkStone, Material.PaleStone, Material.MossyStone, Material.Sandstone, Material.Shale, Material.Limestone, Material.Granite].map((m) => [m, 'pickaxe'])),
   ...Object.fromEntries([Material.Wood, Material.Planks, Material.CraftingTable, Material.FenceWood, Material.GateWood, Material.DoorWood].map((m) => [m, 'axe'])),
   ...Object.fromEntries([Material.Dirt, ...GROUNDS, Material.Sand, Material.DesertSand, Material.Snow, Material.Gravel].map((m) => [m, 'shovel'])),
 };
@@ -55,6 +55,10 @@ const PICKAXE_TIER: Readonly<Partial<Record<MaterialId, number>>> = {
   [Material.DarkStone]: 1,
   [Material.PaleStone]: 1,
   [Material.MossyStone]: 1,
+  [Material.Sandstone]: 1,
+  [Material.Shale]: 1,
+  [Material.Limestone]: 1,
+  [Material.Granite]: 1,
 };
 
 /** How much longer than its hardness a material takes without the pickaxe it needs. */

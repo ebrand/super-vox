@@ -16,7 +16,8 @@ import {
 } from './chunk.js';
 import { Material, type MaterialId } from './materials.js';
 import { fractalGrid, type Octave } from './noise.js';
-import { oreAt } from './ores.js';
+import { IRON_ONLY, oreAt } from './ores.js';
+import { isGeologyRock, type Geology, type GeologyColumn } from './geology.js';
 import { caveColumn, caveOverview, type CaveSettings } from './caves.js';
 import type { VoxelSize } from './units.js';
 import { CHUNK_SIZE, type ChunkCoord, type WorldConfig } from './world.js';
@@ -61,6 +62,8 @@ export interface HeightSource {
   trees?(x0: number, z0: number, x1: number, z1: number): Tree[];
   /** Optional caves carved out of the rock (see caves.ts), or null for none. */
   caves?(): CaveSettings | null;
+  /** Optional geology: the rock in layers (see geology.ts), or null for plain stone. */
+  geology?(): Geology | null;
 }
 
 /** What lies beneath a surface material, down to DIRT_DEPTH. */
@@ -273,6 +276,11 @@ export class TerrainGenerator implements ChunkGenerator {
   private readonly columns = new Map<string, Column>();
   private readonly uniform = new Map<MaterialId, UniformBlock>();
   private readonly grassSlack: number;
+  /** The rock's layers (null: plain stone), and while a chunk's being made, its block columns' geology and its corner (blocks). */
+  private readonly geology: Geology | null;
+  private geoColumns: GeologyColumn[] = [];
+  private geoX = 0;
+  private geoZ = 0;
 
   constructor(
     readonly world: WorldConfig,
@@ -285,6 +293,7 @@ export class TerrainGenerator implements ChunkGenerator {
   ) {
     validateVoxelize(voxelize);
     this.grassSlack = Math.max(voxelize.tolerance, voxelize.minVoxelSize / 2);
+    this.geology = source.geology?.() ?? null;
     if (source.minHeight <= world.minYUnits || source.maxHeight >= world.maxYUnits) {
       throw new RangeError(`terrain heights ${source.minHeight}..${source.maxHeight} exceed the world's Y range`);
     }
@@ -415,12 +424,25 @@ export class TerrainGenerator implements ChunkGenerator {
    * voxel), leaving a voxel that lies slightly below the true surface
    * exposed, so those get the surface material too.
    */
-  private materialFor(minH: number, top: number, surface: MaterialId): MaterialId {
+  private materialFor(minH: number, top: number, surface: MaterialId, k = -1, y = 0): MaterialId {
     if (surface === Material.Ice) return Material.Ice; // ice sheets are ice all the way down
+    // With geology: bare rock is the layers' rock right up to the top (cliffs banded), and the stone
+    // under anything else is too. (`k`: the block column in the chunk being made; `y`: the height, units.)
+    const g = this.geology && k >= 0;
+    if (g && isGeologyRock(surface)) return this.layerRock(k, y);
     const depth = minH - top;
     if (depth <= this.grassSlack) return surface;
-    if (depth < DIRT_DEPTH) return subsurface(surface);
-    return Material.Stone;
+    if (depth < DIRT_DEPTH) {
+      // (Under snow, rock: with geology, the layers' rock, as everywhere under the soil.)
+      const under = subsurface(surface);
+      return g && under === Material.Stone ? this.layerRock(k, y) : under;
+    }
+    return g ? this.layerRock(k, y) : Material.Stone;
+  }
+
+  /** The layers' rock at height `y` (units) in block column `k` of the chunk being made (see geology.ts). */
+  private layerRock(k: number, y: number): MaterialId {
+    return this.geology!.rock(y, this.geoColumns[k]!, this.geoX + (k % BLOCKS_PER_AXIS), this.geoZ + Math.floor(k / BLOCKS_PER_AXIS));
   }
 
   private uniformBlock(material: MaterialId): UniformBlock {
@@ -441,6 +463,11 @@ export class TerrainGenerator implements ChunkGenerator {
     const { H, M, trees, S, SR } = this.chunkColumn(coord.cx, coord.cz);
     const caves = this.cavesOf(coord.cx, coord.cz);
     const oreX = x0 / BLOCK_SIZE, oreZ = z0 / BLOCK_SIZE;
+    if (this.geology) {
+      this.geoColumns = this.geology.chunkColumns(x0, z0);
+      this.geoX = oreX;
+      this.geoZ = oreZ;
+    }
     // Per block column: min / max surface height, and where the minimum is (its top material, looked up only if it's wanted).
     const bMin = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(2 ** 31 - 1);
     const bMax = new Int32Array(BLOCKS_PER_AXIS * BLOCKS_PER_AXIS).fill(-(2 ** 31));
@@ -469,9 +496,12 @@ export class TerrainGenerator implements ChunkGenerator {
           // A cave: nothing (and no water: see below).
           if (caves && by0 / BLOCK_SIZE >= caves.lo && by0 / BLOCK_SIZE < caves.hi && caves.mask[k + 256 * (by0 / BLOCK_SIZE - caves.lo)]) continue;
           if (by0 + BLOCK_SIZE <= minH) {
-            // Wholly underground: its material, and deep in the stone, maybe ore (see oreAt).
-            let m = this.materialFor(minH, by0 + BLOCK_SIZE, M ? M(bMinAt[k]!) : Material.Grass);
-            if (m === Material.Stone) m = oreAt(oreX + bx, by0 / BLOCK_SIZE, oreZ + bz, minH - (by0 + BLOCK_SIZE));
+            // Wholly underground: its material, and deep in the rock, maybe ore (see oreAt; with
+            // geology, coal is in its seams, so here only iron).
+            let m = this.materialFor(minH, by0 + BLOCK_SIZE, M ? M(bMinAt[k]!) : Material.Grass, k, by0 + BLOCK_SIZE / 2);
+            if (this.geology) {
+              if (m !== Material.CoalOre && isGeologyRock(m)) m = oreAt(oreX + bx, by0 / BLOCK_SIZE, oreZ + bz, minH - (by0 + BLOCK_SIZE), m, IRON_ONLY);
+            } else if (m === Material.Stone) m = oreAt(oreX + bx, by0 / BLOCK_SIZE, oreZ + bz, minH - (by0 + BLOCK_SIZE));
             block = this.uniformBlock(m);
           } else block = this.buildBlock(H, M, SR, bx * BLOCK_SIZE, by0, bz * BLOCK_SIZE);
           chunk.blocks[blockIndex(bx, by, bz)] = block;
@@ -576,13 +606,15 @@ export class TerrainGenerator implements ChunkGenerator {
     const surface = M ? M(minAt) : Material.Grass;
     const top = y + s;
     const tol = this.voxelize.tolerance;
-    if (minH >= top) return this.materialFor(minH, top, surface);
+    // (Its block column in the chunk, for geology: a node's always within one.)
+    const k = (lx >> 4) + BLOCKS_PER_AXIS * (lz >> 4), mid = y + s / 2;
+    if (minH >= top) return this.materialFor(minH, top, surface, k, mid);
     if (maxH <= y) return 0;
     if (s <= this.voxelize.minVoxelSize) {
       // Smallest allowed voxel: solid if the mean surface covers at least half of it.
-      return sum / (s * s) - y >= s / 2 ? this.materialFor(minH, top, surface) : 0;
+      return sum / (s * s) - y >= s / 2 ? this.materialFor(minH, top, surface, k, mid) : 0;
     }
-    if (top - minH <= tol) return this.materialFor(minH, top, surface);
+    if (top - minH <= tol) return this.materialFor(minH, top, surface, k, mid);
     if (maxH - y <= tol) return 0;
 
     const t = s / 2;

@@ -6,6 +6,9 @@ import { PLATE_CELL, PlateHeights, PlateStageCache, SURFACE_SETTINGS, defaultPla
 import { TerrainGenerator } from './terrain.js';
 import { CHUNK_SIZE, FLAT_WORLD_16KM, ROUND_WORLD_16x8KM } from './world.js';
 
+/** The default settings without geology: plain stone (these tests are about where bare rock is, not what it's made of). */
+const plainTerrain = (...a: Parameters<typeof defaultPlateTerrain>) => ({ ...defaultPlateTerrain(...a), geology: 0 });
+
 /** Bare rock, of any kind (see rockVariety). */
 const isRock = (m: number | undefined) => m === Material.Stone || m === Material.Gravel || m === Material.DarkStone || m === Material.PaleStone || m === Material.MossyStone;
 
@@ -13,7 +16,7 @@ const cache = new Map<string, PlateHeights>();
 /** A plate world with `over` settings; mountains, biomes, rivers and lakes are off unless asked for, so other features are tested alone. */
 function plates(over: Partial<PlateTerrainConfig> = {}, world = FLAT_WORLD_16KM): PlateHeights {
   // (Climate as before equators: cold north, hot south.)
-  const cfg = { ...defaultPlateTerrain(1), mountains: 0, biomes: 0, rivers: 0, lakes: 0, equator: 0, northTemperature: -6, southTemperature: 26, ...over };
+  const cfg = { ...plainTerrain(1), mountains: 0, biomes: 0, rivers: 0, lakes: 0, equator: 0, northTemperature: -6, southTemperature: 26, ...over };
   const key = JSON.stringify([cfg, world.wrapX, world.depthUnits]);
   let p = cache.get(key);
   if (!p) cache.set(key, (p = new PlateHeights(world, cfg)));
@@ -35,7 +38,7 @@ function coastCells(p: PlateHeights): number {
 
 describe('validatePlateTerrain', () => {
   it('rejects out-of-range settings', () => {
-    const ok = defaultPlateTerrain(1);
+    const ok = plainTerrain(1);
     expect(() => validatePlateTerrain(ok)).not.toThrow();
     expect(() => validatePlateTerrain({ ...ok, majorPlates: 0 })).toThrow(/majorPlates/);
     expect(() => validatePlateTerrain({ ...ok, minorPlates: -1 })).toThrow(/minorPlates/);
@@ -272,9 +275,9 @@ describe('PlateHeights', () => {
   });
 
   it('is deterministic and seed-dependent', () => {
-    const a = new PlateHeights(FLAT_WORLD_16KM, defaultPlateTerrain(42));
-    const b = new PlateHeights(FLAT_WORLD_16KM, defaultPlateTerrain(42));
-    const c = new PlateHeights(FLAT_WORLD_16KM, defaultPlateTerrain(43));
+    const a = new PlateHeights(FLAT_WORLD_16KM, plainTerrain(42));
+    const b = new PlateHeights(FLAT_WORLD_16KM, plainTerrain(42));
+    const c = new PlateHeights(FLAT_WORLD_16KM, plainTerrain(43));
     expect(b.elevation).toEqual(a.elevation);
     expect(c.elevation).not.toEqual(a.elevation);
   });
@@ -992,7 +995,7 @@ describe('migratePlateTerrain', () => {
     // A rock line saved as a percentage converts too.
     expect(migratePlateTerrain({ maxHeight: 300, seaLevel: 100, rockLine: 50 }).rockAltitude).toBe(100);
     // New settings are kept as they are.
-    expect(migratePlateTerrain(defaultPlateTerrain(2))).toEqual(defaultPlateTerrain(2));
+    expect(migratePlateTerrain(plainTerrain(2))).toEqual(plainTerrain(2));
   });
 
   it('is not used for new settings: missing ones there take the defaults', () => {
@@ -1091,10 +1094,10 @@ describe('TerrainGenerator on plate heights', () => {
 
 describe('surface settings', () => {
   it('change no stage of a build: a world built again with them changed reuses every one', () => {
-    const base = defaultPlateTerrain(5);
+    const base = plainTerrain(5);
     const changed: Partial<Record<keyof PlateTerrainConfig, number>> = {
       surfaceRoughness: 90, mountainDetail: 10, beaches: 80, rockAltitude: 60, altitudeRock: 0, snowAltitude: 90, altitudeSnow: 0, snowFractal: 10,
-      rockRoughness: 90, rockVariety: 10, rockSlope: 50, altitudeCooling: 3, snowTemperature: 0, biomeBlend: 90, trees: 80, treeClumping: 10,
+      rockRoughness: 90, rockVariety: 10, rockSlope: 50, altitudeCooling: 3, snowTemperature: 0, biomeBlend: 90, trees: 80, treeClumping: 10, geology: 1,
     };
     expect(Object.keys(changed).sort()).toEqual([...SURFACE_SETTINGS].sort());
     const fresh = new PlateHeights(FLAT_WORLD_16KM, base);
@@ -1142,15 +1145,15 @@ describe('plate builds stay the same', () => {
   // say) mustn't change what's built, or every world's unedited ground changes under its players.
   // If one of these changes on purpose, say so (and think about existing worlds) before updating it.
   it('makes exactly what it always has, stage by stage', () => {
-    expect(stages(defaultPlateTerrain(3))).toEqual(PINNED.defaults);
-    expect(stages({ ...defaultPlateTerrain(7), majorPlates: 80, minorPlates: 200, plateSizeRatio: 2 })).toEqual(PINNED.manyPlates);
-    expect(stages({ ...defaultPlateTerrain(8), landPercent: 15, islandArcs: 80, hotspots: 30 })).toEqual(PINNED.islands);
+    expect(stages(plainTerrain(3))).toEqual(PINNED.defaults);
+    expect(stages({ ...plainTerrain(7), majorPlates: 80, minorPlates: 200, plateSizeRatio: 2 })).toEqual(PINNED.manyPlates);
+    expect(stages({ ...plainTerrain(8), landPercent: 15, islandArcs: 80, hotspots: 30 })).toEqual(PINNED.islands);
   });
 });
 
 describe('PlateStageCache.share and from (one build for every generation thread)', () => {
   it('gives another thread a world just as built, without building it again', () => {
-    const config = { ...defaultPlateTerrain(21), rivers: 60, lakes: 60, mountains: 50 };
+    const config = { ...plainTerrain(21), rivers: 60, lakes: 60, mountains: 50 };
     const strokes = [{ kind: 'raise' as const, x: 300 * 16 * 16, z: 300 * 16 * 16, radius: 80, amount: 20, softness: 0.5 }];
     const cache = new PlateStageCache();
     const original = new PlateHeights(FLAT_WORLD_16KM, config, cache, strokes);
@@ -1184,7 +1187,7 @@ describe('PlateStageCache.share and from (one build for every generation thread)
 });
 
 describe('PlateStageCache', () => {
-  const base: PlateTerrainConfig = { ...defaultPlateTerrain(5, ROUND_WORLD_16x8KM), islandArcs: 50, hotspots: 6, plains: 25 };
+  const base: PlateTerrainConfig = { ...plainTerrain(5, ROUND_WORLD_16x8KM), islandArcs: 50, hotspots: 6, plains: 25 };
   /** Everything a build decides, to compare builds by. */
   const summary = (p: PlateHeights) => {
     const bytes = (a: ArrayBufferView | null) => {
@@ -1266,7 +1269,7 @@ describe('materials worked out as asked for (materialsAt)', () => {
   const M = 16;
   it('matches materials() everywhere: coasts, rivers, snow and rock lines, biomes, polar ice', () => {
     const world = ROUND_WORLD_16x8KM;
-    const p = new PlateHeights(world, { ...defaultPlateTerrain(5, world), rockAltitude: 80, snowAltitude: 140, rockVariety: 80, snowFractal: 80 });
+    const p = new PlateHeights(world, { ...plainTerrain(5, world), rockAltitude: 80, snowAltitude: 140, rockVariety: 80, snowFractal: 80 });
     // The most varied blocks found across the world (coasts, rock, snow, biome borders; the poles' ice).
     const found: { x0: number; z0: number; kinds: Set<number> }[] = [];
     for (let z = 0; z < world.depthUnits; z += 400 * M)
@@ -1294,7 +1297,7 @@ describe('materials worked out as asked for (materialsAt)', () => {
 
   it('matches materials() on terraformed ground, with few strokes about and many', () => {
     const world = ROUND_WORLD_16x8KM;
-    const cfg = defaultPlateTerrain(5, world);
+    const cfg = plainTerrain(5, world);
     const bare = new PlateHeights(world, cfg);
     // A spot on land, and strokes around it: a few, then a dozen (looked up by index).
     let cx = 0, cz = 0;
