@@ -27,7 +27,8 @@ import { InventoryUi } from './inventory.js';
 import { EntityView } from './entities.js';
 import type { Footprint } from './coverage.js';
 import { createCompassRose } from './compassRose.js';
-import { coveredAboveFor, solidAtFor, waterAtFor } from './worldQuery.js';
+import { coveredAboveFor, materialAtFor, solidAtFor, waterAtFor } from './worldQuery.js';
+import { FootstepSound, FootstepWeather, StepCounter, surfaceOf, underSnow, type Surface } from './footsteps.js';
 
 const statusEl = document.getElementById('status')!;
 
@@ -111,6 +112,40 @@ const explosions = new ExplosionView(scene, camera);
  * only playing (survival, or the hybrid tool: not while building with dig or place).
  */
 const knockdown = new Knockdown();
+/** Footsteps (see footsteps.ts): a step each stride walked, of what's underfoot, wet after rain, crunching in snow. */
+const footsteps = new FootstepSound();
+const stepCounter = new StepCounter();
+const footWeather = new FootstepWeather();
+const lastFeet = new THREE.Vector3();
+document.addEventListener('visibilitychange', () => footsteps.pause(document.hidden));
+/** The eye's height above the feet (m). */
+const EYE_HEIGHT = 1.62;
+/** What's underfoot (see Surface): wading, water; else what the feet stand on (null: nothing known). */
+function surfaceUnderfoot(): Surface | null {
+  if (!chunks) return null;
+  const p = camera.position, feet = p.y - EYE_HEIGHT;
+  if (inWaterAt(p.x, feet + 0.15, p.z)) return 'water';
+  const at = materialAtFor(chunks);
+  // (Just under the feet; or a little lower, standing on something smaller than a block.)
+  for (const below of [0.05, 0.3]) {
+    const m = at(Math.floor(p.x * UNITS_PER_METER), Math.floor((feet - below) * UNITS_PER_METER), Math.floor(p.z * UNITS_PER_METER));
+    if (m) return underSnow(surfaceOf(m), footWeather.snowCover);
+  }
+  return null;
+}
+/** Steps walked since the last frame (and the weather on the ground), `dt` s. */
+function walkSounds(dt: number): void {
+  const w = weatherView.now;
+  footWeather.update(w ? w.precipitation * (1 - w.snow) : 0, w ? w.precipitation * w.snow : 0, dt);
+  const p = camera.position;
+  // (Only walking on the ground, on our own feet: not flying, swimming, thrown, or moved somewhere.)
+  const walked = Math.hypot(p.x - lastFeet.x, p.z - lastFeet.z);
+  lastFeet.copy(p);
+  const onFoot = controls.grounded && !controls.swimming && !knockdown.active && walked < 3;
+  if (!stepCounter.update(onFoot ? walked : 0, controls.sprinting)) return;
+  const surface = surfaceUnderfoot();
+  if (surface) footsteps.step(surface, footWeather.wet, controls.sprinting ? 0.6 : 0.4);
+}
 explosions.onBlast = (center, radius) => {
   if (!controls.walking || controls.swimming || !(survivalMovement || editTool?.mode === 'hybrid')) return;
   const body = camera.position.clone().setY(camera.position.y - BODY_BELOW_EYE);
@@ -749,6 +784,9 @@ connection = connect({
           // Survival: a hard landing hurts (the server works out how much).
           controls.onLand = (speed) => {
             if (survivalMovement && fallDamage(speed) > 0) send({ type: 'fell', speed });
+            // A landing: a step, harder the faster.
+            const surface = speed > 2.5 ? surfaceUnderfoot() : null;
+            if (surface) footsteps.step(surface, footWeather.wet, Math.min(1, 0.5 + speed / 15));
           };
           controls.onModifiedWheel = (deltaY) => {
             editTool?.scrollSize(deltaY);
@@ -1006,6 +1044,7 @@ renderer.setAnimationLoop(() => {
   const downPose = paused ? null : knockdown.update(Math.min(0.05, (frameStart - lastFrame) / 1000), controls.collide);
   if (downPose) camera.position.add(new THREE.Vector3(...downPose.moved));
   if (wasThrown && !knockdown.thrown) controls.stopFalling();
+  if (!paused) walkSounds(Math.min(0.1, (frameStart - lastFrame) / 1000));
   lastFrame = frameStart;
   trackVelocity(frameStart);
   chunks?.setViewY(camera.position.y * UNITS_PER_METER);

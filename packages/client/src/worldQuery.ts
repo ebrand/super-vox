@@ -6,7 +6,7 @@ const floorDiv = (v: number, m: number) => Math.floor(v / m);
 const mod = (v: number, m: number) => ((v % m) + m) % m;
 
 /** Material of a world unit cell from the loaded full-detail chunks (0 = air; undefined = not loaded). */
-function materialAtFor(chunks: ChunkManager): (x: number, y: number, z: number) => number | undefined {
+export function materialAtFor(chunks: ChunkManager): (x: number, y: number, z: number) => number | undefined {
   return (x, y, z) => {
     const chunk = chunks.chunkAt({ cx: floorDiv(x, CHUNK_SIZE), cy: floorDiv(y, CHUNK_SIZE), cz: floorDiv(z, CHUNK_SIZE) });
     if (chunk === undefined) return undefined;

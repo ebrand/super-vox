@@ -223,6 +223,16 @@ export class FlyControls {
     this.apply();
   }
 
+  /** Whether we're walking on the ground (not in the air, after the last update). */
+  get grounded(): boolean {
+    return this.walking && this.walk.grounded;
+  }
+
+  /** Whether Shift is held (sprinting, walking). */
+  get sprinting(): boolean {
+    return this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
+  }
+
   /** Stops any fall or jump under way (after being moved somewhere: no landing from where we were). */
   stopFalling(): void {
     this.walk = { vy: 0, grounded: false };
