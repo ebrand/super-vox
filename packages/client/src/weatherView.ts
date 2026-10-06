@@ -33,6 +33,17 @@ const RAIN_HALF = 1500;
 
 export interface WeatherNow extends Weather {}
 
+/** Weather that can be forced (for testing: ?weather=…), and what each sets where the camera is. */
+export const FORCED_WEATHER = {
+  clear: { cover: 0, precipitation: 0, snow: 0, storm: 0, fog: 0 },
+  cloudy: { cover: 1, precipitation: 0, snow: 0, storm: 0, fog: 0 },
+  rain: { cover: 1, precipitation: 0.75, snow: 0, storm: 0 },
+  storm: { cover: 1, precipitation: 1, snow: 0, storm: 1 },
+  snow: { cover: 1, precipitation: 0.7, snow: 1, storm: 0 },
+  fog: { fog: 1 },
+} satisfies Record<string, Partial<Weather>>;
+export type ForcedWeather = keyof typeof FORCED_WEATHER;
+
 export class WeatherView {
   readonly group = new THREE.Group();
   private seed: number | null = null;
@@ -59,6 +70,8 @@ export class WeatherView {
   private boltLeft = 0;
   /** The ground's height under the camera (m), as last known. */
   private groundHeight = 0;
+  /** Weather forced where the camera is, whatever the real weather (testing; null: the real weather). */
+  forced: ForcedWeather | null = null;
   /** How loud the surf is where the camera is (0..1: how near the shore, and how low; set by the game). */
   surf = 0;
   /** The ground's height at (x, z) (m), as far as known (null: not known: the sea's taken). */
@@ -221,7 +234,7 @@ export class WeatherView {
     this.groundHeight = ground ?? Math.min(camera.y, this.groundHeight);
     const seed = this.seed;
     const here = this.climateHere(camera.x, camera.z);
-    const w = weatherAt(seed, t, camera.x, camera.z, ground ?? camera.y, hours, here);
+    const w = { ...weatherAt(seed, t, camera.x, camera.z, ground ?? camera.y, hours, here), ...(this.forced ? FORCED_WEATHER[this.forced] : {}) };
     if (!this.shown) this.shown = { ...w };
     else {
       const k = 1 - Math.exp(-dt / EASE);
@@ -272,6 +285,11 @@ export class WeatherView {
       return;
     }
     const strikes = strikesBetween(this.seed!, this.struckTo, t, camera.x, camera.z, STRIKE_RADIUS, (x, z) => this.climateHere(x, z));
+    // (A forced storm: strikes of its own round the camera, a few a minute.)
+    if (this.forced === 'storm' && Math.random() < (t - this.struckTo) / 12) {
+      const a = Math.random() * Math.PI * 2, r = 400 + Math.random() * 5000;
+      strikes.push({ x: camera.x + Math.cos(a) * r, z: camera.z + Math.sin(a) * r, t });
+    }
     this.struckTo = t;
     for (const s of strikes) {
       const ground = this.groundAt(s.x, s.z) ?? this.seaLevel;
@@ -309,7 +327,8 @@ export class WeatherView {
       for (let i = 0; i < COVER_CELLS; i++) {
         const px = x - size / 2 + (i + 0.5) * cell, pz = z - size / 2 + (j + 0.5) * cell;
         const cl = this.climateHere(px, pz);
-        this.coverData[i + COVER_CELLS * j] = Math.round(weatherAt(seed, t, px, pz, cl.seaLevel, 12, cl).cover * 255);
+        const forced = this.forced ? (FORCED_WEATHER[this.forced] as Partial<Weather>).cover : undefined;
+        this.coverData[i + COVER_CELLS * j] = Math.round((forced ?? weatherAt(seed, t, px, pz, cl.seaLevel, 12, cl).cover) * 255);
       }
     this.coverTex.needsUpdate = true;
     this.cover = { x, z, size, t };

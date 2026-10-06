@@ -15,7 +15,7 @@ import { createAtmosphere, createSky } from './atmosphere.js';
 import { WATER_LAYER, WaterRenderer, createSeaMaterial, createVoxelWaterMaterial } from './water.js';
 import { createTint } from './tint.js';
 import { applyLighting, loadLighting, saveLighting } from './lighting.js';
-import { WeatherView } from './weatherView.js';
+import { FORCED_WEATHER, WeatherView, type ForcedWeather } from './weatherView.js';
 import { LightingPanel } from './lightingPanel.js';
 import { PLAYER, intersectsSolid, liftOut, moveAabb, playerBox, type SolidAt } from './physics.js';
 import { farDetailFor, loadSettings, workersFor } from './settings.js';
@@ -303,13 +303,18 @@ function groundUnder(p: THREE.Vector3): number | undefined {
 }
 /** ?weatherShift=S: the weather S seconds later (or earlier, negative) than now, to see what's coming. */
 const weatherShift = numberParam('weatherShift', 0, -1e7, 1e7);
+/** ?weather=rain (clear, cloudy, rain, storm, snow, fog): that weather wherever the camera is, for testing (this player only). */
+{
+  const forced = params.get('weather');
+  if (forced && forced in FORCED_WEATHER) weatherView.forced = forced as ForcedWeather;
+}
 /** The weather, for the info panel: ", overcast 80%, rain 40%, 12°C". */
 function weatherLine(): string {
   const w = weatherView.now;
   if (!w) return '';
   const pct = (v: number) => `${Math.round(v * 100)}%`;
   const falling = w.precipitation > 0.02 ? `, ${w.snow > 0.5 ? 'snow' : 'rain'} ${pct(w.precipitation)}` : '';
-  return `\nweather: cloud ${pct(w.cover)}${falling}${w.storm > 0.02 ? `, storm ${pct(w.storm)}` : ''}${w.fog > 0.05 ? `, fog ${pct(w.fog)}` : ''}, ${Math.round(w.temperature)}°C` + (weatherShift ? ` (${weatherShift} s ahead)` : '');
+  return `\nweather: cloud ${pct(w.cover)}${falling}${w.storm > 0.02 ? `, storm ${pct(w.storm)}` : ''}${w.fog > 0.05 ? `, fog ${pct(w.fog)}` : ''}, ${Math.round(w.temperature)}°C` + (weatherShift ? ` (${weatherShift} s ahead)` : '') + (weatherView.forced ? ` (forced: ${weatherView.forced})` : '');
 }
 
 /** Biome colours blend where the world's climate says so (no data: plain material colours). */
