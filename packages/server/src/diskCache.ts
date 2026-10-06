@@ -1,6 +1,11 @@
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { deflateRawSync, inflateRawSync } from 'node:zlib';
+import { promisify } from 'node:util';
+import { deflateRaw, inflateRaw } from 'node:zlib';
+
+// (Compressing and decompressing in zlib's background threads, not the main thread: a busy server
+// writes a cache record for every chunk it makes.)
+const deflateRawAsync = promisify(deflateRaw), inflateRawAsync = promisify(inflateRaw);
 
 /**
  * Generated terrain kept on disk (a world's chunks, tiles and column ranges as it generates them;
@@ -50,6 +55,9 @@ export class DiskCache {
     this.put(`c${rk(cx)},${rk(cz)}`, `k${cx},${cz}`, Buffer.from(JSON.stringify(range), 'utf8'));
   }
 
+  /** Its folder made (once; again after a failed write, in case it was taken away). */
+  private made: Promise<unknown> | null = null;
+
   /** Writes not finished yet. */
   private readonly pending = new Set<Promise<void>>();
 
@@ -66,12 +74,11 @@ export class DiskCache {
       return null;
     }
     this.stats.hits++;
-    return new Uint8Array(inflateRawSync(z));
+    return new Uint8Array(await inflateRawAsync(z));
   }
 
   private put(region: string, key: string, bytes: Uint8Array): void {
-    const z = deflateRawSync(bytes, { level: 1 });
-    const done: Promise<void> = this.region(region).then((r) => {
+    const done: Promise<void> = Promise.all([deflateRawAsync(bytes, { level: 1 }), this.region(region)]).then(([z, r]) => {
       if (r.entries.has(key)) return; // (two askers made it at once: one copy)
       r.entries.set(key, z);
       const k = Buffer.from(key, 'utf8');
@@ -82,10 +89,11 @@ export class DiskCache {
       // One write at a time per region, in order.
       r.writing = r.writing.then(async () => {
         try {
-          await mkdir(this.dir, { recursive: true });
+          await (this.made ??= mkdir(this.dir, { recursive: true }));
           await appendFile(join(this.dir, `${region}.cache`), record);
           this.stats.writes++;
         } catch {
+          this.made = null;
           this.stats.errors++; // (a full or missing disk: the terrain is just made again next time)
         }
       });

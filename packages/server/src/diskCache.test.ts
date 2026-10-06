@@ -45,6 +45,22 @@ describe('DiskCache', () => {
     expect(b.stats).toMatchObject({ hits: 4, misses: 1 });
   });
 
+  it('makes its folder again if it is taken away between writes', async () => {
+    const dir = join(tmp(), 'cache');
+    const cache = new DiskCache(dir);
+    cache.putChunk(1, 0, 1, new Uint8Array([1, 2, 3]));
+    await cache.flush();
+    rmSync(dir, { recursive: true, force: true });
+    cache.putChunk(2, 0, 2, new Uint8Array([4, 5]));
+    await cache.flush();
+    cache.putChunk(3, 0, 3, new Uint8Array([6]));
+    await cache.flush();
+    // (The write right after it went missing fails; the next makes it again.)
+    expect(existsSync(dir)).toBe(true);
+    expect(await new DiskCache(dir).chunk(3, 0, 3)).toEqual(new Uint8Array([6]));
+    expect(cache.stats.errors).toBe(1);
+  });
+
   it('ignores a record cut short (a crash while writing), keeping those before it', async () => {
     const dir = join(tmp(), 'v1');
     const a = new DiskCache(dir);
