@@ -6,7 +6,7 @@ import { connect } from './connection.js';
 import { EditTool, sizeLabel } from './editTool.js';
 import { FlyControls } from './flyControls.js';
 import { ExplosionView } from './explosions.js';
-import { Knockdown, knockdownFor } from './knockdown.js';
+import { BODY_BELOW_EYE, Knockdown, knockdownFor } from './knockdown.js';
 import { sampleBlast } from './blastCloud.js';
 import type { CloudRequest, CloudResponse } from './blastCloud.worker.js';
 import { DETAIL_SPEEDS, SpeedDetail, focusLead, selectLod } from './lod.js';
@@ -111,9 +111,10 @@ const explosions = new ExplosionView(scene, camera);
  * only playing (survival, or the hybrid tool: not while building with dig or place).
  */
 const knockdown = new Knockdown();
-explosions.onBlast = (center, radius, distance) => {
+explosions.onBlast = (center, radius) => {
   if (!controls.walking || controls.swimming || !(survivalMovement || editTool?.mode === 'hybrid')) return;
-  const k = knockdownFor(distance, radius, { x: center.x - camera.position.x, z: center.z - camera.position.z });
+  const body = camera.position.clone().setY(camera.position.y - BODY_BELOW_EYE);
+  const k = knockdownFor(body.distanceTo(center), radius, { x: center.x - body.x, z: center.z - body.z });
   if (k) knockdown.begin(k);
 };
 const compassRose = createCompassRose(document.body);

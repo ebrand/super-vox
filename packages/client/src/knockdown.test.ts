@@ -6,7 +6,9 @@ import { ExplosionView } from './explosions.js';
 describe('knockdownFor', () => {
   it('only within reach; harder and longer the bigger and nearer', () => {
     expect(knockdownFor(16 * KNOCKDOWN_REACH, 16, { x: 1, z: 0 })).toBeNull();
-    expect(knockdownFor(4, 2.3, { x: 1, z: 0 })).toBeNull();
+    expect(knockdownFor(5, 2.3, { x: 1, z: 0 })).toBeNull();
+    // (Anywhere its crater can reach: its lobes go about 1.5 radii.)
+    expect(knockdownFor(2.3 * 1.55, 2.3, { x: 1, z: 0 })).not.toBeNull();
     const smallNear = knockdownFor(1, 2.3, { x: 1, z: 0 })!, bigNear = knockdownFor(1, 16, { x: 1, z: 0 })!, bigFar = knockdownFor(20, 16, { x: 1, z: 0 })!;
     expect(bigNear.strength).toBeGreaterThan(smallNear.strength);
     expect(bigNear.strength).toBeGreaterThan(bigFar.strength);

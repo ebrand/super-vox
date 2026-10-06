@@ -5,8 +5,13 @@
  * nearer blasts throw you further and keep you down longer.
  */
 
-/** How near (in blast radii) a blast knocks you down. */
-export const KNOCKDOWN_REACH = 1.5;
+/**
+ * How near (in blast radii, from the middle of the body) a blast knocks you down: beyond its crater,
+ * whose lobes reach about 1.5 radii (see craterShape), so ground blown from under you always does.
+ */
+export const KNOCKDOWN_REACH = 2;
+/** The middle of the body, below the eye (m). */
+export const BODY_BELOW_EYE = 0.8;
 /** How long falling and getting up take (s). */
 const FALL = 0.35;
 const RISE = 1.0;
