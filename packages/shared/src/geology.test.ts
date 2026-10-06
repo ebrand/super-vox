@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BLOCKS_PER_AXIS, blockIndex } from './chunk.js';
-import { Geology, isGeologyRock, layerSequence } from './geology.js';
+import { Geology, isGeologyRock, layerSequence, type GeologyColumn } from './geology.js';
 import { Material } from './materials.js';
 import { PlateHeights, defaultPlateTerrain } from './plates.js';
 import { TerrainGenerator, defaultVoxelize } from './terrain.js';
@@ -52,35 +52,88 @@ describe('layerSequence', () => {
 describe('Geology', () => {
   const g = new Geology(42, 0);
 
+  /** How far faults have moved the rock at height y in column c (units). */
+  const moved = (c: GeologyColumn, y: number) => c.cutY.reduce((t, cy, i) => (y > cy ? t + c.cutShift[i]! : t), 0);
+  /** The height (units) of the point `offset` units above the fold's surface in column c, as faults have moved it (or null where a fault plane is too near to say). */
+  const atLayer = (c: GeologyColumn, offset: number) => {
+    let y = c.fold + offset;
+    for (let k = 0; k < 4; k++) y = c.fold + offset + moved(c, y);
+    return Math.abs(moved(c, y) - (y - c.fold - offset)) < 1e-6 ? y : null;
+  };
+
   it('granite below the basement, layers above it', () => {
-    const c = g.column(1000 * M, 2000 * M);
-    expect(g.rock(c.fold - c.base - 5 * M, c, 0, 0)).toBe(Material.Granite);
-    expect([Material.Sandstone, Material.Shale, Material.Limestone, Material.CoalOre]).toContain(g.rock(c.fold - c.base + 5 * M, c, 0, 0));
-    // (Basement 90-190 m down; layers folded up to about 120 m either way; stretched 0.75-1.25.)
+    let checked = 0;
     for (let x = 0; x < 16000; x += 997) {
-      const k = g.column(x * M, (x * 7) % 16000 * M);
-      expect(k.base / M).toBeGreaterThan(85);
-      expect(k.base / M).toBeLessThan(195);
-      expect(Math.abs(k.fold / M)).toBeLessThan(140);
-      expect(k.stretch).toBeGreaterThan(0.7);
-      expect(k.stretch).toBeLessThan(1.3);
+      const c = g.column(x * M, ((x * 7) % 16000) * M);
+      const deep = atLayer(c, -c.base - 5 * M), shallow = atLayer(c, -c.base + 5 * M);
+      if (deep === null || shallow === null) continue;
+      expect(g.rock(deep, c, 0, 0)).toBe(Material.Granite);
+      expect([Material.Sandstone, Material.Shale, Material.Limestone, Material.CoalOre]).toContain(g.rock(shallow, c, 0, 0));
+      checked++;
+      // (Basement 90-190 m down; layers folded up to about 120 m either way; stretched 0.75-1.25.)
+      expect(c.base / M).toBeGreaterThan(85);
+      expect(c.base / M).toBeLessThan(195);
+      expect(Math.abs(c.fold / M)).toBeLessThan(140);
+      expect(c.stretch).toBeGreaterThan(0.7);
+      expect(c.stretch).toBeLessThan(1.3);
     }
+    expect(checked).toBeGreaterThan(10);
   });
 
-  it('a layer carries on sideways: a seam can be followed (rising and falling with the fold)', () => {
-    // A seam's middle at one place, then 1 m steps east following the fold: still in it.
+  it('a layer carries on sideways: a seam can be followed (rising and falling with the fold, and the faults)', () => {
     const rows = layerSequence(42);
     const seamRow = rows.findIndex((m, i) => i > 220 && m === Material.CoalOre);
     let inSeam = 0, steps = 0;
-    for (let x = 5000; x < 5300; x++, steps++) {
+    for (let x = 5000; x < 5300; x++) {
       const c = g.column(x * M, 3000 * M);
-      // (The seam's row's middle, through the column's stretch.)
-      const y = c.fold + (seamRow - 200 + 0.5) * M * c.stretch;
+      // (The seam's row's middle, through the column's stretch, where faults have moved it.)
+      const y = atLayer(c, (seamRow - 200 + 0.5) * M * c.stretch);
+      if (y === null) continue;
+      steps++;
       const m = g.rock(y, c, x, 3000);
       if (m === Material.CoalOre || m === Material.Shale) inSeam++;
     }
     // (Shale: the seam's impure blocks, or its edge where the stretch changes it by a row.)
+    expect(steps).toBeGreaterThan(250);
     expect(inSeam / steps).toBeGreaterThan(0.95);
+  });
+
+  it('faults: steep, 3-8 km long, moving the rock above them 5-40 m (most down)', () => {
+    const faults = [];
+    for (let j = 0; j < 20; j++) for (let i = 0; i < 20; i++) { const f = g.faultIn(i, j); if (f) faults.push(f); }
+    // (About 60% of regions have one.)
+    expect(faults.length).toBeGreaterThan(400 * 0.45);
+    expect(faults.length).toBeLessThan(400 * 0.75);
+    for (const f of faults) {
+      expect(Math.abs(f.throw) / M).toBeGreaterThanOrEqual(5);
+      expect(Math.abs(f.throw) / M).toBeLessThanOrEqual(40);
+      expect((f.half * 2) / M).toBeGreaterThanOrEqual(3000);
+      expect((f.half * 2) / M).toBeLessThanOrEqual(8000);
+      expect(Math.atan(f.tanDip) * (180 / Math.PI)).toBeGreaterThanOrEqual(55);
+    }
+    expect(faults.filter((f) => f.throw < 0).length).toBeGreaterThan(faults.length * 0.55);
+  });
+
+  it('across a fault the rock jumps by its throw (tapering toward its ends); beyond its ends, and far off it, nothing', () => {
+    let f = null;
+    for (let j = 0; j < 20 && !f; j++) for (let i = 0; i < 20 && !f; i++) { const q = g.faultIn(i, j); if (q && Math.abs(q.throw) > 25 * M) f = q; }
+    expect(f).not.toBeNull();
+    const at = (along: number, across: number) => [f!.x + f!.sx * along + f!.nx * across, f!.z + f!.sz * along + f!.nz * across] as const;
+    // This fault alone: just either side of where its plane comes up (it leans toward +across).
+    const only = (along: number, across: number) => g.column(...at(along, across), [f!]);
+    const y = 0;
+    const jumpMiddle = moved(only(0, 10 * M), y) - moved(only(0, -10 * M), y);
+    expect(jumpMiddle).toBeCloseTo(f!.throw * (1 - 10 * M / f!.reach) ** 2 * (3 - 2 * (1 - 10 * M / f!.reach)), -1);
+    // Toward its ends, less; beyond them, none.
+    const jumpNearEnd = moved(only(f!.half * 0.8, 10 * M), y) - moved(only(f!.half * 0.8, -10 * M), y);
+    expect(Math.abs(jumpNearEnd)).toBeLessThan(Math.abs(jumpMiddle) * 0.5);
+    expect(only(f!.half + 50 * M, 10 * M).cutY).toHaveLength(0);
+    // Far off it (beyond its reach) on the side it moves: none.
+    expect(only(0, f!.reach + 50 * M).cutY).toHaveLength(0);
+    // Deep under the side it leans toward, the plane is passed: below it, nothing's moved.
+    const c = only(0, 100 * M);
+    expect(moved(c, c.cutY[0]! - 16)).toBe(0);
+    expect(moved(c, c.cutY[0]! + 16)).not.toBe(0);
   });
 
   it('on a world that wraps, the same either side of the seam', () => {
@@ -90,6 +143,8 @@ describe('Geology', () => {
       expect(a.fold).toBeCloseTo(b.fold, 6);
       expect(a.base).toBeCloseTo(b.base, 6);
       expect(a.stretch).toBeCloseTo(b.stretch, 6);
+      expect(a.cutY).toEqual(b.cutY);
+      expect(a.cutShift.map((v) => Math.round(v * 1e6))).toEqual(b.cutShift.map((v) => Math.round(v * 1e6)));
     }
   });
 });
@@ -121,6 +176,17 @@ describe('geology in the terrain', () => {
       }
     return counts;
   }
+
+  it('worlds made before faults (geology 1) have none; new ones (2) do', () => {
+    const cuts = (geology: number) => {
+      const g = new PlateHeights(world, { ...config, geology }).geology()!;
+      let n = 0;
+      for (let x = 500; x < 16000; x += 500) n += g.column(x * M, 8000 * M).cutY.length;
+      return n;
+    };
+    expect(cuts(1)).toBe(0);
+    expect(cuts(2)).toBeGreaterThan(0);
+  });
 
   it('with geology: layered rock and coal seams, no plain stone; without: stone, as before', () => {
     const geo = underground(1), plain = underground(0);

@@ -62,7 +62,7 @@ const FIELDS: FieldSpec[] = [
   { key: 'equatorTemperature', label: 'Equator temperature', section: 'Climate', min: L.temperature[0], max: L.temperature[1], step: 1, unit: '°C', hint: 'At sea level across the middle (with an equator)' },
   { key: 'rainfall', label: 'Rainfall', section: 'Climate', min: L.rainfall[0], max: L.rainfall[1], step: 1, hint: '0 dry … 100 soaked; wet near the sea, drier inland' },
   { key: 'windFrom', label: 'Wind from', section: 'Climate', min: L.windFrom[0], max: L.windFrom[1], step: 5, unit: '°', hint: 'Compass direction rain comes from (270 = west); land behind mountains is drier' },
-  { key: 'geology', label: 'Geology', section: 'Underground', min: 0, max: 1, step: 1, toggle: true, hint: 'The rock in layers: sandstone, shale and limestone, gently folded, with coal in seams you can follow, over granite deep down; cliffs show the layers as bands (off: plain stone with ore scattered in it, as worlds made before this setting)' },
+  { key: 'geology', label: 'Geology', section: 'Underground', min: 0, max: 2, step: 1, toggle: true, hint: 'The rock in layers: sandstone, shale and limestone, gently folded, with coal in seams you can follow, broken by faults, over granite deep down; cliffs show the layers as bands (off: plain stone with ore scattered in it, as worlds made before this setting)' },
   { key: 'caves', label: 'Caves', section: 'Underground', min: L.caves[0], max: L.caves[1], step: 1, hint: 'Tunnels and wide, low chambers in the rock (3 to 90 m down, reached by sloping entrances from the surface; dark inside): 0 none … 25 rare … 100 common and big' },
   { key: 'rivers', label: 'Rivers', section: 'Rivers and lakes', min: L.rivers[0], max: L.rivers[1], step: 1, hint: '0 none … 100 many small streams; rivers cut valleys to the sea, more in wet country' },
   { key: 'lakes', label: 'Lakes', section: 'Rivers and lakes', min: L.lakes[0], max: L.lakes[1], step: 1, unit: '%', hint: 'Share of the water land basins could hold that stands in lakes, the biggest first: 0 basins filled in … 100 even small basins hold lakes' },
@@ -213,7 +213,8 @@ for (const f of FIELDS) {
   let range: HTMLInputElement | null = null;
   if (f.toggle) {
     number.type = 'checkbox';
-    number.addEventListener('change', () => set(f.key, number.checked ? 1 : 0));
+    // (On: the setting's highest value: for geology, the newest kind.)
+    number.addEventListener('change', () => set(f.key, number.checked ? f.max : 0));
   }
   if (f.seed) {
     const dice = document.createElement('button');
@@ -251,7 +252,7 @@ function showForm(): void {
   for (const f of FIELDS) {
     const { number, range, hint } = inputs.get(f.key)!;
     const v = config[f.key];
-    if (f.toggle) number.checked = v === 1;
+    if (f.toggle) number.checked = v !== 0;
     else if (document.activeElement !== number) number.value = String(v);
     if (range && document.activeElement !== range) range.value = String(toSlider(f, v));
     if (f.key === 'landPercent' && hint) hint.textContent = `${v}% land · ${100 - v}% sea`;

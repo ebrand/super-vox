@@ -64,7 +64,7 @@ Rock layers, fault lines, and ores that follow geological logic instead of rando
 - **Phases** (each shipped and tested alone; each benchmarked against today's generation time per chunk before shipping):
   1. New rocks (sandstone, shale, limestone, granite: colour, hardness, drop, inventory), tilted/folded strata, coal seams, the `geology` setting, banded cliffs. **M** **Done 2026-10-06 (db39edd).**
   2. Faults. **M**
-  3. Intrusions, basalt dikes, ores at their margins (iron; new: copper, gold), banded iron. **M**. Open: what copper and gold are for (items, smelting, recipes) so they're worth mining.
+  3. Intrusions, basalt dikes, ores at their margins (iron; new: copper, gold), banded iron. **M**. Copper and gold are smelted into coins (decided 2026-10-06), to be spent in the marketplaces of item 6 later.
   4. Geologist's hammer that names the rock (a start on prospecting). **S**
 - **Decided (2026-10-06):** 4 rocks in phase 1 (basalt with dikes in phase 3); add copper and gold; new worlds on, existing unchanged; cliffs show layers.
 - **Later:** prospecting as a skill: reading strata, intrusions and faults; float ore in streams below a vein; a pan for stream gravel; a map marking finds. Ties in with the strata of relics in item 16. Structural integrity (different rocks, different spans) when that exists.
@@ -78,7 +78,7 @@ Characters who set up market stalls and buy ore, iron, steel and tools.
   - Items and inventory, crafting, and the shaped building blocks.
 - **Parts:**
   - Friendly NPCs (a new creature type with its own look).
-  - A currency (coins? emeralds?).
+  - A currency: coins, smelted from copper and gold (decided 2026-10-06; see item 5, phase 3).
   - A trade UI: talk to an NPC and see its offers.
   - Market stalls or settlements, either generated with the world or built by the NPCs over time.
   - Prices, perhaps rising and falling with supply.

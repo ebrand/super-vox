@@ -1113,7 +1113,8 @@ describe('surface settings', () => {
       const differs = H.some((h, k) => h !== H0[k]) || M.some((m, k) => m !== M0[k]) || p.trees(6000 * 16, 6000 * 16, 10_000 * 16, 10_000 * 16).length !== T0;
       expect(differs, key).toBe(true);
     }
-  });
+    // (Slow: a build per setting. Near 20 s alone, more under load.)
+  }, 60_000);
 });
 
 describe('plate builds stay the same', () => {
