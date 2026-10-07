@@ -49,9 +49,26 @@ export interface PlacedObject {
   /**
    * A design placed off the 1 m grid (see DESIGN_STEP): its box's shift from (x, y, z) (units, each
    * 0 to 15; none: on the grid). It then shares the blocks at its edges with what's beside it
-   * (half a wall, say), owning only its box in them (see objectRegion).
+   * (half a wall, say), owning only its box in them (see objectRegions).
    */
   offset?: [number, number, number];
+  /**
+   * A design: what it owns of its box (units, from the least corner of block (x, y, z), shift
+   * included): the box around each of its states' voxels (see designParts), so a thin door owns
+   * its panel shut and open, not the whole metre around it; others can share the rest. Kept as
+   * placed (should the design change). None (placed before): its whole box.
+   */
+  parts?: Box[];
+}
+
+/** A box, [x0, x1) x [y0, y1) x [z0, z1) (units). */
+export interface Box {
+  x0: number;
+  y0: number;
+  z0: number;
+  x1: number;
+  y1: number;
+  z1: number;
 }
 
 /** The blocks an object takes, as offsets from (x, y, z). */
@@ -79,19 +96,47 @@ export function objectBox(o: PlacedObject): { x0: number; y0: number; z0: number
 }
 
 /**
- * What of block (dx, dy, dz) (offsets from the object's (x, y, z)) the object owns, block-local
- * (units): the whole block, but for a design off the grid at its box's edges. What's outside it
- * there belongs to what's beside the object, and stays when it changes or goes.
+ * Whether an object owns every block it takes whole (built-in ones; designs placed on the grid
+ * before their parts were kept), rather than only its parts of them (see objectParts).
  */
-export function objectRegion(o: PlacedObject, dx: number, dy: number, dz: number): { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } {
-  const b = objectBox(o);
-  const clip = (v: number, d: number) => Math.min(S, Math.max(0, v - d * S));
-  return { x0: clip(b.x0, dx), y0: clip(b.y0, dy), z0: clip(b.z0, dz), x1: clip(b.x1, dx), y1: clip(b.y1, dy), z1: clip(b.z1, dz) };
+export function ownsWholeBlocks(o: PlacedObject): boolean {
+  return o.kind !== 'design' || (!o.parts && !o.offset);
 }
 
-/** Whether voxel `v` (block-local) shares any part of `r` (block-local, as objectRegion). */
-export function voxelInRegion(v: BlockVoxel, r: { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number }): boolean {
-  return v.x < r.x1 && v.x + v.size > r.x0 && v.y < r.y1 && v.y + v.size > r.y0 && v.z < r.z1 && v.z + v.size > r.z0;
+/** What an object owns (units, from the least corner of its block (x, y, z)): its parts, or its whole box. */
+export function objectParts(o: PlacedObject): readonly Box[] {
+  return o.kind === 'design' && o.parts ? o.parts : [objectBox(o)];
+}
+
+/**
+ * What of block (dx, dy, dz) (offsets from the object's (x, y, z)) the object owns, block-local
+ * (units; none: nothing of it there). What's outside them belongs to what's beside it (half a
+ * wall, another design), and stays when it changes or goes.
+ */
+export function objectRegions(o: PlacedObject, dx: number, dy: number, dz: number): Box[] {
+  const clip = (v: number, d: number) => Math.min(S, Math.max(0, v - d * S));
+  const out: Box[] = [];
+  for (const b of objectParts(o)) {
+    const r = { x0: clip(b.x0, dx), y0: clip(b.y0, dy), z0: clip(b.z0, dz), x1: clip(b.x1, dx), y1: clip(b.y1, dy), z1: clip(b.z1, dz) };
+    if (r.x1 > r.x0 && r.y1 > r.y0 && r.z1 > r.z0) out.push(r);
+  }
+  return out;
+}
+
+/** Whether two boxes share any volume. */
+export function boxesMeet(a: Box, b: Box): boolean {
+  return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1 && a.z0 < b.z1 && b.z0 < a.z1;
+}
+
+/** Whether voxel `v` (block-local) shares any part of any of `rs` (block-local, as objectRegions). */
+export function voxelInRegions(v: BlockVoxel, rs: readonly Box[]): boolean {
+  const b = { x0: v.x, y0: v.y, z0: v.z, x1: v.x + v.size, y1: v.y + v.size, z1: v.z + v.size };
+  return rs.some((r) => boxesMeet(b, r));
+}
+
+/** Whether a point (units, from the least corner of block (x, y, z)) is in any of an object's parts. */
+export function inObjectParts(o: PlacedObject, x: number, y: number, z: number): boolean {
+  return objectParts(o).some((b) => x >= b.x0 && x < b.x1 && y >= b.y0 && y < b.y1 && z >= b.z0 && z < b.z1);
 }
 
 /** The item taking an object down gives back (null: a design no longer in the library). */

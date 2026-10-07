@@ -350,6 +350,32 @@ export function designVoxelBox(design: ObjectDesign, facing: Facing): { x0: numb
 const voxelBoxes = new WeakMap<ObjectDesign, Map<Facing, ReturnType<typeof designVoxelBox>>>();
 
 /**
+ * What a design placed facing `facing`, shifted `offset` (units) owns: the box around each of its
+ * states' voxels (units, from the least corner of its block; the same box once). A state with none
+ * owns nothing; a design with none at all, its whole box.
+ */
+export function designParts(design: ObjectDesign, facing: Facing, offset: readonly [number, number, number] = [0, 0, 0]): { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number }[] {
+  const [ox, oy, oz] = offset;
+  const out: { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number }[] = [];
+  for (let state = 0; state < design.states.length; state++) {
+    const vs = designVoxels(design, state, facing);
+    if (!vs.length) continue;
+    const b = { x0: Infinity, y0: Infinity, z0: Infinity, x1: -Infinity, y1: -Infinity, z1: -Infinity };
+    for (const v of vs) {
+      b.x0 = Math.min(b.x0, v.x); b.y0 = Math.min(b.y0, v.y); b.z0 = Math.min(b.z0, v.z);
+      b.x1 = Math.max(b.x1, v.x + v.size); b.y1 = Math.max(b.y1, v.y + v.size); b.z1 = Math.max(b.z1, v.z + v.size);
+    }
+    const part = { x0: b.x0 + ox, y0: b.y0 + oy, z0: b.z0 + oz, x1: b.x1 + ox, y1: b.y1 + oy, z1: b.z1 + oz };
+    if (!out.some((p) => JSON.stringify(p) === JSON.stringify(part))) out.push(part);
+  }
+  if (!out.length) {
+    const [w, h, d] = designSpan(design, facing);
+    out.push({ x0: ox, y0: oy, z0: oz, x1: ox + w * BLOCK_SIZE, y1: oy + h * BLOCK_SIZE, z1: oz + d * BLOCK_SIZE });
+  }
+  return out;
+}
+
+/**
  * What a design (its first state) takes up: the box around its voxels (units, from the design's
  * corner), not the box it was drawn in. Pieces of a keep are measured by it, so an 8 m tower top
  * drawn in a 9 m box makes an 8 m tower. Null for a design with nothing in it.

@@ -68,8 +68,12 @@ import {
   objectHeight,
   objectCells,
   objectBox,
-  objectRegion,
-  voxelInRegion,
+  objectRegions,
+  voxelInRegions,
+  boxesMeet,
+  ownsWholeBlocks,
+  designParts,
+  type Box,
   isDesignOffset,
   objectStation,
   emptyStation,
@@ -168,11 +172,13 @@ const mod = (v: number, m: number) => ((v % m) + m) % m;
 /** What a sword cuts. */
 const LEAVES = new Set<number>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves]);
 const objectKey = (x: number, y: number, z: number) => `${x},${y},${z}`;
-/** An object's own key (its block; a design off the grid: and its shift, as two can share a least block). */
-const objectId = (o: PlacedObject) => objectKey(o.x, o.y, o.z) + (o.offset ? `+${o.offset.join(',')}` : '');
-/** Whether two block-local boxes (as objectRegion) share any volume. */
-const regionsMeet = (a: ReturnType<typeof objectRegion>, b: ReturnType<typeof objectRegion>) =>
-  a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1 && a.z0 < b.z1 && b.z0 < a.z1;
+/**
+ * An object's own key: its block; a design owning only parts of its blocks, also its shift, design
+ * and facing (several can start in one block, each in its own parts of it).
+ */
+const objectId = (o: PlacedObject) => objectKey(o.x, o.y, o.z) + (ownsWholeBlocks(o) ? '' : `+${(o.offset ?? [0, 0, 0]).join(',')}+${o.design}+${o.facing}`);
+/** Whether any of one list of block-local boxes shares volume with any of another's. */
+const regionsMeet = (a: readonly Box[], b: readonly Box[]) => a.some((r) => b.some((q) => boxesMeet(r, q)));
 
 /** One edit's results after another's (later chunks win). */
 function mergeResults(a: EditResult, b: EditResult): EditResult {
@@ -802,17 +808,14 @@ export class World {
   objectAtPoint(x: number, y: number, z: number): PlacedObject | undefined {
     const B = BLOCK_SIZE, bx = Math.floor(x / B), by = Math.floor(y / B), bz = Math.floor(z / B);
     const lx = x - bx * B, ly = y - by * B, lz = z - bz * B;
-    return this.objectsAt(bx, by, bz).find((o) => {
-      const r = this.regionIn(o, bx, by, bz);
-      return lx >= r.x0 && lx < r.x1 && ly >= r.y0 && ly < r.y1 && lz >= r.z0 && lz < r.z1;
-    });
+    return this.objectsAt(bx, by, bz).find((o) => this.regionsIn(o, bx, by, bz).some((r) => lx >= r.x0 && lx < r.x1 && ly >= r.y0 && ly < r.y1 && lz >= r.z0 && lz < r.z1));
   }
 
-  /** What of block (bx, by, bz) object `o` (taking it) owns, block-local (see objectRegion). */
-  private regionIn(o: PlacedObject, bx: number, by: number, bz: number): ReturnType<typeof objectRegion> {
+  /** What of block (bx, by, bz) object `o` (taking it) owns, block-local (see objectRegions). */
+  private regionsIn(o: PlacedObject, bx: number, by: number, bz: number): Box[] {
     const n = this.config.widthUnits / BLOCK_SIZE;
     const dx = this.config.wrapX ? mod(this.wrapBlockX(bx) - o.x, n) : bx - o.x;
-    return objectRegion(o, dx, by - o.y, bz - o.z);
+    return objectRegions(o, dx, by - o.y, bz - o.z);
   }
 
   /**
@@ -889,9 +892,9 @@ export class World {
     for (let by = Math.floor(b.y0 / BLOCK_SIZE); by <= Math.floor((b.y1 - 1) / BLOCK_SIZE); by++)
       for (let bz = Math.floor(b.z0 / BLOCK_SIZE); bz <= Math.floor((b.z1 - 1) / BLOCK_SIZE); bz++)
         for (let bx = Math.floor(b.x0 / BLOCK_SIZE); bx <= Math.floor((b.x1 - 1) / BLOCK_SIZE); bx++) {
-          // (Designs off the grid: only if the bounds reach into their box in this block.)
+          // (Designs owning parts of blocks: only if the bounds reach into their parts in this block.)
           const B = BLOCK_SIZE, part = { x0: b.x0 - bx * B, y0: b.y0 - by * B, z0: b.z0 - bz * B, x1: b.x1 - bx * B, y1: b.y1 - by * B, z1: b.z1 - bz * B };
-          const o = this.objectsAt(bx, by, bz).find((o) => !o.offset || regionsMeet(part, this.regionIn(o, bx, by, bz)));
+          const o = this.objectsAt(bx, by, bz).find((o) => ownsWholeBlocks(o) || regionsMeet([part], this.regionsIn(o, bx, by, bz)));
           if (o) return o;
         }
     return undefined;
@@ -1022,15 +1025,15 @@ export class World {
     return objectBlocks(o, joins).map(({ dx, dy, dz, voxels }) => {
       const bx = this.wrapBlockX(o.x + dx), by = o.y + dy, bz = o.z + dz;
       // (Off the grid: what's beside it in the blocks it shares stays.)
-      return { bx, by, bz, block: blockFromVoxels(o.offset ? [...this.besideObject(o, bx, by, bz), ...voxels] : voxels) };
+      return { bx, by, bz, block: blockFromVoxels(ownsWholeBlocks(o) ? voxels : [...this.besideObject(o, bx, by, bz), ...voxels]) };
     });
   }
 
   /** The voxels of block (bx, by, bz) outside what object `o` owns of it (see objectRegion): none, for one on the grid. */
   private besideObject(o: PlacedObject, bx: number, by: number, bz: number): BlockVoxel[] {
-    if (!o.offset) return [];
-    const r = this.regionIn(o, bx, by, bz);
-    return blockVoxels(withoutWater(this.blockAt(bx, by, bz) ?? null)).filter((v) => !voxelInRegion(v, r));
+    if (ownsWholeBlocks(o)) return [];
+    const rs = this.regionsIn(o, bx, by, bz);
+    return blockVoxels(withoutWater(this.blockAt(bx, by, bz) ?? null)).filter((v) => !voxelInRegions(v, rs));
   }
 
   /** Fences beside block (bx, by, bz), redrawn (they may join or part from what's there now). */
@@ -1054,11 +1057,11 @@ export class World {
   private checkRoom(o: PlacedObject, what: string): void {
     for (const [x, y, z] of this.objectBlocksAt(o)) {
       // (Designs off the grid may share a block, each in its own part of it.)
-      const r = this.regionIn(o, x, y, z);
-      if (this.objectsAt(x, y, z).some((p) => regionsMeet(r, this.regionIn(p, x, y, z)))) throw new EditError(`there's already something there`);
+      const rs = this.regionsIn(o, x, y, z);
+      if (this.objectsAt(x, y, z).some((p) => regionsMeet(rs, this.regionsIn(p, x, y, z)))) throw new EditError(`there's already something there`);
       const block = this.blockAt(x, y, z);
       if (block === undefined) throw new EditError('outside the world');
-      if (blockVoxels(withoutWater(block)).some((v) => voxelInRegion(v, r))) throw new EditError(what);
+      if (blockVoxels(withoutWater(block)).some((v) => voxelInRegions(v, rs))) throw new EditError(what);
     }
   }
 
@@ -1131,6 +1134,7 @@ export class World {
     const at = designOrigin(design, facing, bx, by, bz);
     const o: PlacedObject = { kind: 'design', design: design.id, state: 0, x: this.wrapBlockX(at.x), y: at.y, z: at.z, facing, open: false, span: designSpan(design, facing) };
     if (offset.some((c) => c !== 0)) o.offset = [...offset];
+    o.parts = designParts(design, facing, offset);
     const [w, h, d] = o.span!;
     this.checkRoom(o, `a ${design.name} needs ${w} x ${h} x ${d} m of empty space`);
     this.addObject(o);
@@ -1316,7 +1320,8 @@ export class World {
       const design = designById(o.design ?? '');
       if (!design || design.states.length < 2) throw new EditError(`a ${objectName(o)} doesn't change`);
       const next = { ...o, state: ((o.state ?? 0) + 1) % design.states.length };
-      if (objectBlocks(next).length === 0) throw new EditError(`the ${design.name} design has changed since this one was placed: take it down and place it again`);
+      const changed = objectBlocks(next).length === 0 || (o.parts && JSON.stringify(designParts(design, o.facing, o.offset)) !== JSON.stringify(o.parts));
+      if (changed) throw new EditError(`the ${design.name} design has changed since this one was placed: take it down and place it again`);
       this.addObject(next);
       const result = this.writeBlocks(this.objectWrites(next));
       this.saveObjects();

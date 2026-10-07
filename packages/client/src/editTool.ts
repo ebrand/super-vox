@@ -25,8 +25,9 @@ import {
   itemName,
   materialName,
   objectKindOf,
-  objectBox,
+  inObjectParts,
   objectCells,
+  ownsWholeBlocks,
   objectName,
   designById,
   designOfItem,
@@ -351,16 +352,14 @@ export class EditTool {
     if (!this.target) return undefined;
     const b = (v: number) => floorDiv(v, BLOCK_SIZE);
     const here = this.designCells.get(`${this.wrapBlock(b(this.target.x))},${b(this.target.y)},${b(this.target.z)}`) ?? [];
-    // (Off the grid, it shares blocks with what's beside it, other designs too: only within its box.)
+    // (A design may share its blocks with what's beside it, other designs too: only within its parts.)
     const B = BLOCK_SIZE, n = this.wrapBlocks ? this.wrapBlocks * B : null;
     const target = this.target;
     return here.find((o) => {
-      if (!o.offset) return true;
-      const box = objectBox(o);
+      if (ownsWholeBlocks(o)) return true;
       let x = target.x - o.x * B;
       if (n) x = ((x % n) + n) % n;
-      const y = target.y - o.y * B, z = target.z - o.z * B;
-      return x >= box.x0 && x < box.x1 && y >= box.y0 && y < box.y1 && z >= box.z0 && z < box.z1;
+      return inObjectParts(o, x, target.y - o.y * B, target.z - o.z * B);
     });
   }
 

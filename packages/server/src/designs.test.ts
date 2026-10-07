@@ -279,6 +279,52 @@ describe('designs off the grid', () => {
     expect(block(again, 100, 0, 100)).toBeNull();
   });
 
+  it('own only the room their voxels take, shut and open: a thin door leaves the rest of its box to others', () => {
+    const lib = new DesignLibrary(null);
+    // A door with its panel on the back edge (z 0..2), open: against the west side (x 0..2).
+    const edge = lib.put({ ...door(), id: 'edge-door', states: [{ name: 'shut', voxels: door().states[0]!.voxels.map((v) => ({ ...v, z: v.z - 6 })) }, door().states[1]!] }) as ObjectDesign;
+    const w = flat();
+    w.placeDesign(edge, 100, 0, 100, 'n');
+    const a = w.objectAt(100, 0, 100)!;
+    expect(a.parts).toEqual([{ x0: 0, y0: 0, z0: 0, x1: 16, y1: 32, z1: 2 }, { x0: 0, y0: 0, z0: 0, x1: 2, y1: 32, z1: 16 }]);
+    // Another 1/2 m in front of it, in the same blocks (its panel at z 8..10, clear of both of the first's): fine.
+    w.placeDesign(edge, 100, 0, 100, 'n', [4, 0, 8]);
+    expect(w.objectsAt(100, 0, 100).length).toBe(2);
+    // Where the first swings open (its west side): no.
+    expect(() => w.placeDesign(edge, 100, 0, 100, 'e', [0, 0, 0])).toThrow(/already something there/);
+    // A wall piece can go in the rest of their block, but not where either door is or swings.
+    w.applyEdit({ op: 'place', x: 100 * 16 + 12, y: 0, z: 100 * 16 + 12, size: 4, material: S });
+    expect(() => w.applyEdit({ op: 'place', x: 100 * 16, y: 0, z: 100 * 16 + 4, size: 2, material: S })).toThrow(/Door/);
+    // Opened, closed, taken down: the other door and the wall piece stay.
+    const first = () => w.objectsAt(100, 0, 100).find((o) => !o.offset)!;
+    w.toggleObject(a);
+    expect(first().state).toBe(1);
+    w.toggleObject(first());
+    expect(w.objectsAt(100, 0, 100).map((o) => o.state)).toEqual([0, 0]);
+    w.removeObject(first());
+    const left = blockVoxels(block(w, 100, 0, 100));
+    expect(left.filter((v) => v.material === S).length).toBe(1);
+    expect(left.filter((v) => v.material === P).every((v) => v.z >= 8 && v.z < 10)).toBe(true);
+    // Its design changed, but not its size: it won't change (its parts are what it was placed with), but it comes down.
+    lib.put({ ...door(), id: 'edge-door', states: [door().states[0]!, door().states[1]!] });
+    const b = w.objectsAt(100, 0, 100)[0]!;
+    expect(() => w.toggleObject(b)).toThrow(/changed since/);
+    w.removeObject(b);
+    expect(blockVoxels(block(w, 100, 0, 100)).map((v) => v.material)).toEqual([S]);
+  });
+
+  it('go side by side when only their voxels touch, however big the box they were drawn in', () => {
+    // A 1/2 m x 1/4 m x 1/2 m block of 1/4 m voxels, in the middle of a 1 m box.
+    const tile = new DesignLibrary(null).put({ ...door(), id: 'tile', name: 'Tile', size: [1, 1, 1], states: [{ name: 's', voxels: [4, 8].flatMap((x) => [4, 8].map((z) => ({ x, y: 0, z, size: 4, material: S }))) }] }) as ObjectDesign;
+    const w = flat();
+    // Each 1/2 m along from the last, both ways: their boxes overlap, their voxels only meet.
+    for (const [bx, ox] of [[100, 0], [100, 8], [101, 0], [101, 8]] as const)
+      for (const [bz, oz] of [[100, 0], [100, 8]] as const) w.placeDesign(tile, bx, 0, bz, 'n', [ox, 0, oz]);
+    expect(w.designObjects().length).toBe(8);
+    // 1/4 m along: into one.
+    expect(() => w.placeDesign(tile, 100, 0, 100, 'n', [4, 0, 0])).toThrow(/already something there/);
+  });
+
   it('split voxels that would cross a 1 m gridline, and stand on a floor off the grid', () => {
     const d = new DesignLibrary(null).put({ ...door(), id: 'cube', name: 'Cube', size: [1, 1, 1], states: [{ name: 'c', voxels: [{ x: 0, y: 0, z: 0, size: 16, material: P }] }] }) as ObjectDesign;
     const w = flat();
