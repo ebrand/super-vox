@@ -1206,7 +1206,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           }
           // Left-clicking any part of an object takes the whole thing down (and gives it back).
           if (msg.edit.op === 'remove') {
-            const o = world.objectAt(Math.floor(msg.edit.x / 16), Math.floor(msg.edit.y / 16), Math.floor(msg.edit.z / 16));
+            const o = world.objectAtPoint(msg.edit.x, msg.edit.y, msg.edit.z);
             if (o) {
               // A furnace or stove: what's in it comes back too (brought up to date first).
               const now = Date.now(), st = world.station(o, now);
@@ -1280,7 +1280,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               if (!kind && !design) return fail(`a ${itemName(msg.item)} isn't placed like that`);
               const why = inventory?.refuseItem(msg.item);
               if (why) return fail(why);
-              result = design ? world.placeDesign(design, msg.x, msg.y, msg.z, msg.facing) : world.placeObject(kind!, msg.x, msg.y, msg.z, msg.facing, msg.wall ?? false);
+              result = design ? world.placeDesign(design, msg.x, msg.y, msg.z, msg.facing, msg.offset) : world.placeObject(kind!, msg.x, msg.y, msg.z, msg.facing, msg.wall ?? false);
               inventory?.addItem(msg.item, -1);
             } else if (msg.type === 'bucket') {
               // Water in buckets is kept by volume (a 1 m block of it is BLOCK_VOLUME); 16 units deep fills a block.
@@ -1311,7 +1311,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               if (!r) return fail('no leaves there');
               result = r;
             } else {
-              const o = world.objectAt(Math.floor(msg.x / 16), Math.floor(msg.y / 16), Math.floor(msg.z / 16));
+              const o = world.objectAtPoint(msg.x, msg.y, msg.z);
               // A bed: theirs from now on (see respawn); nothing about it changes.
               const p = players.get(socket);
               if (o && isBed(o) && p) {

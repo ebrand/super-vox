@@ -5,6 +5,7 @@ import {
   Item,
   Material,
   RECIPES,
+  designAnchor,
   designBlocks,
   designOfItem,
   designOrigin,
@@ -274,5 +275,35 @@ describe('big designs and pieces of a keep', () => {
     expect(parseDesign({ ...wall, states: [{ name: 'built', voxels: [...voxels, { x: 0, y: 0, z: 0, size: 8, material: Material.Cobblestone }] }] })).toMatch(/overlap/);
     expect(parseDesign({ ...wall, piece: 'moat' })).toMatch(/piece/);
     expect(parseDesign({ ...wall, role: 'furnace' })).toMatch(/not both/);
+  });
+});
+
+describe('designs off the grid', () => {
+  it('are aimed to the 1/4 m: against the face, standing on a floor, centred on the point across it', () => {
+    // A floor's top at y = 8 (a 1/2 m slab), hit at (100.3, 8, 52.9): the 1 m around that point, on it.
+    expect(designAnchor([100, 7, 52], [0, 1, 0], [100.3, 8, 52.9])).toEqual([92, 8, 44]);
+    // A wall's east face at x = 24 (cell 23), hit at z = 69.2: off it, on its 1 m block's level.
+    expect(designAnchor([23, 21, 69], [1, 0, 0], [24, 21.5, 69.2])).toEqual([24, 16, 60]);
+    // Its west face (cell 16): the 1 m block ending at it.
+    expect(designAnchor([16, 21, 69], [-1, 0, 0], [16, 21.5, 69.2])).toEqual([0, 16, 60]);
+    // A ceiling: the 1 m under it.
+    expect(designAnchor([40, 32, 40], [0, -1, 0], [40.5, 32, 40.5])).toEqual([32, 16, 32]);
+    // On the 1 m grid, aimed at a block's middle: as ever.
+    expect(designAnchor([24, 15, 24], [0, 1, 0], [24, 16, 24])).toEqual([16, 16, 16]);
+  });
+
+  it('keep every voxel inside a block, splitting those that would cross', () => {
+    const d = { id: 'x', name: 'X', size: [1, 1, 1] as [number, number, number], item: 0, recipe: null, states: [{ name: 's', voxels: [{ x: 0, y: 0, z: 0, size: 8, material: 1 }, { x: 8, y: 8, z: 8, size: 8, material: 2 }, { x: 0, y: 8, z: 0, size: 2, material: 3 }] }] };
+    for (const offset of [[0, 0, 0], [4, 0, 0], [8, 8, 8], [12, 4, 0]] as [number, number, number][]) {
+      const blocks = designBlocks(d, 0, 'n', offset);
+      expect(blocks.length).toBe([0, 1, 2].reduce((n, a) => n * (offset[a]! > 0 ? 2 : 1), 1));
+      const vs = blocks.flatMap((b) => b.voxels);
+      expect(vs.every((v) => v.x % v.size === 0 && v.y % v.size === 0 && v.z % v.size === 0 && v.x + v.size <= 16 && v.y + v.size <= 16 && v.z + v.size <= 16)).toBe(true);
+      for (const m of [1, 2, 3]) expect(vs.filter((v) => v.material === m).reduce((n, v) => n + v.size ** 3, 0)).toBe([512, 512, 8][m - 1]);
+    }
+    // On the grid, as it was drawn.
+    expect(designBlocks(d, 0, 'n', [0, 0, 0])[0]!.voxels.map((v) => v.size)).toEqual([8, 8, 2]);
+    // 1/2 m off: 1/2 m voxels still whole.
+    expect(designBlocks(d, 0, 'n', [8, 8, 8]).flatMap((b) => b.voxels).filter((v) => v.material !== 3).map((v) => v.size)).toEqual([8, 8]);
   });
 });

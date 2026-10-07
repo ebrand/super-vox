@@ -46,15 +46,52 @@ export interface PlacedObject {
   state?: number;
   /** A design: the blocks its box takes along x, y and z (as placed: turned; kept, should the design change). A torch: [1, 2, 1] when it reaches into the block above. */
   span?: [number, number, number];
+  /**
+   * A design placed off the 1 m grid (see DESIGN_STEP): its box's shift from (x, y, z) (units, each
+   * 0 to 15; none: on the grid). It then shares the blocks at its edges with what's beside it
+   * (half a wall, say), owning only its box in them (see objectRegion).
+   */
+  offset?: [number, number, number];
 }
 
 /** The blocks an object takes, as offsets from (x, y, z). */
 export function objectCells(o: PlacedObject): [number, number, number][] {
   // (A torch reaching up into the block above takes it too: see fitTorch.)
   const [w, h, d] = o.span ?? (o.kind === 'design' ? [1, 1, 1] : [1, objectHeight(o.kind), 1]);
+  if (o.offset) return cellsOf(w + (o.offset[0] > 0 ? 1 : 0), h + (o.offset[1] > 0 ? 1 : 0), d + (o.offset[2] > 0 ? 1 : 0));
+  return cellsOf(w, h, d);
+}
+
+function cellsOf(w: number, h: number, d: number): [number, number, number][] {
   const out: [number, number, number][] = [];
   for (let dy = 0; dy < h; dy++) for (let dz = 0; dz < d; dz++) for (let dx = 0; dx < w; dx++) out.push([dx, dy, dz]);
   return out;
+}
+
+/**
+ * The box an object owns (units, from the least corner of its block (x, y, z)): its whole blocks,
+ * or a design's box, shifted by its offset.
+ */
+export function objectBox(o: PlacedObject): { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } {
+  const [w, h, d] = o.span ?? (o.kind === 'design' ? [1, 1, 1] : [1, objectHeight(o.kind), 1]);
+  const [ox, oy, oz] = o.offset ?? [0, 0, 0];
+  return { x0: ox, y0: oy, z0: oz, x1: ox + w * S, y1: oy + h * S, z1: oz + d * S };
+}
+
+/**
+ * What of block (dx, dy, dz) (offsets from the object's (x, y, z)) the object owns, block-local
+ * (units): the whole block, but for a design off the grid at its box's edges. What's outside it
+ * there belongs to what's beside the object, and stays when it changes or goes.
+ */
+export function objectRegion(o: PlacedObject, dx: number, dy: number, dz: number): { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } {
+  const b = objectBox(o);
+  const clip = (v: number, d: number) => Math.min(S, Math.max(0, v - d * S));
+  return { x0: clip(b.x0, dx), y0: clip(b.y0, dy), z0: clip(b.z0, dz), x1: clip(b.x1, dx), y1: clip(b.y1, dy), z1: clip(b.z1, dz) };
+}
+
+/** Whether voxel `v` (block-local) shares any part of `r` (block-local, as objectRegion). */
+export function voxelInRegion(v: BlockVoxel, r: { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number }): boolean {
+  return v.x < r.x1 && v.x + v.size > r.x0 && v.y < r.y1 && v.y + v.size > r.y0 && v.z < r.z1 && v.z + v.size > r.z0;
 }
 
 /** The item taking an object down gives back (null: a design no longer in the library). */
@@ -260,7 +297,7 @@ export function objectBlocks(o: PlacedObject, fenceToward: readonly Facing[] = [
   if (o.kind === 'design') {
     const design = designById(o.design ?? '');
     if (!design || designSpan(design, o.facing).join() !== (o.span ?? []).join()) return [];
-    return designBlocks(design, o.state ?? 0, o.facing);
+    return designBlocks(design, o.state ?? 0, o.facing, o.offset);
   }
   if (o.kind === 'fence') return [{ dx: 0, dy: 0, dz: 0, voxels: fenceVoxels(fenceToward) }];
   if (o.kind === 'table') return [{ dx: 0, dy: 0, dz: 0, voxels: tableVoxels(o.facing) }];

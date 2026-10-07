@@ -104,12 +104,18 @@ describe('protocol', () => {
 
   it('validates placing and using objects', () => {
     expect(decodeClientMessage('{"type":"placeObject","id":3,"item":1003,"x":-5,"y":2,"z":9,"facing":"e"}')).toEqual({ type: 'placeObject', id: 3, item: 1003, x: -5, y: 2, z: 9, facing: 'e' });
+    expect(decodeClientMessage('{"type":"placeObject","id":3,"item":5000,"x":1,"y":2,"z":3,"facing":"n","offset":[8,0,12]}')).toEqual({ type: 'placeObject', id: 3, item: 5000, x: 1, y: 2, z: 3, facing: 'n', offset: [8, 0, 12] });
     expect(decodeClientMessage('{"type":"use","id":4,"x":-80,"y":33,"z":150}')).toEqual({ type: 'use', id: 4, x: -80, y: 33, z: 150 });
     for (const raw of [
       '{"type":"placeObject","id":3,"item":1003,"x":0,"y":0,"z":0,"facing":"up"}',
       '{"type":"placeObject","id":-1,"item":1003,"x":0,"y":0,"z":0,"facing":"n"}',
       '{"type":"placeObject","id":3,"item":1003,"x":0.5,"y":0,"z":0,"facing":"n"}',
       '{"type":"use","id":4,"x":1,"y":2}',
+      // (Off the grid: 1/4 m steps within a block, along each axis.)
+      '{"type":"placeObject","id":3,"item":5000,"x":0,"y":0,"z":0,"facing":"n","offset":[6,0,0]}',
+      '{"type":"placeObject","id":3,"item":5000,"x":0,"y":0,"z":0,"facing":"n","offset":[16,0,0]}',
+      '{"type":"placeObject","id":3,"item":5000,"x":0,"y":0,"z":0,"facing":"n","offset":[4,0]}',
+      '{"type":"placeObject","id":3,"item":5000,"x":0,"y":0,"z":0,"facing":"n","offset":[-4,0,0]}',
     ]) {
       expect(decodeClientMessage(raw)).toBeNull();
     }

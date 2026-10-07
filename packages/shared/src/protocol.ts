@@ -7,7 +7,7 @@ import { MAX_MATERIAL_ID } from './materials.js';
 import type { DebrisPiece } from './debris.js';
 import type { DeathCause } from './survival.js';
 import { isFacing, type Facing, type PlacedObject } from './objects.js';
-import type { ObjectDesign } from './designs.js';
+import { isDesignOffset, type ObjectDesign } from './designs.js';
 import type { EntityKind } from './mobs.js';
 import type { StationKind, StationState } from './stations.js';
 import { UNITS_PER_METER } from './units.js';
@@ -48,7 +48,7 @@ export type ClientMessage =
    * coordinates), facing `facing` (a torch: on the floor, or `wall`: on the wall that way);
    * answered with `editResult` (`id` as for edits).
    */
-  | { type: 'placeObject'; id: number; item: number; x: number; y: number; z: number; facing: Facing; wall?: boolean }
+  | { type: 'placeObject'; id: number; item: number; x: number; y: number; z: number; facing: Facing; wall?: boolean; /** A design: off the 1 m grid by this (units, see isDesignOffset). */ offset?: [number, number, number] }
   /**
    * A bucket at block (x, y, z) (1 m block coordinates): `fill` takes up to 1 m of water from it,
    * otherwise pours up to 1 m into it (see PouredWater); answered with `editResult`.
@@ -340,7 +340,8 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   const isId = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 2 ** 32;
   if (msg.type === 'placeObject' && isId(msg.id) && isInt32(msg.item) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z) && isFacing(msg.facing)) {
     if (msg.wall !== undefined && typeof msg.wall !== 'boolean') return null;
-    return { type: 'placeObject', id: msg.id as number, item: msg.item, x: msg.x, y: msg.y, z: msg.z, facing: msg.facing, ...(msg.wall ? { wall: true } : {}) };
+    if (msg.offset !== undefined && !isDesignOffset(msg.offset)) return null;
+    return { type: 'placeObject', id: msg.id as number, item: msg.item, x: msg.x, y: msg.y, z: msg.z, facing: msg.facing, ...(msg.wall ? { wall: true } : {}), ...(msg.offset ? { offset: [...msg.offset] as [number, number, number] } : {}) };
   }
   if (msg.type === 'bucket' && isId(msg.id) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z) && typeof msg.fill === 'boolean') {
     return { type: 'bucket', id: msg.id as number, x: msg.x, y: msg.y, z: msg.z, fill: msg.fill };

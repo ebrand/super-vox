@@ -258,17 +258,56 @@ export function designVoxels(design: ObjectDesign, state: number, facing: Facing
 
 /**
  * Each block of a design placed facing `facing` (offsets from its least corner, every block of
- * its box, empty ones too) with its voxels (block-local).
+ * its box, empty ones too) with its voxels (block-local). `offset`: its box's shift from the 1 m
+ * grid (units, each 0 to 15; placed off the grid, see DESIGN_STEP): it then takes a block more
+ * along each axis it's shifted on, and voxels that would cross a 1 m gridline are split (into the
+ * largest pieces the shift keeps aligned).
  */
-export function designBlocks(design: ObjectDesign, state: number, facing: Facing): { dx: number; dy: number; dz: number; voxels: BlockVoxel[] }[] {
-  const [w, h, d] = designSpan(design, facing);
+export function designBlocks(design: ObjectDesign, state: number, facing: Facing, offset: readonly [number, number, number] = [0, 0, 0]): { dx: number; dy: number; dz: number; voxels: BlockVoxel[] }[] {
+  const [ox, oy, oz] = offset;
+  const [sw, sh, sd] = designSpan(design, facing);
+  const w = sw + (ox > 0 ? 1 : 0), h = sh + (oy > 0 ? 1 : 0), d = sd + (oz > 0 ? 1 : 0);
   const blocks = Array.from({ length: w * h * d }, (_, i) => ({ dx: i % w, dz: Math.floor(i / w) % d, dy: Math.floor(i / (w * d)), voxels: [] as BlockVoxel[] }));
   const B = BLOCK_SIZE;
-  for (const v of designVoxels(design, state, facing)) {
+  const put = (v: BlockVoxel) => {
     const dx = Math.floor(v.x / B), dy = Math.floor(v.y / B), dz = Math.floor(v.z / B);
     blocks[(dy * d + dz) * w + dx]!.voxels.push({ ...v, x: v.x - dx * B, y: v.y - dy * B, z: v.z - dz * B });
+  };
+  for (const v of designVoxels(design, state, facing)) {
+    let s = v.size;
+    while (s > 1 && (ox % s || oy % s || oz % s)) s /= 2;
+    for (let y = 0; y < v.size; y += s)
+      for (let z = 0; z < v.size; z += s)
+        for (let x = 0; x < v.size; x += s) put({ x: v.x + x + ox, y: v.y + y + oy, z: v.z + z + oz, size: s, material: v.material });
   }
   return blocks;
+}
+
+/** How finely designs are placed (units): a 1/4 m step, so a door can go in a gap off the 1 m grid. */
+export const DESIGN_STEP = BLOCK_SIZE / 4;
+
+/** Whether `v` is a shift from the 1 m grid a design can be placed at (units along x, y and z; see DESIGN_STEP). */
+export function isDesignOffset(v: unknown): v is [number, number, number] {
+  return Array.isArray(v) && v.length === 3 && v.every((c) => Number.isInteger(c) && c >= 0 && c < BLOCK_SIZE && c % DESIGN_STEP === 0);
+}
+
+/**
+ * Where a design goes when aimed at a face (as `designOrigin` takes it, but to the 1/4 m): the
+ * least corner (units, multiples of DESIGN_STEP) of the 1 m "block" beside the face that its
+ * front row's middle stands in. Off the face along its normal (against it), centred on the
+ * point aimed at across it, standing on a floor aimed at (a wall: on its 1 m block's level, as
+ * ever). `cell`: the solid unit cell hit; `point`: where on its face.
+ */
+export function designAnchor(cell: readonly number[], normal: readonly number[], point: readonly number[]): [number, number, number] {
+  const S = DESIGN_STEP;
+  const down = (v: number) => Math.floor(v / S) * S, up = (v: number) => Math.ceil(v / S) * S;
+  return [0, 1, 2].map((a) => {
+    const n = normal[a]!, c = cell[a]!;
+    if (n > 0) return up(c + 1);
+    if (n < 0) return down(c) - BLOCK_SIZE;
+    if (a === 1) return Math.floor(c / BLOCK_SIZE) * BLOCK_SIZE;
+    return Math.round((point[a]! - BLOCK_SIZE / 2) / S) * S;
+  }) as [number, number, number];
 }
 
 /**

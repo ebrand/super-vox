@@ -25,10 +25,12 @@ import {
   itemName,
   materialName,
   objectKindOf,
+  objectBox,
   objectCells,
   objectName,
   designById,
   designOfItem,
+  designAnchor,
   designOrigin,
   designSpan,
   usable,
@@ -135,7 +137,7 @@ export class EditTool {
   private target: Box | null = null;
   /** The aimed voxel's material, and the unit cell and face the aim hit (for objects). */
   private targetMaterial: MaterialId | null = null;
-  private hit: { cell: [number, number, number]; normal: [number, number, number]; distance: number } | null = null;
+  private hit: { cell: [number, number, number]; normal: [number, number, number]; point: [number, number, number]; distance: number } | null = null;
   /** Finds a mob along a ray (units), for hitting it (set by the game; see EntityView.pick). */
   pickEntity: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { id: number; dist: number } | null) | null = null;
   private placement: (Box & { valid: boolean; reason: string }) | null = null;
@@ -335,7 +337,15 @@ export class EditTool {
   private aimedDesign(): PlacedObject | undefined {
     if (!this.target) return undefined;
     const b = (v: number) => floorDiv(v, BLOCK_SIZE);
-    return this.designCells.get(`${this.wrapBlock(b(this.target.x))},${b(this.target.y)},${b(this.target.z)}`);
+    const o = this.designCells.get(`${this.wrapBlock(b(this.target.x))},${b(this.target.y)},${b(this.target.z)}`);
+    if (!o?.offset) return o;
+    // (Off the grid, it shares blocks with what's beside it: only within its box.)
+    const box = objectBox(o), B = BLOCK_SIZE;
+    const n = this.wrapBlocks ? this.wrapBlocks * B : null;
+    let x = this.target.x - o.x * B;
+    if (n) x = ((x % n) + n) % n;
+    const y = this.target.y - o.y * B, z = this.target.z - o.z * B;
+    return x >= box.x0 && x < box.x1 && y >= box.y0 && y < box.y1 && z >= box.z0 && z < box.z1 ? o : undefined;
   }
 
   /** The block an object placed now would go in (beside the face aimed at), and the way it would face. */
@@ -346,17 +356,30 @@ export class EditTool {
     return { x, y, z, facing: facingOfYaw(Math.atan2(-dir.x, -dir.z)) };
   }
 
+  /**
+   * Where a design placed now would go, to the 1/4 m (see designAnchor): the block its front row's
+   * middle stands in, and its shift from the 1 m grid (units).
+   */
+  private designSpot(): { x: number; y: number; z: number; offset: [number, number, number]; facing: ReturnType<typeof facingOfYaw> } | null {
+    const spot = this.objectSpot();
+    if (!spot || !this.hit) return null;
+    const anchor = designAnchor(this.hit.cell, this.hit.normal, this.hit.point);
+    const [x, y, z] = anchor.map((v) => floorDiv(v, BLOCK_SIZE)) as [number, number, number];
+    return { x, y, z, offset: [anchor[0] - x * BLOCK_SIZE, anchor[1] - y * BLOCK_SIZE, anchor[2] - z * BLOCK_SIZE], facing: spot.facing };
+  }
+
   /** Shows where the designed object in hand would go (its whole box), if one is. */
   private showDesignPreview(): void {
     const held = this.materialOf();
     const design = this.mode === 'hybrid' && held !== null ? designOfItem(held) : undefined;
-    const spot = design && this.objectSpot();
+    const spot = design && this.designSpot();
     this.designPreview.visible = !!spot;
     if (!design || !spot) return;
     const at = designOrigin(design, spot.facing, spot.x, spot.y, spot.z);
     const [w, h, d] = designSpan(design, spot.facing);
+    const [ox, oy, oz] = spot.offset.map((v) => v / BLOCK_SIZE) as [number, number, number];
     this.designPreview.scale.set(w * 1.002, h * 1.002, d * 1.002);
-    this.designPreview.position.set(at.x + w / 2, at.y + h / 2, at.z + d / 2);
+    this.designPreview.position.set(at.x + ox + w / 2, at.y + oy + h / 2, at.z + oz + d / 2);
   }
 
   /** Re-aims from the camera; call every frame. */
@@ -675,6 +698,16 @@ export class EditTool {
    * block beside the face aimed at, facing the way we look.
    */
   private placeObject(item: ItemId): void {
+    if (designOfItem(item)) {
+      // (To the 1/4 m: see designSpot.)
+      const at = this.designSpot();
+      if (!at) return;
+      const id = this.nextId++;
+      this.pending.set(id, 'place');
+      const shifted = at.offset.some((v) => v !== 0);
+      this.send({ type: 'placeObject', id, item, x: at.x, y: at.y, z: at.z, facing: at.facing, ...(shifted ? { offset: at.offset } : {}) });
+      return;
+    }
     const spot = this.objectSpot();
     if (!spot) return;
     const { x, y, z } = spot;

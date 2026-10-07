@@ -67,6 +67,10 @@ import {
   isTorchVoxel,
   objectHeight,
   objectCells,
+  objectBox,
+  objectRegion,
+  voxelInRegion,
+  isDesignOffset,
   objectStation,
   emptyStation,
   isStationKind,
@@ -771,6 +775,26 @@ export class World {
   }
 
   /**
+   * The object at unit cell (x, y, z), if any: as objectAt, but in a block a design off the grid
+   * shares with what's beside it, only within its box.
+   */
+  objectAtPoint(x: number, y: number, z: number): PlacedObject | undefined {
+    const B = BLOCK_SIZE, bx = Math.floor(x / B), by = Math.floor(y / B), bz = Math.floor(z / B);
+    const o = this.objectAt(bx, by, bz);
+    if (!o?.offset) return o;
+    const r = this.regionIn(o, bx, by, bz);
+    const lx = x - bx * B, ly = y - by * B, lz = z - bz * B;
+    return lx >= r.x0 && lx < r.x1 && ly >= r.y0 && ly < r.y1 && lz >= r.z0 && lz < r.z1 ? o : undefined;
+  }
+
+  /** What of block (bx, by, bz) object `o` (taking it) owns, block-local (see objectRegion). */
+  private regionIn(o: PlacedObject, bx: number, by: number, bz: number): ReturnType<typeof objectRegion> {
+    const n = this.config.widthUnits / BLOCK_SIZE;
+    const dx = this.config.wrapX ? mod(this.wrapBlockX(bx) - o.x, n) : bx - o.x;
+    return objectRegion(o, dx, by - o.y, bz - o.z);
+  }
+
+  /**
    * Where a player whose bed is at block (bx, by, bz) (1 m block coordinates) comes back after
    * dying (feet, units: on top of it, in the middle), or why they can't: it isn't a bed there any
    * more ('gone'), or there's no room above it ('blocked').
@@ -778,8 +802,8 @@ export class World {
   bedSpot(bx: number, by: number, bz: number): { x: number; y: number; z: number } | 'gone' | 'blocked' {
     const o = this.objectAt(bx, by, bz);
     if (!o || !isBed(o) || this.wrapBlockX(o.x) !== this.wrapBlockX(bx) || o.y !== by || o.z !== bz) return 'gone';
-    const [w, h, d] = o.span ?? [1, 1, 1];
-    const x = (o.x + w / 2) * BLOCK_SIZE, z = (o.z + d / 2) * BLOCK_SIZE, top = (o.y + h) * BLOCK_SIZE;
+    const b = objectBox(o);
+    const x = o.x * BLOCK_SIZE + (b.x0 + b.x1) / 2, z = o.z * BLOCK_SIZE + (b.z0 + b.z1) / 2, top = o.y * BLOCK_SIZE + b.y1;
     // (The client stands them half a metre above where they're sent: room for them there, or a little higher.)
     const lift = liftOut(playerBox([x, top + BLOCK_SIZE / 2 + PLAYER.eye, z]), this.solidAt, BLOCK_SIZE);
     return lift === null ? 'blocked' : { x, y: top + lift, z };
@@ -831,7 +855,12 @@ export class World {
       for (let bz = Math.floor(b.z0 / BLOCK_SIZE); bz <= Math.floor((b.z1 - 1) / BLOCK_SIZE); bz++)
         for (let bx = Math.floor(b.x0 / BLOCK_SIZE); bx <= Math.floor((b.x1 - 1) / BLOCK_SIZE); bx++) {
           const o = this.objectAt(bx, by, bz);
-          if (o) return o;
+          if (!o) continue;
+          if (!o.offset) return o;
+          // (A design off the grid: only if the bounds reach into its box in this block.)
+          const B = BLOCK_SIZE, r = this.regionIn(o, bx, by, bz);
+          const x0 = b.x0 - bx * B, y0 = b.y0 - by * B, z0 = b.z0 - bz * B, x1 = b.x1 - bx * B, y1 = b.y1 - by * B, z1 = b.z1 - bz * B;
+          if (x0 < r.x1 && x1 > r.x0 && y0 < r.y1 && y1 > r.y0 && z0 < r.z1 && z1 > r.z0) return o;
         }
     return undefined;
   }
@@ -958,7 +987,18 @@ export class World {
   /** The blocks of an object as it should be now (fences join their neighbours). */
   private objectWrites(o: PlacedObject): { bx: number; by: number; bz: number; block: Block }[] {
     const joins = o.kind === 'fence' ? fenceJoins(o.x, o.y, o.z, (x, y, z) => this.objectAt(x, y, z)) : [];
-    return objectBlocks(o, joins).map(({ dx, dy, dz, voxels }) => ({ bx: this.wrapBlockX(o.x + dx), by: o.y + dy, bz: o.z + dz, block: blockFromVoxels(voxels) }));
+    return objectBlocks(o, joins).map(({ dx, dy, dz, voxels }) => {
+      const bx = this.wrapBlockX(o.x + dx), by = o.y + dy, bz = o.z + dz;
+      // (Off the grid: what's beside it in the blocks it shares stays.)
+      return { bx, by, bz, block: blockFromVoxels(o.offset ? [...this.besideObject(o, bx, by, bz), ...voxels] : voxels) };
+    });
+  }
+
+  /** The voxels of block (bx, by, bz) outside what object `o` owns of it (see objectRegion): none, for one on the grid. */
+  private besideObject(o: PlacedObject, bx: number, by: number, bz: number): BlockVoxel[] {
+    if (!o.offset) return [];
+    const r = this.regionIn(o, bx, by, bz);
+    return blockVoxels(withoutWater(this.blockAt(bx, by, bz) ?? null)).filter((v) => !voxelInRegion(v, r));
   }
 
   /** Fences beside block (bx, by, bz), redrawn (they may join or part from what's there now). */
@@ -975,13 +1015,17 @@ export class World {
     this.onObjectsChanged?.();
   }
 
-  /** Throws EditError unless every block `o` would take is in the world, empty (water aside) and free of objects. */
+  /**
+   * Throws EditError unless every block `o` would take is in the world, empty (water aside) and free
+   * of objects (a design off the grid: empty within its box; see objectRegion).
+   */
   private checkRoom(o: PlacedObject, what: string): void {
     for (const [x, y, z] of this.objectBlocksAt(o)) {
       if (this.objectAt(x, y, z)) throw new EditError(`there's already something there`);
       const block = this.blockAt(x, y, z);
       if (block === undefined) throw new EditError('outside the world');
-      if (blockVoxels(withoutWater(block)).length > 0) throw new EditError(what);
+      const r = this.regionIn(o, x, y, z);
+      if (blockVoxels(withoutWater(block)).some((v) => voxelInRegion(v, r))) throw new EditError(what);
     }
   }
 
@@ -1049,9 +1093,11 @@ export class World {
    * (bx, by, bz) (see designOrigin), facing `facing`. Throws EditError if any block of its box is
    * outside the world, holds something solid, or holds another object.
    */
-  placeDesign(design: ObjectDesign, bx: number, by: number, bz: number, facing: Facing): EditResult {
+  placeDesign(design: ObjectDesign, bx: number, by: number, bz: number, facing: Facing, offset: [number, number, number] = [0, 0, 0]): EditResult {
+    if (!isDesignOffset(offset)) throw new EditError('a design goes on a 1/4 m grid');
     const at = designOrigin(design, facing, bx, by, bz);
     const o: PlacedObject = { kind: 'design', design: design.id, state: 0, x: this.wrapBlockX(at.x), y: at.y, z: at.z, facing, open: false, span: designSpan(design, facing) };
+    if (offset.some((c) => c !== 0)) o.offset = [...offset];
     const [w, h, d] = o.span!;
     this.checkRoom(o, `a ${design.name} needs ${w} x ${h} x ${d} m of empty space`);
     this.addObject(o);
@@ -1065,7 +1111,10 @@ export class World {
   removeObject(o: PlacedObject): EditResult {
     this.dropObject(o);
     // (A torch may share its block with the ground: that stays.)
-    const empty = this.objectBlocksAt(o).map(([bx, by, bz]) => ({ bx, by, bz, block: o.kind === 'torch' ? blockFromVoxels(blockVoxels(withoutWater(this.blockAt(bx, by, bz) ?? null)).filter((v) => !isTorchVoxel(v))) : null }));
+    const empty = this.objectBlocksAt(o).map(([bx, by, bz]) => ({
+      bx, by, bz,
+      block: o.kind === 'torch' ? blockFromVoxels(blockVoxels(withoutWater(this.blockAt(bx, by, bz) ?? null)).filter((v) => !isTorchVoxel(v))) : blockFromVoxels(this.besideObject(o, bx, by, bz)),
+    }));
     const result = this.writeBlocks([...empty, ...this.neighbourFenceWrites(o.x, o.y, o.z)]);
     this.stats.edits++;
     this.saveObjects();
@@ -1149,12 +1198,12 @@ export class World {
     // Objects in it: gone.
     for (const o of [...this.objects.values()]) {
       // (The nearest point of its box: a 1 m column's middle, as ever, for the built-in ones.)
-      const [w, h, d] = o.kind === 'design' ? (o.span ?? [1, 1, 1]) : [1, objectHeight(o.kind), 1];
+      const box = objectBox(o), B = BLOCK_SIZE;
       const near = (lo: number, hi: number, v: number) => Math.max(0, lo - v, v - hi);
-      const cx = deltaX(this.config, x, (o.x + w / 2) * BLOCK_SIZE);
-      const dx = o.kind === 'design' ? Math.max(0, Math.abs(cx) - (w / 2) * BLOCK_SIZE) : cx;
-      const dz = o.kind === 'design' ? near(o.z * BLOCK_SIZE, (o.z + d) * BLOCK_SIZE, z) : (o.z + 0.5) * BLOCK_SIZE - z;
-      const dy = near(o.y * BLOCK_SIZE, (o.y + h) * BLOCK_SIZE, y);
+      const cx = deltaX(this.config, x, o.x * B + (box.x0 + box.x1) / 2);
+      const dx = o.kind === 'design' ? Math.max(0, Math.abs(cx) - (box.x1 - box.x0) / 2) : cx;
+      const dz = o.kind === 'design' ? near(o.z * B + box.z0, o.z * B + box.z1, z) : (o.z + 0.5) * B - z;
+      const dy = near(o.y * B + box.y0, o.y * B + box.y1, y);
       if (dx * dx + dy * dy + dz * dz <= r2) results.push(this.removeObject(o));
     }
     const tnt: Explosive[] = [];

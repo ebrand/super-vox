@@ -179,6 +179,134 @@ describe('placed designs', () => {
   });
 });
 
+/** A 1 x 2 x 1 m door (as drawn: facing north): a 1/8 m panel across the middle; open, against the west side. */
+function door(): Omit<ObjectDesign, 'item'> {
+  const panel = (x0: number, x1: number, z0: number, z1: number) => {
+    const out: { x: number; y: number; z: number; size: number; material: number }[] = [];
+    for (let y = 0; y < 32; y += 2) for (let z = z0; z < z1; z += 2) for (let x = x0; x < x1; x += 2) out.push({ x, y, z, size: 2, material: P });
+    return out;
+  };
+  return { id: 'door', name: 'Door', size: [1, 2, 1], recipe: { inputs: [[P, 1]], count: 1, table: false }, states: [{ name: 'closed', voxels: panel(0, 16, 6, 8) }, { name: 'open', voxels: panel(0, 2, 0, 16) }] };
+}
+
+describe('designs off the grid', () => {
+  // A wall with a 1 m gap straddling blocks 100 and 101 (x): their outer halves are wall, 2 m high.
+  const wall = (w: World) => {
+    for (const [x0, by] of [[100 * 16, 0], [101 * 16 + 8, 0], [100 * 16, 1], [101 * 16 + 8, 1]] as const)
+      for (const y of [0, 8]) for (const z of [0, 8]) w.applyEdit({ op: 'place', x: x0, y: by * 16 + y, z: 100 * 16 + z, size: 8, material: S });
+  };
+  const wallIn = (b: Block) => blockVoxels(b).filter((v) => v.material === S).length;
+
+  it('go in at 1/4 m steps, sharing the blocks at their edges with what is beside them', () => {
+    const dir = tempDir();
+    const d = new DesignLibrary(null).put(door()) as ObjectDesign;
+    const w = flat(new FileChunkStore(dir));
+    wall(w);
+    // On the 1 m grid, or 1/4 m off it: into the wall.
+    expect(() => w.placeDesign(d, 100, 0, 100, 'n')).toThrow(/1 x 2 x 1 m of empty space/);
+    expect(() => w.placeDesign(d, 100, 0, 100, 'n', [4, 0, 0])).toThrow(/empty space/);
+    expect(() => w.placeDesign(d, 100, 0, 100, 'n', [6, 0, 0])).toThrow(/1\/4 m/);
+    // 1/2 m off: in the gap. It takes the four blocks it's in; the wall in them stays.
+    w.placeDesign(d, 100, 0, 100, 'n', [8, 0, 0]);
+    const o = w.objectAt(100, 0, 100)!;
+    expect(o).toMatchObject({ x: 100, y: 0, z: 100, span: [1, 2, 1], offset: [8, 0, 0] });
+    for (const [bx, by] of [[101, 0], [100, 1], [101, 1]]) expect(w.objectAt(bx!, by!, 100)).toBe(o);
+    for (const [bx, by] of [[100, 0], [101, 0], [100, 1], [101, 1]]) {
+      expect(wallIn(block(w, bx!, by!, 100))).toBe(4);
+      expect(blockVoxels(block(w, bx!, by!, 100)).filter((v) => v.material === P).length).toBe(4 * 8);
+    }
+    // Clicks: on its panel, the door; on the wall beside it (in the same block), not.
+    expect(w.objectAtPoint(100 * 16 + 12, 4, 100 * 16 + 6)).toBe(o);
+    expect(w.objectAtPoint(100 * 16 + 2, 4, 100 * 16 + 6)).toBeUndefined();
+    // The wall there can be dug and built again; nothing goes into the door's box.
+    w.applyEdit({ op: 'remove', x: 100 * 16 + 2, y: 4, z: 100 * 16 + 2 });
+    expect(wallIn(block(w, 100, 0, 100))).toBe(3);
+    w.applyEdit({ op: 'place', x: 100 * 16, y: 0, z: 100 * 16, size: 8, material: S });
+    expect(() => w.applyEdit({ op: 'place', x: 100 * 16 + 8, y: 0, z: 100 * 16, size: 8, material: S })).toThrow(/Door/);
+    expect(() => w.applyEdit({ op: 'remove', x: 100 * 16 + 12, y: 4, z: 100 * 16 + 6 })).toThrow(/Door/);
+    // Nothing else in its blocks.
+    expect(() => w.placeObject('torch', 100, 0, 100, 'n')).toThrow();
+    // Opened: the panel swings, the wall stays.
+    w.toggleObject(o);
+    const swung = blockVoxels(block(w, 100, 0, 100)).filter((v) => v.material === P);
+    expect(swung.length).toBe(8 * 8);
+    expect(swung.every((v) => v.x >= 8 && v.x < 10)).toBe(true);
+    expect(wallIn(block(w, 100, 0, 100))).toBe(4);
+    // Kept as it is.
+    const again = flat(new FileChunkStore(dir));
+    expect(again.objectAt(101, 1, 100)).toMatchObject({ offset: [8, 0, 0], state: 1 });
+    // Taken down: the wall stays, nothing of the door.
+    again.removeObject(again.objectAt(101, 1, 100)!);
+    for (const [bx, by] of [[100, 0], [101, 0], [100, 1], [101, 1]]) {
+      expect(blockVoxels(block(again, bx!, by!, 100)).map((v) => v.material)).toEqual([S, S, S, S]);
+      expect(again.objectAt(bx!, by!, 100)).toBeUndefined();
+    }
+  });
+
+  it('split voxels that would cross a 1 m gridline, and stand on a floor off the grid', () => {
+    const d = new DesignLibrary(null).put({ ...door(), id: 'cube', name: 'Cube', size: [1, 1, 1], states: [{ name: 'c', voxels: [{ x: 0, y: 0, z: 0, size: 16, material: P }] }] }) as ObjectDesign;
+    const w = flat();
+    // A 1/4 m step up on the ground: the cube, 1/4 m off in each axis.
+    w.placeDesign(d, 100, 0, 100, 'n', [4, 4, 12]);
+    let volume = 0;
+    for (let by = 0; by <= 1; by++)
+      for (let bz = 100; bz <= 101; bz++)
+        for (let bx = 100; bx <= 101; bx++) for (const v of blockVoxels(block(w, bx, by, bz))) volume += v.size ** 3;
+    expect(volume).toBe(16 ** 3);
+    expect(blockVoxels(block(w, 100, 0, 100)).every((v) => v.size === 4)).toBe(true);
+    // A blast reaches it where its box is (its far side at x = 101 m + 4 units), not where its blocks' grid would put it.
+    w.explode(101 * 16 + 4 + 62, 12, 101 * 16, 64);
+    expect(w.objectAt(100, 0, 100)).toBeUndefined();
+  });
+});
+
+describe('designs off the grid, in play', () => {
+  it('are placed 1/4 m off the grid; a click on the wall beside one is the wall, on it the design', async () => {
+    const lib = new DesignLibrary(null);
+    const d = lib.put(door()) as ObjectDesign;
+    const world = flat();
+    for (const x0 of [100 * 16, 101 * 16 + 8]) for (const y of [0, 8]) for (const z of [0, 8]) world.applyEdit({ op: 'place', x: x0, y, z: 100 * 16 + z, size: 8, material: S });
+    const app = await buildApp({ catalog: singleWorld(world), designs: lib });
+    try {
+      const base = await app.listen({ port: 0, host: '127.0.0.1' });
+      const ws = new WebSocket(base.replace(/^http/, 'ws') + '/ws');
+      const msgs: ServerMessage[] = [];
+      ws.on('message', (m, bin) => !bin && msgs.push(JSON.parse(String(m)) as ServerMessage));
+      await new Promise((r) => ws.once('open', r));
+      ws.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION }));
+      const until = async (f: () => boolean) => {
+        for (let i = 0; i < 300 && !f(); i++) await new Promise((r) => setTimeout(r, 10));
+        if (!f()) throw new Error(`timed out: ${f.toString().slice(0, 100)}`);
+      };
+      let id = 0;
+      const ask = async (msg: object) => {
+        const n = ++id;
+        ws.send(JSON.stringify({ ...msg, id: n }));
+        await until(() => msgs.some((m) => m.type === 'editResult' && m.id === n));
+        return msgs.find((m) => m.type === 'editResult' && m.id === n) as Extract<ServerMessage, { type: 'editResult' }>;
+      };
+      await until(() => msgs.some((m) => m.type === 'designs'));
+      expect(await ask({ type: 'placeObject', item: d.item, x: 100, y: 0, z: 100, facing: 'n', offset: [8, 0, 0] })).toMatchObject({ ok: true });
+      expect(world.objectAt(101, 0, 100)).toMatchObject({ design: 'door', offset: [8, 0, 0] });
+      // Right-click: on the wall, nothing; on the door, it opens.
+      expect(await ask({ type: 'use', x: 100 * 16 + 2, y: 4, z: 100 * 16 + 2 })).toMatchObject({ ok: false });
+      expect(await ask({ type: 'use', x: 100 * 16 + 12, y: 4, z: 100 * 16 + 6 })).toMatchObject({ ok: true });
+      expect(world.objectAt(100, 0, 100)!.state).toBe(1);
+      // Left-click on the wall beside it: that bit of wall goes; the door stays.
+      expect(await ask({ type: 'edit', edit: { op: 'remove', x: 100 * 16 + 2, y: 4, z: 100 * 16 + 2 } })).toMatchObject({ ok: true });
+      expect(world.objectAt(100, 0, 100)).toBeDefined();
+      expect(blockVoxels(block(world, 100, 0, 100)).filter((v) => v.material === S).length).toBe(3);
+      // On the door (open: against its west side, x 8..10): it comes down, the wall left as it is.
+      expect(await ask({ type: 'edit', edit: { op: 'remove', x: 100 * 16 + 9, y: 4, z: 100 * 16 + 4 } })).toMatchObject({ ok: true });
+      expect(world.objectAt(100, 0, 100)).toBeUndefined();
+      expect(blockVoxels(block(world, 100, 0, 100)).map((v) => v.material)).toEqual([S, S, S]);
+      ws.close();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe('the crafting table design', () => {
   it('is one design at most (the newest), placed by the crafting table item, and recipes needing a table work beside it', async () => {
     const lib = new DesignLibrary(null);
