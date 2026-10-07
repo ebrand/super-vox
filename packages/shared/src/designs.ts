@@ -327,6 +327,29 @@ export function designOrigin(design: ObjectDesign, facing: Facing, bx: number, b
 }
 
 /**
+ * The box around a design's voxels (its first state) placed facing `facing` (units, from the
+ * least corner of its turned box; see designVoxels), or null for one with none. Kept per design
+ * (a design is replaced, not changed, when edited).
+ */
+export function designVoxelBox(design: ObjectDesign, facing: Facing): { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } | null {
+  let byFacing = voxelBoxes.get(design);
+  if (!byFacing) voxelBoxes.set(design, (byFacing = new Map()));
+  if (byFacing.has(facing)) return byFacing.get(facing)!;
+  const vs = designVoxels(design, 0, facing);
+  let box: { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } | null = null;
+  if (vs.length) {
+    box = { x0: Infinity, y0: Infinity, z0: Infinity, x1: -Infinity, y1: -Infinity, z1: -Infinity };
+    for (const v of vs) {
+      box.x0 = Math.min(box.x0, v.x); box.y0 = Math.min(box.y0, v.y); box.z0 = Math.min(box.z0, v.z);
+      box.x1 = Math.max(box.x1, v.x + v.size); box.y1 = Math.max(box.y1, v.y + v.size); box.z1 = Math.max(box.z1, v.z + v.size);
+    }
+  }
+  byFacing.set(facing, box);
+  return box;
+}
+const voxelBoxes = new WeakMap<ObjectDesign, Map<Facing, ReturnType<typeof designVoxelBox>>>();
+
+/**
  * What a design (its first state) takes up: the box around its voxels (units, from the design's
  * corner), not the box it was drawn in. Pieces of a keep are measured by it, so an 8 m tower top
  * drawn in a 9 m box makes an 8 m tower. Null for a design with nothing in it.

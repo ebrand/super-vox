@@ -33,6 +33,7 @@ import {
   designAnchor,
   designOrigin,
   designSpan,
+  designVoxelBox,
   usable,
   isBed,
   isStationKind,
@@ -149,8 +150,10 @@ export class EditTool {
   private nextId = 1;
   private readonly pending = new Map<number, string>();
   private readonly outline: THREE.LineSegments;
-  /** Where a designed object in hand would go (its box), when one's aimed somewhere. */
+  /** Where a designed object in hand would go, when one's aimed somewhere: the box around its voxels (green)... */
   private readonly designPreview: THREE.LineSegments;
+  /** ...and the 1 m blocks it would take (amber; off the grid, a block more along each shifted axis). */
+  private readonly designBlocksPreview: THREE.LineSegments;
   /** Designed objects placed in the world (see setPlacedObjects), by each block they take ("bx,by,bz"). */
   private readonly designCells = new Map<string, PlacedObject>();
   /** Round worlds: blocks around (block X wraps); null: they don't. */
@@ -206,9 +209,15 @@ export class EditTool {
     };
     const box = new THREE.BoxGeometry(1, 1, 1);
     this.outline = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0xffffff }));
-    this.designPreview = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0x40ff60 }));
+    // (Both drawn through everything: what's in the way, half a wall say, mustn't hide them.)
+    this.designPreview = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0x40ff60, depthTest: false }));
+    this.designPreview.renderOrder = 10;
     this.designPreview.visible = false;
     scene.add(this.designPreview);
+    this.designBlocksPreview = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0xffb030, depthTest: false }));
+    this.designBlocksPreview.renderOrder = 9;
+    this.designBlocksPreview.visible = false;
+    scene.add(this.designBlocksPreview);
     this.previewMaterial = new THREE.MeshBasicMaterial({ color: 0x40ff60, transparent: true, opacity: 0.3, depthWrite: false });
     this.preview = new THREE.Mesh(box, this.previewMaterial);
     // The dig box's volume lies inside solid ground, so it is drawn faintly through everything.
@@ -373,13 +382,20 @@ export class EditTool {
     const held = this.materialOf();
     const design = this.mode === 'hybrid' && held !== null ? designOfItem(held) : undefined;
     const spot = design && this.designSpot();
-    this.designPreview.visible = !!spot;
+    this.designPreview.visible = this.designBlocksPreview.visible = !!spot;
     if (!design || !spot) return;
     const at = designOrigin(design, spot.facing, spot.x, spot.y, spot.z);
     const [w, h, d] = designSpan(design, spot.facing);
     const [ox, oy, oz] = spot.offset.map((v) => v / BLOCK_SIZE) as [number, number, number];
-    this.designPreview.scale.set(w * 1.002, h * 1.002, d * 1.002);
-    this.designPreview.position.set(at.x + ox + w / 2, at.y + oy + h / 2, at.z + oz + d / 2);
+    // Its voxels' box (metres; none drawn: its whole box).
+    const B = BLOCK_SIZE, v = designVoxelBox(design, spot.facing) ?? { x0: 0, y0: 0, z0: 0, x1: w * B, y1: h * B, z1: d * B };
+    const [vw, vh, vd] = [(v.x1 - v.x0) / B, (v.y1 - v.y0) / B, (v.z1 - v.z0) / B];
+    this.designPreview.scale.set(vw + 0.004, vh + 0.004, vd + 0.004);
+    this.designPreview.position.set(at.x + ox + (v.x0 + v.x1) / 2 / B, at.y + oy + (v.y0 + v.y1) / 2 / B, at.z + oz + (v.z0 + v.z1) / 2 / B);
+    // The blocks (a little outside, so where they meet its voxels' box both show).
+    const [bw, bh, bd] = [w + (ox > 0 ? 1 : 0), h + (oy > 0 ? 1 : 0), d + (oz > 0 ? 1 : 0)];
+    this.designBlocksPreview.scale.set(bw + 0.02, bh + 0.02, bd + 0.02);
+    this.designBlocksPreview.position.set(at.x + bw / 2, at.y + bh / 2, at.z + bd / 2);
   }
 
   /** Re-aims from the camera; call every frame. */
@@ -596,6 +612,7 @@ export class EditTool {
     window.removeEventListener('blur', this.onBlur);
     this.outline.removeFromParent();
     this.designPreview.removeFromParent();
+    this.designBlocksPreview.removeFromParent();
     this.preview.removeFromParent();
     this.digPreview.removeFromParent();
     this.digEntry.removeFromParent();

@@ -7,6 +7,7 @@ import {
   RECIPES,
   designAnchor,
   designBlocks,
+  designVoxelBox,
   designOfItem,
   designOrigin,
   designSpan,
@@ -305,5 +306,16 @@ describe('designs off the grid', () => {
     expect(designBlocks(d, 0, 'n', [0, 0, 0])[0]!.voxels.map((v) => v.size)).toEqual([8, 8, 2]);
     // 1/2 m off: 1/2 m voxels still whole.
     expect(designBlocks(d, 0, 'n', [8, 8, 8]).flatMap((b) => b.voxels).filter((v) => v.material !== 3).map((v) => v.size)).toEqual([8, 8]);
+  });
+});
+
+describe('designVoxelBox', () => {
+  it('is the box around its voxels, turned the way it faces', () => {
+    // 2 x 1 x 1 m, drawn facing north: a 1/8 m slab across the back (z 0..2), the left 1 1/2 m of it.
+    const d = { id: 'x', name: 'X', size: [2, 1, 1] as [number, number, number], item: 0, recipe: null, states: [{ name: 's', voxels: [0, 8, 16].map((x) => ({ x, y: 0, z: 0, size: 2, material: 1 })).concat([{ x: 16, y: 0, z: 0, size: 8, material: 1 }]) }] };
+    expect(designVoxelBox(d, 'n')).toEqual({ x0: 0, y0: 0, z0: 0, x1: 24, y1: 8, z1: 8 });
+    // A quarter turn: x and z swap (its back now to the east).
+    expect(designVoxelBox(d, 'e')).toEqual({ x0: 8, y0: 0, z0: 0, x1: 16, y1: 8, z1: 24 });
+    expect(designVoxelBox({ ...d, states: [{ name: 's', voxels: [] }] }, 'n')).toBeNull();
   });
 });
