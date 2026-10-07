@@ -140,6 +140,7 @@
             <button data-tool="line" title="Line (L): drag a row or column of voxels; shift: clear one">Line</button>
             <button data-tool="box" title="Box (F): drag its base, let go, move to raise it, click; shift: clear one">Box</button>
             <button data-tool="select" title="Select (S): drag a box as with Box, then move what's wholly inside it">Select</button>
+            <button data-tool="extrude" title="Extrude (X): press on a face and drag out: every voxel in that flat face (joined edge to edge) grows with it; drag in to cut it back">Extrude</button>
             <button data-tool="circle" title="Circle (C): press where its middle goes, drag out its radius, let go; flat on the face (or the plane); shift: clear one">Circle</button>
             <button data-tool="dome" title="Dome (D): press where its middle goes, drag out its radius, let go; it rises from the face; shift: clear one">Dome</button>
             <button data-tool="sphere" title="Sphere (R): press where its middle goes, drag out its radius, let go; shift: clear one">Sphere</button>
@@ -173,7 +174,7 @@
           </div>
         </div>
         <div id="hover"></div>
-        <div class="help">click: use the tool · shift-click: erase · Line: drag a row or column · Box: drag its base, let go, move up or down, click (Esc: stop) · shift: lines and boxes clear · Circle, Dome, Sphere: press the middle, drag out the radius, let go (Hollow: rings and shells) · Select: drag a box the same way, then arrows (shift ↑ ↓: up, down) or the buttons move what's in it (Esc: done) · plane: [ ] up and down, V turn, Home floor · alt-click: pick up a material · drag: turn · right-drag: move · wheel: zoom · 1-5: voxel size · the arrow marks its front (toward whoever places it)</div>
+        <div class="help">click: use the tool · shift-click: erase · Line: drag a row or column · Box: drag its base, let go, move up or down, click (Esc: stop) · shift: lines and boxes clear · Circle, Dome, Sphere: press the middle, drag out the radius, let go (Hollow: rings and shells) · Select: drag a box the same way, then arrows (shift ↑ ↓: up, down) or the buttons move what's in it (Esc: done) · Extrude: press on a face, drag out (or in): the whole flat face grows (or is cut back) · plane: [ ] up and down, V turn, Home floor · alt-click: pick up a material · drag: turn · right-drag: move · wheel: zoom · 1-5: voxel size · the arrow marks its front (toward whoever places it)</div>
       </div>
       <aside class="right">
         <h2>Palette</h2>

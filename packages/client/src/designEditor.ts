@@ -174,6 +174,112 @@ export class DesignEditor {
     return gone;
   }
 
+  /**
+   * The flat face aimed at (Extrude): voxel `start`'s face on side `axis`, `sign` (0 x, 1 y, 2 z;
+   * which way out), and every voxel whose face that way lies in the same plane, is open (nothing
+   * right against it) and is joined to it edge to edge, through others like it. Their indices
+   * (none: that face of it isn't open).
+   */
+  flatFace(start: number, axis: 0 | 1 | 2, sign: 1 | -1): number[] {
+    const vs = this.voxels, occ = this.occupancy();
+    const at = (v: BlockVoxel, a: number) => (a === 0 ? v.x : a === 1 ? v.y : v.z);
+    const plane = (v: BlockVoxel) => at(v, axis) + (sign > 0 ? v.size : 0);
+    const open = (v: BlockVoxel) => {
+      const out = { x: v.x, y: v.y, z: v.z, size: v.size };
+      out[(['x', 'y', 'z'] as const)[axis]] += sign * v.size;
+      return !occ.overlaps(out);
+    };
+    const first = vs[start];
+    if (!first || !open(first)) return [];
+    const p = plane(first);
+    // The faces in that plane, by size and place across it (u, v: the other two axes).
+    const [ua, va] = [0, 1, 2].filter((a) => a !== axis) as [number, number];
+    const bySize = new Map<number, Map<string, number>>();
+    vs.forEach((v, i) => {
+      if (plane(v) !== p) return;
+      let m = bySize.get(v.size);
+      if (!m) bySize.set(v.size, (m = new Map()));
+      m.set(`${at(v, ua)},${at(v, va)}`, i);
+    });
+    const seen = new Set<number>([start]), out: number[] = [], todo = [start];
+    while (todo.length) {
+      const i = todo.pop()!, v = vs[i]!;
+      if (!open(v)) continue;
+      out.push(i);
+      const u0 = at(v, ua), v0 = at(v, va), s = v.size;
+      // Faces of any size along each of its four edges (sharing some of the edge, not just a corner).
+      for (const [size, m] of bySize) {
+        const near = (u: number, w: number) => {
+          const j = m.get(`${u},${w}`);
+          if (j !== undefined && !seen.has(j)) {
+            seen.add(j);
+            todo.push(j);
+          }
+        };
+        const lo = (c: number) => Math.floor(c / size) * size;
+        for (let w = lo(v0); w < v0 + s; w += size) {
+          near(u0 - size, w);
+          near(u0 + s, w);
+        }
+        for (let u = lo(u0); u < u0 + s; u += size) {
+          near(u, v0 - size);
+          near(u, v0 + s);
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Extrudes the voxels `faces` (see flatFace) out of their face (`axis`, `sign`) by `depth` units:
+   * each grows a column of copies of itself (its size and material) as long as that (whole copies:
+   * as many as fit), those with no room skipped; or, `depth` negative, cuts in that deep behind
+   * each (taking away whatever's there). As one change; mirroring, mirrored too. How many voxels
+   * went in or went, and were skipped.
+   */
+  extrude(faces: readonly number[], axis: 0 | 1 | 2, sign: 1 | -1, depth: number): { placed: number; removed: number; skipped: number } {
+    const k = (['x', 'y', 'z'] as const)[axis];
+    const vs = faces.map((i) => this.voxels[i]!).filter(Boolean);
+    if (depth < 0) {
+      const regions: Region[] = vs.map((v) => {
+        const r: Region = { x0: v.x, y0: v.y, z0: v.z, x1: v.x + v.size, y1: v.y + v.size, z1: v.z + v.size };
+        const face = v[k] + (sign > 0 ? v.size : 0), d = -depth;
+        r[`${k}0`] = sign > 0 ? face - d : face;
+        r[`${k}1`] = sign > 0 ? face : face + d;
+        return r;
+      });
+      const [W] = this.extent;
+      const all = this.mirror ? [...regions, ...regions.map((r) => ({ ...r, x0: W - r.x1, x1: W - r.x0 }))] : regions;
+      const hits = (v: BlockVoxel, q: Region) => v.x < q.x1 && q.x0 < v.x + v.size && v.y < q.y1 && q.y0 < v.y + v.size && v.z < q.z1 && q.z0 < v.z + v.size;
+      const kept = this.voxels.filter((v) => !all.some((r) => hits(v, r)));
+      const removed = this.voxels.length - kept.length;
+      if (removed) this.change(() => (this.draft.states[this.state]!.voxels = kept));
+      return { placed: 0, removed, skipped: 0 };
+    }
+    const todo: BlockVoxel[] = [];
+    for (const v of vs) for (let n = 1; n * v.size <= depth; n++) todo.push({ ...v, [k]: v[k] + sign * n * v.size });
+    let placed = 0, skipped = 0;
+    if (!todo.some((v) => !this.refuse(v))) return { placed, removed: 0, skipped: todo.length };
+    this.change(() => {
+      for (const v of todo) {
+        if (this.refuse(v)) {
+          skipped++;
+          continue;
+        }
+        this.voxels_.push(v);
+        this.pushed(v);
+        placed++;
+        const m = this.mirrored(v);
+        if (this.mirror && !this.refuse(m)) {
+          this.voxels_.push(m);
+          this.pushed(m);
+          placed++;
+        }
+      }
+    });
+    return { placed, removed: 0, skipped };
+  }
+
   /** Takes away the voxel at index `i` (and, mirroring, its mirror image, if there is one just like it). */
   remove(i: number): void {
     const v = this.voxels[i];
@@ -346,7 +452,13 @@ export class DesignEditor {
     return JSON.stringify({ draft: this.draft, state: this.state, selection: this.selection });
   }
 
+  /** Bumped by every change (undone and redone too): what's worked out from the voxels is good while it's the same. */
+  get revision(): number {
+    return this.version;
+  }
+
   private restore(s: string): void {
+    this.version++;
     const { draft, state, selection } = JSON.parse(s) as { draft: Draft; state: number; selection: Region | null };
     this.draft = draft;
     this.state = state;

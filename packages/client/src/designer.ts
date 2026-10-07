@@ -51,7 +51,7 @@ const say = (text: string, kind: '' | 'good' | 'bad' = '') => {
 const css = (c: readonly [number, number, number]) => `rgb(${c.map((v) => Math.round(Math.min(1, Math.max(0, v)) ** (1 / 2.2) * 255)).join(' ')})`;
 const sizeLabel = (units: number) => (units === BLOCK_SIZE ? '1 m' : `1/${BLOCK_SIZE / units} m`);
 
-type Tool = 'build' | 'erase' | 'paint' | 'line' | 'box' | 'select' | RoundShape;
+type Tool = 'build' | 'erase' | 'paint' | 'line' | 'box' | 'select' | 'extrude' | RoundShape;
 const ROUND: readonly Tool[] = ['circle', 'dome', 'sphere'];
 const isRound = (t: Tool | string): t is RoundShape => (ROUND as readonly string[]).includes(t);
 /** Tools that drag out a line, a box, or a round shape's radius (see drawing). */
@@ -249,6 +249,7 @@ function aimAt(e: PointerEvent): void {
   raycaster.setFromCamera(pointer, camera);
   aim = null;
   if (drawing) return draw();
+  if (extruding) return showExtrude();
   const hit = voxelMesh && editor.voxels.length ? raycaster.intersectObject(voxelMesh, false)[0] : undefined;
   if (hit && hit.instanceId !== undefined && hit.face) {
     aim = { index: hit.instanceId, point: hit.point.clone(), normal: hit.face.normal.clone() };
@@ -288,7 +289,10 @@ function buildVoxel(): BlockVoxel | null {
 const hoverEl = $('hover');
 function showAim(): void {
   if (drawing) return draw();
+  if (extruding) return showExtrude();
+  hideShape();
   let act = action();
+  if (act === 'extrude') return showFace();
   // (Lines, boxes and round shapes start like a build: from where one would go.)
   if (act === 'line' || act === 'box' || isRound(act)) act = 'build';
   const target = aim?.index != null ? editor.voxels[aim.index] : undefined;
@@ -325,6 +329,7 @@ function showAim(): void {
 function click(): void {
   if (!aim) return;
   const act = action();
+  if (act === 'extrude') return; // (pressed and dragged: see startExtrude)
   const i = aim.index;
   if (act === 'build') {
     const v = buildVoxel();
@@ -340,6 +345,128 @@ function click(): void {
     }
   }
   changed();
+}
+
+// --- Extruding -----------------------------------------------------------------------------------
+
+/**
+ * A flat face being extruded (Extrude): its voxels (see DesignEditor.flatFace), the way out of it,
+ * and how far it's been dragged (units, in steps of its biggest voxel's size; negative: in).
+ */
+let extruding: { faces: number[]; axis: 0 | 1 | 2; sign: 1 | -1; origin: THREE.Vector3; from: number; step: number; depth: number } | null = null;
+/** The face under the pointer (kept while nothing changes: finding it again on every move is costly for a big one). */
+let faceCache: { editor: DesignEditor; key: string; faces: number[] } | null = null;
+
+/** The flat face aimed at (its voxels, and the way out of it), if a voxel's face is. */
+function aimedFace(): { faces: number[]; axis: 0 | 1 | 2; sign: 1 | -1 } | null {
+  if (!aim || aim.index === null) return null;
+  const n = [aim.normal.x, aim.normal.y, aim.normal.z];
+  const axis = n.findIndex((c) => Math.abs(c) > 0.5) as 0 | 1 | 2;
+  if (axis < 0) return null;
+  const sign: 1 | -1 = n[axis]! > 0 ? 1 : -1;
+  const key = `${editor.state}:${editor.revision}:${aim.index}:${axis}:${sign}`;
+  if (faceCache?.key !== key || faceCache.editor !== editor) faceCache = { editor, key, faces: editor.flatFace(aim.index, axis, sign) };
+  return { faces: faceCache.faces, axis, sign };
+}
+
+/** Lights up the flat face aimed at, voxel by voxel: what Extrude would take. */
+function showFace(): void {
+  ghost.visible = false;
+  hoverEl.textContent = '';
+  const f = aimedFace();
+  if (!f) {
+    if (aim) hoverEl.textContent = "extrude: aim at a voxel's face";
+    return;
+  }
+  if (!f.faces.length) {
+    hoverEl.textContent = "that face isn't open (something's against it)";
+    return;
+  }
+  slabs(f.faces.map((i) => {
+    const v = editor.voxels[i]!, b = { x0: v.x, y0: v.y, z0: v.z, x1: v.x + v.size, y1: v.y + v.size, z1: v.z + v.size };
+    const k = (['x', 'y', 'z'] as const)[f.axis], face = v[k] + (f.sign > 0 ? v.size : 0), t = Math.min(0.4, v.size * 0.15);
+    b[`${k}0`] = face - t / 2;
+    b[`${k}1`] = face + t / 2;
+    return b;
+  }), 0xe3b341);
+  hoverEl.textContent = `${f.faces.length} voxel${f.faces.length === 1 ? '' : 's'} in this face · drag out to extrude, in to cut back`;
+}
+
+/** Shows boxes (units) in the shape preview, in `color`. */
+function slabs(boxes: readonly { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number }[], color: number): void {
+  const m = new THREE.Matrix4();
+  shapePreview.count = Math.min(boxes.length, SHAPE_PREVIEW_MAX);
+  for (let i = 0; i < shapePreview.count; i++) {
+    const b = boxes[i]!;
+    m.makeScale((b.x1 - b.x0) * 0.98, (b.y1 - b.y0) * 0.98, (b.z1 - b.z0) * 0.98).setPosition((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2);
+    shapePreview.setMatrixAt(i, m);
+  }
+  shapePreview.instanceMatrix.needsUpdate = true;
+  (shapePreview.material as THREE.MeshBasicMaterial).color.set(color);
+}
+
+/** Starts extruding the face aimed at (the press); false if there's none. */
+function startExtrude(): boolean {
+  const f = aimedFace();
+  if (!f || !f.faces.length || !aim) return false;
+  const step = Math.max(...f.faces.map((i) => editor.voxels[i]!.size));
+  const origin = aim.point.clone();
+  extruding = { ...f, origin, from: alongAxis(origin, f.axis)?.t ?? 0, step, depth: 0 };
+  controls.enabled = false;
+  showExtrude();
+  return true;
+}
+
+/** Follows the pointer along the way out of the face: what would go in (or be cut away). */
+function showExtrude(): void {
+  const x = extruding!;
+  const a = alongAxis(x.origin, x.axis);
+  if (a) x.depth = Math.round(((a.t - x.from) * x.sign) / x.step) * x.step;
+  ghost.visible = false;
+  const k = (['x', 'y', 'z'] as const)[x.axis];
+  const boxes: { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number }[] = [];
+  for (const i of x.faces) {
+    const v = editor.voxels[i]!;
+    if (x.depth > 0) {
+      for (let n = 1; n * v.size <= x.depth; n++) {
+        const c = { ...v, [k]: v[k] + x.sign * n * v.size };
+        boxes.push({ x0: c.x, y0: c.y, z0: c.z, x1: c.x + v.size, y1: c.y + v.size, z1: c.z + v.size });
+      }
+    } else if (x.depth < 0) {
+      const b = { x0: v.x, y0: v.y, z0: v.z, x1: v.x + v.size, y1: v.y + v.size, z1: v.z + v.size };
+      const face = v[k] + (x.sign > 0 ? v.size : 0);
+      b[`${k}0`] = x.sign > 0 ? face + x.depth : face;
+      b[`${k}1`] = x.sign > 0 ? face : face - x.depth;
+      boxes.push(b);
+    }
+  }
+  slabs(boxes, x.depth < 0 ? 0xff4040 : 0x40ff60);
+  const metres = Math.round((Math.abs(x.depth) / BLOCK_SIZE) * 1000) / 1000;
+  hoverEl.textContent = x.depth === 0
+    ? `${x.faces.length} voxel${x.faces.length === 1 ? '' : 's'}: drag out to extrude, in to cut back (Esc: stop)`
+    : `${x.depth > 0 ? 'extrude' : 'cut back'} ${x.faces.length} voxel${x.faces.length === 1 ? '' : 's'} ${metres} m · let go to ${x.depth > 0 ? 'extrude' : 'cut'} (Esc: stop)`;
+}
+
+/** Lets go: extrudes (or cuts back) as far as dragged. */
+function finishExtrude(): void {
+  const x = extruding!;
+  extruding = null;
+  controls.enabled = true;
+  hideShape();
+  faceCache = null;
+  if (x.depth === 0) return showAim();
+  const r = editor.extrude(x.faces, x.axis, x.sign, x.depth);
+  if (x.depth < 0) say(r.removed ? `cut back: ${r.removed} voxel${r.removed === 1 ? '' : 's'} gone` : 'nothing there to cut');
+  else say(`extruded: ${r.placed} voxel${r.placed === 1 ? '' : 's'} in${r.skipped ? `, ${r.skipped} skipped (taken, or outside the box)` : ''}`, r.placed ? '' : 'bad');
+  changed();
+}
+
+function stopExtrude(): void {
+  if (!extruding) return;
+  extruding = null;
+  controls.enabled = true;
+  hideShape();
+  showAim();
 }
 
 // --- Lines and boxes ----------------------------------------------------------------------------
@@ -595,6 +722,10 @@ view.addEventListener(
       controls.enabled = false; // (until the button's up: this press doesn't turn the view)
       return;
     }
+    if (tool === 'extrude' && !e.altKey && !e.shiftKey) {
+      aimAt(e);
+      if (startExtrude()) return;
+    }
     if (drags(tool) && !e.altKey) {
       aimAt(e);
       // (Shift: as the press says, or as the keyboard last did. A selection starts in what's aimed at, as clearing does.)
@@ -614,6 +745,12 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   if (finishing) {
     finishing = false;
     controls.enabled = true;
+    down = null;
+    return;
+  }
+  if (extruding) {
+    aimAt(e);
+    finishExtrude();
     down = null;
     return;
   }
@@ -761,6 +898,7 @@ $('move-done').onclick = () => {
 
 function setTool(t: Tool): void {
   stopDrawing();
+  stopExtrude();
   tool = t;
   renderPanels();
   showAim();
@@ -1227,6 +1365,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'Escape') {
     // (A line or box being drawn first; then the selection.)
     if (drawing) stopDrawing();
+    else if (extruding) stopExtrude();
     else if (editor.selection) {
       editor.selection = null;
       changed();
@@ -1247,6 +1386,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyC') setTool('circle');
   else if (e.code === 'KeyD') setTool('dome');
   else if (e.code === 'KeyR') setTool('sphere');
+  else if (e.code === 'KeyX') setTool('extrude');
   else if (e.code === 'KeyH') hollowEl.click();
   else if (e.code === 'KeyO') centredEl.click();
   else if (e.code === 'KeyE') setTool('erase');

@@ -300,3 +300,66 @@ describe('roundCells', () => {
     }
   });
 });
+
+describe('extruding', () => {
+  /** A 2 m box with a flat layer on its floor: an L of 1/4 m planks (3 along x, then 2 more along z from its end), a 1/8 m stone beside it, and a lone 1/4 m plank touching the L only at a corner. */
+  function layer(): DesignEditor {
+    const e = new DesignEditor({ id: null, name: 'x', size: [2, 2, 2], states: [{ name: 's', voxels: [] }], recipe: null });
+    for (const [x, z] of [[0, 0], [4, 0], [8, 0], [8, 4], [8, 8]]) e.place({ x: x!, y: 0, z: z!, size: 4, material: P });
+    e.place({ x: 12, y: 2, z: 0, size: 2, material: S }); // its top level with theirs, joined to (8, 0) along part of its edge
+    e.place({ x: 12, y: 0, z: 12, size: 4, material: P }); // only a corner on (8, 8)
+    return e;
+  }
+
+  it('takes the whole flat face joined edge to edge (any sizes), not what only meets it at a corner', () => {
+    const e = layer();
+    const face = e.flatFace(0, 1, 1).map((i) => e.voxels[i]!).map((v) => `${v.x},${v.z}/${v.size}`).sort();
+    expect(face).toEqual(['0,0/4', '12,0/2', '4,0/4', '8,0/4', '8,4/4', '8,8/4'].sort());
+    // (Not level with it: not part of it.)
+    e.place({ x: 14, y: 0, z: 0, size: 2, material: S });
+    expect(e.flatFace(0, 1, 1).length).toBe(6);
+    e.undo();
+    // Covered on top: that one's face isn't open, and it splits the face.
+    e.place({ x: 4, y: 4, z: 0, size: 4, material: P });
+    expect(e.flatFace(0, 1, 1).length).toBe(1);
+    expect(e.flatFace(1, 1, 1)).toEqual([]);
+    // Its underside (on the box's floor) is a face too: the planks' (the stone's is higher up).
+    expect(e.flatFace(0, 1, -1).length).toBe(5);
+  });
+
+  it('grows each up by whole copies of itself, keeping its material; and cuts back down', () => {
+    const e = layer();
+    const face = e.flatFace(0, 1, 1);
+    const r = e.extrude(face, 1, 1, 8);
+    // 1/4 m voxels: 2 more each (5 of them); the 1/8 m stone: 4 more.
+    expect(r).toEqual({ placed: 5 * 2 + 4, removed: 0, skipped: 0 });
+    expect(e.voxels.filter((v) => v.material === S).map((v) => v.y).sort((a, b) => a - b)).toEqual([2, 4, 6, 8, 10]);
+    expect(e.voxels.some((v) => v.x === 12 && v.z === 12 && v.y > 0)).toBe(false);
+    // One change: undone at once.
+    e.undo();
+    expect(e.voxels.length).toBe(7);
+    e.redo();
+    // Cut 1/4 m back from the new top (y 12): the top layer of the L goes, the stone's top two.
+    const top = e.flatFace(e.voxels.findIndex((v) => v.x === 0 && v.y === 8), 1, 1);
+    expect(e.extrude(top, 1, 1, -4).removed).toBe(5 + 2);
+    expect(Math.max(...e.voxels.map((v) => v.y + v.size))).toBe(8);
+  });
+
+  it('skips what has no room (the box, or something in the way), and mirrors', () => {
+    const e = layer();
+    e.place({ x: 0, y: 8, z: 0, size: 4, material: S });
+    const r = e.extrude(e.flatFace(0, 1, 1), 1, 1, 8);
+    expect(r.skipped).toBe(1);
+    // Out of the box's top: nothing goes in.
+    const tall = new DesignEditor({ id: null, name: 'x', size: [1, 1, 1], states: [{ name: 's', voxels: [] }], recipe: null });
+    tall.place({ x: 0, y: 12, z: 0, size: 4, material: P });
+    expect(tall.extrude(tall.flatFace(0, 1, 1), 1, 1, 8)).toEqual({ placed: 0, removed: 0, skipped: 2 });
+    expect(tall.canUndo).toBe(true); // (the place only)
+    // Mirroring: the mirror image grows too.
+    const m = new DesignEditor({ id: null, name: 'x', size: [1, 1, 1], states: [{ name: 's', voxels: [] }], recipe: null });
+    m.place({ x: 0, y: 0, z: 0, size: 4, material: P });
+    m.mirror = true;
+    expect(m.extrude(m.flatFace(0, 0, 1), 0, 1, 4).placed).toBe(2);
+    expect(m.voxels.map((v) => v.x).sort((a, b) => a - b)).toEqual([0, 4, 8]);
+  });
+});
