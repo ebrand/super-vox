@@ -359,6 +359,8 @@ describe('wild jungle trees (tree style 1)', () => {
           plantTrees(chunk, [t]);
           chunk.blocks.forEach((b, i) => {
             if (!b) return;
+            // (Valid voxels: none overlapping, the fine ones (vines) included. Throws otherwise.)
+            if (b.kind === 'voxels') rasterizeVoxels(b);
             const bx = i % 16, bz = Math.floor(i / 16) % 16, by = Math.floor(i / 256);
             const wx = cx * CHUNK_SIZE + bx * 16 + 8 - t.x, wy = cy * CHUNK_SIZE + by * 16 + 8 - t.y, wz = cz * CHUNK_SIZE + bz * 16 + 8 - t.z;
             // (Its materials, however it's stored: one, a grid of equal voxels, or a list of them.)

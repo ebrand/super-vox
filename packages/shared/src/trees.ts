@@ -63,6 +63,8 @@ export const TREE_REACH = 11 * M;
 export const TREE_MAX_HEIGHT = 42 * M;
 const TRUNK_VOXEL = 4; // 1/4 m
 const LEAF_VOXEL = 8; // 1/2 m
+/** Vines' voxels (see plantTrees): 1/8 m, thin as vines are. */
+const VINE_VOXEL = 2;
 
 /** Chance of a tree per cell at density 50, by biome. */
 const DENSITY: Record<BiomeId, number> = {
@@ -487,15 +489,15 @@ export function plantTrees(chunk: Chunk, trees: readonly Tree[]): void {
         }
       }
     }
-    // Vines: columns of leaves (1/2 m), hanging.
+    // Vines: columns of leaves (VINE_VOXEL across), hanging.
     for (const v of t.vines ?? []) {
       const vx = t.x + v.dx, vz = t.z + v.dz, col = blocks(vx, vx, t.y + v.bottom, t.y + v.top, vz, vz);
       if (!col) continue;
-      const lx = Math.floor((vx - x0 - col.x0 * BLOCK_SIZE) / LEAF_VOXEL) * LEAF_VOXEL, lz = Math.floor((vz - z0 - col.z0 * BLOCK_SIZE) / LEAF_VOXEL) * LEAF_VOXEL;
+      const lx = Math.floor((vx - x0 - col.x0 * BLOCK_SIZE) / VINE_VOXEL) * VINE_VOXEL, lz = Math.floor((vz - z0 - col.z0 * BLOCK_SIZE) / VINE_VOXEL) * VINE_VOXEL;
       for (let by = col.y0; by <= col.y1; by++)
-        for (let ly = 0; ly < BLOCK_SIZE; ly += LEAF_VOXEL) {
+        for (let ly = 0; ly < BLOCK_SIZE; ly += VINE_VOXEL) {
           const py = y0 + by * BLOCK_SIZE + ly - t.y;
-          if (py >= v.bottom && py < v.top) push(col.x0, by, col.z0, { x: lx, y: ly, z: lz, size: LEAF_VOXEL, material });
+          if (py >= v.bottom && py < v.top) push(col.x0, by, col.z0, { x: lx, y: ly, z: lz, size: VINE_VOXEL, material });
         }
     }
     // Trunk, in 1/4 m voxels, over the few blocks around its axis (wild trees' is one of their limbs).
@@ -530,22 +532,25 @@ export function plantTrees(chunk: Chunk, trees: readonly Tree[]): void {
 function addVoxels(block: Block, add: Add[]): Block {
   if (block && block.kind === 'uniform') return block; // solid
   if (!block) {
-    // An empty block: tree voxels are aligned to 1/4 m, so a 4 x 4 x 4 occupancy grid will do.
-    const occ = new Uint8Array(64);
+    // An empty block: occupancy on a grid as fine as the smallest voxel needs (trunks and leaves are
+    // aligned to 1/4 m, so 4 x 4 x 4 cells will do; anything finer, such as vines, 16 x 16 x 16).
+    const cell = add.every((v) => v.size >= 4 && v.x % 4 === 0 && v.y % 4 === 0 && v.z % 4 === 0) ? 4 : 1, n = BLOCK_SIZE / cell;
+    const occ = new Uint8Array(n * n * n);
     const packed: number[] = [], materials: number[] = [];
     for (const v of add) {
-      const s = v.size >> 2, x = v.x >> 2, y = v.y >> 2, z = v.z >> 2;
+      const s = v.size / cell, x = v.x / cell, y = v.y / cell, z = v.z / cell;
       let free = true;
-      for (let yy = y; yy < y + s && free; yy++) for (let zz = z; zz < z + s && free; zz++) for (let xx = x; xx < x + s; xx++) if (occ[xx + 4 * (zz + 4 * yy)]) { free = false; break; }
+      for (let yy = y; yy < y + s && free; yy++) for (let zz = z; zz < z + s && free; zz++) for (let xx = x; xx < x + s; xx++) if (occ[xx + n * (zz + n * yy)]) { free = false; break; }
       if (!free) continue;
-      for (let yy = y; yy < y + s; yy++) for (let zz = z; zz < z + s; zz++) for (let xx = x; xx < x + s; xx++) occ[xx + 4 * (zz + 4 * yy)] = 1;
+      for (let yy = y; yy < y + s; yy++) for (let zz = z; zz < z + s; zz++) for (let xx = x; xx < x + s; xx++) occ[xx + n * (zz + n * yy)] = 1;
       packed.push(packVoxel(v.x, v.y, v.z, v.size));
       materials.push(v.material);
     }
     if (packed.length === 0) return null;
-    // All one size (leaves only, or trunk only): a grid block, which meshes much faster.
-    const size = (packed[0]! >> 12) + 1;
-    if (packed.every((p) => (p >> 12) + 1 === size)) {
+    // All one size (leaves only, or trunk only): a grid block, which meshes much faster; unless
+    // it would be mostly empty (a vine's few small voxels: a grid of them would be 512 cells).
+    const size = (packed[0]! >> 12) + 1, cells = (BLOCK_SIZE / size) ** 3;
+    if (packed.every((p) => (p >> 12) + 1 === size) && (cells <= 64 || packed.length * 8 >= cells)) {
       const n = BLOCK_SIZE / size;
       const grid = new Uint16Array(n * n * n);
       packed.forEach((p, k) => {
