@@ -72,7 +72,7 @@ export function pieceName(piece: DesignPiece): string {
   return DESIGN_PIECES.find((p) => p.piece === piece)!.name;
 }
 
-export type DesignRole = 'crafting-table' | 'furnace' | 'stove' | 'anvil' | 'smithing-table' | 'bed';
+export type DesignRole = 'crafting-table' | 'furnace' | 'stove' | 'anvil' | 'smithing-table' | 'bed' | 'boat';
 
 /**
  * The stations a design can stand in for: each one's item, what it's for, and how it's made (null:
@@ -86,6 +86,8 @@ export const STATIONS: readonly { role: DesignRole; name: string; item: ItemId; 
   { role: 'anvil', name: 'anvil', item: Item.Anvil, use: 'repairing and naming (coming with metals)', recipe: null },
   { role: 'smithing-table', name: 'smithing table', item: Item.SmithingTable, use: 'metal tools and armour (coming with metals)', recipe: null },
   { role: 'bed', name: 'bed', item: Item.Bed, use: 'coming back to after dying (right-click it to make it yours)', recipe: { inputs: [[Material.Planks, 6]], table: true } },
+  // (Not placed like the rest: put in the water, and ridden; see boats.ts.)
+  { role: 'boat', name: 'boat', item: Item.Boat, use: 'going on water (right-click water to put it in, right-click it to get in; W/S, A/D; Shift gets out)', recipe: { inputs: [[Material.Planks, 5]], table: true } },
 ];
 export const DESIGN_ROLES: readonly DesignRole[] = STATIONS.map((s) => s.role);
 

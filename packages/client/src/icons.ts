@@ -111,6 +111,10 @@ const ITEM_ICONS: Readonly<Partial<Record<ItemId, string>>> = {
   [Item.CopperCoin]: coin(COPPER),
   [Item.GoldCoin]: coin(GOLD),
   [Item.CraftingTable]: craftingTable(),
+  [Item.Boat]: svg(
+    `<path d="M3 15 L29 15 L25 23 Q16 26 7 23 Z" fill="${css(WOOD, 1.2)}"${OUTLINE}/><path d="M5 18 L27 18" stroke="${css(DARK_WOOD, 1.2)}" stroke-width="1"/>` +
+      `<path d="M2 25 Q6 23 10 25 T18 25 T26 25 T30 25" stroke="${css(WATER, 1.4)}" stroke-width="1.6" fill="none"/><line x1="20" y1="6" x2="13" y2="20" stroke="${css(DARK_WOOD, 1.3)}" stroke-width="1.6" stroke-linecap="round"/>`,
+  ),
   [Item.Furnace]: cube(STONE, STONE, `<path d="M6 19 L13 22.5 L13 27 L6 23.5 Z" fill="rgb(20 12 8)"/><path d="M7.5 23 Q9.5 19.5 11.5 23.5 Z" fill="${css(FLAME)}"/>`),
   [Item.Stove]: cube(IRON, STONE, `<ellipse cx="12" cy="10" rx="3" ry="1.6" fill="rgb(30 30 30)"/><ellipse cx="20" cy="10" rx="3" ry="1.6" fill="rgb(30 30 30)"/>`),
   [Item.Anvil]: svg(`<path d="M4 9 L28 9 L24 14 L19 14 L19 20 L24 26 L8 26 L13 20 L13 14 L8 14 Z" fill="${css([0.16, 0.16, 0.18], 1.3)}"${OUTLINE}/><path d="M4 9 L28 9 L27 10.5 L5 10.5 Z" fill="rgb(255 255 255 / 0.3)"/>`),

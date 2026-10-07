@@ -8,13 +8,14 @@ import type { DebrisPiece } from './debris.js';
 import type { DeathCause } from './survival.js';
 import { isFacing, type Facing, type PlacedObject } from './objects.js';
 import { isDesignOffset, type ObjectDesign } from './designs.js';
+import type { Boat } from './boats.js';
 import type { EntityKind } from './mobs.js';
 import type { StationKind, StationState } from './stations.js';
 import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 39;
+export const PROTOCOL_VERSION = 40;
 
 export type ClientMessage =
   | {
@@ -54,6 +55,16 @@ export type ClientMessage =
    * otherwise pours up to 1 m into it (see PouredWater); answered with `editResult`.
    */
   | { type: 'bucket'; id: number; x: number; y: number; z: number; fill: boolean }
+  /**
+   * Boats (see boats.ts): putting one in the water (from the boat item) with its hull's bottom at
+   * (x, y, z) (units) pointing `yaw`; getting into one; taking one (back into the inventory). Each
+   * answered with `editResult` (`id` as for edits).
+   */
+  | { type: 'boatLaunch'; id: number; x: number; y: number; z: number; yaw: number }
+  | { type: 'boatBoard'; id: number; boat: number }
+  | { type: 'boatTake'; id: number; boat: number }
+  /** Where the boat we're in is now (a few times a second while it moves; no answer); `leave`: and we've got out. */
+  | { type: 'boatMove'; boat: number; x: number; y: number; z: number; yaw: number; leave?: boolean }
   /** A sword's sweep (`sword`: the item) cutting leaves around block (x, y, z); answered with `editResult`. */
   | { type: 'cut'; id: number; sword: number; x: number; y: number; z: number }
   /**
@@ -128,6 +139,10 @@ export type ServerMessage =
    * or changes state), so clients know a click on one means it (they're built of ordinary materials).
    */
   | { type: 'objects'; objects: PlacedObject[] }
+  /** The world's boats (see Boat), on joining and whenever one's put in, taken, got into or out of. */
+  | { type: 'boats'; boats: Boat[] }
+  /** A boat someone's in has moved. */
+  | { type: 'boatMoved'; id: number; x: number; y: number; z: number; yaw: number }
   /**
    * Everything moving near the player (mobs and other players, see EntitySnapshot), as it is now;
    * sent a few times a second. Anything not listed has gone (out of range, or gone for good).
@@ -391,6 +406,17 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   }
   if (msg.type === 'discard' && Number.isInteger(msg.item) && (msg.item as number) >= 0 && (msg.item as number) <= MAX_MATERIAL_ID && Number.isInteger(msg.amount) && (msg.amount as number) > 0) {
     return { type: 'discard', item: msg.item as number, amount: msg.amount as number };
+  }
+  const finite = (...vs: unknown[]) => vs.every((v) => typeof v === 'number' && Number.isFinite(v));
+  const isWhole = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 2 ** 32;
+  if (msg.type === 'boatLaunch' && isWhole(msg.id) && finite(msg.x, msg.y, msg.z, msg.yaw)) {
+    return { type: 'boatLaunch', id: msg.id as number, x: msg.x as number, y: msg.y as number, z: msg.z as number, yaw: msg.yaw as number };
+  }
+  if ((msg.type === 'boatBoard' || msg.type === 'boatTake') && isWhole(msg.id) && isWhole(msg.boat)) {
+    return { type: msg.type, id: msg.id as number, boat: msg.boat as number };
+  }
+  if (msg.type === 'boatMove' && isWhole(msg.boat) && finite(msg.x, msg.y, msg.z, msg.yaw) && (msg.leave === undefined || typeof msg.leave === 'boolean')) {
+    return { type: 'boatMove', boat: msg.boat as number, x: msg.x as number, y: msg.y as number, z: msg.z as number, yaw: msg.yaw as number, ...(msg.leave ? { leave: true } : {}) };
   }
   if (msg.type === 'pose' && [msg.x, msg.y, msg.z, msg.yaw].every((v) => typeof v === 'number' && Number.isFinite(v))) {
     return { type: 'pose', x: msg.x as number, y: msg.y as number, z: msg.z as number, yaw: msg.yaw as number };

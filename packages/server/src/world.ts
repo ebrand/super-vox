@@ -69,6 +69,9 @@ import {
   objectCells,
   objectBox,
   objectRegions,
+  BOAT,
+  waterSurface,
+  type Boat,
   voxelInRegions,
   boxesMeet,
   ownsWholeBlocks,
@@ -172,6 +175,8 @@ const mod = (v: number, m: number) => ((v % m) + m) % m;
 /** What a sword cuts. */
 const LEAVES = new Set<number>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves]);
 const objectKey = (x: number, y: number, z: number) => `${x},${y},${z}`;
+/** A moving boat is kept at most this often (ms; and whenever it's left). */
+const BOATS_SAVE_MS = 2000;
 /**
  * An object's own key: its block; a design owning only parts of its blocks, also its shift, design
  * and facing (several can start in one block, each in its own parts of it).
@@ -296,6 +301,10 @@ export class World {
       this.recordEdited(chunk);
     }
     for (const o of this.store?.loadObjects?.() ?? []) this.addObject(o);
+    for (const b of this.store?.loadBoats?.() ?? []) {
+      this.boats.set(b.id, { id: b.id, design: b.design, x: b.x, y: b.y, z: b.z, yaw: b.yaw });
+      this.nextBoat = Math.max(this.nextBoat, b.id + 1);
+    }
     for (const [k, s] of Object.entries(this.store?.loadStations?.() ?? {})) if (isStationState(s) && this.objects.has(k)) this.stations.set(k, s);
     if (config.widthUnits % CHUNK_SIZE !== 0 || config.depthUnits % CHUNK_SIZE !== 0) {
       throw new RangeError('world width and depth must be multiples of the chunk size');
@@ -692,6 +701,99 @@ export class World {
     if (!chunk) return undefined;
     return materialAt(chunk, x - cx * n, y - cy * n, z - cz * n);
   }
+
+  /** Whether the unit cell (world units) is water; undefined outside the world. */
+  readonly waterAt = (x: number, y: number, z: number): boolean | undefined => {
+    const m = this.materialAtUnit(Math.floor(x), Math.floor(y), Math.floor(z));
+    return m === undefined ? undefined : isWater(m);
+  };
+
+  // --- Boats (see boats.ts): kept as they're left; who's in one isn't (they're gone when the server starts).
+
+  /** Told whenever a boat's put in, taken, or got into or out of (not as it moves). */
+  onBoatsChanged: (() => void) | null = null;
+
+  boatList(): Boat[] {
+    return [...this.boats.values()];
+  }
+
+  boatById(id: number): Boat | undefined {
+    return this.boats.get(id);
+  }
+
+  /**
+   * Puts a boat made from `design` in the water at (x, z) (units), pointing `yaw`: floating there,
+   * on the water near height `y`. Throws EditError if there's no water there.
+   */
+  launchBoat(design: ObjectDesign, x: number, y: number, z: number, yaw: number): Boat {
+    const top = waterSurface(this.waterAt, x, y + BOAT.draft, z);
+    if (top === null || top === undefined || Math.abs(top - BOAT.draft - y) > BLOCK_SIZE) throw new EditError('a boat goes in the water');
+    const boat: Boat = { id: this.nextBoat++, design: design.id, x, y: top - BOAT.draft, z, yaw };
+    this.boats.set(boat.id, boat);
+    this.saveBoats();
+    this.onBoatsChanged?.();
+    return boat;
+  }
+
+  /** Puts player `rider` in boat `id`. Throws EditError if it's gone, or someone else is in it. */
+  boardBoat(id: number, rider: number): Boat {
+    const boat = this.boats.get(id);
+    if (!boat) throw new EditError('that boat has gone');
+    if (boat.rider !== undefined && boat.rider !== rider) throw new EditError("someone's in that boat");
+    for (const b of this.boats.values()) if (b.rider === rider && b !== boat) delete b.rider;
+    boat.rider = rider;
+    this.onBoatsChanged?.();
+    return boat;
+  }
+
+  /**
+   * Boat `id` moved by player `rider` (in it) to (x, y, z), pointing `yaw`; `leave`: and they got
+   * out. False (nothing changes) if they aren't in it, or it went further than a boat goes at once.
+   */
+  moveBoat(id: number, rider: number, x: number, y: number, z: number, yaw: number, leave = false): boolean {
+    const boat = this.boats.get(id);
+    if (!boat || boat.rider !== rider) return false;
+    if (Math.hypot(x - boat.x, z - boat.z) > 8 * BLOCK_SIZE || Math.abs(y - boat.y) > 4 * BLOCK_SIZE) return false;
+    Object.assign(boat, { x, y, z, yaw });
+    if (leave) {
+      delete boat.rider;
+      this.saveBoats();
+      this.onBoatsChanged?.();
+    } else if (Date.now() - this.boatsSavedAt > BOATS_SAVE_MS) this.saveBoats();
+    return true;
+  }
+
+  /** Takes boat `id` out of the world (back into someone's inventory). Throws EditError if it's gone or someone else is in it. */
+  takeBoat(id: number, by: number): Boat {
+    const boat = this.boats.get(id);
+    if (!boat) throw new EditError('that boat has gone');
+    if (boat.rider !== undefined && boat.rider !== by) throw new EditError("someone's in that boat");
+    this.boats.delete(id);
+    this.saveBoats();
+    this.onBoatsChanged?.();
+    return boat;
+  }
+
+  /** Player `rider` has gone: out of any boat they were in (where it was last). */
+  riderGone(rider: number): void {
+    let any = false;
+    for (const b of this.boats.values())
+      if (b.rider === rider) {
+        delete b.rider;
+        any = true;
+      }
+    if (!any) return;
+    this.saveBoats();
+    this.onBoatsChanged?.();
+  }
+
+  private saveBoats(): void {
+    this.boatsSavedAt = Date.now();
+    this.store?.saveBoats?.(this.boatList().map(({ rider: _, ...b }) => b));
+  }
+  private readonly boats = new Map<number, Boat>();
+  private nextBoat = 1;
+  private boatsSavedAt = 0;
 
   /** Whether the unit cell (world units) is solid (not air, not water); outside the world counts as solid. */
   readonly solidAt = (x: number, y: number, z: number): boolean => {

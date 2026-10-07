@@ -9,6 +9,8 @@ import { PlayerInventory } from './playerInventory.js';
 import { MobManager } from './mobManager.js';
 import {
   BinaryTag,
+  BOAT,
+  BLOCK_SIZE,
   CHUNK_SIZE,
   resolveChunk,
   EditError,
@@ -974,6 +976,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       savePlace(true);
       clients.delete(socket);
       clientWorld.delete(socket);
+      // (Out of any boat they were in: it stays where it was.)
+      const gone = players.get(socket);
+      if (gone && greeted) world.riderGone(gone.id);
       players.delete(socket);
     });
 
@@ -1037,6 +1042,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               send({ type: 'designs', designs: designs.list() });
               send({ type: 'objects', objects: world.designObjects() });
               world.onObjectsChanged ??= () => toWorld(world, { type: 'objects', objects: world.designObjects() });
+              send({ type: 'boats', boats: world.boatList() });
+              world.onBoatsChanged ??= () => toWorld(world, { type: 'boats', boats: world.boatList() });
             };
             sendWelcome({
               type: 'welcome',
@@ -1278,6 +1285,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             if (msg.type === 'placeObject') {
               const kind = objectKindOf(msg.item), design = designOfItem(msg.item);
               if (!kind && !design) return fail(`a ${itemName(msg.item)} isn't placed like that`);
+              if (design?.role === 'boat') return fail('a boat goes in the water: right-click water');
               const why = inventory?.refuseItem(msg.item);
               if (why) return fail(why);
               result = design ? world.placeDesign(design, msg.x, msg.y, msg.z, msg.facing, msg.offset) : world.placeObject(kind!, msg.x, msg.y, msg.z, msg.facing, msg.wall ?? false);
@@ -1333,6 +1341,53 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           send({ type: 'editResult', id: msg.id, ok: true });
           if ((msg.type === 'placeObject' || msg.type === 'bucket') && inventory?.mode === 'survival') send(inventory.message());
           broadcast(world, result);
+          break;
+        }
+
+        case 'boatLaunch':
+        case 'boatBoard':
+        case 'boatTake': {
+          if (!greeted) return;
+          const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
+          if (!canEdit()) return fail('sign in to build');
+          if (opts.inventories && who && !inventory) return fail(inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded");
+          const p = players.get(socket)!;
+          // (Within reach of where they last said they were.)
+          const near = (x: number, y: number, z: number) => !p.pose || Math.hypot(p.pose.x - x, p.pose.y - y, p.pose.z - z) <= BOAT.reach + 2 * BLOCK_SIZE;
+          try {
+            if (msg.type === 'boatLaunch') {
+              const design = designOfItem(Item.Boat);
+              if (design?.role !== 'boat') return fail('there are no boats yet: one needs designing');
+              const why = inventory?.refuseItem(Item.Boat);
+              if (why) return fail(why);
+              if (!near(msg.x, msg.y, msg.z)) return fail('too far away');
+              world.launchBoat(design, msg.x, msg.y, msg.z, msg.yaw);
+              inventory?.addItem(Item.Boat, -1);
+            } else {
+              const boat = world.boatById(msg.boat);
+              if (!boat) return fail('that boat has gone');
+              if (!near(boat.x, boat.y, boat.z)) return fail('too far from the boat');
+              if (msg.type === 'boatBoard') world.boardBoat(msg.boat, p.id);
+              else {
+                world.takeBoat(msg.boat, p.id);
+                inventory?.addItem(Item.Boat, 1);
+              }
+            }
+          } catch (err) {
+            if (!(err instanceof EditError)) throw err;
+            return fail(err.message);
+          }
+          send({ type: 'editResult', id: msg.id, ok: true });
+          if (msg.type !== 'boatBoard' && inventory?.mode === 'survival') send(inventory.message());
+          break;
+        }
+
+        case 'boatMove': {
+          if (!greeted || !canEdit()) return;
+          const p = players.get(socket)!;
+          if (!world.moveBoat(msg.boat, p.id, msg.x, msg.y, msg.z, msg.yaw, msg.leave ?? false)) return;
+          const bytes = encodeMessage({ type: 'boatMoved', id: msg.boat, x: msg.x, y: msg.y, z: msg.z, yaw: msg.yaw });
+          for (const [client, w] of clients) if (w === world && client !== socket && client.readyState === client.OPEN) out(client, bytes);
           break;
         }
 

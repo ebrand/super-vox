@@ -121,6 +121,21 @@ describe('protocol', () => {
     }
   });
 
+  it('validates boats: putting one in, getting in, taking one, and moving it', () => {
+    expect(decodeClientMessage('{"type":"boatLaunch","id":1,"x":10.5,"y":-3,"z":4,"yaw":1.2}')).toEqual({ type: 'boatLaunch', id: 1, x: 10.5, y: -3, z: 4, yaw: 1.2 });
+    expect(decodeClientMessage('{"type":"boatBoard","id":2,"boat":7}')).toEqual({ type: 'boatBoard', id: 2, boat: 7 });
+    expect(decodeClientMessage('{"type":"boatTake","id":3,"boat":7}')).toEqual({ type: 'boatTake', id: 3, boat: 7 });
+    expect(decodeClientMessage('{"type":"boatMove","boat":7,"x":1,"y":2,"z":3,"yaw":0}')).toEqual({ type: 'boatMove', boat: 7, x: 1, y: 2, z: 3, yaw: 0 });
+    expect(decodeClientMessage('{"type":"boatMove","boat":7,"x":1,"y":2,"z":3,"yaw":0,"leave":true}')).toEqual({ type: 'boatMove', boat: 7, x: 1, y: 2, z: 3, yaw: 0, leave: true });
+    for (const raw of [
+      '{"type":"boatLaunch","id":1,"x":"a","y":0,"z":0,"yaw":0}',
+      '{"type":"boatBoard","id":2,"boat":-1}',
+      '{"type":"boatTake","id":3}',
+      '{"type":"boatMove","boat":7,"x":1,"y":2,"z":3}',
+      '{"type":"boatMove","boat":7,"x":1,"y":2,"z":3,"yaw":0,"leave":"yes"}',
+    ]) expect(decodeClientMessage(raw)).toBeNull();
+  });
+
   it('validates buckets and sword sweeps', () => {
     expect(decodeClientMessage('{"type":"bucket","id":1,"x":2,"y":-3,"z":4,"fill":true}')).toEqual({ type: 'bucket', id: 1, x: 2, y: -3, z: 4, fill: true });
     expect(decodeClientMessage('{"type":"cut","id":2,"sword":1001,"x":2,"y":3,"z":4}')).toEqual({ type: 'cut', id: 2, sword: 1001, x: 2, y: 3, z: 4 });

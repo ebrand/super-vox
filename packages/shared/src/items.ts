@@ -74,6 +74,8 @@ export const Item = {
   /** Smelted in a furnace from raw copper and raw gold (see stations.ts): money, for markets (later). */
   CopperCoin: 1028,
   GoldCoin: 1029,
+  /** Put in the water (right-click), and ridden (see boats.ts): once a design stands in for it. */
+  Boat: 1030,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -109,10 +111,11 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.GeologistsHammer]: "geologist's hammer",
   [Item.CopperCoin]: 'copper coin',
   [Item.GoldCoin]: 'gold coin',
+  [Item.Boat]: 'boat',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */
-const DESIGNED_ONLY = new Set<ItemId>([Item.Furnace, Item.Stove, Item.Anvil, Item.SmithingTable, Item.Bed]);
+const DESIGNED_ONLY = new Set<ItemId>([Item.Furnace, Item.Stove, Item.Anvil, Item.SmithingTable, Item.Bed, Item.Boat]);
 
 /** Whether an id is a block material (amounts are volumes) rather than an item (amounts are counts). */
 export function isBlock(id: ItemId): boolean {

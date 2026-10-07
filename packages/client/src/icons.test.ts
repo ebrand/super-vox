@@ -4,7 +4,7 @@ import { iconSvg } from './icons.js';
 
 describe('iconSvg', () => {
   it('has a picture for every item and block there is', () => {
-    const ids = [...ALL_ITEMS, ...Object.values(Material).filter((m) => m !== 0), Item.Furnace, Item.Stove, Item.Anvil, Item.SmithingTable, Item.Bed];
+    const ids = [...ALL_ITEMS, ...Object.values(Material).filter((m) => m !== 0), Item.Furnace, Item.Stove, Item.Anvil, Item.SmithingTable, Item.Bed, Item.Boat];
     for (const id of ids) {
       const svg = iconSvg(id);
       expect(svg, `item ${id}`).toMatch(/^<svg [^>]*viewBox="0 0 32 32"[^>]*>.*<\/svg>$/s);

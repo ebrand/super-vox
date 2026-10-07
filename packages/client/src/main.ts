@@ -26,6 +26,8 @@ import { WorldMapOverlay, decodeWorldMap } from './worldMap.js';
 import { rememberReturn, startFromParams, takeReturn } from './startAt.js';
 import { InventoryUi } from './inventory.js';
 import { EntityView } from './entities.js';
+import { BoatView } from './boatView.js';
+import { getOutAt, stepBoat, waterSurface, type Boat, type BoatMotion, type Hull } from '@super-vox/shared';
 import type { Footprint } from './coverage.js';
 import { createCompassRose } from './compassRose.js';
 import { coveredAboveFor, materialAtFor, solidAtFor, waterAtFor } from './worldQuery.js';
@@ -407,6 +409,20 @@ const sessionStore = (): Storage | null => {
 
 /** Mobs and other players (see EntityView). */
 let entities: EntityView | null = null;
+/** The world's boats (see BoatView), and the one we're in, if any: the keys steer it (see FlyControls.ride). */
+let boats: BoatView | null = null;
+/** The boats as the server last told them (kept for when the view's made, or the designs they're made from arrive). */
+let boatList: Boat[] = [];
+let riding: { id: number; motion: BoatMotion; hull: Hull; sentAt: number; sent: string; shiftWasDown: boolean } | null = null;
+/**
+ * Gets into boat `id` (the server's said we may); and out of the one we're in, beside it (`gone`:
+ * it's gone from under us; `stay`: we're being sent somewhere, dying or jumping on the map, so
+ * not beside it).
+ */
+let startRide: (id: number) => void = () => {};
+let endRide: (gone?: boolean, stay?: boolean) => void = () => {};
+/** The rider's eyes above their seat (units): sitting. */
+const SEAT_EYE = 0.85 * UNITS_PER_METER;
 
 /** Blasts' dust, flown in a worker (see blastCloud): when each blast was. */
 let cloudWorker: Worker | null = null;
@@ -643,6 +659,7 @@ connection = connect({
             // On a round world, go to the copy of that spot nearest where we are.
             const here = camera.position.x * UNITS_PER_METER;
             const vx = w.wrapX ? x + Math.round((here - x) / w.widthUnits) * w.widthUnits : x;
+            endRide(false, true);
             camera.position.set(vx / UNITS_PER_METER, ground / UNITS_PER_METER + PLAYER.eye / UNITS_PER_METER + 2, z / UNITS_PER_METER);
             updateLod();
           };
@@ -747,6 +764,68 @@ connection = connect({
             () => 1 - 0.85 * atmosphere.uniforms.stars.value,
           );
           editTool.pickEntity = (origin, dir, maxDist) => entities!.pick(origin, dir, maxDist);
+          boats = new BoatView(
+            scene,
+            w,
+            () => camera.position.x * UNITS_PER_METER,
+            (x, y, z) => (chunks ? lightAt(chunks.lightWorld(), Math.floor(x / BLOCK_SIZE), Math.floor(y / BLOCK_SIZE), Math.floor(z / BLOCK_SIZE)) : null),
+            () => 1 - 0.85 * atmosphere.uniforms.stars.value,
+          );
+          boats.setBoats(boatList);
+          editTool.pickBoat = (origin, dir, maxDist) => boats!.pick(origin, dir, maxDist);
+          editTool.onBoarded = (id) => startRide(id);
+          {
+            const surface = (x: number, y: number, z: number) => waterSurface(waterAt, x, y, z);
+            const placeRider = (r: NonNullable<typeof riding>) =>
+              camera.position.set(r.motion.x / UNITS_PER_METER, (r.motion.y + r.hull.seat + SEAT_EYE) / UNITS_PER_METER, r.motion.z / UNITS_PER_METER);
+            const tell = (r: NonNullable<typeof riding>, leave = false) => {
+              const { x, y, z, yaw } = r.motion;
+              r.sentAt = performance.now();
+              r.sent = [x, y, z, yaw].map((v) => v.toFixed(2)).join();
+              send({ type: 'boatMove', boat: r.id, x, y, z, yaw, ...(leave ? { leave: true } : {}) });
+            };
+            startRide = (id) => {
+              const b = boats!.boat(id), hull = boats!.hull(id);
+              if (!b || !hull) return;
+              riding = { id, motion: { x: b.x, y: b.y, z: b.z, yaw: b.yaw, speed: 0 }, hull, sentAt: 0, sent: '', shiftWasDown: true };
+              // Facing the way it points.
+              controls.yaw = b.yaw;
+              placeRider(riding);
+              boats!.setOwn({ id, x: b.x, y: b.y, z: b.z, yaw: b.yaw });
+              controls.ride = (input, dt) => {
+                const r = riding;
+                if (!r) return;
+                // (Shift pressed again, not held from before getting in.)
+                if (input.leave && !r.shiftWasDown) return endRide();
+                r.shiftWasDown = input.leave;
+                const before = r.motion.yaw;
+                r.motion = stepBoat(r.motion, input, dt, r.hull, surface, solidOrGround);
+                // (Looking round turns with the boat.)
+                controls.yaw += r.motion.yaw - before;
+                placeRider(r);
+                boats!.setOwn({ id: r.id, ...r.motion });
+                const key = [r.motion.x, r.motion.y, r.motion.z, r.motion.yaw].map((v) => v.toFixed(2)).join();
+                if (key !== r.sent && performance.now() - r.sentAt >= 100) tell(r);
+              };
+              editTool?.say('in the boat: W/S ahead and astern, A/D turn; Shift gets out');
+            };
+            endRide = (gone = false, stay = false) => {
+              const r = riding;
+              if (!r) return;
+              riding = null;
+              controls.ride = null;
+              boats!.setOwn(null);
+              if (stay) {
+                if (!gone) tell(r, true);
+                return;
+              }
+              // Out onto the bank if there's one beside it, else into the water.
+              const [x, y, z] = getOutAt(r.motion, r.hull, solidOrGround);
+              if (!gone) tell(r, true);
+              camera.position.set(x / UNITS_PER_METER, (y + PLAYER.eye) / UNITS_PER_METER, z / UNITS_PER_METER);
+              controls.stopFalling();
+            };
+          }
           const modeTag = document.getElementById('mode')!;
           // The mode, and the size chosen (dig, place; hybrid while ⌘ is held: else it matches what's aimed at).
           const showMode = () => {
@@ -873,7 +952,8 @@ connection = connect({
         editTool?.say('back where you left off');
         break;
       case 'respawn':
-        // Died: back at our bed or the spawn point (standing on it).
+        // Died: back at our bed or the spawn point (standing on it); out of any boat (it stays).
+        endRide(false, true);
         camera.position.set(unitsToMeters(msg.x), unitsToMeters(msg.y) + PLAYER.eye / UNITS_PER_METER + 0.5, unitsToMeters(msg.z));
         controls.stopFalling(); // (no falling on from where we died)
         updateLod(true);
@@ -888,6 +968,17 @@ connection = connect({
         setDesigns(msg.designs);
         inventoryUi.refresh();
         updateHud();
+        // (Boats whose designs weren't known yet: now they can be drawn.)
+        boats?.setBoats(boatList);
+        break;
+      case 'boats':
+        boatList = msg.boats;
+        boats?.setBoats(msg.boats);
+        // (Ours gone from under us: taken, or the server restarted.)
+        if (riding && !msg.boats.some((b) => b.id === riding!.id)) endRide(true);
+        break;
+      case 'boatMoved':
+        if (riding?.id !== msg.id) boats?.moved(msg.id, msg.x, msg.y, msg.z, msg.yaw);
         break;
       case 'objects':
         placedObjects = msg.objects;
@@ -1041,6 +1132,7 @@ setInterval(() => {
   tiles.retireCovered(covered, STALE_MAX_MS);
 }, 500);
 
+let lastBoatFrame = performance.now();
 renderer.setAnimationLoop(() => {
   const frameStart = performance.now();
   // Movement and editing pause while the map or the inventory is open.
@@ -1062,6 +1154,8 @@ renderer.setAnimationLoop(() => {
   if (!paused) editTool?.update();
   compassRose.update(controls.yaw);
   entities?.frame();
+  boats?.frame(Math.min(0.25, (frameStart - lastBoatFrame) / 1000));
+  lastBoatFrame = frameStart;
   worldMap?.update();
   if (sea) sea.position.set(camera.position.x, sea.position.y, camera.position.z);
   applyLighting(lighting, worldHours(), atmosphere, lightingUniforms, view);

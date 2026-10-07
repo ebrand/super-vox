@@ -18,6 +18,7 @@ import {
   Item,
   isBlock,
   isWater,
+  BOAT,
   isObjectMaterial,
   isUsableMaterial,
   isFood,
@@ -145,6 +146,12 @@ export class EditTool {
   private hit: { cell: [number, number, number]; normal: [number, number, number]; point: [number, number, number]; distance: number } | null = null;
   /** Finds a mob along a ray (units), for hitting it (set by the game; see EntityView.pick). */
   pickEntity: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { id: number; dist: number } | null) | null = null;
+  /** Finds a boat along a ray (units), to get into or take (set by the game; see BoatView.pick). */
+  pickBoat: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { id: number; dist: number } | null) | null = null;
+  /** We're in boat `id` now (the server said so). */
+  onBoarded: ((id: number) => void) | null = null;
+  /** Requests to get into a boat, by message id: the boat's. */
+  private readonly boarding = new Map<number, number>();
   private placement: (Box & { valid: boolean; reason: string }) | null = null;
   private dig: Box | null = null;
   /** Outward normal of the face the dig box starts at (the surface aimed at). */
@@ -386,7 +393,12 @@ export class EditTool {
   /** Shows where the designed object in hand would go (its whole box), if one is. */
   private showDesignPreview(): void {
     const held = this.materialOf();
+    // (Not a boat: that goes in the water, see launchBoat.)
     const design = this.mode === 'hybrid' && held !== null ? designOfItem(held) : undefined;
+    if (design?.role === 'boat') {
+      this.designPreview.visible = this.designBlocksPreview.visible = false;
+      return;
+    }
     const spot = design && this.designSpot();
     this.designPreview.visible = this.designBlocksPreview.visible = !!spot;
     if (!design || !spot) return;
@@ -427,7 +439,9 @@ export class EditTool {
     {
       const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
       const dir = this.camera.getWorldDirection(new THREE.Vector3());
-      const hit = raycastVoxels([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], REACH, this.materialOf() === Item.Bucket ? this.solidOrWaterAt : this.solidAt);
+      // (With a bucket or a boat in hand, water stops the aim: to fill it there, or put the boat in.)
+      const held = this.materialOf();
+      const hit = raycastVoxels([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], REACH, held === Item.Bucket || held === Item.Boat ? this.solidOrWaterAt : this.solidAt);
       const aimed = hit ? this.voxelBox(hit.cell) : null;
       this.target = aimed;
       if (hit && aimed) {
@@ -478,6 +492,21 @@ export class EditTool {
     if (button === 1) return this.breakSmaller(mods.shift ? MIN_VOXEL_SIZE : null);
     if (this.mode === 'hybrid') {
       const held = this.materialOf();
+      // A boat in reach, nearer than the voxel aimed at: right-click gets in, left-click takes it.
+      const boat = this.aimedBoat();
+      if (boat && (button === 0 || button === 2)) {
+        const id = this.nextId++;
+        if (button === 2) {
+          this.pending.set(id, 'getting in');
+          this.boarding.set(id, boat);
+          this.send({ type: 'boatBoard', id, boat });
+        } else {
+          this.pending.set(id, 'taking the boat');
+          this.send({ type: 'boatTake', id, boat });
+        }
+        return;
+      }
+      if (button === 2 && held === Item.Boat) return this.launchBoat();
       if (button === 0) {
         // A mob in reach, nearer than the voxel aimed at: hit it (with the sword in hand, if any).
         const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
@@ -548,11 +577,32 @@ export class EditTool {
     }
   }
 
+  /** The boat aimed at, if one's in reach and nearer than the voxel aimed at. */
+  private aimedBoat(): number | null {
+    const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const boat = this.pickBoat?.([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], BOAT.reach);
+    return boat && (!this.hit || boat.dist < this.hit.distance) ? boat.id : null;
+  }
+
+  /** Puts the boat in hand in the water aimed at (on its top), pointing the way we look. */
+  private launchBoat(): void {
+    if (!this.hit || this.targetMaterial === null || !isWater(this.targetMaterial) || this.hit.normal[1] <= 0) return this.say('a boat goes in the water: aim at its surface');
+    const [x, y, z] = this.hit.point;
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const id = this.nextId++;
+    this.pending.set(id, 'putting the boat in');
+    this.send({ type: 'boatLaunch', id, x, y: y - BOAT.draft, z, yaw: Math.atan2(-dir.x, -dir.z) });
+  }
+
   /** Handles editResult messages; returns true if the message was one. */
   onServerMessage(msg: ServerMessage): boolean {
     if (msg.type !== 'editResult') return false;
     const what = this.pending.get(msg.id);
     this.pending.delete(msg.id);
+    const boat = this.boarding.get(msg.id);
+    this.boarding.delete(msg.id);
+    if (msg.ok && boat !== undefined) this.onBoarded?.(boat);
     if (!msg.ok) this.say(`${what ?? 'edit'} failed: ${msg.error}`);
     else if (msg.note) this.say(msg.note);
     return true;

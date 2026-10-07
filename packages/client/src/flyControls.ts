@@ -71,6 +71,11 @@ export class FlyControls {
   stunned = false;
   /** Being thrown (see knockdown.ts, which moves the camera): no walking or falling of our own; looking round still. */
   held = false;
+  /**
+   * In a boat: the keys steer it instead (W/S ahead and astern, A/D left and right; `leave`:
+   * Shift, getting out), and it moves the camera; looking round still.
+   */
+  ride: ((input: { forward: number; turn: number; leave: boolean }, dt: number) => void) | null = null;
   private walk: WalkState = { vy: 0, grounded: false };
   private readonly keys = new Set<string>();
   private dragging = false;
@@ -183,6 +188,15 @@ export class FlyControls {
 
   /** Moves and orients the camera; `dt` in seconds. */
   update(dt: number): void {
+    if (this.ride && !this.held) {
+      const k = this.stunned ? NO_KEYS : this.keys;
+      const on = (...codes: string[]) => codes.some((c) => k.has(c));
+      this.walk = { vy: 0, grounded: false };
+      this.swimming = false;
+      this.ride({ forward: (on('KeyW', 'ArrowUp') ? 1 : 0) - (on('KeyS', 'ArrowDown') ? 1 : 0), turn: (on('KeyA', 'ArrowLeft') ? 1 : 0) - (on('KeyD', 'ArrowRight') ? 1 : 0), leave: on('ShiftLeft', 'ShiftRight') }, dt);
+      this.apply();
+      return;
+    }
     if (this.held) {
       this.walk = { vy: 0, grounded: false };
       this.swimming = false;
