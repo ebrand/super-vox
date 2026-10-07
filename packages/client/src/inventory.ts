@@ -29,6 +29,7 @@ import {
   type ServerMessage,
 } from '@super-vox/shared';
 import { TABLE_SLOTS, addToTable, available, couldMake, describeEntry, fillFor, matchRecipes, onTable, timesAvailable, type Table } from './crafting.js';
+import { iconSvg } from './icons.js';
 import { materialColor } from './materials.js';
 
 type InventoryMessage = Extract<ServerMessage, { type: 'inventory' }>;
@@ -369,9 +370,14 @@ export class InventoryUi {
     const el = document.createElement('div');
     el.className = 'swatch';
     if (m !== null) {
-      el.style.background = colorOf(m);
       el.title = itemName(m);
-      const glyph = lookOf(m)?.glyph;
+      const icon = iconSvg(m);
+      // (Our own markup, from icons.ts: nothing a player wrote.)
+      if (icon) {
+        el.classList.add('icon');
+        el.innerHTML = icon;
+      } else el.style.background = colorOf(m);
+      const glyph = icon ? undefined : lookOf(m)?.glyph;
       if (glyph) {
         const g = document.createElement('b');
         g.textContent = glyph;
