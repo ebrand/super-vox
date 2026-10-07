@@ -43,6 +43,7 @@ import {
   objectStation,
   type PlacedObject,
   type ItemId,
+  MIN_VOXEL_SIZE,
   nextBreakSize,
   type ClientMessage,
   type Edit,
@@ -80,6 +81,8 @@ export function sizeLabel(size: number): string {
 export interface Modifiers {
   meta: boolean;
   alt: boolean;
+  /** (Middle click: break the aimed voxel all the way down, to 1/16 m.) */
+  shift?: boolean;
 }
 
 /** The standard tool size closest to `size` (ties go to the smaller). */
@@ -111,7 +114,7 @@ const mod = (v: number, m: number) => ((v % m) + m) % m;
  *
  * In dig and place, Option positions the box in 1/16 m steps instead of
  * snapping to its size. In every mode, middle click breaks the aimed voxel into the next
- * smaller size, B breaks it into the selected size, X removes it. The size
+ * smaller size (with Shift, into 1/16 m voxels), B breaks it into the selected size, X removes it. The size
  * (one of the five standard sizes) changes with Command+wheel or [ ]; the material is the
  * selected hotbar slot (see InventoryUi; water fills whole blocks and flows). The server applies
  * edits (in survival, from your inventory) and sends back changed chunks.
@@ -466,7 +469,7 @@ export class EditTool {
     this.setMeta(mods.meta);
     this.modifiers.alt = mods.alt;
     this.update(); // aim with the modifiers as they are right now
-    if (button === 1) return this.breakSmaller();
+    if (button === 1) return this.breakSmaller(mods.shift ? MIN_VOXEL_SIZE : null);
     if (this.mode === 'hybrid') {
       const held = this.materialOf();
       if (button === 0) {
@@ -585,7 +588,7 @@ export class EditTool {
             : `click: place · ⌥: 1/16 m steps${this.bigBoxes ? ' · bigger sizes: fill boxes up to 16 m' : ''}`;
     return (
       `mode: ${this.mode} (Tab: hybrid / dig / place) · ${size} ${this.material?.name ?? 'nothing (E: inventory)'} · ${target}\n` +
-      `${actions} · middle-click: break smaller · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-9: hotbar · E: inventory` +
+      `${actions} · middle-click: break smaller (⇧: to 1/16 m) · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-9: hotbar · E: inventory` +
       msg
     );
   }
@@ -740,9 +743,10 @@ export class EditTool {
     this.send({ type: 'placeObject', id, item, x, y, z, facing, ...(wall ? { wall } : {}) });
   }
 
-  private breakSmaller(): void {
+  /** Breaks the aimed voxel into pieces of `to` (null: the next size down). */
+  private breakSmaller(to: number | null = null): void {
     if (!this.target) return;
-    const piece = nextBreakSize(this.target.size);
+    const piece = to !== null && to < this.target.size ? to : to === null ? nextBreakSize(this.target.size) : null;
     if (piece === null) return this.say(`can't break a ${sizeLabel(this.target.size)} voxel any smaller`);
     this.submit({ op: 'break', x: this.target.x, y: this.target.y, z: this.target.z, pieceSize: piece }, 'break');
   }

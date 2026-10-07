@@ -264,6 +264,37 @@ describe('EditTool big boxes (creative)', () => {
   });
 });
 
+describe('EditTool breaking', () => {
+  it('breaks the aimed voxel a size down with a middle click, and with Shift all the way, to 1/16 m', () => {
+    (globalThis as { window?: EventTarget }).window = new EventTarget();
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    chunk.blocks[blockIndex(0, 0, 0)] = { kind: 'uniform', size: 16, material: Material.Stone };
+    const chunks = { chunkAt: (c: { cx: number; cy: number; cz: number }) => (c.cx === 0 && c.cy === 0 && c.cz === 0 ? chunk : emptyChunk(c)) } as unknown as ChunkManager;
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(0.5, 3, 0.5);
+    camera.lookAt(0.5, 0, 0.5);
+    camera.updateMatrixWorld();
+    const sent: { type: string; [k: string]: unknown }[] = [];
+    const tool = new EditTool(new THREE.Scene(), camera, chunks, (m) => sent.push(m as never), () => Material.Stone);
+    tool.click(1, { meta: false, alt: false });
+    tool.click(1, { meta: false, alt: false, shift: true });
+    expect(sent.filter((m) => m.type === 'edit').map((m) => m.edit)).toMatchObject([
+      { op: 'break', x: 0, y: 0, z: 0, pieceSize: 8 },
+      { op: 'break', x: 0, y: 0, z: 0, pieceSize: 1 },
+    ]);
+    // Already 1/16 m: nothing to send.
+    chunk.blocks[blockIndex(0, 0, 0)] = blockFromVoxels([{ x: 0, y: 15, z: 0, size: 1, material: Material.Stone }]);
+    const n = sent.length;
+    camera.position.set(0.02, 3, 0.02);
+    camera.lookAt(0.02, 0, 0.02);
+    camera.updateMatrixWorld();
+    tool.click(1, { meta: false, alt: false, shift: true });
+    expect(sent.length).toBe(n);
+    tool.dispose();
+    delete (globalThis as { window?: EventTarget }).window;
+  });
+});
+
 describe('EditTool TNT', () => {
   it('lights TNT with a click in hybrid (and never mines it, even in survival)', () => {
     (globalThis as { window?: EventTarget }).window = new EventTarget();

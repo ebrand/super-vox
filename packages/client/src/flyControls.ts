@@ -80,7 +80,7 @@ export class FlyControls {
    * Called for a mouse button press while the mouse is captured (0 = left,
    * 1 = middle, 2 = right), with the modifier keys held at that moment.
    */
-  onClick: ((button: number, mods: { meta: boolean; alt: boolean }) => void) | null = null;
+  onClick: ((button: number, mods: { meta: boolean; alt: boolean; shift: boolean }) => void) | null = null;
   /**
    * Offered plain wheel movement (deltaY, pixels), e.g. to step through the hotbar; returns
    * whether it took it (if so, speed is Option+wheel).
@@ -107,7 +107,7 @@ export class FlyControls {
     on(element, 'mousedown', (e: MouseEvent) => {
       if (this.pointerLocked) {
         // Captured: buttons are actions, not look-drags.
-        this.onClick?.(e.button, { meta: e.metaKey, alt: e.altKey });
+        this.onClick?.(e.button, { meta: e.metaKey, alt: e.altKey, shift: e.shiftKey });
         return;
       }
       if (e.button === 0 || e.button === 2) {
