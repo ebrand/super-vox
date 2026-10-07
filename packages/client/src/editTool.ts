@@ -151,9 +151,9 @@ export class EditTool {
   private readonly pending = new Map<number, string>();
   private readonly outline: THREE.LineSegments;
   /** Where a designed object in hand would go, when one's aimed somewhere: the box around its voxels (green)... */
-  private readonly designPreview: THREE.LineSegments;
+  private readonly designPreview: THREE.Object3D;
   /** ...and the 1 m blocks it would take (amber; off the grid, a block more along each shifted axis). */
-  private readonly designBlocksPreview: THREE.LineSegments;
+  private readonly designBlocksPreview: THREE.Object3D;
   /** Designed objects placed in the world (see setPlacedObjects), by each block they take ("bx,by,bz"). */
   private readonly designCells = new Map<string, PlacedObject>();
   /** Round worlds: blocks around (block X wraps); null: they don't. */
@@ -209,13 +209,10 @@ export class EditTool {
     };
     const box = new THREE.BoxGeometry(1, 1, 1);
     this.outline = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0xffffff }));
-    // (Both drawn through everything: what's in the way, half a wall say, mustn't hide them.)
-    this.designPreview = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0x40ff60, depthTest: false }));
-    this.designPreview.renderOrder = 10;
+    this.designPreview = seeThroughOutline(box, 0x40ff60);
     this.designPreview.visible = false;
     scene.add(this.designPreview);
-    this.designBlocksPreview = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0xffb030, depthTest: false }));
-    this.designBlocksPreview.renderOrder = 9;
+    this.designBlocksPreview = seeThroughOutline(box, 0xffb030);
     this.designBlocksPreview.visible = false;
     scene.add(this.designBlocksPreview);
     this.previewMaterial = new THREE.MeshBasicMaterial({ color: 0x40ff60, transparent: true, opacity: 0.3, depthWrite: false });
@@ -879,4 +876,16 @@ export class EditTool {
     obj.scale.setScalar((b.size / UNITS_PER_METER) * scale);
     obj.position.set((b.x + b.size / 2) / UNITS_PER_METER, (b.y + b.size / 2) / UNITS_PER_METER, (b.z + b.size / 2) / UNITS_PER_METER);
   }
+}
+
+/**
+ * A box's edges in `color`: bright where nothing's in front of them, faint where something is (the
+ * ground, half a wall), so they're never hidden and it's still plain where they meet things.
+ */
+function seeThroughOutline(box: THREE.BufferGeometry, color: number): THREE.Group {
+  const edges = new THREE.EdgesGeometry(box);
+  const seen = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color }));
+  const hidden = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.3 }));
+  hidden.renderOrder = 9;
+  return new THREE.Group().add(seen, hidden);
 }
