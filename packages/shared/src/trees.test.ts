@@ -4,7 +4,8 @@ import { rasterizeVoxels, voxelAt, type Chunk } from './chunk.js';
 import { Material } from './materials.js';
 import { PlateHeights, defaultPlateTerrain, migratePlateTerrain, type PlateTerrainConfig } from './plates.js';
 import { TerrainGenerator, type HeightSource } from './terrain.js';
-import { CANOPY_EXACT_STEP, NO_CANOPY, TREE_REACH, TreeKind, clumpFactors, clumpedChance, crownTop, plantTrees, type Clumping, type Tree } from './trees.js';
+import { CANOPY_EXACT_STEP, NO_CANOPY, TREE_MAX_HEIGHT, TREE_REACH, TreeKind, clumpFactors, clumpedChance, crownTop, plantTrees, treesIn, type Clumping, type GroundSampler, type Tree } from './trees.js';
+import { emptyChunk, blockIndex } from './chunk.js';
 import { CHUNK_SIZE, FLAT_WORLD_16KM } from './world.js';
 
 const cache = new Map<string, PlateHeights>();
@@ -311,4 +312,66 @@ describe('tree clumping', () => {
       }
     }
   });
+});
+
+describe('wild jungle trees (tree style 1)', () => {
+  // Jungle everywhere: hot, wet, its floor at height 0.
+  const hot = 30, wet = 0.95;
+  const jungle: GroundSampler = {
+    ground: (xs) => ({ heights: new Int32Array(xs.length), materials: new Uint16Array(xs.length).fill(Material.JungleFloor), climate: { temperature: new Float64Array(xs.length).fill(hot), moisture: new Float64Array(xs.length).fill(wet) } }),
+  };
+  const box = [0, 0, 400 * 16, 400 * 16] as const;
+  const of = (style: number) => treesIn(jungle, 7, 50, ...box, undefined, null, null, style).filter((t) => t.kind === TreeKind.Jungle);
+
+  it('branch and lean on buttress roots, with clumps at different heights and vines; style 0 as before', () => {
+    expect(classifyBiome(hot, wet)).toBe(Biome.Jungle);
+    const plain = of(0), wild = of(1);
+    expect(wild.length).toBeGreaterThan(100);
+    expect(wild.length).toBe(plain.length);
+    for (const t of plain) expect(t.limbs).toBeUndefined();
+    for (const t of wild) {
+      // A trunk, 4-6 roots, 3-5 branches; vines; clumps over a spread of heights.
+      expect(t.limbs!.length).toBeGreaterThanOrEqual(1 + 4 + 3);
+      expect(t.limbs!.length).toBeLessThanOrEqual(1 + 6 + 5);
+      expect(t.vines!.length).toBeGreaterThanOrEqual(6);
+      const heights = t.blobs.map((b) => b.dy);
+      expect(Math.max(...heights) - Math.min(...heights)).toBeGreaterThan(3 * 16);
+      // Within what chunks look for: TREE_REACH across, TREE_MAX_HEIGHT up.
+      for (const b of t.blobs) expect(Math.hypot(b.dx, b.dz) + b.rx).toBeLessThanOrEqual(TREE_REACH);
+      for (const l of t.limbs!) expect(Math.max(Math.hypot(l.x0, l.z0), Math.hypot(l.x1, l.z1)) + l.r0).toBeLessThanOrEqual(TREE_REACH);
+      expect(t.height).toBeLessThanOrEqual(TREE_MAX_HEIGHT);
+      for (const v of t.vines!) expect(v.bottom).toBeGreaterThan(0);
+    }
+    // Some giants over the rest.
+    // (Height: the top of its leaves. Giants top out at 29-35 m, the rest under 28 m.)
+    expect(wild.filter((t) => t.height > 28 * 16).length).toBeGreaterThan(wild.length * 0.1);
+  });
+
+  it('plant as wood and leaves: branches away from the trunk, vines hanging under the clumps', () => {
+    const t = of(1)[0]!;
+    // The chunks around the tree, from its roots to its top.
+    let wood = 0, woodOff = 0, hanging = 0;
+    const lowest = Math.min(...t.blobs.map((b) => b.dy - b.ry));
+    for (let cy = 0; cy * CHUNK_SIZE < t.height + 16; cy++)
+      for (let cz = Math.floor((t.z - TREE_REACH) / CHUNK_SIZE); cz <= Math.floor((t.z + TREE_REACH) / CHUNK_SIZE); cz++)
+        for (let cx = Math.floor((t.x - TREE_REACH) / CHUNK_SIZE); cx <= Math.floor((t.x + TREE_REACH) / CHUNK_SIZE); cx++) {
+          const chunk = emptyChunk({ cx, cy, cz });
+          plantTrees(chunk, [t]);
+          chunk.blocks.forEach((b, i) => {
+            if (!b) return;
+            const bx = i % 16, bz = Math.floor(i / 16) % 16, by = Math.floor(i / 256);
+            const wx = cx * CHUNK_SIZE + bx * 16 + 8 - t.x, wy = cy * CHUNK_SIZE + by * 16 + 8 - t.y, wz = cz * CHUNK_SIZE + bz * 16 + 8 - t.z;
+            // (Its materials, however it's stored: one, a grid of equal voxels, or a list of them.)
+            const mats = b.kind === 'uniform' ? [b.material] : [...b.materials];
+            if (mats.includes(Material.Wood)) {
+              wood++;
+              if (Math.hypot(wx, wz) > t.trunk + 3 * 16 && wy > 6 * 16) woodOff++;
+            }
+            if (mats.includes(Material.JungleLeaves) && wy < lowest - 16) hanging++;
+          });
+        }
+    expect(wood).toBeGreaterThan(50);
+    expect(woodOff).toBeGreaterThan(0);
+    expect(hanging).toBeGreaterThan(0);
+  }, 60_000);
 });

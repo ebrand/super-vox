@@ -44,6 +44,14 @@ export interface Tree {
   crown: number;
   /** Crown blobs (broadleaf, jungle, acacia): centre offsets from the trunk base and radii. */
   blobs: { dx: number; dy: number; dz: number; rx: number; ry: number }[];
+  /**
+   * Wood other than a plain trunk (wild jungle trees: see wildJungle): segments from (x0, y0, z0)
+   * to (x1, y1, z1) (offsets from the trunk base), tapering from radius r0 to r1. When given, the
+   * trunk is one of them.
+   */
+  limbs?: { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number; r0: number; r1: number }[];
+  /** Vines hanging from the crown: at (dx, dz) from the trunk, from `top` down to `bottom` (offsets from its base). */
+  vines?: { dx: number; dz: number; top: number; bottom: number }[];
 }
 
 const M = 16;
@@ -205,7 +213,7 @@ function cellRandom(seed: number, cx: number, cz: number) {
  * trees mix, and a forest thins out over the width of the ecotone instead of stopping at a line.
  * `edits` (plant and clear strokes) change each spot's chance last.
  */
-export function treesIn(sampler: GroundSampler, seed: number, density: number, x0: number, z0: number, x1: number, z1: number, ecotone: Ecotone = SHARP, clumps: Clumping | null = null, edits: TreeEdits | null = null): Tree[] {
+export function treesIn(sampler: GroundSampler, seed: number, density: number, x0: number, z0: number, x1: number, z1: number, ecotone: Ecotone = SHARP, clumps: Clumping | null = null, edits: TreeEdits | null = null, style = 0): Tree[] {
   if (density <= 0 && !edits) return [];
   const c0 = Math.floor((x0 - TREE_REACH) / TREE_CELL), c1 = Math.floor((x1 + TREE_REACH) / TREE_CELL);
   const r0 = Math.floor((z0 - TREE_REACH) / TREE_CELL), r1 = Math.floor((z1 + TREE_REACH) / TREE_CELL);
@@ -230,7 +238,7 @@ export function treesIn(sampler: GroundSampler, seed: number, density: number, x
     const chance = Math.min(1, DENSITY[biome] * scale);
     const here = clumps && clump ? clumpedChance(clumps, chance, t.clump) : chance;
     if (t.rnd(2) >= (edits ? edits.chance(t.x, t.z, here) : here)) return;
-    const tree = shapeTree(biome, t.x, g.heights[k]!, t.z, t.rnd);
+    const tree = shapeTree(biome, t.x, g.heights[k]!, t.z, t.rnd, style);
     // Only trees that reach into the box.
     if (tree.x + TREE_REACH < x0 || tree.x - TREE_REACH >= x1 || tree.z + TREE_REACH < z0 || tree.z - TREE_REACH >= z1) return;
     out.push(tree);
@@ -238,8 +246,84 @@ export function treesIn(sampler: GroundSampler, seed: number, density: number, x
   return out;
 }
 
-/** Sizes and crown of a tree of the biome's kind. */
-function shapeTree(biome: BiomeId, x: number, y: number, z: number, rnd: (k: number) => number): Tree {
+/**
+ * A wild jungle tree (tree style 1, see PlateTerrainConfig.treeStyle): a trunk leaning a little,
+ * on buttress roots; 3-5 branches climbing out from its upper part, each with its own clump of
+ * leaves, and one at its top, so the canopy is clumps at different heights; a few small clumps
+ * low on the trunk; vines hanging from the clumps. One in five a giant, over the rest.
+ */
+function wildJungle(x: number, y: number, z: number, rnd: (k: number) => number): Tree {
+  const r = (k: number, lo: number, hi: number) => (lo + (hi - lo) * rnd(k)) * M;
+  const giant = rnd(200) < 0.2;
+  const height = giant ? r(3, 34, 42) : r(3, 20, 32);
+  const trunk = r(5, 0.55, giant ? 1.1 : 0.85);
+  // The trunk, leaning up to 1.2 m at its top.
+  const la = rnd(201) * Math.PI * 2, lean = r(202, 0, 1.2);
+  const top = { x: Math.cos(la) * lean, y: height * 0.74, z: Math.sin(la) * lean };
+  const limbs: NonNullable<Tree['limbs']> = [{ x0: 0, y0: -M, z0: 0, x1: top.x, y1: top.y, z1: top.z, r0: trunk, r1: trunk * 0.55 }];
+  // Buttress roots: fins from up the trunk flaring out to the ground.
+  const roots = 4 + Math.floor(rnd(203) * 3);
+  for (let i = 0; i < roots; i++) {
+    const a = ((i + 0.6 * rnd(210 + i)) / roots) * Math.PI * 2, out = r(220 + i, 1.8, 3.4) * (giant ? 1.25 : 1), up = r(230 + i, 1.5, 3.5) * (giant ? 1.3 : 1);
+    limbs.push({ x0: Math.cos(a) * trunk * 0.5, y0: up, z0: Math.sin(a) * trunk * 0.5, x1: Math.cos(a) * out, y1: -0.5 * M, z1: Math.sin(a) * out, r0: 0.35 * M, r1: 0.12 * M });
+  }
+  // A clump of leaves round (cx, cy, cz): one broad, flattish blob and three more about it.
+  const blobs: Tree['blobs'] = [];
+  const clump = (cx: number, cy: number, cz: number, size: number, k: number) => {
+    blobs.push({ dx: cx, dy: cy, dz: cz, rx: size, ry: size * 0.45 });
+    for (let j = 0; j < 3; j++) {
+      const a = rnd(k + j) * Math.PI * 2, d = size * (0.4 + 0.5 * rnd(k + 10 + j));
+      blobs.push({ dx: cx + Math.cos(a) * d, dy: cy + (rnd(k + 20 + j) - 0.4) * size * 0.5, dz: cz + Math.sin(a) * d, rx: size * (0.55 + 0.3 * rnd(k + 30 + j)), ry: size * (0.3 + 0.15 * rnd(k + 40 + j)) });
+    }
+  };
+  clump(top.x, top.y + 1.5 * M, top.z, r(240, 3.5, 5), 300);
+  // Branches, from the upper half of the trunk, climbing 20-50 degrees, each with a clump at its end (kept
+  // within TREE_REACH of the trunk).
+  const branches = 3 + Math.floor(rnd(241) * 3);
+  for (let i = 0; i < branches; i++) {
+    // (Spread up the trunk's upper half, each in its own stretch: clumps at different heights.)
+    const f = 0.45 + (0.5 * (i + rnd(250 + i))) / branches, h0 = top.y * f;
+    const a = ((i + 0.5 * rnd(260 + i)) / branches) * Math.PI * 2, e = ((20 + 30 * rnd(270 + i)) * Math.PI) / 180;
+    const size = r(290 + i, 2.2, 3.6);
+    let len = r(280 + i, 3.5, 7);
+    const sx = top.x * f, sz = top.z * f;
+    const reach = 10.5 * M - size - Math.hypot(sx, sz);
+    if (len * Math.cos(e) > reach) len = reach / Math.cos(e);
+    const ex = sx + Math.cos(a) * Math.cos(e) * len, ey = h0 + Math.sin(e) * len, ez = sz + Math.sin(a) * Math.cos(e) * len;
+    limbs.push({ x0: sx, y0: h0, z0: sz, x1: ex, y1: ey, z1: ez, r0: trunk * 0.45, r1: trunk * 0.22 });
+    clump(ex, ey + 0.6 * M, ez, size, 400 + i * 50);
+  }
+  // Small clumps low on the trunk (ferns and the like growing on it).
+  const low = Math.floor(rnd(242) * 3);
+  for (let i = 0; i < low; i++) {
+    const h = height * (0.25 + 0.25 * rnd(700 + i)), a = rnd(710 + i) * Math.PI * 2, f = h / top.y, d = trunk + 0.5 * M;
+    blobs.push({ dx: top.x * f + Math.cos(a) * d, dy: h, dz: top.z * f + Math.sin(a) * d, rx: r(720 + i, 1, 1.6), ry: 0.8 * M });
+  }
+  // (Every blob within TREE_REACH of the trunk, as chunks look no further for trees: those beyond drawn in.)
+  for (const b of blobs) {
+    const d = Math.hypot(b.dx, b.dz), over = d + b.rx - 10.8 * M;
+    if (over > 0 && d > 0) {
+      const k = Math.max(0, d - over) / d;
+      b.dx *= k;
+      b.dz *= k;
+    }
+  }
+  // Vines hanging from the clumps' undersides, 2-8 m.
+  const vines: NonNullable<Tree['vines']> = [];
+  const nVines = 6 + Math.floor(rnd(243) * 9);
+  for (let i = 0; i < nVines; i++) {
+    const b = blobs[Math.floor(rnd(500 + i) * blobs.length)]!;
+    const a = rnd(510 + i) * Math.PI * 2, d = b.rx * 0.8 * Math.sqrt(rnd(530 + i));
+    const vtop = b.dy - b.ry * 0.4;
+    vines.push({ dx: b.dx + Math.cos(a) * d, dz: b.dz + Math.sin(a) * d, top: vtop, bottom: Math.max(0.5 * M, vtop - r(520 + i, 2, 8)) });
+  }
+  const crown = Math.max(...blobs.map((b) => Math.hypot(b.dx, b.dz) + b.rx));
+  return { x, y, z, kind: TreeKind.Jungle, height: Math.max(...blobs.map((b) => b.dy + b.ry)), trunk, crown, blobs, limbs, vines };
+}
+
+/** Sizes and crown of a tree of the biome's kind (`style` 1: wild jungle trees, see wildJungle). */
+function shapeTree(biome: BiomeId, x: number, y: number, z: number, rnd: (k: number) => number, style = 0): Tree {
+  if (biome === Biome.Jungle && style >= 1) return wildJungle(x, y, z, rnd);
   const between = (k: number, lo: number, hi: number) => (lo + (hi - lo) * rnd(k)) * M;
   const blobs: Tree['blobs'] = [];
   const crownOf = (n: number, cy: number, spread: number, rx: number, ry: number) => {
@@ -344,8 +428,35 @@ export function plantTrees(chunk: Chunk, trees: readonly Tree[]): void {
     };
     return b.x0 > b.x1 || b.y0 > b.y1 || b.z0 > b.z1 ? null : b;
   };
+  /** A limb (see Tree.limbs) of tree `t`, in 1/4 m voxels: those within its tapering radius of the segment. */
+  const plantLimb = (t: Tree, l: NonNullable<Tree['limbs']>[number]) => {
+    const ax = t.x + l.x0, ay = t.y + l.y0, az = t.z + l.z0, dx = l.x1 - l.x0, dy = l.y1 - l.y0, dz = l.z1 - l.z0;
+    const len2 = dx * dx + dy * dy + dz * dz || 1, rMax = Math.max(l.r0, l.r1);
+    const box = blocks(Math.min(ax, ax + dx) - rMax, Math.max(ax, ax + dx) + rMax, Math.min(ay, ay + dy) - rMax, Math.max(ay, ay + dy) + rMax, Math.min(az, az + dz) - rMax, Math.max(az, az + dz) + rMax);
+    if (!box) return;
+    // Distance from (px, py, pz) (world units) to the segment, and the radius there.
+    const near = (px: number, py: number, pz: number) => {
+      const u = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy + (pz - az) * dz) / len2));
+      return { d: Math.hypot(px - ax - u * dx, py - ay - u * dy, pz - az - u * dz), r: l.r0 + (l.r1 - l.r0) * u };
+    };
+    for (let by = box.y0; by <= box.y1; by++)
+      for (let bz = box.z0; bz <= box.z1; bz++)
+        for (let bx = box.x0; bx <= box.x1; bx++) {
+          const cx = x0 + bx * BLOCK_SIZE, cy = y0 + by * BLOCK_SIZE, cz = z0 + bz * BLOCK_SIZE;
+          // (Blocks wholly away from it skipped: most of a slanting limb's box.)
+          if (near(cx + BLOCK_SIZE / 2, cy + BLOCK_SIZE / 2, cz + BLOCK_SIZE / 2).d > rMax + 0.87 * BLOCK_SIZE) continue;
+          for (let ly = 0; ly < BLOCK_SIZE; ly += TRUNK_VOXEL)
+            for (let lz = 0; lz < BLOCK_SIZE; lz += TRUNK_VOXEL)
+              for (let lx = 0; lx < BLOCK_SIZE; lx += TRUNK_VOXEL) {
+                const h = TRUNK_VOXEL / 2, q = near(cx + lx + h, cy + ly + h, cz + lz + h);
+                if (q.d <= q.r) push(bx, by, bz, { x: lx, y: ly, z: lz, size: TRUNK_VOXEL, material: Material.Wood });
+              }
+        }
+  };
   for (const t of trees) {
     const material = LEAVES[t.kind];
+    // (Wild trees' wood first: branches show where they leave the trunk, under their leaves.)
+    if (t.limbs) for (const l of t.limbs) plantLimb(t, l);
     // Leaves, in 1/2 m voxels, over the blocks the crown's bounding box covers.
     const crown =
       t.kind === TreeKind.Conifer
@@ -376,9 +487,20 @@ export function plantTrees(chunk: Chunk, trees: readonly Tree[]): void {
         }
       }
     }
-    // Trunk, in 1/4 m voxels, over the few blocks around its axis.
+    // Vines: columns of leaves (1/2 m), hanging.
+    for (const v of t.vines ?? []) {
+      const vx = t.x + v.dx, vz = t.z + v.dz, col = blocks(vx, vx, t.y + v.bottom, t.y + v.top, vz, vz);
+      if (!col) continue;
+      const lx = Math.floor((vx - x0 - col.x0 * BLOCK_SIZE) / LEAF_VOXEL) * LEAF_VOXEL, lz = Math.floor((vz - z0 - col.z0 * BLOCK_SIZE) / LEAF_VOXEL) * LEAF_VOXEL;
+      for (let by = col.y0; by <= col.y1; by++)
+        for (let ly = 0; ly < BLOCK_SIZE; ly += LEAF_VOXEL) {
+          const py = y0 + by * BLOCK_SIZE + ly - t.y;
+          if (py >= v.bottom && py < v.top) push(col.x0, by, col.z0, { x: lx, y: ly, z: lz, size: LEAF_VOXEL, material });
+        }
+    }
+    // Trunk, in 1/4 m voxels, over the few blocks around its axis (wild trees' is one of their limbs).
     const top = trunkTop(t);
-    const trunk = blocks(t.x - t.trunk, t.x + t.trunk, t.y - M, t.y + top, t.z - t.trunk, t.z + t.trunk);
+    const trunk = t.limbs ? null : blocks(t.x - t.trunk, t.x + t.trunk, t.y - M, t.y + top, t.z - t.trunk, t.z + t.trunk);
     if (trunk) {
       for (let by = trunk.y0; by <= trunk.y1; by++) {
         for (let bz = trunk.z0; bz <= trunk.z1; bz++) {

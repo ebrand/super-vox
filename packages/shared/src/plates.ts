@@ -118,6 +118,8 @@ export interface PlateTerrainConfig {
   lakesByArea: number;
   /** Caves (see caves.ts): 0 none (worlds made before caves) .. 100 common and big; 25 rare. */
   caves: number;
+  /** Tree shapes: 1, jungle trees wild (branching, buttress roots, vines: see trees.ts); 0, as worlds made before (umbrella-like). */
+  treeStyle: number;
   /**
    * Geology (see geology.ts): 3, the rock in layers (sandstone, shale, limestone, coal seams and
    * banded iron, over granite), shown on bare rock too, broken by faults, with granite intrusions
@@ -197,6 +199,7 @@ export function defaultPlateTerrain(seed = 1, world?: WorldConfig): PlateTerrain
     rockVariety: 50,
     caves: 25,
     geology: 3,
+    treeStyle: 1,
     islandArcs: 0,
     hotspots: 0,
     islandMinSize: 200,
@@ -212,7 +215,7 @@ export function defaultPlateTerrain(seed = 1, world?: WorldConfig): PlateTerrain
  */
 export const SURFACE_SETTINGS: readonly (keyof PlateTerrainConfig)[] = [
   'surfaceRoughness', 'mountainDetail', 'beaches', 'rockAltitude', 'altitudeRock', 'snowAltitude', 'altitudeSnow', 'snowFractal',
-  'rockRoughness', 'rockVariety', 'rockSlope', 'altitudeCooling', 'snowTemperature', 'biomeBlend', 'trees', 'treeClumping', 'geology',
+  'rockRoughness', 'rockVariety', 'rockSlope', 'altitudeCooling', 'snowTemperature', 'biomeBlend', 'trees', 'treeClumping', 'geology', 'treeStyle',
 ];
 
 export const PLATE_LIMITS = {
@@ -304,6 +307,8 @@ export function migratePlateTerrain(raw: unknown): PlateTerrainConfig {
   if (r.caves === undefined) r.caves = 0;
   // Nor geology: plain stone, ore scattered in it.
   if (r.geology === undefined) r.geology = 0;
+  // Jungle trees were umbrella-like.
+  if (r.treeStyle === undefined) r.treeStyle = 0;
   // With biomes, the snow and rock altitudes didn't count (temperature alone decided).
   if (r.altitudeSnow === undefined) r.altitudeSnow = 0;
   if (r.altitudeRock === undefined) r.altitudeRock = 0;
@@ -373,6 +378,7 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
   num(c.rockVariety, L.rockVariety, 'rockVariety');
   if (c.lakesByArea !== 0 && c.lakesByArea !== 1) throw new RangeError(`lakesByArea must be 0 or 1; got ${c.lakesByArea}`);
   if (![0, 1, 2, 3].includes(c.geology)) throw new RangeError(`geology must be 0, 1, 2 or 3; got ${c.geology}`);
+  if (c.treeStyle !== 0 && c.treeStyle !== 1) throw new RangeError(`treeStyle must be 0 or 1; got ${c.treeStyle}`);
   num(c.islandArcs, L.islandArcs, 'islandArcs');
   int(c.hotspots, ...L.hotspots, 'hotspots');
   num(c.islandMinSize, L.islandSize, 'islandMinSize', ' m');
@@ -2290,6 +2296,7 @@ export class PlateHeights implements HeightSource {
       this.clumps,
       // (Trees reach into the box from outside it.)
       this.treeEditsIn(x0 - TREE_REACH, z0 - TREE_REACH, x1 + TREE_REACH, z1 + TREE_REACH),
+      this.config.treeStyle,
     );
   }
 
