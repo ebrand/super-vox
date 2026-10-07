@@ -1,6 +1,7 @@
 import './envBadge.js';
 import * as THREE from 'three';
 import { BLOCK_SIZE, CHUNK_SIZE, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, weatherTime, lightAt, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
+import { LeaveAsk } from './leaveAsk.js';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool, sizeLabel } from './editTool.js';
@@ -209,41 +210,40 @@ document.addEventListener('pointerlockchange', () => {
 });
 
 // --- Leaving the world: the connection closed properly, so the server lets go of the player at once
-// (and their world can close when it's idle). Esc asks: the browser takes the first Esc for itself
-// (it frees the mouse, and the page never hears the key), so the mouse being freed by anything but
-// the game (E, M, L, a furnace) or another window taking over asks; with the mouse already free,
-// Esc does. Leaving the page any way at all leaves too (closing the tab, going elsewhere, or the
-// browser keeping the page to come back to: then it starts afresh).
+// (and their world can close when it's idle). Esc asks (see LeaveAsk: the browser takes the first
+// Esc for itself). Leaving the page any way at all leaves too (closing the tab, going elsewhere, or
+// the browser keeping the page to come back to: then it starts afresh).
 const leaveDialog = document.getElementById('leave') as HTMLDialogElement;
-/** The game itself is freeing the mouse (not the browser's Esc): no asking. */
-let freeingMouse = false;
-function freeMouse(): void {
-  freeingMouse = true;
-  document.exitPointerLock();
-}
-/** When the mouse was last freed: the Esc that freed it isn't a second Esc. */
-let freedAt = 0;
+/** When it was last shown: the Esc that showed it mustn't close it straight away. */
+let leaveAskedAt = 0;
 function askToLeave(): void {
   if (leaveDialog.open || inventoryUi.isOpen || worldMap?.isOpen) return;
   (document.getElementById('leave-world') as HTMLElement).textContent = worldName ?? 'this world';
+  leaveAskedAt = performance.now();
   leaveDialog.showModal();
 }
-document.addEventListener('pointerlockchange', () => {
-  if (document.pointerLockElement) return;
-  freedAt = performance.now();
-  const ours = freeingMouse;
-  freeingMouse = false;
-  // (Switching to another window frees it too: then the page has lost the focus by the time this looks.)
-  if (!ours) setTimeout(() => document.hasFocus() && document.visibilityState === 'visible' && askToLeave(), 50);
+leaveDialog.addEventListener('cancel', (e) => {
+  if (performance.now() - leaveAskedAt < 400) e.preventDefault();
 });
+const leaveAsk = new LeaveAsk({
+  focused: () => document.hasFocus() && document.visibilityState === 'visible',
+  locked: () => !!document.pointerLockElement,
+  free: () => document.exitPointerLock(),
+  ask: askToLeave,
+  now: () => performance.now(),
+  later: (fn, ms) => setTimeout(fn, ms),
+});
+/** The game freeing the mouse (E, M, L, a furnace): no asking. */
+const freeMouse = () => leaveAsk.free();
+document.addEventListener('pointerlockchange', () => leaveAsk.lockChanged(!!document.pointerLockElement));
+document.addEventListener('fullscreenchange', () => leaveAsk.fullscreenChanged(!!document.fullscreenElement));
 function leaveWorld(): void {
   connection?.close();
   weatherView.stop();
 }
 window.addEventListener('keydown', (e) => {
-  if (e.code !== 'Escape' || e.repeat || typingIn(e) || controls.pointerLocked || leaveDialog.open) return;
-  if (performance.now() - freedAt < 400) return;
-  askToLeave();
+  if (e.code !== 'Escape' || e.repeat || typingIn(e) || leaveDialog.open) return;
+  leaveAsk.escape();
 });
 document.getElementById('leave-go')!.addEventListener('click', () => {
   leaveWorld();
