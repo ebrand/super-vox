@@ -168,6 +168,11 @@ const mod = (v: number, m: number) => ((v % m) + m) % m;
 /** What a sword cuts. */
 const LEAVES = new Set<number>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves]);
 const objectKey = (x: number, y: number, z: number) => `${x},${y},${z}`;
+/** An object's own key (its block; a design off the grid: and its shift, as two can share a least block). */
+const objectId = (o: PlacedObject) => objectKey(o.x, o.y, o.z) + (o.offset ? `+${o.offset.join(',')}` : '');
+/** Whether two block-local boxes (as objectRegion) share any volume. */
+const regionsMeet = (a: ReturnType<typeof objectRegion>, b: ReturnType<typeof objectRegion>) =>
+  a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1 && a.z0 < b.z1 && b.z0 < a.z1;
 
 /** One edit's results after another's (later chunks win). */
 function mergeResults(a: EditResult, b: EditResult): EditResult {
@@ -238,10 +243,13 @@ export class World {
   private readonly decoded = new Map<string, Chunk>();
   /** Placed objects (fences, gates, doors, designs) by their bottom block, "bx,by,bz" (block X in the world's range). */
   private readonly objects = new Map<string, PlacedObject>();
-  /** What's in each furnace and stove (see stations.ts), by its origin block (objectKey). */
+  /** What's in each furnace and stove (see stations.ts), by its key (objectId). */
   private readonly stations = new Map<string, StationState>();
-  /** Every block a placed object takes (see objectCells), "bx,by,bz", to the object. */
-  private readonly cells = new Map<string, PlacedObject>();
+  /**
+   * Every block a placed object takes (see objectCells), "bx,by,bz", to the objects there: one, or
+   * designs off the grid sharing it, each in its own part of it (see objectRegion).
+   */
+  private readonly cells = new Map<string, PlacedObject[]>();
   /** Told whenever objects are placed, taken down or change (to tell players about designs: see designObjects). */
   onObjectsChanged: (() => void) | null = null;
   /** Running totals since the world was opened, for monitoring (see WorldStats). */
@@ -771,7 +779,20 @@ export class World {
 
   /** The object occupying block (bx, by, bz) (1 m block coordinates), if any (doors: either block; designs: any in their box). */
   objectAt(bx: number, by: number, bz: number): PlacedObject | undefined {
-    return this.cells.get(objectKey(this.wrapBlockX(bx), by, bz));
+    const here = this.objectsAt(bx, by, bz);
+    // (Shared: the one starting here, if one does.)
+    return here.find((o) => this.wrapBlockX(o.x) === this.wrapBlockX(bx) && o.y === by && o.z === bz) ?? here[0];
+  }
+
+  /** Every object taking block (bx, by, bz) (more than one: designs off the grid sharing it). */
+  objectsAt(bx: number, by: number, bz: number): readonly PlacedObject[] {
+    return this.cells.get(objectKey(this.wrapBlockX(bx), by, bz)) ?? [];
+  }
+
+  /** The furnace or stove (a design standing in for one) taking block (bx, by, bz), the one starting there first. */
+  stationAt(bx: number, by: number, bz: number): PlacedObject | undefined {
+    const here = this.objectsAt(bx, by, bz).filter((o) => isStationKind(objectStation(o)));
+    return here.find((o) => this.wrapBlockX(o.x) === this.wrapBlockX(bx) && o.y === by && o.z === bz) ?? here[0];
   }
 
   /**
@@ -780,11 +801,11 @@ export class World {
    */
   objectAtPoint(x: number, y: number, z: number): PlacedObject | undefined {
     const B = BLOCK_SIZE, bx = Math.floor(x / B), by = Math.floor(y / B), bz = Math.floor(z / B);
-    const o = this.objectAt(bx, by, bz);
-    if (!o?.offset) return o;
-    const r = this.regionIn(o, bx, by, bz);
     const lx = x - bx * B, ly = y - by * B, lz = z - bz * B;
-    return lx >= r.x0 && lx < r.x1 && ly >= r.y0 && ly < r.y1 && lz >= r.z0 && lz < r.z1 ? o : undefined;
+    return this.objectsAt(bx, by, bz).find((o) => {
+      const r = this.regionIn(o, bx, by, bz);
+      return lx >= r.x0 && lx < r.x1 && ly >= r.y0 && ly < r.y1 && lz >= r.z0 && lz < r.z1;
+    });
   }
 
   /** What of block (bx, by, bz) object `o` (taking it) owns, block-local (see objectRegion). */
@@ -800,8 +821,8 @@ export class World {
    * more ('gone'), or there's no room above it ('blocked').
    */
   bedSpot(bx: number, by: number, bz: number): { x: number; y: number; z: number } | 'gone' | 'blocked' {
-    const o = this.objectAt(bx, by, bz);
-    if (!o || !isBed(o) || this.wrapBlockX(o.x) !== this.wrapBlockX(bx) || o.y !== by || o.z !== bz) return 'gone';
+    const o = this.objectsAt(bx, by, bz).find((o) => isBed(o) && this.wrapBlockX(o.x) === this.wrapBlockX(bx) && o.y === by && o.z === bz);
+    if (!o) return 'gone';
     const b = objectBox(o);
     const x = o.x * BLOCK_SIZE + (b.x0 + b.x1) / 2, z = o.z * BLOCK_SIZE + (b.z0 + b.z1) / 2, top = o.y * BLOCK_SIZE + b.y1;
     // (The client stands them half a metre above where they're sent: room for them there, or a little higher.)
@@ -814,9 +835,24 @@ export class World {
     return objectCells(o).map(([dx, dy, dz]) => [this.wrapBlockX(o.x + dx), o.y + dy, o.z + dz]);
   }
 
+  /** Registers `o` (in place of the one it was, changed: the same objectId). */
   private addObject(o: PlacedObject): void {
-    this.objects.set(objectKey(o.x, o.y, o.z), o);
-    for (const [x, y, z] of this.objectBlocksAt(o)) this.cells.set(objectKey(x, y, z), o);
+    const was = this.objects.get(objectId(o));
+    if (was) this.unregister(was);
+    this.objects.set(objectId(o), o);
+    for (const [x, y, z] of this.objectBlocksAt(o)) {
+      const key = objectKey(x, y, z);
+      this.cells.set(key, [...(this.cells.get(key) ?? []), o]);
+    }
+  }
+
+  private unregister(o: PlacedObject): void {
+    this.objects.delete(objectId(o));
+    for (const [x, y, z] of this.objectBlocksAt(o)) {
+      const key = objectKey(x, y, z), left = (this.cells.get(key) ?? []).filter((p) => p !== o);
+      if (left.length) this.cells.set(key, left);
+      else this.cells.delete(key);
+    }
   }
 
   /**
@@ -826,7 +862,7 @@ export class World {
   station(o: PlacedObject, now: number): { kind: StationKind; state: StationState } | null {
     const kind = objectStation(o);
     if (!isStationKind(kind)) return null;
-    const key = objectKey(o.x, o.y, o.z);
+    const key = objectId(o);
     let state = this.stations.get(key);
     if (!state) this.stations.set(key, (state = emptyStation(now)));
     return { kind, state };
@@ -838,9 +874,8 @@ export class World {
 
   private dropObject(o: PlacedObject): void {
     // (A station taken down loses what's in it: take it out first, see station.)
-    if (this.stations.delete(objectKey(o.x, o.y, o.z))) this.saveStations();
-    this.objects.delete(objectKey(o.x, o.y, o.z));
-    for (const [x, y, z] of this.objectBlocksAt(o)) this.cells.delete(objectKey(x, y, z));
+    if (this.stations.delete(objectId(o))) this.saveStations();
+    this.unregister(this.objects.get(objectId(o)) ?? o);
   }
 
   /** The designs placed in this world (see ObjectDesign). */
@@ -854,13 +889,10 @@ export class World {
     for (let by = Math.floor(b.y0 / BLOCK_SIZE); by <= Math.floor((b.y1 - 1) / BLOCK_SIZE); by++)
       for (let bz = Math.floor(b.z0 / BLOCK_SIZE); bz <= Math.floor((b.z1 - 1) / BLOCK_SIZE); bz++)
         for (let bx = Math.floor(b.x0 / BLOCK_SIZE); bx <= Math.floor((b.x1 - 1) / BLOCK_SIZE); bx++) {
-          const o = this.objectAt(bx, by, bz);
-          if (!o) continue;
-          if (!o.offset) return o;
-          // (A design off the grid: only if the bounds reach into its box in this block.)
-          const B = BLOCK_SIZE, r = this.regionIn(o, bx, by, bz);
-          const x0 = b.x0 - bx * B, y0 = b.y0 - by * B, z0 = b.z0 - bz * B, x1 = b.x1 - bx * B, y1 = b.y1 - by * B, z1 = b.z1 - bz * B;
-          if (x0 < r.x1 && x1 > r.x0 && y0 < r.y1 && y1 > r.y0 && z0 < r.z1 && z1 > r.z0) return o;
+          // (Designs off the grid: only if the bounds reach into their box in this block.)
+          const B = BLOCK_SIZE, part = { x0: b.x0 - bx * B, y0: b.y0 - by * B, z0: b.z0 - bz * B, x1: b.x1 - bx * B, y1: b.y1 - by * B, z1: b.z1 - bz * B };
+          const o = this.objectsAt(bx, by, bz).find((o) => !o.offset || regionsMeet(part, this.regionIn(o, bx, by, bz)));
+          if (o) return o;
         }
     return undefined;
   }
@@ -1021,10 +1053,11 @@ export class World {
    */
   private checkRoom(o: PlacedObject, what: string): void {
     for (const [x, y, z] of this.objectBlocksAt(o)) {
-      if (this.objectAt(x, y, z)) throw new EditError(`there's already something there`);
+      // (Designs off the grid may share a block, each in its own part of it.)
+      const r = this.regionIn(o, x, y, z);
+      if (this.objectsAt(x, y, z).some((p) => regionsMeet(r, this.regionIn(p, x, y, z)))) throw new EditError(`there's already something there`);
       const block = this.blockAt(x, y, z);
       if (block === undefined) throw new EditError('outside the world');
-      const r = this.regionIn(o, x, y, z);
       if (blockVoxels(withoutWater(block)).some((v) => voxelInRegion(v, r))) throw new EditError(what);
     }
   }
@@ -1369,8 +1402,7 @@ export class World {
     for (let by = Math.floor((y - reach) / BLOCK_SIZE); by <= Math.floor((y + reach) / BLOCK_SIZE); by++)
       for (let bz = Math.floor((z - reach) / BLOCK_SIZE); bz <= Math.floor((z + reach) / BLOCK_SIZE); bz++)
         for (let bx = Math.floor((x - reach) / BLOCK_SIZE); bx <= Math.floor((x + reach) / BLOCK_SIZE); bx++) {
-          const o = this.objectAt(bx, by, bz);
-          if (o && objectStation(o) === role) return true;
+          if (this.objectsAt(bx, by, bz).some((o) => objectStation(o) === role)) return true;
         }
     return false;
   }

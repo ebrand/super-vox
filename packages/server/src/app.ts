@@ -728,7 +728,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       for (const [key, viewers] of byKey) {
         if (!viewers.size) continue;
         const [x, y, z] = key.split(',').map(Number) as [number, number, number];
-        const o = world.objectAt(x, y, z);
+        const o = world.stationAt(x, y, z);
         const st = o && world.station(o, now);
         if (!o || !st) {
           for (const s of viewers) sendTo(s, { type: 'station', x, y, z, kind: 'furnace', name: '', state: null, serverTime: now });
@@ -1362,7 +1362,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           const fail = (message: string) => send({ type: 'error', code: 'station', message });
           if (!canEdit()) return fail('sign in to use it');
           if (opts.inventories && who && !inventory) return fail(inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded");
-          const o = world.objectAt(msg.x, msg.y, msg.z);
+          const o = world.stationAt(msg.x, msg.y, msg.z);
           const now = Date.now();
           const st = o && world.station(o, now);
           if (!o || !st) return fail('no furnace or stove there');

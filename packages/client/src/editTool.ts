@@ -157,8 +157,8 @@ export class EditTool {
   private readonly designPreview: THREE.Object3D;
   /** ...and the 1 m blocks it would take (amber; off the grid, a block more along each shifted axis). */
   private readonly designBlocksPreview: THREE.Object3D;
-  /** Designed objects placed in the world (see setPlacedObjects), by each block they take ("bx,by,bz"). */
-  private readonly designCells = new Map<string, PlacedObject>();
+  /** Designed objects placed in the world (see setPlacedObjects), by each block they take ("bx,by,bz"; off the grid, several may share one). */
+  private readonly designCells = new Map<string, PlacedObject[]>();
   /** Round worlds: blocks around (block X wraps); null: they don't. */
   wrapBlocks: number | null = null;
   private readonly preview: THREE.Mesh;
@@ -334,7 +334,11 @@ export class EditTool {
   /** The designed objects placed in the world (from the server: see the `objects` message). */
   setPlacedObjects(objects: readonly PlacedObject[]): void {
     this.designCells.clear();
-    for (const o of objects) for (const [dx, dy, dz] of objectCells(o)) this.designCells.set(`${this.wrapBlock(o.x + dx)},${o.y + dy},${o.z + dz}`, o);
+    for (const o of objects)
+      for (const [dx, dy, dz] of objectCells(o)) {
+        const key = `${this.wrapBlock(o.x + dx)},${o.y + dy},${o.z + dz}`;
+        this.designCells.set(key, [...(this.designCells.get(key) ?? []), o]);
+      }
   }
 
   private wrapBlock(bx: number): number {
@@ -346,15 +350,18 @@ export class EditTool {
   private aimedDesign(): PlacedObject | undefined {
     if (!this.target) return undefined;
     const b = (v: number) => floorDiv(v, BLOCK_SIZE);
-    const o = this.designCells.get(`${this.wrapBlock(b(this.target.x))},${b(this.target.y)},${b(this.target.z)}`);
-    if (!o?.offset) return o;
-    // (Off the grid, it shares blocks with what's beside it: only within its box.)
-    const box = objectBox(o), B = BLOCK_SIZE;
-    const n = this.wrapBlocks ? this.wrapBlocks * B : null;
-    let x = this.target.x - o.x * B;
-    if (n) x = ((x % n) + n) % n;
-    const y = this.target.y - o.y * B, z = this.target.z - o.z * B;
-    return x >= box.x0 && x < box.x1 && y >= box.y0 && y < box.y1 && z >= box.z0 && z < box.z1 ? o : undefined;
+    const here = this.designCells.get(`${this.wrapBlock(b(this.target.x))},${b(this.target.y)},${b(this.target.z)}`) ?? [];
+    // (Off the grid, it shares blocks with what's beside it, other designs too: only within its box.)
+    const B = BLOCK_SIZE, n = this.wrapBlocks ? this.wrapBlocks * B : null;
+    const target = this.target;
+    return here.find((o) => {
+      if (!o.offset) return true;
+      const box = objectBox(o);
+      let x = target.x - o.x * B;
+      if (n) x = ((x % n) + n) % n;
+      const y = target.y - o.y * B, z = target.z - o.z * B;
+      return x >= box.x0 && x < box.x1 && y >= box.y0 && y < box.y1 && z >= box.z0 && z < box.z1;
+    });
   }
 
   /** The block an object placed now would go in (beside the face aimed at), and the way it would face. */

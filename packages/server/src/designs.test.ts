@@ -243,6 +243,42 @@ describe('designs off the grid', () => {
     }
   });
 
+  it('share a block with each other, each in its own part of it', () => {
+    const dir = tempDir();
+    const d = new DesignLibrary(null).put(door()) as ObjectDesign;
+    const w = flat(new FileChunkStore(dir));
+    // Two doors side by side, 1/2 m off the grid: x 100.5..101.5 m and 101.5..102.5 m; both take block 101.
+    w.placeDesign(d, 100, 0, 100, 'n', [8, 0, 0]);
+    w.placeDesign(d, 101, 0, 100, 'n', [8, 0, 0]);
+    const a = w.objectAtPoint(100 * 16 + 12, 4, 100 * 16 + 6)!, b = w.objectAtPoint(102 * 16 + 4, 4, 100 * 16 + 6)!;
+    expect([a.x, b.x]).toEqual([100, 101]);
+    expect(w.objectsAt(101, 0, 100)).toEqual([a, b]);
+    // In the block they share: each its own half.
+    expect(w.objectAtPoint(101 * 16 + 4, 4, 100 * 16 + 6)).toBe(a);
+    expect(w.objectAtPoint(101 * 16 + 12, 4, 100 * 16 + 6)).toBe(b);
+    const panel = (bx: number) => blockVoxels(block(w, bx, 0, 100)).filter((v) => v.material === P).map((v) => v.x);
+    expect(panel(101).length).toBe(2 * 32); // (each door's half: 4 x 8 voxels of 1/8 m)
+    // Nothing a third can share: either door's box.
+    expect(() => w.placeDesign(d, 100, 0, 100, 'n', [12, 0, 0])).toThrow(/already something there/);
+    expect(() => w.placeDesign(d, 101, 0, 100, 'n')).toThrow(/already something there/);
+    expect(() => w.placeObject('fence', 101, 0, 100, 'n')).toThrow(/already something there/);
+    // One opens (swinging back into its own block, 100): the other's half of the block stays as it was.
+    w.toggleObject(a);
+    expect(panel(101).filter((x) => x >= 8).length).toBe(32);
+    expect(panel(101).filter((x) => x < 8)).toEqual([]);
+    expect(w.objectsAt(101, 0, 100).map((o) => [o.x, o.state]).sort()).toEqual([[100, 1], [101, 0]]);
+    // Kept, both.
+    const again = flat(new FileChunkStore(dir));
+    expect(again.designObjects().length).toBe(2);
+    expect(again.objectsAt(101, 1, 100).length).toBe(2);
+    // One taken down: the other whole.
+    again.removeObject(again.objectAtPoint(100 * 16 + 12, 4, 100 * 16 + 6)!);
+    expect(again.objectsAt(101, 0, 100).map((o) => o.x)).toEqual([101]);
+    expect(blockVoxels(block(again, 101, 0, 100)).filter((v) => v.material === P).every((v) => v.x >= 8)).toBe(true);
+    expect(blockVoxels(block(again, 101, 0, 100)).length).toBe(32);
+    expect(block(again, 100, 0, 100)).toBeNull();
+  });
+
   it('split voxels that would cross a 1 m gridline, and stand on a floor off the grid', () => {
     const d = new DesignLibrary(null).put({ ...door(), id: 'cube', name: 'Cube', size: [1, 1, 1], states: [{ name: 'c', voxels: [{ x: 0, y: 0, z: 0, size: 16, material: P }] }] }) as ObjectDesign;
     const w = flat();
