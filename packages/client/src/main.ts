@@ -13,6 +13,7 @@ import type { CloudRequest, CloudResponse } from './blastCloud.worker.js';
 import { DETAIL_SPEEDS, SpeedDetail, focusLead, selectLod } from './lod.js';
 import { TileManager } from './tileManager.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
+import { GrassField } from './grassField.js';
 import { createAtmosphere, createSky } from './atmosphere.js';
 import { WATER_LAYER, WaterRenderer, createSeaMaterial, createVoxelWaterMaterial } from './water.js';
 import { createTint } from './tint.js';
@@ -392,6 +393,8 @@ async function loadTint(wrapX: boolean): Promise<void> {
 let world: WorldConfig | null = null;
 let pool: MeshWorkerPool | null = null;
 let chunks: ChunkManager | null = null;
+/** Grass blades near the eye (see GrassField), on the chunks' grass. */
+let grass: GrassField | null = null;
 let tiles: TileManager | null = null;
 let editTool: EditTool | null = null;
 /** Designed objects placed in the world (see the `objects` message), for the edit tool. */
@@ -614,6 +617,9 @@ connection = connect({
           const send = (m: Parameters<NonNullable<typeof connection>['send']>[0]) => connection?.send(m);
           pool = new MeshWorkerPool(workers);
           chunks = new ChunkManager(w, scene, material, voxelWater, send, pool, 64, onProgress);
+          grass?.dispose();
+          grass = new GrassField(scene, material);
+          chunks.onGrass = (key, origin, tops) => grass?.setTops(key, origin, tops);
           const waterAt = waterAtFor(chunks);
           // (Sea at (x, z) m: the chunks' water just under sea level, open to the sky (not a flooded
           // cave under the land), else the tiles' ground below sea level.)
@@ -1222,6 +1228,7 @@ renderer.setAnimationLoop(() => {
   if (!paused) editTool?.update();
   showPlaceSize(paused ? null : (editTool?.placing ?? null));
   compassRose.update(controls.yaw);
+  grass?.update(camera.position);
   entities?.frame();
   boats?.frame(Math.min(0.25, (frameStart - lastBoatFrame) / 1000));
   arrows?.frame();

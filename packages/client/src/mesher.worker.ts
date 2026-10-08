@@ -3,6 +3,7 @@ import { chunkWithoutWater, decodeChunk, decodeTile, isWater } from '@super-vox/
 import { mergeFaces, packQuads, visibleFaces, waterQuads, type MeshBuffers } from './mesher.js';
 import { lightFields, type LightInput } from './skyLight.js';
 import { meshTile } from './tileMesher.js';
+import { grassTops } from './grassTops.js';
 
 export type MeshRequest =
   | {
@@ -23,6 +24,8 @@ export interface MeshResponse {
   water?: MeshBuffers | null;
   /** Chunks only: whether any of it is in shade (below full sky light) or lit by torches. */
   shaded?: boolean;
+  /** Chunks only: where grass blades grow (see grassTops), or null for nowhere. */
+  grass?: Uint16Array | null;
   /** Tiles only: world Y (units) of the mesh origin. */
   baseY?: number;
   /** Time spent meshing in the worker. */
@@ -38,6 +41,7 @@ self.onmessage = (ev: MessageEvent<MeshRequest>) => {
   const reply = (res: Omit<MeshResponse, 'id' | 'ms'>) => {
     const msg: MeshResponse = { id: req.id, ms: performance.now() - t0, ...res };
     const transfer = [res.buffers, res.water].flatMap((b) => (b ? [b.positions.buffer, b.faces.buffer, ...(b.shade ? [b.shade.buffer] : [])] : []));
+    if (res.grass) transfer.push(res.grass.buffer);
     self.postMessage(msg, transfer);
   };
   try {
@@ -57,10 +61,11 @@ self.onmessage = (ev: MessageEvent<MeshRequest>) => {
     const neighbors = req.neighbors.map((n) => (n ? decodeChunk(n) : null));
     // Terrain without its water (so the bottom shows through), then the water's surfaces.
     const light = req.light ? lightFields(req.light) : null;
-    const quads = mergeFaces(visibleFaces(chunkWithoutWater(chunk), neighbors.map((n) => n && chunkWithoutWater(n)), true, light));
+    const faces = visibleFaces(chunkWithoutWater(chunk), neighbors.map((n) => n && chunkWithoutWater(n)), true, light);
+    const quads = mergeFaces(faces);
     const water = waterQuads(chunk, neighbors);
     const buffers = quads.length ? packQuads(quads) : null;
-    reply({ buffers, water: water.length ? packQuads(water) : null, shaded: !!buffers?.shade });
+    reply({ buffers, water: water.length ? packQuads(water) : null, shaded: !!buffers?.shade, grass: grassTops(faces, chunk) });
   } catch (err) {
     reply({ buffers: null, error: String(err) });
   }

@@ -22,6 +22,108 @@ export interface Tint {
 }
 
 
+/** Hash and smooth noise for world positions (vertex or fragment shaders). */
+export const NOISE_GLSL = /* glsl */ `
+      // A random 0..1 for a whole-numbered cell (wrapped first: far out, a float's too coarse to hash).
+      float cellHash(vec2 c) {
+        c = mod(c, 1024.0);
+        vec2 p = fract(c * vec2(0.1031, 0.1030));
+        p += dot(p, p.yx + 33.33);
+        return fract((p.x + p.y) * p.x);
+      }
+      // Smooth noise 0..1, about a unit across.
+      float valueNoise(vec2 p) {
+        vec2 i = floor(p), f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(cellHash(i), cellHash(i + vec2(1.0, 0.0)), f.x), mix(cellHash(i + vec2(0.0, 1.0)), cellHash(i + vec2(1.0, 1.0)), f.x), f.y);
+      }
+`;
+
+/**
+ * The wind over grass (see setGrassWind): its uniforms, and grassGust(xz): how hard a gust is
+ * blowing at world point xz (m) now, 0 (between gusts) .. 1 (a strong wind's gust).
+ */
+export const GRASS_WIND_GLSL = /* glsl */ `
+      uniform float grassTime;
+      uniform vec2 grassDrift;
+      uniform vec2 grassWind;
+      ${NOISE_GLSL}
+      float grassGust(vec2 xz) {
+        // The wind's frame: along it, and across it (the gusts long across, short along).
+        float speed = length(grassWind);
+        vec2 along = speed > 0.01 ? grassWind / speed : vec2(1.0, 0.0);
+        vec2 q = xz - grassDrift;
+        vec2 w = vec2(dot(q, along), dot(q, vec2(-along.y, along.x)));
+        return smoothstep(0.5, 0.85, valueNoise(w * vec2(0.25, 0.08))) * clamp(speed / 6.0, 0.15, 1.0);
+      }
+`;
+
+/**
+ * What the ground and what stands on it are coloured and lit by (voxels: see createVoxelMaterial;
+ * grass blades: see grassField.ts), after ATMOSPHERE_GLSL: its uniforms, and groundColor,
+ * grassShade, litColor.
+ */
+export const VOXEL_SHADING_GLSL = /* glsl */ `
+      uniform float tintOn;
+      uniform sampler2D climateTex;
+      uniform sampler2D tintLut;
+      uniform vec2 climateExtent;
+      uniform float climateSea;
+      uniform float climateCooling;
+      uniform float aoStrength;
+      uniform float exposure;
+      uniform float gridOn;
+      uniform float treePass;
+      uniform float treeAlpha;
+      uniform float grassOn;
+      ${GRASS_WIND_GLSL}
+      // How grass looks at world point xz (m), as a brightness to multiply its colour by: blades
+      // (1/16 m) and clumps (1/2 m), and gusts of wind going over it, lightening it as it bends
+      // (bands across the wind, sweeping downwind), blades fluttering in them. The fine detail
+      // fades out once it's too small to see.
+      float grassShade(vec2 xz) {
+        vec2 blade = floor(xz * 16.0);
+        float r = cellHash(blade), r2 = cellHash(blade + 517.0);
+        float fine = 1.0 - smoothstep(0.25, 0.6, max(fwidth(xz.x), fwidth(xz.y)) * 16.0);
+        float clump = valueNoise(xz * 2.0);
+        float gust = grassGust(xz);
+        // (A whole number of cycles in 100 s, 0.4 to 0.7 a second: see setGrassWind.)
+        float flutter = sin(grassTime * 6.283 * floor(40.0 + 30.0 * r2) / 100.0 + r * 6.283);
+        return (1.0 + fine * (0.16 * (r - 0.5) + 0.06 * flutter * (0.3 + gust))) * (0.94 + 0.12 * clump) * (1.0 + 0.16 * gust);
+      }
+      // A material's colour where it is: tinted ones (tinted 1) take the ground colour of the local
+      // climate (temperature falls with height).
+      vec3 groundColor(vec3 base, float tinted, vec3 world) {
+        if (tintOn < 0.5 || tinted < 0.5) return base;
+        vec2 c = texture2D(climateTex, world.xz / climateExtent).rg;
+        float t = c.r * 127.5 - 64.0 - climateCooling * max(0.0, world.y - climateSea);
+        // Samples sit at texel centres: first and last at the range's ends.
+        vec2 at = clamp(vec2((t - ${LUT_T_MIN.toFixed(1)}) / ${(LUT_T_MAX - LUT_T_MIN).toFixed(1)}, c.g), 0.0, 1.0);
+        return texture2D(tintLut, (at * vec2(${LUT_W - 1}.0, ${LUT_H - 1}.0) + 0.5) / vec2(${LUT_W}.0, ${LUT_H}.0)).rgb;
+      }
+      // base lit: facing n, ao (1 open .. less in corners), sky and block light (0..1),
+      // glows (1: a flame, full bright), at world (m).
+      vec3 litColor(vec3 base, vec3 n, float ao, float skyLight, float blockLight, float glows, vec3 world) {
+        float sky = 0.5 + 0.5 * n.y;
+        vec3 light = mix(groundAmbient, skyAmbient, sky) * ao + sunColor * max(dot(n, sunDir), 0.0) * mix(1.0, ao, 0.5);
+        // Shade underground: sky light 0..15 (skyLight 0..1), each step down 80% as bright, so
+        // the depths of a cave are nearly black (as Minecraft's).
+        light *= pow(0.8, 15.0 * (1.0 - skyLight));
+        // Torchlight (block light 0..15, the same falloff), warm, whatever the time of day; faded
+        // to nothing over its last few levels (that falloff alone ends at 4% of a torch's light, a
+        // hard edge where its reach ends: plain in the dark of night, a diamond of straight lines).
+        float torch = pow(0.8, 15.0 * (1.0 - blockLight)) * smoothstep(0.0, 0.3, blockLight);
+        light += vec3(1.0, 0.7, 0.4) * torch * ao;
+        if (glows > 0.5) light = vec3(1.0);
+        // Below the water, light that reached down through it (red is lost first).
+        if (world.y < waterLevel) light *= exp(-WATER_ABSORB * 0.5 * (waterLevel - world.y));
+        vec3 rgb = base * light * exposure;
+        // Night vision: colour fades and shifts blue in the dark.
+        // (Not where a torch lights it: that keeps its colour.)
+        return mix(rgb, vec3(dot(rgb, vec3(0.3, 0.5, 0.2))) * vec3(0.75, 0.9, 1.25), 0.7 * stars * (1.0 - min(1.0, 1.5 * torch + glows)));
+      }
+`;
+
 /**
  * Voxel material for packed meshes (see MeshBuffers): positions are
  * chunk-local units (the mesh is scaled by 1/16), and each vertex carries its
@@ -114,17 +216,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
     `,
     fragmentShader: /* glsl */ `
       ${ATMOSPHERE_GLSL}
-      uniform float tintOn;
-      uniform sampler2D climateTex;
-      uniform sampler2D tintLut;
-      uniform vec2 climateExtent;
-      uniform float climateSea;
-      uniform float climateCooling;
-      uniform float aoStrength;
-      uniform float exposure;
-      uniform float gridOn;
-      uniform float treePass;
-      uniform float treeAlpha;
+      ${VOXEL_SHADING_GLSL}
       varying vec3 vColor;
       varying vec3 vNormal;
       varying vec3 vUnits;
@@ -138,43 +230,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       varying float vBlockLight;
       varying float vGlows;
       varying float vGrass;
-      uniform float grassOn;
-      uniform float grassTime;
-      uniform vec2 grassDrift;
-      uniform vec2 grassWind;
       #include <logdepthbuf_pars_fragment>
-      // A random 0..1 for a whole-numbered cell (wrapped first: far out, a float's too coarse to hash).
-      float cellHash(vec2 c) {
-        c = mod(c, 1024.0);
-        vec2 p = fract(c * vec2(0.1031, 0.1030));
-        p += dot(p, p.yx + 33.33);
-        return fract((p.x + p.y) * p.x);
-      }
-      // Smooth noise 0..1, about a unit across.
-      float valueNoise(vec2 p) {
-        vec2 i = floor(p), f = fract(p);
-        f = f * f * (3.0 - 2.0 * f);
-        return mix(mix(cellHash(i), cellHash(i + vec2(1.0, 0.0)), f.x), mix(cellHash(i + vec2(0.0, 1.0)), cellHash(i + vec2(1.0, 1.0)), f.x), f.y);
-      }
-      // How grass looks at world point xz (m), as a brightness to multiply its colour by: blades
-      // (1/16 m) and clumps (1/2 m), and gusts of wind going over it, lightening it as it bends
-      // (bands across the wind, sweeping downwind), blades fluttering in them. The fine detail
-      // fades out once it's too small to see.
-      float grassShade(vec2 xz) {
-        vec2 blade = floor(xz * 16.0);
-        float r = cellHash(blade), r2 = cellHash(blade + 517.0);
-        float fine = 1.0 - smoothstep(0.25, 0.6, max(fwidth(xz.x), fwidth(xz.y)) * 16.0);
-        float clump = valueNoise(xz * 2.0);
-        // The wind's frame: along it, and across it (the gusts long across, short along).
-        float speed = length(grassWind);
-        vec2 along = speed > 0.01 ? grassWind / speed : vec2(1.0, 0.0);
-        vec2 q = xz - grassDrift;
-        vec2 w = vec2(dot(q, along), dot(q, vec2(-along.y, along.x)));
-        float gust = smoothstep(0.5, 0.85, valueNoise(w * vec2(0.25, 0.08))) * clamp(speed / 6.0, 0.15, 1.0);
-        // (A whole number of cycles in 100 s, 0.4 to 0.7 a second: see setGrassWind.)
-        float flutter = sin(grassTime * 6.283 * floor(40.0 + 30.0 * r2) / 100.0 + r * 6.283);
-        return (1.0 + fine * (0.16 * (r - 0.5) + 0.06 * flutter * (0.3 + gust))) * (0.94 + 0.12 * clump) * (1.0 + 0.16 * gust);
-      }
       // Lines every "spacing" (world units of vWorld: metres) across x and z, "widthPx" pixels wide
       // (x: the lines across x, at constant x; y: those at constant z); fading out once they're
       // under about ten pixels apart (no moire, no solid wash).
@@ -205,36 +261,12 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
         float line = 1.0 - min(min(grid.x, grid.y), 1.0);
         // Fade lines once a voxel spans only a few pixels.
         line *= 1.0 - smoothstep(0.15, 0.35, max(fw.x, fw.y));
-        vec3 base = vColor;
-        if (tintOn > 0.5 && vTinted > 0.5) {
-          // The ground colour of the local climate: temperature falls with height.
-          vec2 c = texture2D(climateTex, vWorld.xz / climateExtent).rg;
-          float t = c.r * 127.5 - 64.0 - climateCooling * max(0.0, vWorld.y - climateSea);
-          // Samples sit at texel centres: first and last at the range's ends.
-          vec2 at = clamp(vec2((t - ${LUT_T_MIN.toFixed(1)}) / ${(LUT_T_MAX - LUT_T_MIN).toFixed(1)}, c.g), 0.0, 1.0);
-          base = texture2D(tintLut, (at * vec2(${LUT_W - 1}.0, ${LUT_H - 1}.0) + 0.5) / vec2(${LUT_W}.0, ${LUT_H}.0)).rgb;
-        }
+        vec3 base = groundColor(vColor, vTinted, vWorld);
         // Grass tops: blades, clumps, and the wind over them.
         if (grassOn > 0.5 && vGrass > 0.5 && n.y > 0.5) base *= grassShade(vWorld.xz);
         // Corner occlusion: 0 (open) .. 3 (tucked into a corner).
         float ao = max(0.0, 1.0 - aoStrength * vAo);
-        float sky = 0.5 + 0.5 * n.y;
-        vec3 light = mix(groundAmbient, skyAmbient, sky) * ao + sunColor * max(dot(n, sunDir), 0.0) * mix(1.0, ao, 0.5);
-        // Shade underground: sky light 0..15 (vSkyLight 0..1), each step down 80% as bright, so
-        // the depths of a cave are nearly black (as Minecraft's).
-        light *= pow(0.8, 15.0 * (1.0 - vSkyLight));
-        // Torchlight (block light 0..15, the same falloff), warm, whatever the time of day; faded
-        // to nothing over its last few levels (that falloff alone ends at 4% of a torch's light, a
-        // hard edge where its reach ends: plain in the dark of night, a diamond of straight lines).
-        float torch = pow(0.8, 15.0 * (1.0 - vBlockLight)) * smoothstep(0.0, 0.3, vBlockLight);
-        light += vec3(1.0, 0.7, 0.4) * torch * ao;
-        if (vGlows > 0.5) light = vec3(1.0);
-        // Below the water, light that reached down through it (red is lost first).
-        if (vWorld.y < waterLevel) light *= exp(-WATER_ABSORB * 0.5 * (waterLevel - vWorld.y));
-        vec3 rgb = base * light * exposure * (1.0 - 0.35 * line);
-        // Night vision: colour fades and shifts blue in the dark.
-        // (Not where a torch lights it: that keeps its colour.)
-        rgb = mix(rgb, vec3(dot(rgb, vec3(0.3, 0.5, 0.2))) * vec3(0.75, 0.9, 1.25), 0.7 * stars * (1.0 - min(1.0, 1.5 * torch + vGlows)));
+        vec3 rgb = litColor(base, n, ao, vSkyLight, vBlockLight, vGlows, vWorld) * (1.0 - 0.35 * line);
         if (gridOn > 0.5 && vTree < 0.5) {
           // Metres faintly dark, half kilometres white, kilometres yellow (seen from above: on
           // every face of the ground, by where it is across it; not on trees, which hide it).

@@ -123,6 +123,8 @@ export class ChunkManager {
   private errors = 0;
   private focusX = 0;
   private focusZ = 0;
+  /** A chunk's grass tops (see grassTops) as it's meshed; null when it has none or is no longer drawn. */
+  onGrass: ((key: string, origin: { x: number; y: number; z: number } | null, tops: Uint16Array | null) => void) | null = null;
 
   constructor(
     private readonly world: WorldConfig,
@@ -374,7 +376,10 @@ export class ChunkManager {
 
   dispose(): void {
     this.retireStale();
-    for (const { mesh } of this.meshes.values()) if (mesh) disposePackedMesh(mesh);
+    for (const [key, { mesh }] of this.meshes) {
+      if (mesh) disposePackedMesh(mesh);
+      this.onGrass?.(key, null, null);
+    }
     this.meshes.clear();
   }
 
@@ -462,6 +467,7 @@ export class ChunkManager {
     for (const [key, { mesh }] of [...this.meshes]) {
       if (render.has(key)) continue;
       this.meshes.delete(key);
+      this.onGrass?.(key, null, null);
       if (mesh) this.retire(key, mesh);
     }
     for (const key of [...this.jobs.keys()]) if (!render.has(key)) this.jobs.delete(key);
@@ -812,6 +818,7 @@ export class ChunkManager {
           group.add(water);
         }
         this.setMesh(key, group.children.length ? group : null, mask, res.shaded);
+        this.onGrass?.(key, origin, res.grass ?? null);
       }
       if (job.stale) this.tryMesh(key);
       this.onChange();
@@ -819,6 +826,7 @@ export class ChunkManager {
   }
 
   private setMesh(key: string, mesh: THREE.Object3D | null, mask: number, shaded = false): void {
+    if (!mesh) this.onGrass?.(key, null, null);
     const prev = this.meshes.get(key)?.mesh;
     if (prev) disposePackedMesh(prev);
     const stale = this.stale.get(key);
