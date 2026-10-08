@@ -68,6 +68,17 @@ const lump = (c: Rgb, shine = 0.4) =>
 const drumstick = (meat: Rgb) =>
   svg(`<ellipse cx="19" cy="13" rx="9" ry="7.5" transform="rotate(-35 19 13)" fill="${css(meat, 1.1)}"${OUTLINE}/><line x1="12" y1="20" x2="6" y2="26" stroke="rgb(240 232 214)" stroke-width="3.2" stroke-linecap="round"/><circle cx="5.5" cy="26.5" r="2.4" fill="rgb(240 232 214)"/>`);
 
+/** A bow (its arc and string), and an arrow across it (as it's drawn in the inventory). */
+const BOW =
+  `<path d="M8 4 Q26 6 28 24" stroke="${css(WOOD, 1.3)}" stroke-width="2.6" fill="none" stroke-linecap="round"/><path d="M8 4 Q26 6 28 24" stroke="rgb(0 0 0 / 0.35)" stroke-width="0.8" fill="none" transform="translate(0.8 0.8)"/>` +
+  `<line x1="8" y1="4" x2="28" y2="24" stroke="rgb(235 230 220)" stroke-width="0.8"/>`;
+const ARROW_ON_BOW = `<line x1="5" y1="27" x2="22" y2="10" stroke="${css(WOOD, 1.1)}" stroke-width="1.4"/><path d="M22 10 L24 6 L26 8 Z" fill="${css(IRON, 1.2)}"/><path d="M5 27 L4 24 M5 27 L8 28" stroke="rgb(235 230 220)" stroke-width="1.2"/>`;
+
+/** The picture an item's held model is made from (see itemModels.ts): its icon, but a bow without the arrow drawn across it. */
+export function heldSvg(id: ItemId): string | null {
+  return id === Item.Bow ? svg(BOW) : iconSvg(id);
+}
+
 /** The pictures of items (not blocks). */
 const ITEM_ICONS: Readonly<Partial<Record<ItemId, string>>> = {
   [Item.Stick]: svg(handle(7, 26, 25, 7, 3.2)),
@@ -111,10 +122,7 @@ const ITEM_ICONS: Readonly<Partial<Record<ItemId, string>>> = {
   [Item.CopperCoin]: coin(COPPER),
   [Item.GoldCoin]: coin(GOLD),
   [Item.CraftingTable]: craftingTable(),
-  [Item.Bow]: svg(
-    `<path d="M8 4 Q26 6 28 24" stroke="${css(WOOD, 1.3)}" stroke-width="2.6" fill="none" stroke-linecap="round"/><path d="M8 4 Q26 6 28 24" stroke="rgb(0 0 0 / 0.35)" stroke-width="0.8" fill="none" transform="translate(0.8 0.8)"/>` +
-      `<line x1="8" y1="4" x2="28" y2="24" stroke="rgb(235 230 220)" stroke-width="0.8"/><line x1="5" y1="27" x2="22" y2="10" stroke="${css(WOOD, 1.1)}" stroke-width="1.4"/><path d="M22 10 L24 6 L26 8 Z" fill="${css(IRON, 1.2)}"/><path d="M5 27 L4 24 M5 27 L8 28" stroke="rgb(235 230 220)" stroke-width="1.2"/>`,
-  ),
+  [Item.Bow]: svg(BOW + ARROW_ON_BOW),
   [Item.Boat]: svg(
     `<path d="M3 15 L29 15 L25 23 Q16 26 7 23 Z" fill="${css(WOOD, 1.2)}"${OUTLINE}/><path d="M5 18 L27 18" stroke="${css(DARK_WOOD, 1.2)}" stroke-width="1"/>` +
       `<path d="M2 25 Q6 23 10 25 T18 25 T26 25 T30 25" stroke="${css(WATER, 1.4)}" stroke-width="1.6" fill="none"/><line x1="20" y1="6" x2="13" y2="20" stroke="${css(DARK_WOOD, 1.3)}" stroke-width="1.6" stroke-linecap="round"/>`,

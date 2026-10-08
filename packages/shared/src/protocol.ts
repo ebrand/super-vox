@@ -105,7 +105,7 @@ export type ClientMessage =
   /** Survival: throw away `amount` of `item` (stored amounts: blocks by volume, items by count). */
   | { type: 'discard'; item: number; amount: number }
   /** Where the player is (world units) and faces (radians, 0 = -Z); sent a couple of times a second, not answered. */
-  | { type: 'pose'; x: number; y: number; z: number; yaw: number };
+  | { type: 'pose'; x: number; y: number; z: number; yaw: number; /** What's in hand (an item), if anything; and how many times it's been swung (others swing it too). */ held?: number; swings?: number };
 
 export type ServerMessage =
   | {
@@ -228,8 +228,10 @@ export interface EntitySnapshot {
   max?: number;
   /** Hurt just now (for a flash). */
   hurt?: boolean;
-  /** Players: their name. */
+  /** Players: their name; what's in their hand (an item), and how many times they've swung it. */
   name?: string;
+  held?: number;
+  swings?: number;
 }
 
 /**
@@ -432,7 +434,8 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
     return { type: 'boatMove', boat: msg.boat as number, x: msg.x as number, y: msg.y as number, z: msg.z as number, yaw: msg.yaw as number, ...(msg.leave ? { leave: true } : {}) };
   }
   if (msg.type === 'pose' && [msg.x, msg.y, msg.z, msg.yaw].every((v) => typeof v === 'number' && Number.isFinite(v))) {
-    return { type: 'pose', x: msg.x as number, y: msg.y as number, z: msg.z as number, yaw: msg.yaw as number };
+    if ((msg.held !== undefined && !isInt32(msg.held)) || (msg.swings !== undefined && !isWhole(msg.swings))) return null;
+    return { type: 'pose', x: msg.x as number, y: msg.y as number, z: msg.z as number, yaw: msg.yaw as number, ...(msg.held !== undefined ? { held: msg.held as number } : {}), ...(msg.swings !== undefined ? { swings: msg.swings as number } : {}) };
   }
   if (msg.type === 'edit' && typeof msg.id === 'number' && Number.isInteger(msg.id) && msg.id >= 0 && msg.id < 2 ** 32) {
     const edit = decodeEdit(msg.edit);

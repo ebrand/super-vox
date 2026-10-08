@@ -155,6 +155,16 @@ export class EditTool {
   onShoot: ((charge: number) => void) | null = null;
   /** When the bow in hand started being drawn (right button held; ms), if it is. */
   private drawnAt: number | null = null;
+
+  /** How far the bow in hand is drawn (0..1), if it's being drawn. */
+  get bowDraw(): number | null {
+    return this.drawnAt === null ? null : drawCharge(performance.now() - this.drawnAt);
+  }
+
+  /** Whether something's being mined (survival, the button held). */
+  get miningNow(): boolean {
+    return this.mining !== null;
+  }
   /** Requests to get into a boat, by message id: the boat's. */
   private readonly boarding = new Map<number, number>();
   private placement: (Box & { valid: boolean; reason: string }) | null = null;

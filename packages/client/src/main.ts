@@ -25,11 +25,12 @@ import { MeshWorkerPool } from './workerPool.js';
 import { WorldMapOverlay, decodeWorldMap } from './worldMap.js';
 import { rememberReturn, startFromParams, takeReturn } from './startAt.js';
 import { InventoryUi } from './inventory.js';
-import { EntityView } from './entities.js';
+import { EntityView, entityBrightness } from './entities.js';
 import { BoatView } from './boatView.js';
 import { ArrowView } from './arrowView.js';
 import { DropView } from './dropView.js';
-import { getOutAt, stepBoat, waterSurface, type Boat, type BoatMotion, type DroppedItem, type Hull } from '@super-vox/shared';
+import { HeldItem } from './heldItem.js';
+import { Item, getOutAt, stepBoat, waterSurface, type Boat, type BoatMotion, type DroppedItem, type Hull } from '@super-vox/shared';
 import type { Footprint } from './coverage.js';
 import { createCompassRose } from './compassRose.js';
 import { coveredAboveFor, materialAtFor, solidAtFor, waterAtFor } from './worldQuery.js';
@@ -413,6 +414,11 @@ const sessionStore = (): Storage | null => {
 let entities: EntityView | null = null;
 /** Arrows in flight, and stuck where they hit (see ArrowView). */
 let arrows: ArrowView | null = null;
+/** What's in hand, drawn at the lower right (see HeldItem); and how many times we've swung it (others are told, to swing it too). */
+const hand = new HeldItem();
+let swings = 0;
+/** How bright it is where we stand (for the hand), looked at a few times a second. */
+let handLight = { at: 0, brightness: 1 };
 /** What's dropped on the ground (see DropView), and the list as last told (kept for when the view's made). */
 let drops: DropView | null = null;
 let dropList: DroppedItem[] = [];
@@ -880,7 +886,14 @@ connection = connect({
             // (In hybrid it's shown while ⌘ is held: it goes when ⌘ does. Otherwise, for a moment.)
             if (editTool!.mode !== 'hybrid') sizeBadgeTimer = setTimeout(() => sizeBadge.classList.remove('shown'), 1200);
           };
-          controls.onClick = (button, mods) => editTool?.click(button, mods);
+          controls.onClick = (button, mods) => {
+            editTool?.click(button, mods);
+            // (Swung at a click: not a bow being drawn, and not the middle button.)
+            if (button !== 1 && !(button === 2 && inventoryUi.material === Item.Bow)) {
+              hand.swing();
+              swings++;
+            }
+          };
           controls.onRelease = (button) => editTool?.release(button);
           editTool.onTap = () => footsteps.tap();
           // What the tool says (a hammer's reading, an edit refused): under the crosshair for a few seconds.
@@ -1153,8 +1166,10 @@ let lastPose = '';
 setInterval(() => {
   if (!world) return;
   const p = camera.position;
-  const pose = { type: 'pose' as const, x: Math.round(p.x * UNITS_PER_METER), y: Math.round(p.y * UNITS_PER_METER), z: Math.round(p.z * UNITS_PER_METER), yaw: Math.round(controls.yaw * 1000) / 1000 };
-  const key = `${pose.x},${pose.y},${pose.z},${pose.yaw}`;
+  // (With what's in hand, and how many swings: others see it.)
+  const held = inventoryUi.enabled ? inventoryUi.material : null;
+  const pose = { type: 'pose' as const, x: Math.round(p.x * UNITS_PER_METER), y: Math.round(p.y * UNITS_PER_METER), z: Math.round(p.z * UNITS_PER_METER), yaw: Math.round(controls.yaw * 1000) / 1000, ...(held !== null ? { held } : {}), swings };
+  const key = `${pose.x},${pose.y},${pose.z},${pose.yaw},${held},${swings}`;
   if (key === lastPose) return;
   connection?.send(pose);
   lastPose = key;
@@ -1172,6 +1187,7 @@ setInterval(() => {
 }, 500);
 
 let lastBoatFrame = performance.now();
+let handDt = 0;
 renderer.setAnimationLoop(() => {
   const frameStart = performance.now();
   // Movement and editing pause while the map or the inventory is open.
@@ -1196,6 +1212,7 @@ renderer.setAnimationLoop(() => {
   boats?.frame(Math.min(0.25, (frameStart - lastBoatFrame) / 1000));
   arrows?.frame();
   drops?.frame();
+  handDt = (frameStart - lastBoatFrame) / 1000;
   lastBoatFrame = frameStart;
   worldMap?.update();
   if (sea) sea.position.set(camera.position.x, sea.position.y, camera.position.z);
@@ -1227,7 +1244,19 @@ renderer.setAnimationLoop(() => {
     camera.rotateZ(downPose.roll);
     camera.rotateX(downPose.pitch);
   }
-  if (!worldMap?.showing3d) water.render(scene, camera);
+  if (!worldMap?.showing3d) {
+    water.render(scene, camera);
+    // What's in hand, over it all (not while knocked down, or with the map's 3D view up).
+    if (editTool && !downPose && !paused) {
+      hand.setItem(inventoryUi.enabled ? inventoryUi.material : null);
+      if (frameStart - handLight.at > 250 && chunks) {
+        const p = camera.position, l = lightAt(chunks.lightWorld(), Math.floor((p.x * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.y * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.z * UNITS_PER_METER) / BLOCK_SIZE));
+        handLight = { at: frameStart, brightness: entityBrightness(l.sky, l.block, 1 - 0.85 * atmosphere.uniforms.stars.value) };
+      }
+      hand.update({ dt: handDt, speed: Math.hypot(velocity.x, velocity.z) / UNITS_PER_METER, draw: editTool.bowDraw, mining: editTool.miningNow, brightness: handLight.brightness });
+      hand.render(renderer);
+    }
+  }
   camera.position.sub(shake);
   if (downPose) camera.position.y += downPose.drop;
   camera.quaternion.copy(pose);

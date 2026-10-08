@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { MOBS, UNITS_PER_METER, deltaX, type EntityKind, type EntitySnapshot, type WorldConfig } from '@super-vox/shared';
+import { isCubeModel, itemGeometry } from './itemModels.js';
+import { SWING_S } from './heldItem.js';
 
 /**
  * How bright something is (0..1) with sky light `sky` and torchlight `block` (0..15) where it
@@ -35,6 +37,11 @@ interface Tracked {
   /** When `to` arrived (ms). */
   at: number;
   hurtUntil: number;
+  /** Players: what's in their hand (its model in `hand`, at their right side), and when they last swung it (ms). */
+  held?: number | undefined;
+  hand?: THREE.Group | undefined;
+  handMaterial?: THREE.MeshBasicMaterial;
+  swungAt: number;
 }
 
 /** Where to draw something between two snapshots `t` of the way (0..1); yaw the shortest way round. */
@@ -90,8 +97,15 @@ export class EntityView {
       seen.add(e.id);
       const t = this.tracked.get(e.id);
       if (!t) {
-        this.tracked.set(e.id, { ...this.make(e), from: e, to: e, at: now, hurtUntil: e.hurt ? now + 300 : 0, brightness: 1, litAt: -Infinity });
+        const made: Tracked = { ...this.make(e), from: e, to: e, at: now, hurtUntil: e.hurt ? now + 300 : 0, brightness: 1, litAt: -Infinity, swungAt: -Infinity };
+        this.tracked.set(e.id, made);
+        this.hold(made, e.held);
         continue;
+      }
+      // A player's hand: what's in it now; swung, if they've swung since.
+      if (e.kind === 'player') {
+        this.hold(t, e.held);
+        if ((e.swings ?? 0) > (t.to.swings ?? 0)) t.swungAt = now;
       }
       // From wherever it's drawn now to the new snapshot.
       const p = interpolate(t.from, t.to, (now - t.at) / INTERPOLATION_MS);
@@ -128,8 +142,48 @@ export class EntityView {
         t.brightness = l ? entityBrightness(l.sky, l.block, this.daylight()) : 1;
       }
       t.body.color.setHex(now < t.hurtUntil ? 0xff3030 : LOOK[t.kind].color).multiplyScalar(t.brightness);
+      if (t.hand) {
+        t.handMaterial!.color.setScalar(t.brightness);
+        // A swing: the arm (its item) down and forward, and back.
+        const u = Math.min(1, (now - t.swungAt) / 1000 / SWING_S);
+        t.hand.rotation.x = -Math.sin(u * Math.PI) * 1.2;
+      }
       t.face.color.setHex(0x1b1b1b).multiplyScalar(t.brightness);
     }
+  }
+
+  /** Puts `item` in a player's hand (its model at their right side), or nothing. */
+  private hold(t: Tracked, item: number | undefined): void {
+    if (t.kind !== 'player' || item === t.held) return;
+    t.held = item;
+    if (t.hand) {
+      t.group.remove(t.hand);
+      t.hand = undefined;
+    }
+    if (item === undefined) return;
+    const hand = new THREE.Group();
+    // (At the right side, at the hand's height, a little forward: the way it faces is -z.)
+    hand.position.set(LOOK.player.w / 2 + 0.06, 0.95, -0.15);
+    t.handMaterial ??= new THREE.MeshBasicMaterial({ vertexColors: true });
+    const material = t.handMaterial;
+    const put = (g: THREE.BufferGeometry) => {
+      if (t.held !== item) return;
+      const mesh = new THREE.Mesh(g, material);
+      const cube = isCubeModel(item);
+      mesh.scale.setScalar(cube ? 0.25 : 0.5);
+      // A tool by its handle (the icon's lower left), its head up and forward; a block, held out.
+      if (cube) mesh.position.set(0, 0, -0.12);
+      else {
+        mesh.rotation.set(0, Math.PI / 2, 0);
+        mesh.position.set(0, 0.17, -0.17);
+      }
+      hand.add(mesh);
+    };
+    const g = itemGeometry(item);
+    if (g instanceof Promise) void g.then(put);
+    else put(g);
+    t.hand = hand;
+    t.group.add(hand);
   }
 
   /** The nearest mob (not player) a ray (units) hits within `maxDist` units, and how far along. */

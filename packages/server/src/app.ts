@@ -149,6 +149,9 @@ interface Player {
   name: string | null;
   /** Last reported position (units) and heading, and when. */
   pose: { x: number; y: number; z: number; yaw: number; at: number } | null;
+  /** What's in their hand (an item), and how many times they've swung it (see the pose message). */
+  held: number | null;
+  swings: number;
   chunks: number;
   tiles: number;
   edits: number;
@@ -924,7 +927,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         const entities = mobs.near(p.pose!.x, p.pose!.z, VIEW, now);
         for (const o of here) {
           if (o.p === p || Math.hypot(deltaX(world.config, p.pose!.x, o.p.pose!.x), o.p.pose!.z - p.pose!.z) > VIEW) continue;
-          entities.push({ id: o.p.id, kind: 'player', x: Math.round(o.p.pose!.x), y: Math.round(o.p.pose!.y - EYE), z: Math.round(o.p.pose!.z), yaw: o.p.pose!.yaw, name: o.p.name ?? 'guest' });
+          entities.push({ id: o.p.id, kind: 'player', x: Math.round(o.p.pose!.x), y: Math.round(o.p.pose!.y - EYE), z: Math.round(o.p.pose!.z), yaw: o.p.pose!.yaw, name: o.p.name ?? 'guest', ...(o.p.held !== null ? { held: o.p.held } : {}), ...(o.p.swings ? { swings: o.p.swings } : {}) });
         }
         sendTo(s, { type: 'entities', entities });
       }
@@ -1199,7 +1202,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             players.set(socket, {
               id: nextPlayer++, world: msg.world ?? catalog.defaultName, connectedAt: Date.now(), tolerance: world.tolerance,
               name: who?.account.name ?? null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
-              vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0, lastShot: 0, bed: null, settleUntil: Infinity, saveState: null,
+              vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0, lastShot: 0, held: null, swings: 0, bed: null, settleUntil: Infinity, saveState: null,
               give: (item, amount) => {
                 if (!inventory) return false;
                 inventory.addItem(item, amount);
@@ -1680,6 +1683,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (!p) break;
           const now = Date.now(), before = p.pose;
           p.pose = { x: greeted ? normalizeX(world.config, msg.x) : msg.x, y: msg.y, z: msg.z, yaw: msg.yaw, at: now };
+          p.held = msg.held ?? null;
+          if (msg.swings !== undefined) p.swings = msg.swings;
           savePlace(false);
           // Survival: going places makes you hungry (sprinting more, swimming a little more).
           if (greeted && p.vulnerable && before) {

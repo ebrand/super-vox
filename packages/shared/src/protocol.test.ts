@@ -121,6 +121,13 @@ describe('protocol', () => {
     }
   });
 
+  it("validates poses, with what's in hand and how many swings", () => {
+    expect(decodeClientMessage('{"type":"pose","x":1,"y":2,"z":3,"yaw":0.5,"held":1031,"swings":7}')).toEqual({ type: 'pose', x: 1, y: 2, z: 3, yaw: 0.5, held: 1031, swings: 7 });
+    expect(decodeClientMessage('{"type":"pose","x":1,"y":2,"z":3,"yaw":0.5}')).toEqual({ type: 'pose', x: 1, y: 2, z: 3, yaw: 0.5 });
+    expect(decodeClientMessage('{"type":"pose","x":1,"y":2,"z":3,"yaw":0.5,"held":"bow"}')).toBeNull();
+    expect(decodeClientMessage('{"type":"pose","x":1,"y":2,"z":3,"yaw":0.5,"swings":-1}')).toBeNull();
+  });
+
   it('validates boats: putting one in, getting in, taking one, and moving it', () => {
     expect(decodeClientMessage('{"type":"boatLaunch","id":1,"x":10.5,"y":-3,"z":4,"yaw":1.2}')).toEqual({ type: 'boatLaunch', id: 1, x: 10.5, y: -3, z: 4, yaw: 1.2 });
     expect(decodeClientMessage('{"type":"boatBoard","id":2,"boat":7}')).toEqual({ type: 'boatBoard', id: 2, boat: 7 });
