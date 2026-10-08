@@ -82,6 +82,10 @@
       #mining[hidden] { display: none; }
       #hotbar { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 4px; padding: 4px; background: rgba(0,0,0,0.45); border-radius: 8px; z-index: 5; }
       #hotbar[hidden] { display: none; }
+      /* Exploring (the explore mode): no hotbar, crosshair or what the tool shows; the compass in the bottom-right corner. */
+      body.exploring #crosshair, body.exploring #hotbar, body.exploring #size-badge, body.exploring #place-size, body.exploring #mining { display: none !important; }
+      body.exploring #compass { left: auto !important; top: auto !important; right: 12px !important; bottom: 12px !important; margin: 0 !important; opacity: 0.8 !important; }
+      #mode[data-mode="explore"] { border-left-color: #c8a0ff; }
       /* Just looking round (O): nothing on screen but the world. */
       body.viewing #crosshair, body.viewing #compass, body.viewing #hotbar, body.viewing #mode, body.viewing #status, body.viewing #note, body.viewing #size-badge, body.viewing #place-size, body.viewing #mining { display: none !important; }
       #hotbar .slot, #inventory .window-bar .slot { position: relative; width: 46px; height: 46px; border: 2px solid rgba(255,255,255,0.18); border-radius: 6px; padding: 3px; cursor: pointer; box-sizing: content-box; }

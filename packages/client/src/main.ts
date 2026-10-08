@@ -937,6 +937,8 @@ connection = connect({
             const tool = editTool!.mode === 'build' ? ` · ${editTool!.builder.tool.toUpperCase()}${editTool!.builder.hollow && !['line', 'box', 'extrude', 'select'].includes(editTool!.builder.tool) ? ' (HOLLOW)' : ''}` : '';
             modeTag.textContent = editTool!.mode.toUpperCase() + tool + (size !== null ? ` · ${sizeLabel(size)}` : '');
             modeTag.dataset.mode = editTool!.mode;
+            // Exploring: no hotbar, crosshair or hand; the compass in the corner.
+            document.body.classList.toggle('exploring', editTool!.mode === 'explore');
           };
           editTool.onModeChange = () => {
             showMode();
@@ -1343,7 +1345,7 @@ renderer.setAnimationLoop(() => {
   if (!worldMap?.showing3d) {
     water.render(scene, camera);
     // What's in hand, over it all (not while knocked down, or with the map's 3D view up).
-    if (editTool && !downPose && !paused && !viewing) {
+    if (editTool && !downPose && !paused && !viewing && editTool.mode !== 'explore') {
       hand.setItem(inventoryUi.enabled ? inventoryUi.material : null);
       if (frameStart - handLight.at > 250 && chunks) {
         const p = camera.position, l = lightAt(chunks.lightWorld(), Math.floor((p.x * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.y * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.z * UNITS_PER_METER) / BLOCK_SIZE));

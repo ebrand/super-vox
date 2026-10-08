@@ -397,11 +397,11 @@ describe('EditTool build mode (creative)', () => {
   });
 
   it('is a mode in creative only', () => {
-    const modes = () => Array.from({ length: 4 }, () => (window.dispatchEvent(key('keydown', 'Tab', false)), tool.mode));
-    expect(modes()).toEqual(['dig', 'place', 'hybrid', 'dig']);
+    const modes = () => Array.from({ length: 5 }, () => (window.dispatchEvent(key('keydown', 'Tab', false)), tool.mode));
+    expect(modes()).toEqual(['dig', 'place', 'explore', 'hybrid', 'dig']);
     tool.mode = 'hybrid';
     tool.bigBoxes = true;
-    expect(modes()).toEqual(['dig', 'place', 'build', 'hybrid']);
+    expect(modes()).toEqual(['dig', 'place', 'build', 'explore', 'hybrid']);
   });
 
   it('clicks out a box (base, then height) and sends it to be built; U and ⌘Z undo', () => {
@@ -625,6 +625,37 @@ describe('EditTool off (just looking round)', () => {
     tool.update();
     tool.click(0, { meta: false, alt: false });
     expect(sent).toHaveLength(1);
+    tool.dispose();
+    delete (globalThis as { window?: EventTarget }).window;
+  });
+});
+
+describe('EditTool explore mode', () => {
+  it('shows nothing and does nothing (no size either); Tab goes on, back to the tools', () => {
+    (globalThis as { window?: EventTarget }).window = new EventTarget();
+    const stone = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    stone.blocks[blockIndex(0, 0, 0)] = { kind: 'uniform', size: 16, material: Material.Stone };
+    const chunks = { chunkAt: (c: { cx: number; cy: number; cz: number }) => (c.cx === 0 && c.cy === 0 && c.cz === 0 ? stone : emptyChunk(c)) } as unknown as ChunkManager;
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(0.5, 3, 0.5);
+    camera.lookAt(0.5, 0, 0.5);
+    camera.updateMatrixWorld();
+    const sent: unknown[] = [];
+    const scene = new THREE.Scene();
+    const tool = new EditTool(scene, camera, chunks, (m) => sent.push(m), () => Material.Stone);
+    tool.mode = 'explore';
+    tool.update();
+    expect(scene.children.filter((o) => o.visible)).toHaveLength(0);
+    expect(tool.chosenSize).toBeNull();
+    tool.click(0, { meta: false, alt: false });
+    tool.click(2, { meta: false, alt: false });
+    window.dispatchEvent(key('keydown', 'KeyX', false));
+    expect(sent).toEqual([]);
+    expect(tool.hudLines()).toMatch(/explore/);
+    window.dispatchEvent(key('keydown', 'Tab', false));
+    expect(tool.mode).toBe('hybrid');
+    tool.update();
+    expect(scene.children.some((o) => o.visible)).toBe(true);
     tool.dispose();
     delete (globalThis as { window?: EventTarget }).window;
   });

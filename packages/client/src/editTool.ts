@@ -80,8 +80,8 @@ const REACH = 32 * UNITS_PER_METER;
 /** Sizes the tool offers: the five that tile a 1 m block (1/16, 1/8, 1/4, 1/2, 1 m). */
 export const TOOL_SIZES = GRID_SIZES;
 
-/** Tool modes, in the order Tab cycles through them; the first is the default (build: creative only). */
-export const MODES = ['hybrid', 'dig', 'place', 'build'] as const;
+/** Tool modes, in the order Tab cycles through them; the first is the default (build: creative only; explore: no tool at all, just looking round). */
+export const MODES = ['hybrid', 'dig', 'place', 'build', 'explore'] as const;
 export type Mode = (typeof MODES)[number];
 
 /** "1 m", "1/2 m", ... "1/16 m" for a size in units. */
@@ -151,7 +151,7 @@ export class EditTool {
    */
   get chosenSize(): number | null {
     // (Extrude copies voxels as they are: no size of its own.)
-    if (this.mode === 'build' && this.builder.tool === 'extrude') return null;
+    if (this.mode === 'explore' || (this.mode === 'build' && this.builder.tool === 'extrude')) return null;
     if (this.mode !== 'hybrid') return this.size;
     if (!this.modifiers.meta) return null;
     return this.hybridSize ?? (this.target ? nearestToolSize(this.target.size) : null);
@@ -435,7 +435,7 @@ export class EditTool {
   cycleMode(): void {
     this.mode = MODES[(MODES.indexOf(this.mode) + 1) % MODES.length]!;
     // (Build: creative only.)
-    if (this.mode === 'build' && !this.bigBoxes) this.mode = MODES[0];
+    if (this.mode === 'build' && !this.bigBoxes) this.mode = 'explore';
     this.builder.cancel();
     this.hybridSize = null;
     this.onModeChange?.(this.mode);
@@ -520,7 +520,10 @@ export class EditTool {
 
   /** Re-aims from the camera; call every frame. */
   update(): void {
-    if (!this.enabled) return this.hideAll();
+    if (!this.enabled || this.mode === 'explore') {
+      this.hideAll();
+      return this.tellSize();
+    }
     this.aim();
     this.tellSize();
   }
@@ -610,7 +613,7 @@ export class EditTool {
    * 2 = right. `mods` are the modifier keys held at that moment.
    */
   click(button: number, mods: Modifiers = this.modifiers): void {
-    if (!this.enabled) return;
+    if (!this.enabled || this.mode === 'explore') return;
     this.setMeta(mods.meta);
     this.modifiers.alt = mods.alt;
     this.update(); // aim with the modifiers as they are right now
@@ -765,11 +768,12 @@ export class EditTool {
           ? `aiming at ${sizeLabel(this.target.size)} of ${materialName(this.targetMaterial)}${this.mode === 'hybrid' ? ' (click: light it, then stand back)' : ''}`
           : `aiming at a ${sizeLabel(this.target.size)} voxel${this.needsPickaxe()}`;
     const held = this.materialOf();
+    if (this.mode === 'explore') return `mode: explore (Tab: hybrid / dig / place${this.bigBoxes ? ' / build' : ''} / explore) · just looking round: nothing in hand · Tab: back to the tools${msg}`;
     if (this.mode === 'build') {
       const b = this.builder;
       const round = b.tool === 'circle' || b.tool === 'dome' || b.tool === 'sphere';
       return (
-        `mode: build (Tab: hybrid / dig / place / build) · ${b.tool}${round ? (b.hollow ? `, hollow ${b.thickness} thick` : ', solid') : ''}${b.tool === 'extrude' ? '' : b.tool === 'select' ? ` · ${sizeLabel(this.size)} grid` : ` · ${sizeLabel(this.size)} ${this.material?.name ?? 'nothing (E: inventory)'}`} · ${b.stage}${this.buildNote ? ` · ${this.buildNote}` : ''}\n` +
+        `mode: build (Tab: hybrid / dig / place / build / explore) · ${b.tool}${round ? (b.hollow ? `, hollow ${b.thickness} thick` : ', solid') : ''}${b.tool === 'extrude' ? '' : b.tool === 'select' ? ` · ${sizeLabel(this.size)} grid` : ` · ${sizeLabel(this.size)} ${this.material?.name ?? 'nothing (E: inventory)'}`} · ${b.stage}${this.buildNote ? ` · ${this.buildNote}` : ''}\n` +
         (b.tool === 'select'
           ? 'G: line / box / circle / dome / sphere / extrude / select · click a corner, its base, its height · V: move it · ⇧V: copy it · R: turn it (carried) · click: put it down · right-click: put back, again: select nothing · U or ⌘Z: undo · ⌘+wheel or [ ]: grid size'
           : b.tool === 'extrude'
@@ -791,7 +795,7 @@ export class EditTool {
             ? 'click: fill the box (whole 1 m blocks, replacing what\'s there)'
             : `click: place · ⌥: 1/16 m steps${this.bigBoxes ? ' · bigger sizes: fill boxes up to 16 m' : ''}`;
     return (
-      `mode: ${this.mode} (Tab: hybrid / dig / place${this.bigBoxes ? ' / build' : ''}) · ${size} ${this.material?.name ?? 'nothing (E: inventory)'} · ${target}\n` +
+      `mode: ${this.mode} (Tab: hybrid / dig / place${this.bigBoxes ? ' / build' : ''} / explore) · ${size} ${this.material?.name ?? 'nothing (E: inventory)'} · ${target}\n` +
       `${actions} · middle-click: break smaller (⇧: to 1/16 m) · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-9: hotbar · E: inventory · O: just look around` +
       msg
     );
@@ -1066,6 +1070,8 @@ export class EditTool {
       this.cycleMode();
       return;
     }
+    // (Exploring: no tool, only Tab on to the next.)
+    if (this.mode === 'explore') return;
     if (this.mode === 'build' && this.buildKey(e.code, e.shiftKey)) return;
     // (In hybrid the size follows the target unless Command is held, so [ ] only work in dig and place.)
     if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && this.mode === 'hybrid') this.say('hybrid: hold ⌘ and turn the wheel to choose a size');
