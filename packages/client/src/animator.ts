@@ -189,6 +189,22 @@ function placeHeld(): void {
   if (wasGrip || gizmoFor === 'grip') attachGizmo();
 }
 
+/** The game preview set to show clip `id` being played: moving (and how fast) and doing as it needs. */
+function showDoing(id: ClipId): void {
+  const set = editor.draft.settings, sel = (el: string, v: string) => (($(el) as HTMLSelectElement).value = v);
+  const moving: Partial<Record<ClipId, string>> = { swim: 'swim', fly: 'fly', jump: 'air' };
+  sel('g-move', moving[id] ?? 'ground');
+  if (id === 'run') game.speed = Math.round((set.runTo + 1) * 10) / 10;
+  else if (id === 'walk') game.speed = Math.min(1.4, set.runFrom - 0.1);
+  else if (id === 'idle' || id === 'breathe' || id === 'dig' || id === 'bow') game.speed = 0;
+  if (id === 'dig' || id === 'bow') sel('g-action', id);
+  else sel('g-action', 'none');
+  if (id === 'bow') {
+    game.draw = 1;
+    if (gripOf(currentItem()) !== 'bow') itemSelect.value = String(Item.Bow);
+  }
+}
+
 // --- The panels ---
 function renderClips(): void {
   const ul = $('clips');
@@ -201,6 +217,8 @@ function renderClips(): void {
     li.onclick = () => {
       editor.clip = id;
       editor.t = 0;
+      // As in game: shown doing it (running fast enough to run, swimming, digging...).
+      if (mode === 'game') showDoing(id);
       refresh();
     };
     ul.append(li);
@@ -530,7 +548,11 @@ for (const b of document.querySelectorAll<HTMLButtonElement>('#modes button')) {
   b.onclick = () => {
     mode = b.dataset.mode as 'edit' | 'game';
     for (const x of document.querySelectorAll<HTMLButtonElement>('#modes button')) x.classList.toggle('on', x === b);
-    if (mode === 'game') playing = true;
+    // (As in game: shown doing the clip picked, and going.)
+    if (mode === 'game') {
+      showDoing(editor.clip);
+      playing = true;
+    }
     refreshPlay();
     refresh();
   };
