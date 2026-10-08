@@ -5,7 +5,7 @@ import { GRASS_TOP_FIELDS } from './grassTops.js';
 import { TINTED } from './materials.js';
 import { GRASS_WIND_GLSL, VOXEL_SHADING_GLSL } from './voxelMaterial.js';
 
-/** How far from the eye blades grow (m); they shrink away over the last third of it. */
+/** How far from the eye blades grow by default (m); they shrink away over the last third of it. */
 export const GRASS_RANGE = 24;
 /** Each blade stands on a patch of grass top this many units across (1/4 m). */
 const PATCH = 4;
@@ -38,6 +38,9 @@ export class GrassField {
     private readonly scene: THREE.Scene,
     /** The terrain's material (see createVoxelMaterial): its uniforms are shared, so the blades are lit, tinted and blown as the ground is. */
     ground: THREE.ShaderMaterial,
+    /** How far blades grow (m), and how tall (1: as usual): the player's settings. */
+    private readonly range = GRASS_RANGE,
+    height = 1,
   ) {
     this.blade = bladeGeometry();
     const palette = ground.uniforms.palette!.value as THREE.Vector3[];
@@ -48,13 +51,15 @@ export class GrassField {
         dryColor: { value: palette[Material.DryGrass]!.clone() },
         greenTinted: { value: TINTED.has(Material.Grass) ? 1 : 0 },
         dryTinted: { value: TINTED.has(Material.DryGrass) ? 1 : 0 },
-        bladeRange: { value: GRASS_RANGE },
+        bladeRange: { value: range },
+        bladeHeight: { value: height },
       },
       side: THREE.DoubleSide,
       vertexShader: /* glsl */ `
         attribute vec4 aPatch;
         attribute vec3 lit;
         uniform float bladeRange;
+        uniform float bladeHeight;
         varying vec3 vWorld;
         varying vec3 vNormal;
         varying vec2 vUv;
@@ -72,7 +77,7 @@ export class GrassField {
           float r1 = cellHash(key), r2 = cellHash(key + 71.0), r3 = cellHash(key + 143.0), r4 = cellHash(key + 211.0);
           // A tuft at the patch's middle (a little off it), as tall as it is (none on part of a small patch: as many to a metre); shrinking away far off.
           vec3 foot = (modelMatrix * vec4(aPatch.xyz + vec3(pw * (0.3 + 0.4 * r1), 0.0, pd * (0.3 + 0.4 * r2)), 1.0)).xyz;
-          float h = (3.0 + floor(r3 * 5.0)) * step(r4, pw * pd / ${PATCH * PATCH}.0);
+          float h = (3.0 + floor(r3 * 5.0)) * bladeHeight * step(r4, pw * pd / ${PATCH * PATCH}.0);
           h *= 1.0 - smoothstep(bladeRange * 0.66, bladeRange, distance(foot, cameraPosition));
           // Only in the grass's patches (fewer toward their edges: thinned, not stubs).
           h *= step(cellHash(key + 307.0), grassPatch(foot.xz));
@@ -87,7 +92,7 @@ export class GrassField {
           vec2 dir = speed > 0.01 ? grassWind / speed : vec2(1.0, 0.0);
           float gust = grassGust(foot.xz);
           float bend = tall * (0.1 + 0.35 * gust) * clamp(speed / 8.0, 0.15, 1.0)
-            + 0.015 * sin(grassTime * 6.283 * floor(40.0 + 30.0 * r1) / 100.0 + r2 * 6.283);
+            + 0.015 * grassSway * sin(grassTime * 6.283 * floor(40.0 + 30.0 * r1) / 100.0 + r2 * 6.283);
           p.xz += dir * bend * position.y;
           vWorld = p;
           // Lit as the ground is, leaning a little toward the eye.
@@ -162,7 +167,7 @@ export class GrassField {
       // (How far the eye is from the chunk's box, m.)
       const o = [t.origin.x / UNITS_PER_METER, t.origin.y / UNITS_PER_METER, t.origin.z / UNITS_PER_METER];
       const d = Math.hypot(...[eye.x, eye.y, eye.z].map((e, a) => Math.max(0, o[a]! - e, e - (o[a]! + C))));
-      const near = d < GRASS_RANGE, far = d > GRASS_RANGE + 4;
+      const near = d < this.range, far = d > this.range + 4;
       if (near && !this.shown.has(key) && built < BUILDS_PER_FRAME) {
         built++;
         const mesh = this.build(t);

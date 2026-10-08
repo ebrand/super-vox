@@ -17,6 +17,42 @@ export interface Settings {
   performance: Performance;
   /** The game full-screen: entered when the mouse is captured (a click: browsers allow it then). */
   fullscreen: boolean;
+  /** How grass is drawn (see GrassSettings). */
+  grass: GrassSettings;
+}
+
+/** How grass is drawn: blades near you, the texture on the ground, its patches, the wind in it. */
+export interface GrassSettings {
+  /** How far from you blades grow (m); 0: none. */
+  blades: number;
+  /** How tall they are (% of their usual height). */
+  height: number;
+  /** How much of the grass is in patches with blades and texture (%); the rest is plain. */
+  cover: number;
+  /** How much the wind moves it (%; 0: still). */
+  sway: number;
+  /** Blades and gusts drawn on the grass itself, out to the horizon. */
+  texture: boolean;
+}
+
+export const GRASS_LIMITS = { blades: [0, 48], height: [50, 200], cover: [0, 100], sway: [0, 200] } as const;
+
+export function defaultGrass(): GrassSettings {
+  return { blades: 24, height: 100, cover: 65, sway: 100, texture: true };
+}
+
+function parseGrass(raw: unknown): GrassSettings {
+  const d = defaultGrass();
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+  const int = (v: unknown, [lo, hi]: readonly [number, number], fallback: number) =>
+    typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi ? v : fallback;
+  return {
+    blades: int(r.blades, GRASS_LIMITS.blades, d.blades),
+    height: int(r.height, GRASS_LIMITS.height, d.height),
+    cover: int(r.cover, GRASS_LIMITS.cover, d.cover),
+    sway: int(r.sway, GRASS_LIMITS.sway, d.sway),
+    texture: typeof r.texture === 'boolean' ? r.texture : d.texture,
+  };
 }
 
 export type Performance = 'normal' | 'medium' | 'max';
@@ -43,7 +79,7 @@ export function workersFor(p: Performance, cores: number): number {
 export const SETTINGS_LIMITS = { detail: [1, 32], view: [64, 16_000] } as const;
 
 export function defaultSettings(): Settings {
-  return { detail: 4, view: 2048, tolerance: null, world: null, performance: 'medium', fullscreen: false };
+  return { detail: 4, view: 2048, tolerance: null, world: null, performance: 'medium', fullscreen: false, grass: defaultGrass() };
 }
 
 const KEY = 'super-vox.settings';
@@ -61,6 +97,7 @@ export function parseSettings(raw: unknown): Settings {
     world: typeof r.world === 'string' && r.world !== '' ? r.world : null,
     performance: isPerformance(r.performance) ? r.performance : d.performance,
     fullscreen: r.fullscreen === true,
+    grass: parseGrass(r.grass),
   };
 }
 

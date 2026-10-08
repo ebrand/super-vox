@@ -1,7 +1,7 @@
 import './header.js';
 import './fullscreen.js';
 import './envBadge.js';
-import { SETTINGS_LIMITS, returnTo, workersFor, defaultSettings, loadSettings, saveSettings, type Performance, type Settings } from './settings.js';
+import { GRASS_LIMITS, SETTINGS_LIMITS, returnTo, workersFor, defaultSettings, loadSettings, saveSettings, type Performance, type Settings } from './settings.js';
 
 /**
  * The settings page: how much of the world the game shows and how hard it works at it. Saved in
@@ -20,6 +20,15 @@ const performanceEl = document.getElementById('s-performance') as HTMLSelectElem
 const fullscreenEl = document.getElementById('s-fullscreen') as HTMLInputElement;
 const performanceHint = document.getElementById('s-performance-hint')!;
 const errorEl = document.getElementById('s-error')!;
+/** The grass's number settings: each a slider and its box. */
+const GRASS_FIELDS = [
+  { key: 'blades', id: 's-blades', name: 'Blades' },
+  { key: 'height', id: 's-grass-height', name: 'Blade height' },
+  { key: 'cover', id: 's-grass-cover', name: 'Grass patches' },
+  { key: 'sway', id: 's-grass-sway', name: 'Wind' },
+] as const;
+const grassEls = GRASS_FIELDS.map((f) => ({ ...f, box: document.getElementById(f.id) as HTMLInputElement, range: document.getElementById(`${f.id}-range`) as HTMLInputElement }));
+const grassTextureEl = document.getElementById('s-grass-texture') as HTMLInputElement;
 const statusEl = document.getElementById('s-status')!;
 
 const back = returnTo(location.search);
@@ -46,6 +55,7 @@ const detailText = () => {
 };
 pair(detailRange, detailEl, detailText);
 pair(viewRange, viewEl, () => {});
+for (const g of grassEls) pair(g.range, g.box, () => {});
 const cores = navigator.hardwareConcurrency || 0;
 if (cores) performanceHint.textContent += ` This computer has ${cores} cores.`;
 for (const o of performanceEl.options) o.textContent += ` (${workersFor(o.value as Performance, cores)} mesh worker${workersFor(o.value as Performance, cores) === 1 ? '' : 's'})`;
@@ -56,6 +66,8 @@ function fillForm(s: Settings): void {
   toleranceEl.value = s.tolerance === null ? '' : String(s.tolerance);
   performanceEl.value = s.performance;
   fullscreenEl.checked = s.fullscreen;
+  for (const g of grassEls) g.box.value = g.range.value = String(s.grass[g.key]);
+  grassTextureEl.checked = s.grass.texture;
   detailText();
 }
 
@@ -64,6 +76,12 @@ function readForm(): Settings | string {
   const detail = Number(detailEl.value), view = Number(viewEl.value);
   if (detailEl.value === '' || !Number.isFinite(detail)) return 'Detail distance must be a number.';
   if (viewEl.value === '' || !Number.isFinite(view)) return 'View distance must be a number.';
+  const grass = { ...settings.grass, texture: grassTextureEl.checked };
+  for (const g of grassEls) {
+    const v = Number(g.box.value);
+    if (g.box.value === '' || !Number.isFinite(v)) return `${g.name} must be a number.`;
+    grass[g.key] = clamp(v, GRASS_LIMITS[g.key]);
+  }
   return {
     ...settings,
     detail: clamp(detail, SETTINGS_LIMITS.detail),
@@ -71,6 +89,7 @@ function readForm(): Settings | string {
     tolerance: toleranceEl.value === '' ? null : Number(toleranceEl.value),
     performance: performanceEl.value as Performance,
     fullscreen: fullscreenEl.checked,
+    grass,
   };
 }
 

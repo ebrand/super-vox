@@ -61,6 +61,7 @@ export const GRASS_WIND_GLSL = /* glsl */ `
       uniform vec2 grassDrift;
       uniform vec2 grassWind;
       uniform float grassCut;
+      uniform float grassSway;
       ${NOISE_GLSL}
       // Whether world point xz (m) is in a patch of grass (1) or plain (0), soft at the edges: the
       // patches a few metres across, GRASS_COVER of it all.
@@ -73,7 +74,7 @@ export const GRASS_WIND_GLSL = /* glsl */ `
         vec2 along = speed > 0.01 ? grassWind / speed : vec2(1.0, 0.0);
         vec2 q = xz - grassDrift;
         vec2 w = vec2(dot(q, along), dot(q, vec2(-along.y, along.x)));
-        return smoothstep(0.5, 0.85, valueNoise(w * vec2(0.25, 0.08))) * clamp(speed / 6.0, 0.15, 1.0);
+        return smoothstep(0.5, 0.85, valueNoise(w * vec2(0.25, 0.08))) * clamp(speed / 6.0, 0.15, 1.0) * grassSway;
       }
 `;
 
@@ -108,7 +109,7 @@ export const VOXEL_SHADING_GLSL = /* glsl */ `
         float gust = grassGust(xz);
         // (A whole number of cycles in 100 s, 0.4 to 0.7 a second: see setGrassWind.)
         float flutter = sin(grassTime * 6.283 * floor(40.0 + 30.0 * r2) / 100.0 + r * 6.283);
-        return (1.0 + fine * (0.16 * (r - 0.5) + 0.06 * flutter * (0.3 + gust))) * (0.94 + 0.12 * clump) * (1.0 + 0.16 * gust);
+        return (1.0 + fine * (0.16 * (r - 0.5) + 0.06 * flutter * (0.3 * grassSway + gust))) * (0.94 + 0.12 * clump) * (1.0 + 0.16 * gust);
       }
       // A material's colour where it is: tinted ones (tinted 1) take the ground colour of the local
       // climate (temperature falls with height).
@@ -151,7 +152,11 @@ export const VOXEL_SHADING_GLSL = /* glsl */ `
  * fragment shader and fade out with distance to avoid moire. Lit by the sun and by sky and ground
  * light (less in occluded corners), and hazed by the atmosphere.
  */
-export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMaterial & { setTint(tint: Tint | null): void; setGrassWind(wind: { x: number; z: number }, dt: number): void } {
+export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMaterial & {
+  setTint(tint: Tint | null): void;
+  setGrassWind(wind: { x: number; z: number }, dt: number): void;
+  setGrass(g: { texture: boolean; cover: number; sway: number }): void;
+} {
   const empty = new THREE.DataTexture(new Uint8Array(4), 1, 1);
   empty.needsUpdate = true;
   const material = new THREE.ShaderMaterial({
@@ -182,6 +187,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       grassDrift: { value: new THREE.Vector2() },
       grassWind: { value: new THREE.Vector2() },
       grassCut: { value: noiseCut(GRASS_COVER) },
+      grassSway: { value: 1 },
     },
     vertexShader: /* glsl */ `
       attribute vec4 face;
@@ -308,10 +314,20 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
   // (Flutter cycles a whole number of times every 100 s: its time goes round without a jump.)
   let drift = new THREE.Vector2();
   return Object.assign(material, {
-    /** Grass in the wind (see grassShade): on, `wind` (m/s, x east, z south) for `dt` s more. */
+    /** Grass in the wind (see grassShade): `wind` (m/s, x east, z south) for `dt` s more. */
+    /**
+     * How grass is drawn (the player's settings): its texture on or off; how much of it is in
+     * patches (0..1); how much the wind moves it (1: as it does; 0: still).
+     */
+    setGrass(g: { texture: boolean; cover: number; sway: number }) {
+      const u = material.uniforms;
+      u.grassOn!.value = g.texture ? 1 : 0;
+      // (All of it: past the noise's top, soft edge and all.)
+      u.grassCut!.value = g.cover >= 1 ? 2 : g.cover <= 0 ? -1 : noiseCut(g.cover);
+      u.grassSway!.value = Math.max(0, g.sway);
+    },
     setGrassWind(wind: { x: number; z: number }, dt: number) {
       const u = material.uniforms;
-      u.grassOn!.value = 1;
       u.grassTime!.value = (u.grassTime!.value + dt) % 100;
       drift = drift.add(new THREE.Vector2(wind.x * dt, wind.z * dt));
       // (Far enough, start again: a gust's pattern jumps, once in hours.)

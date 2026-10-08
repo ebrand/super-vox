@@ -162,6 +162,7 @@ explosions.onBlast = (center, radius) => {
 const compassRose = createCompassRose(document.body);
 
 const material = createVoxelMaterial(atmosphere);
+material.setGrass({ texture: settings.grass.texture, cover: settings.grass.cover / 100, sway: settings.grass.sway / 100 });
 /** Draws water over the rest of the scene, shading it from what lies behind. */
 const water = new WaterRenderer(renderer, atmosphere);
 const voxelWater = createVoxelWaterMaterial(water.uniforms);
@@ -618,7 +619,8 @@ connection = connect({
           pool = new MeshWorkerPool(workers);
           chunks = new ChunkManager(w, scene, material, voxelWater, send, pool, 64, onProgress);
           grass?.dispose();
-          grass = new GrassField(scene, material);
+          // (Blades: as far and as tall as the settings say; none at 0 m.)
+          grass = settings.grass.blades > 0 ? new GrassField(scene, material, settings.grass.blades, settings.grass.height / 100) : null;
           chunks.onGrass = (key, origin, tops) => grass?.setTops(key, origin, tops);
           const waterAt = waterAtFor(chunks);
           // (Sea at (x, z) m: the chunks' water just under sea level, open to the sky (not a flooded

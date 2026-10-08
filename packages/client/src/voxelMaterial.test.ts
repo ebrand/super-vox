@@ -4,12 +4,19 @@ import { createAtmosphere } from './atmosphere.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
 
 describe('grass in the wind (voxel material)', () => {
-  it('is off until the game turns it on; drifts with the wind; its flutter time goes round every 100 s', () => {
+  it('is off until the settings turn it on; drifts with the wind; its flutter time goes round every 100 s', () => {
     const m = createVoxelMaterial(createAtmosphere(1000));
     const u = m.uniforms;
     expect(u.grassOn!.value).toBe(0);
     m.setGrassWind({ x: 3, z: -4 }, 0.5);
-    expect(u.grassOn!.value).toBe(1);
+    expect(u.grassOn!.value).toBe(0); // (the settings turn it on: setGrass)
+    m.setGrass({ texture: true, cover: 0.65, sway: 1.5 });
+    expect([u.grassOn!.value, u.grassSway!.value]).toEqual([1, 1.5]);
+    expect(u.grassCut!.value).toBeCloseTo(0.595, 3);
+    m.setGrass({ texture: false, cover: 1, sway: 0 });
+    expect([u.grassOn!.value, u.grassCut!.value, u.grassSway!.value]).toEqual([0, 2, 0]);
+    m.setGrass({ texture: true, cover: 0, sway: 1 });
+    expect(u.grassCut!.value).toBe(-1);
     expect(u.grassWind!.value.toArray()).toEqual([3, -4]);
     expect(u.grassDrift!.value.toArray()).toEqual([1.5, -2]);
     // The wind changes: the drift goes on from where it was (no jump).

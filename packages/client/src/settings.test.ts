@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultSettings, farDetailFor, loadSettings, parseSettings, returnTo, saveSettings, workersFor } from './settings.js';
+import { defaultGrass, defaultSettings, farDetailFor, loadSettings, parseSettings, returnTo, saveSettings, workersFor } from './settings.js';
 
 /** In-memory stand-in for localStorage. */
 function memoryStorage() {
@@ -9,21 +9,24 @@ function memoryStorage() {
 
 describe('settings', () => {
   it('defaults to detail 4, view 2048 m, the world tolerance, no world, medium performance, not full-screen', () => {
-    expect(defaultSettings()).toEqual({ detail: 4, view: 2048, tolerance: null, world: null, performance: 'medium', fullscreen: false });
+    expect(defaultSettings()).toEqual({ detail: 4, view: 2048, tolerance: null, world: null, performance: 'medium', fullscreen: false, grass: defaultGrass() });
+    expect(defaultGrass()).toEqual({ blades: 24, height: 100, cover: 65, sway: 100, texture: true });
     expect(loadSettings(memoryStorage())).toEqual(defaultSettings());
     expect(loadSettings(null)).toEqual(defaultSettings());
   });
 
   it('round-trips through storage', () => {
     const store = memoryStorage();
-    const s = { detail: 7, view: 5000, tolerance: 0, world: 'archipelago', performance: 'max' as const, fullscreen: true };
+    const s = { detail: 7, view: 5000, tolerance: 0, world: 'archipelago', performance: 'max' as const, fullscreen: true, grass: { blades: 0, height: 150, cover: 100, sway: 0, texture: false } };
     expect(saveSettings(s, store)).toBe(true);
     expect(loadSettings(store)).toEqual(s);
   });
 
   it('replaces anything invalid with its default, keeping the rest', () => {
     expect(parseSettings({ detail: 99, view: 'far', tolerance: 17, world: '', performance: 'turbo', fullscreen: 'yes' })).toEqual(defaultSettings());
-    expect(parseSettings({ detail: 2.5, view: 64, tolerance: 16, world: 'x', performance: 'normal' })).toEqual({ detail: 4, view: 64, tolerance: 16, world: 'x', performance: 'normal', fullscreen: false });
+    expect(parseSettings({ detail: 2.5, view: 64, tolerance: 16, world: 'x', performance: 'normal' })).toEqual({ detail: 4, view: 64, tolerance: 16, world: 'x', performance: 'normal', fullscreen: false, grass: defaultGrass() });
+    // Grass: each bad one its default, the good ones kept (settings saved before there was grass: all defaults).
+    expect(parseSettings({ grass: { blades: 49, height: 120, cover: -1, sway: 1.5, texture: 'no' } }).grass).toEqual({ ...defaultGrass(), height: 120 });
     expect(parseSettings({ performance: 'toString' }).performance).toBe('medium');
     expect(parseSettings(null)).toEqual(defaultSettings());
     const store = memoryStorage();

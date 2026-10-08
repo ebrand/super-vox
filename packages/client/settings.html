@@ -22,6 +22,7 @@
       #s-error { color: var(--bad); font-size: 12px; min-height: 1.45em; }
       #s-status { font-size: 12px; min-height: 1.45em; color: var(--good); }
       #s-status.bad { color: var(--bad); }
+      h2 { font-size: 15px; margin: 22px 0 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; }
       .actions { flex: none; display: flex; gap: 8px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--line); background: #10141a; }
       .actions .spacer { flex: 1; }
       button { display: inline-flex; align-items: center; justify-content: center; background: #21262d; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
@@ -58,6 +59,31 @@
           <label class="title" for="s-tolerance">Terrain tolerance</label>
           <div class="line"><select id="s-tolerance"></select></div>
           <div class="hint">How far generated voxels may stray from the true surface; smaller is more detailed and slower. Only development servers honor it.</div>
+        </div>
+        <h2>Grass</h2>
+        <div class="field">
+          <label class="title" for="s-blades">Blades</label>
+          <div class="line"><input type="range" id="s-blades-range" min="0" max="48" step="4" aria-label="Blades" /><input type="number" id="s-blades" min="0" max="48" step="1" /> m</div>
+          <div class="hint">How far from you grass blades grow (0: none, just the texture). Farther costs more drawing.</div>
+        </div>
+        <div class="field">
+          <label class="title" for="s-grass-height">Blade height</label>
+          <div class="line"><input type="range" id="s-grass-height-range" min="50" max="200" step="10" aria-label="Blade height" /><input type="number" id="s-grass-height" min="50" max="200" step="1" /> %</div>
+          <div class="hint">How tall the blades are, from half their usual height to twice it.</div>
+        </div>
+        <div class="field">
+          <label class="title" for="s-grass-cover">Grass patches</label>
+          <div class="line"><input type="range" id="s-grass-cover-range" min="0" max="100" step="5" aria-label="Grass patches" /><input type="number" id="s-grass-cover" min="0" max="100" step="1" /> %</div>
+          <div class="hint">How much of the grass grows in patches with blades and texture; the rest is plain ground.</div>
+        </div>
+        <div class="field">
+          <label class="title" for="s-grass-sway">Wind</label>
+          <div class="line"><input type="range" id="s-grass-sway-range" min="0" max="200" step="10" aria-label="Wind" /><input type="number" id="s-grass-sway" min="0" max="200" step="1" /> %</div>
+          <div class="hint">How much the wind moves the grass (0: still).</div>
+        </div>
+        <div class="field">
+          <label class="title" for="s-grass-texture">Grass texture</label>
+          <div class="line"><label><input type="checkbox" id="s-grass-texture" /> Draw blades and gusts on the grass, out to the horizon</label></div>
         </div>
         <div id="s-error" role="alert"></div>
         <div id="s-status" role="status"></div>
