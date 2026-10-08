@@ -11,6 +11,8 @@ import { bowArcGeometry, isCubeModel, itemGeometry } from './itemModels.js';
 const STRING_X = -0.088, TIP_Y = 0.442, GRIP_X = -0.265;
 /** How far the string's drawn back at full draw (the bow's frame). */
 const PULL = 0.24;
+/** The arrow's tip, from its nock (along -x, the bow's frame). */
+export const ARROW_TIP = 0.87;
 
 class BowRig {
   readonly root = new THREE.Group();
@@ -186,8 +188,16 @@ export class HeldItem {
       h.scale.setScalar(1);
       // (Drawn, it goes out a little as the nock comes back: the nock stays a hand's width from the eye.)
       h.position.set(0.21 - 0.07 * d + bobX, -0.08 + bobY - (1 - this.raise) * 0.4, -0.3 - 0.08 * d);
-      // (Its belly along -x in its own frame: turned so that's ahead and a little left.)
-      h.rotation.set(0.04, -1.25 - 0.12 * d, 0.06);
+      // Turned so the arrow's tip is right in the middle of the view, on the crosshair: where the
+      // shot goes (from the eye, straight ahead). The tip's at (-L, 0, 0) in the bow's frame (L
+      // from the bow's middle); turned by `yaw` about y then `pitch` about x it's at
+      // (-L cos yaw, -L sin yaw sin pitch, L sin yaw cos pitch) from the bow: so that's level
+      // with and in line with the eye when cos yaw = x / L and sin pitch = y / (L sin yaw).
+      // (Its belly ahead and a little left: the string on the right.)
+      const L = ARROW_TIP - (STRING_X + PULL * d), p = h.position;
+      const yaw = -Math.acos(Math.max(-1, Math.min(1, p.x / L)));
+      const pitch = Math.asin(Math.max(-1, Math.min(1, p.y / (L * Math.sin(yaw)))));
+      h.rotation.set(pitch, yaw, 0);
       this.bow.pose(d, this.sinceShot > 0.4);
       this.bow.shade(s.brightness);
       return;

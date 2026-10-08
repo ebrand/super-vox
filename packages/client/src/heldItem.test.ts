@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { FLAT_WORLD_16KM, Item, Material } from '@super-vox/shared';
-import { HeldItem, SWING_S } from './heldItem.js';
+import { ARROW_TIP, HeldItem, SWING_S } from './heldItem.js';
 import { pixelModel } from './itemModels.js';
 import { EntityView } from './entities.js';
 
@@ -70,6 +70,23 @@ describe('the hand', () => {
       ys.add(Math.round(h.scene.children[0]!.position.y * 1000));
     }
     expect(ys.size).toBeGreaterThan(5);
+  });
+});
+
+describe('aiming the bow', () => {
+  it("puts the arrow's tip on the crosshair (straight ahead of the eye), at rest, drawn and walking", () => {
+    const h = new HeldItem();
+    h.setItem(Item.Bow);
+    for (const [draw, speed] of [[null, 0], [0.5, 0], [1, 0], [null, 4.3], [1, 4.3]] as const) {
+      for (let i = 0; i < 20; i++) h.update({ ...STILL, dt: 0.05, draw, speed });
+      h.scene.updateMatrixWorld(true);
+      const arrow = h.scene.children[0]!.children[0]!.children[2]!;
+      const tip = arrow.localToWorld(new THREE.Vector3(-ARROW_TIP, 0, 0));
+      // (The hand's camera at the eye, looking along -z: the crosshair is the -z axis.)
+      expect(Math.abs(tip.x)).toBeLessThan(1e-6);
+      expect(Math.abs(tip.y)).toBeLessThan(1e-6);
+      expect(tip.z).toBeLessThan(-0.3);
+    }
   });
 });
 
