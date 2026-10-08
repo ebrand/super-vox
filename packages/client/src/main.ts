@@ -1,6 +1,6 @@
 import './envBadge.js';
 import * as THREE from 'three';
-import { BLOCK_SIZE, CHUNK_SIZE, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, weatherTime, lightAt, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
+import { BLOCK_SIZE, CHUNK_SIZE, blockIndex, blockVoxelContaining, isWater, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, weatherTime, lightAt, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
 import { LeaveAsk } from './leaveAsk.js';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
@@ -14,6 +14,8 @@ import { DETAIL_SPEEDS, SpeedDetail, focusLead, selectLod } from './lod.js';
 import { TileManager } from './tileManager.js';
 import { createVoxelMaterial } from './voxelMaterial.js';
 import { GrassField } from './grassField.js';
+import { Birds } from './birds.js';
+import { LocalBirds } from './localBirds.js';
 import { createAtmosphere, createSky } from './atmosphere.js';
 import { WATER_LAYER, WaterRenderer, createSeaMaterial, createVoxelWaterMaterial } from './water.js';
 import { createTint } from './tint.js';
@@ -38,6 +40,35 @@ import { coveredAboveFor, materialAtFor, solidAtFor, waterAtFor } from './worldQ
 import { FootstepSound, FootstepWeather, StepCounter, surfaceOf, underSnow, type Surface } from './footsteps.js';
 
 const statusEl = document.getElementById('status')!;
+
+/** What birds land in: the leaves of trees. */
+const LEAVES = new Set<number>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves]);
+/**
+ * The top of what's solid in the column at (x, z) (m), looking from 30 m above `y` (m) to 30 m
+ * below: its height (m) and whether it's leaves; null if there's nothing (or it's water, or not loaded).
+ */
+function columnTop(chunks: ChunkManager, x: number, z: number, y: number): { y: number; leaves: boolean } | null {
+  const ux = Math.floor(x * UNITS_PER_METER), uz = Math.floor(z * UNITS_PER_METER);
+  const top = Math.floor((y + 30) * UNITS_PER_METER), bottom = Math.floor((y - 30) * UNITS_PER_METER);
+  const mod = (v: number, m: number) => ((v % m) + m) % m;
+  for (let uy = top; uy >= bottom; ) {
+    const chunk = chunks.chunkAt({ cx: Math.floor(ux / CHUNK_SIZE), cy: Math.floor(uy / CHUNK_SIZE), cz: Math.floor(uz / CHUNK_SIZE) });
+    if (!chunk) return null;
+    const by = Math.floor(mod(uy, CHUNK_SIZE) / BLOCK_SIZE);
+    const block = chunk.blocks[blockIndex(Math.floor(mod(ux, CHUNK_SIZE) / BLOCK_SIZE), by, Math.floor(mod(uz, CHUNK_SIZE) / BLOCK_SIZE))] ?? null;
+    if (!block) {
+      uy = Math.floor(uy / BLOCK_SIZE) * BLOCK_SIZE - 1; // (the rest of an empty block)
+      continue;
+    }
+    const v = blockVoxelContaining(block, mod(ux, BLOCK_SIZE), mod(uy, BLOCK_SIZE), mod(uz, BLOCK_SIZE));
+    if (v) {
+      if (isWater(v.material)) return null;
+      return { y: (Math.floor(uy / BLOCK_SIZE) * BLOCK_SIZE + v.y + v.size) / UNITS_PER_METER, leaves: LEAVES.has(v.material) };
+    }
+    uy--;
+  }
+  return null;
+}
 
 /** I: shows or hides the info panel (remembered in this browser). */
 const INFO_KEY = 'super-vox.infoHidden';
@@ -433,6 +464,9 @@ let swings = 0;
 let handLight = { at: 0, brightness: 1 };
 /** What's dropped on the ground (see DropView), and the list as last told (kept for when the view's made). */
 let drops: DropView | null = null;
+/** Flocks crossing the sky now and then (see Birds), and small birds about you (see LocalBirds). */
+let flocks: Birds | null = null;
+let localBirds: LocalBirds | null = null;
 let dropList: DroppedItem[] = [];
 /** The world's boats (see BoatView), and the one we're in, if any: the keys steer it (see FlyControls.ride). */
 let boats: BoatView | null = null;
@@ -817,6 +851,26 @@ connection = connect({
             () => 1 - 0.85 * atmosphere.uniforms.stars.value,
           );
           drops.setDrops(dropList);
+          // Birds: flocks over now and then; small birds about, sitting in the trees.
+          for (const b of [flocks, localBirds]) if (b) {
+            scene.remove(b.group);
+            b.dispose();
+          }
+          const brightness = () => 1 - 0.85 * atmosphere.uniforms.stars.value;
+          flocks = new Birds({
+            groundAt: (x, z) => {
+              const g = tiles?.groundAt(x * UNITS_PER_METER, z * UNITS_PER_METER);
+              return g === undefined || g === null ? null : g / UNITS_PER_METER;
+            },
+            sunDir: () => atmosphere.uniforms.sunDir.value as THREE.Vector3,
+            target: () => camera.position,
+            distance: () => 600,
+            areaSize: () => 1500,
+            real: { span: 1.6, height: [30, 60], crossing: 70 },
+            brightness,
+          });
+          localBirds = new LocalBirds({ topAt: (x, z, y) => (chunks ? columnTop(chunks, x, z, y) : null), brightness });
+          scene.add(flocks.group, localBirds.group);
           // A bow let go: shot from the eye, the way we look.
           editTool.onShoot = (charge) => {
             const d = camera.getWorldDirection(new THREE.Vector3());
@@ -1250,6 +1304,8 @@ renderer.setAnimationLoop(() => {
   boats?.frame(Math.min(0.25, (frameStart - lastBoatFrame) / 1000));
   arrows?.frame();
   drops?.frame();
+  flocks?.update(handDt);
+  localBirds?.update(handDt, camera.position);
   handDt = (frameStart - lastBoatFrame) / 1000;
   lastBoatFrame = frameStart;
   worldMap?.update();

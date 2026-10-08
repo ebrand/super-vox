@@ -19,6 +19,80 @@ export interface BirdsView {
   distance(): number;
   /** The area's size (metres). */
   areaSize(): number;
+  /**
+   * In the game, real birds (unset: sized for a far view, as the terraformer's): their wingspan
+   * (m), how high flocks fly over the ground (m, at random within), and how long one takes to
+   * cross the view (s).
+   */
+  real?: { span: number; height: readonly [number, number]; crossing: number };
+  /** How bright it is (0..1: night dims them); unset, full. */
+  brightness?(): number;
+}
+
+/**
+ * The bird drawn by Birds (and the game's nearby birds, see localBirds.ts): an instanced mesh of up to
+ * `max`, a unit across, facing +z, flapping (each its own pace: the instance attributes phase and
+ * rate) unless folded (flying 0: perched), coloured `color`, as bright as the uniform says.
+ */
+export function birdMesh(max: number, color = 0xffffff): { mesh: THREE.InstancedMesh; material: THREE.ShaderMaterial } {
+  // A bird a unit across, facing +z: a thin body and two wings, swept back (flapped in the shader).
+  const g = new THREE.BufferGeometry();
+  // prettier-ignore
+  const v = [
+    // left wing: shoulder front, shoulder back, tip
+    0, 0, 0.12, 0, 0, -0.08, -0.5, 0, -0.12,
+    // right wing
+    0, 0, 0.12, 0.5, 0, -0.12, 0, 0, -0.08,
+    // body (a sliver, nose to tail)
+    -0.03, 0, 0.22, 0.03, 0, 0.22, 0, 0, -0.25,
+  ];
+  g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+  const material = new THREE.ShaderMaterial({
+    uniforms: { time: { value: 0 }, color: { value: new THREE.Color(color) }, brightness: { value: 1 } },
+    side: THREE.DoubleSide,
+    vertexShader: /* glsl */ `
+      #include <common>
+      #include <logdepthbuf_pars_vertex>
+      attribute float phase;
+      attribute float rate;
+      attribute float flying;
+      uniform float time;
+      varying float vLight;
+      void main() {
+        vec3 p = position;
+        // Wings up and down (tips the most), each bird at its own pace; now and then a glide.
+        // Perched: folded along its back.
+        float glide = smoothstep(0.6, 0.9, sin(time * 0.35 * rate + phase * 1.7));
+        float f = sin(time * rate + phase) * (1.0 - 0.8 * glide) * flying;
+        p.x *= mix(0.12, 1.0, flying);
+        p.y += f * abs(p.x) * 0.8 + (1.0 - flying) * abs(p.x) * 0.6;
+        vLight = 0.82 + 0.18 * f;
+        gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(p, 1.0);
+        #include <logdepthbuf_vertex>
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      #include <logdepthbuf_pars_fragment>
+      uniform vec3 color;
+      uniform float brightness;
+      varying float vLight;
+      void main() {
+        #include <logdepthbuf_fragment>
+        gl_FragColor = vec4(color * vLight * brightness, 1.0);
+        #include <colorspace_fragment>
+      }
+    `,
+  });
+  const mesh = new THREE.InstancedMesh(g, material, max);
+  const phase = new Float32Array(max), rate = new Float32Array(max), flying = new Float32Array(max).fill(1);
+  for (let i = 0; i < max; i++) {
+    phase[i] = Math.random() * Math.PI * 2;
+    rate[i] = random(8, 13);
+  }
+  g.setAttribute('phase', new THREE.InstancedBufferAttribute(phase, 1));
+  g.setAttribute('rate', new THREE.InstancedBufferAttribute(rate, 1));
+  g.setAttribute('flying', new THREE.InstancedBufferAttribute(flying, 1));
+  return { mesh, material };
 }
 
 /** Seconds between flocks (one ends, the next comes this long after), at random within this. */
@@ -65,57 +139,7 @@ export class Birds {
   enabled = true;
 
   constructor(private readonly view: BirdsView) {
-    // A bird a unit across, facing +z: a thin body and two wings, swept back (flapped in the shader).
-    const g = new THREE.BufferGeometry();
-    // prettier-ignore
-    const v = [
-      // left wing: shoulder front, shoulder back, tip
-      0, 0, 0.12, 0, 0, -0.08, -0.5, 0, -0.12,
-      // right wing
-      0, 0, 0.12, 0.5, 0, -0.12, 0, 0, -0.08,
-      // body (a sliver, nose to tail)
-      -0.03, 0, 0.22, 0.03, 0, 0.22, 0, 0, -0.25,
-    ];
-    g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
-    this.material = new THREE.ShaderMaterial({
-      uniforms: { time: { value: 0 } },
-      side: THREE.DoubleSide,
-      vertexShader: /* glsl */ `
-        #include <common>
-        #include <logdepthbuf_pars_vertex>
-        attribute float phase;
-        attribute float rate;
-        uniform float time;
-        varying float vLight;
-        void main() {
-          vec3 p = position;
-          // Wings up and down (tips the most), each bird at its own pace; now and then a glide.
-          float glide = smoothstep(0.6, 0.9, sin(time * 0.35 * rate + phase * 1.7));
-          float f = sin(time * rate + phase) * (1.0 - 0.8 * glide);
-          p.y += f * abs(p.x) * 0.8;
-          vLight = 0.82 + 0.18 * f;
-          gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(p, 1.0);
-          #include <logdepthbuf_vertex>
-        }
-      `,
-      fragmentShader: /* glsl */ `
-        #include <logdepthbuf_pars_fragment>
-        varying float vLight;
-        void main() {
-          #include <logdepthbuf_fragment>
-          gl_FragColor = vec4(vec3(vLight), 1.0);
-          #include <colorspace_fragment>
-        }
-      `,
-    });
-    this.birds = new THREE.InstancedMesh(g, this.material, MAX_BIRDS);
-    const phase = new Float32Array(MAX_BIRDS), rate = new Float32Array(MAX_BIRDS);
-    for (let i = 0; i < MAX_BIRDS; i++) {
-      phase[i] = Math.random() * Math.PI * 2;
-      rate[i] = random(8, 13);
-    }
-    g.setAttribute('phase', new THREE.InstancedBufferAttribute(phase, 1));
-    g.setAttribute('rate', new THREE.InstancedBufferAttribute(rate, 1));
+    ({ mesh: this.birds, material: this.material } = birdMesh(MAX_BIRDS));
     // Shadows: soft dark ovals on the ground, stretched away from the sun when it's low.
     const disc = new THREE.CircleGeometry(0.5, 12).rotateX(-Math.PI / 2);
     this.shadows = new THREE.InstancedMesh(
@@ -135,6 +159,7 @@ export class Birds {
     dt = Math.min(dt, 0.1);
     this.time += dt;
     this.material.uniforms.time!.value = this.time;
+    this.material.uniforms.brightness!.value = this.view.brightness?.() ?? 1;
     if (!this.crossing) {
       this.wait -= dt;
       if (this.wait <= 0 && this.enabled) this.crossing = this.spawn();
@@ -151,7 +176,7 @@ export class Birds {
         for (let s = 0; s < steps; s++) k.step(dt / steps, goal);
         if (Math.hypot(k.pos[0]! - goal[0], k.pos[2]! - goal[2]) < c.near) v.next++;
       }
-      if (c.vees.every((v) => v.next >= c.route.length) || c.age > CROSSING * 3 || !this.enabled) {
+      if (c.vees.every((v) => v.next >= c.route.length) || c.age > (this.view.real?.crossing ?? CROSSING) * 3 || !this.enabled) {
         const [lo, hi] = c.few ? FEW_BETWEEN : BETWEEN;
         this.crossing = null;
         this.wait = random(lo, hi);
@@ -176,12 +201,13 @@ export class Birds {
     const target = this.view.target(), area = this.view.areaSize();
     const reach = Math.min(area * 1.2, Math.max(area * 0.3, this.view.distance() * 0.7));
     // (Sized by how far off the view is: a few pixels across, a flock you can see.)
-    const span = Math.min(30, Math.max(0.5, this.view.distance() / 150));
+    const real = this.view.real;
+    const span = real ? real.span : Math.min(30, Math.max(0.5, this.view.distance() / 150));
     const angle = Math.random() * Math.PI * 2, dir = new THREE.Vector3(Math.sin(angle), 0, Math.cos(angle));
     const side = new THREE.Vector3(dir.z, 0, -dir.x);
     // A lone bird or a few: lower, slower, wandering more, loosely together.
     const few = Math.random() < FEW_CHANCE;
-    const clearance = reach * (few ? random(0.015, 0.035) : 0.05);
+    const clearance = real ? random(real.height[0], real.height[1]) * (few ? 0.4 : 1) : reach * (few ? random(0.015, 0.035) : 0.05);
     const groundAt = (p: THREE.Vector3) => this.view.groundAt(p.x, p.z) ?? this.view.groundAt(target.x, target.z) ?? target.y;
     const point = (along: number, across: number) => {
       const p = target.clone().addScaledVector(dir, along * reach).addScaledVector(side, across * reach);
@@ -190,7 +216,7 @@ export class Birds {
     };
     const bend = few ? 1.6 : 1;
     const route = [point(-1.3, random(-0.5, 0.5)), point(random(-0.2, 0.2), random(-0.45, 0.45) * bend), point(1.7, random(-0.6, 0.6) * bend)];
-    const speed = ((reach * 3) / CROSSING) * (few ? 0.75 : 1);
+    const speed = ((reach * 3) / (real?.crossing ?? CROSSING)) * (few ? 0.75 : 1);
     const settings = skeinSettings(span, speed);
     settings.turnRate = Math.max(0.2, (2 * speed) / reach);
     settings.climbRate = speed * 0.2;
