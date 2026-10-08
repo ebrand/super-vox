@@ -17,9 +17,16 @@ export interface WalkState {
 
 /** Swimming speed up or down (m/s), and how fast a body that isn't swimming sinks. */
 export const SWIM_SPEED = 3;
-/** Walking pace (m/s; Minecraft's), and how much faster sprinting (Shift) is. */
-export const WALK_SPEED = 4.3;
-export const SPRINT = 1.5;
+/**
+ * Walking pace (m/s: a person's, so a figure's legs can carry it at a walk; see the client's
+ * lockedStride), and how much faster sprinting (Shift) is: a run, at what was the walking pace
+ * (Minecraft's, 4.3 m/s).
+ */
+export const WALK_SPEED = 1.6;
+export const SPRINT = 4.3 / 1.6;
+/** Swimming across (m/s), and with Shift: as it was before walking slowed (half the old walking pace). */
+export const SWIM_PACE = 2.15;
+export const SWIM_SPRINT = 1.5;
 export const SINK_SPEED = 0.6;
 /** How quickly water drag brings vertical speed to the swimming speed (per second). */
 export const WATER_DRAG = 5;

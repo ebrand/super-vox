@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { SPRINT, WALK_SPEED, walkStep, type Mover, type WalkState } from './walking.js';
+import { SPRINT, SWIM_PACE, SWIM_SPRINT, WALK_SPEED, walkStep, type Mover, type WalkState } from './walking.js';
 
 /** Keys currently held, by KeyboardEvent.code. */
 export type HeldKeys = ReadonlySet<string>;
@@ -40,7 +40,7 @@ export function applyLook(yaw: number, pitch: number, dx: number, dy: number, se
  * Shift for 5x speed, Option+wheel changes the base speed (the plain wheel too, unless onWheel
  * takes it; with Command held
  * it goes to `onModifiedWheel` instead). Flying: Space up, Q/C down. Walking goes at WALK_SPEED
- * (Shift: SPRINT times that), whatever the flying speed.
+ * (Shift: SPRINT times that: a run), swimming at SWIM_PACE (Shift: SWIM_SPRINT times), whatever the flying speed.
  * Collision comes from `collide`; walking needs it.
  */
 const NO_KEYS: ReadonlySet<string> = new Set();
@@ -216,7 +216,7 @@ export class FlyControls {
       this.swimming = this.inWater(p.x, p.y - 0.75, p.z);
       const swim = this.swimming ? { up: keys.has('Space'), down: keys.has('KeyC') || keys.has('KeyQ') } : undefined;
       // On foot: a walking pace (Shift: sprint), not the flying speed.
-      const speed = WALK_SPEED * (shift ? SPRINT : 1) * (swim ? 0.5 : 1);
+      const speed = swim ? SWIM_PACE * (shift ? SWIM_SPRINT : 1) : WALK_SPEED * (shift ? SPRINT : 1);
       const r = walkStep(
         this.walk,
         { dx: dir.x, dz: dir.z, speed, jump: keys.has('Space'), ...(swim ? { swim } : {}) },

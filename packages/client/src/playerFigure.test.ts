@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { PlayerAct, defaultAnimations } from '@super-vox/shared';
+import { PlayerAct, SPRINT, WALK_SPEED, defaultAnimations } from '@super-vox/shared';
 import { FIGURE_HEIGHT, JOINTS, MAN, PlayerFigure, figureModel, playerColor, poseFor, type FigureState } from './playerFigure.js';
 import { FigureMotion } from './entities.js';
 
@@ -38,7 +38,7 @@ describe('PlayerFigure', () => {
   });
 
   it('walks and runs: the legs half a stride apart, each arm against its leg; running leans forward', () => {
-    for (const speed of [4.3, 6.45]) {
+    for (const speed of [WALK_SPEED, WALK_SPEED * SPRINT]) {
       for (let k = 0; k < 8; k++) {
         const stride = (k / 8) * 2 * Math.PI;
         const now = poseFor({ ...still, speed, stride }), half = poseFor({ ...still, speed, stride: stride + Math.PI });
@@ -48,8 +48,8 @@ describe('PlayerFigure', () => {
         expect(Math.sign(now.joints.shoulderL![0]) * Math.sign(now.joints.legL![0] - now.lean * -1)).toBeLessThanOrEqual(1);
       }
     }
-    expect(poseFor({ ...still, speed: 4.3 }).lean).toBeCloseTo(0, 5);
-    expect(poseFor({ ...still, speed: 6.45 }).lean).toBeLessThan(-0.15);
+    expect(poseFor({ ...still, speed: WALK_SPEED }).lean).toBeCloseTo(0, 5);
+    expect(poseFor({ ...still, speed: WALK_SPEED * SPRINT }).lean).toBeLessThan(-0.15);
     // Standing: legs straight down.
     expect(poseFor(still).joints.legL?.[0] ?? 0).toBeCloseTo(0, 5);
   });
@@ -129,7 +129,7 @@ describe('the animations in play', () => {
 
 describe('strides locked to the feet', () => {
   it("move the body as far as a planted foot carries it: the foot on the ground doesn't slide", async () => {
-    const { SPRINT, WALK_SPEED, defaultAnimations: defaults } = await import('@super-vox/shared');
+    const { defaultAnimations: defaults } = await import('@super-vox/shared');
     const { lockedStride, measureStrides } = await import('./playerFigure.js');
     const lib = defaults();
     expect(lib.settings.walkStride).toBe(0); // locked, by default
@@ -169,7 +169,7 @@ describe('walking and running forwards', () => {
       f.root.updateMatrixWorld(true);
       return new THREE.Box3().setFromObject(f.joints.get(j as never)!).min.y;
     };
-    for (const speed of [4.3, 6.45])
+    for (const speed of [WALK_SPEED, WALK_SPEED * SPRINT])
       for (let k = 0; k < 16; k++) {
         const stride = (k / 16) * 2 * Math.PI;
         const a = poseFor({ ...still, speed, stride }), b = poseFor({ ...still, speed, stride: stride + 0.1 });
@@ -179,5 +179,21 @@ describe('walking and running forwards', () => {
         f.pose(a);
         expect(footY('ankleL'), `${speed} m/s, stride ${k}/16`).toBeGreaterThan(footY('ankleR') + 0.03);
       }
+  });
+});
+
+describe('walking and running speeds', () => {
+  it("are a figure's: walking a walk (pure, a natural pace), sprinting a run", async () => {
+    const { strides } = await import('./playerFigure.js');
+    const s = defaultAnimations().settings, st = strides();
+    expect(WALK_SPEED).toBeLessThanOrEqual(s.runFrom);
+    expect(WALK_SPEED * SPRINT).toBeGreaterThanOrEqual(s.runTo);
+    expect(WALK_SPEED * SPRINT).toBeCloseTo(4.3, 5); // (the old walking pace)
+    // Steps a minute, feet locked: a walk's (people: 100 to 160) and a run's (people: 150 to 190).
+    const walking = (2 * WALK_SPEED * 60) / st.walk, running = (2 * WALK_SPEED * SPRINT * 60) / st.run;
+    expect(walking).toBeGreaterThan(100);
+    expect(walking).toBeLessThan(160);
+    expect(running).toBeGreaterThan(120);
+    expect(running).toBeLessThan(190);
   });
 });

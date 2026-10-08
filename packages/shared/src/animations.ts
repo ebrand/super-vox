@@ -397,7 +397,7 @@ export function defaultAnimations(): AnimationLibrary {
         },
       },
     },
-    settings: { walkFull: 1.5, runFrom: 4.6, runTo: 5.6, walkStride: 0, runStride: 0, digSeconds: 0.32, flyLean: 0.03, flyLeanMax: 0.5 },
+    settings: { walkFull: 1.2, runFrom: 2.2, runTo: 3.2, walkStride: 0, runStride: 0, digSeconds: 0.32, flyLean: 0.03, flyLeanMax: 0.5 },
     grips: {
       tool: { hand: 'right', at: [0, 0.06, -0.17], turn: [0, Math.PI / 2, 0], scale: 0.5 },
       block: { hand: 'right', at: [0, -0.15, -0.04], turn: [0, 0, 0], scale: 0.2 },

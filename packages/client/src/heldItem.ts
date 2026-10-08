@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Item, type ItemId } from '@super-vox/shared';
+import { Item, WALK_SPEED, type ItemId } from '@super-vox/shared';
 import { bowArcGeometry, isCubeModel, itemGeometry } from './itemModels.js';
 
 /**
@@ -160,7 +160,7 @@ export class HeldItem {
     if (s.mining && this.swingT >= SWING_S) this.swingT = 0;
     this.raise = Math.min(1, this.raise + dt * 5);
     // Bob: a step's rise and fall, and sway, while going; settling when still.
-    const going = Math.min(1, s.speed / 4.3);
+    const going = Math.min(1, s.speed / WALK_SPEED);
     this.walkPhase += dt * (2 + s.speed * 1.6);
     this.bob += (going - this.bob) * Math.min(1, dt * 8);
     const bobY = Math.abs(Math.sin(this.walkPhase)) * 0.025 * this.bob, bobX = Math.sin(this.walkPhase) * 0.015 * this.bob;
