@@ -30,7 +30,7 @@ export interface Tint {
  * fragment shader and fade out with distance to avoid moire. Lit by the sun and by sky and ground
  * light (less in occluded corners), and hazed by the atmosphere.
  */
-export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMaterial & { setTint(tint: Tint | null): void } {
+export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMaterial & { setTint(tint: Tint | null): void; setGrassWind(wind: { x: number; z: number }, dt: number): void } {
   const empty = new THREE.DataTexture(new Uint8Array(4), 1, 1);
   empty.needsUpdate = true;
   const material = new THREE.ShaderMaterial({
@@ -53,6 +53,13 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       // only, at treeAlpha (a second, transparent pass).
       treePass: { value: 0 },
       treeAlpha: { value: 1 },
+      // Grass in the wind (the game; see setGrassWind): its tops speckled with blades and clumps;
+      // gusts, drifting downwind (grassDrift: how far the air's gone, m), lighten it as it bends,
+      // and blades flutter in them (grassTime, s); grassWind (m/s) says which way and how hard.
+      grassOn: { value: 0 },
+      grassTime: { value: 0 },
+      grassDrift: { value: new THREE.Vector2() },
+      grassWind: { value: new THREE.Vector2() },
     },
     vertexShader: /* glsl */ `
       attribute vec4 face;
@@ -71,6 +78,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       varying float vSkyLight;
       varying float vBlockLight;
       varying float vGlows;
+      varying float vGrass;
       #include <common>
       #include <logdepthbuf_pars_vertex>
       const vec3 NORMALS[6] = vec3[6](
@@ -96,6 +104,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
         vBlockLight = shade.y;
         // Flames give light: drawn at full brightness, whatever lights them.
         vGlows = material == ${Material.TorchFlame} ? 1.0 : 0.0;
+        vGrass = material == ${Material.Grass} || material == ${Material.DryGrass} ? 1.0 : 0.0;
         vUnits = position;
         vec4 world = modelMatrix * vec4(position, 1.0);
         vWorld = world.xyz;
@@ -128,7 +137,44 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       varying float vSkyLight;
       varying float vBlockLight;
       varying float vGlows;
+      varying float vGrass;
+      uniform float grassOn;
+      uniform float grassTime;
+      uniform vec2 grassDrift;
+      uniform vec2 grassWind;
       #include <logdepthbuf_pars_fragment>
+      // A random 0..1 for a whole-numbered cell (wrapped first: far out, a float's too coarse to hash).
+      float cellHash(vec2 c) {
+        c = mod(c, 1024.0);
+        vec2 p = fract(c * vec2(0.1031, 0.1030));
+        p += dot(p, p.yx + 33.33);
+        return fract((p.x + p.y) * p.x);
+      }
+      // Smooth noise 0..1, about a unit across.
+      float valueNoise(vec2 p) {
+        vec2 i = floor(p), f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(cellHash(i), cellHash(i + vec2(1.0, 0.0)), f.x), mix(cellHash(i + vec2(0.0, 1.0)), cellHash(i + vec2(1.0, 1.0)), f.x), f.y);
+      }
+      // How grass looks at world point xz (m), as a brightness to multiply its colour by: blades
+      // (1/16 m) and clumps (1/2 m), and gusts of wind going over it, lightening it as it bends
+      // (bands across the wind, sweeping downwind), blades fluttering in them. The fine detail
+      // fades out once it's too small to see.
+      float grassShade(vec2 xz) {
+        vec2 blade = floor(xz * 16.0);
+        float r = cellHash(blade), r2 = cellHash(blade + 517.0);
+        float fine = 1.0 - smoothstep(0.25, 0.6, max(fwidth(xz.x), fwidth(xz.y)) * 16.0);
+        float clump = valueNoise(xz * 2.0);
+        // The wind's frame: along it, and across it (the gusts long across, short along).
+        float speed = length(grassWind);
+        vec2 along = speed > 0.01 ? grassWind / speed : vec2(1.0, 0.0);
+        vec2 q = xz - grassDrift;
+        vec2 w = vec2(dot(q, along), dot(q, vec2(-along.y, along.x)));
+        float gust = smoothstep(0.5, 0.85, valueNoise(w * vec2(0.25, 0.08))) * clamp(speed / 6.0, 0.15, 1.0);
+        // (A whole number of cycles in 100 s, 0.4 to 0.7 a second: see setGrassWind.)
+        float flutter = sin(grassTime * 6.283 * floor(40.0 + 30.0 * r2) / 100.0 + r * 6.283);
+        return (1.0 + fine * (0.16 * (r - 0.5) + 0.06 * flutter * (0.3 + gust))) * (0.94 + 0.12 * clump) * (1.0 + 0.16 * gust);
+      }
       // Lines every "spacing" (world units of vWorld: metres) across x and z, "widthPx" pixels wide
       // (x: the lines across x, at constant x; y: those at constant z); fading out once they're
       // under about ten pixels apart (no moire, no solid wash).
@@ -168,6 +214,8 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
           vec2 at = clamp(vec2((t - ${LUT_T_MIN.toFixed(1)}) / ${(LUT_T_MAX - LUT_T_MIN).toFixed(1)}, c.g), 0.0, 1.0);
           base = texture2D(tintLut, (at * vec2(${LUT_W - 1}.0, ${LUT_H - 1}.0) + 0.5) / vec2(${LUT_W}.0, ${LUT_H}.0)).rgb;
         }
+        // Grass tops: blades, clumps, and the wind over them.
+        if (grassOn > 0.5 && vGrass > 0.5 && n.y > 0.5) base *= grassShade(vWorld.xz);
         // Corner occlusion: 0 (open) .. 3 (tucked into a corner).
         float ao = max(0.0, 1.0 - aoStrength * vAo);
         float sky = 0.5 + 0.5 * n.y;
@@ -204,7 +252,20 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       }
     `,
   });
+  // (Flutter cycles a whole number of times every 100 s: its time goes round without a jump.)
+  let drift = new THREE.Vector2();
   return Object.assign(material, {
+    /** Grass in the wind (see grassShade): on, `wind` (m/s, x east, z south) for `dt` s more. */
+    setGrassWind(wind: { x: number; z: number }, dt: number) {
+      const u = material.uniforms;
+      u.grassOn!.value = 1;
+      u.grassTime!.value = (u.grassTime!.value + dt) % 100;
+      drift = drift.add(new THREE.Vector2(wind.x * dt, wind.z * dt));
+      // (Far enough, start again: a gust's pattern jumps, once in hours.)
+      if (drift.lengthSq() > 1e10) drift.set(0, 0);
+      u.grassDrift!.value.copy(drift);
+      u.grassWind!.value.set(wind.x, wind.z);
+    },
     setTint(tint: Tint | null) {
       const u = material.uniforms;
       u.tintOn!.value = tint ? 1 : 0;

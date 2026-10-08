@@ -1240,6 +1240,8 @@ renderer.setAnimationLoop(() => {
     const pixelScale = renderer.domElement.height / Math.tan((camera.fov * Math.PI) / 360);
     weatherView.surf = surfHere(frameStart);
     weatherView.update(weatherTime(Date.now() + serverOffset) + weatherShift, worldHours(), p, ground === undefined ? null : ground / UNITS_PER_METER, view, (frameStart - weatherFrame) / 1000, open, pixelScale);
+    // Grass in the wind here (calm: still a breath of it; see grassShade).
+    material.setGrassWind(weatherView.now?.wind ?? { x: 0, z: 0 }, Math.min(0.25, (frameStart - weatherFrame) / 1000));
     weatherFrame = frameStart;
     weatherView.applyTo(atmosphere);
   }
