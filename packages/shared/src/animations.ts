@@ -222,6 +222,25 @@ export function poseFigure(lib: AnimationLibrary, s: FigureState): FigurePose {
   return pose;
 }
 
+/** One clip alone, `t` of the way through (0..1), looking `pitch` (the animation designer shows clips so). */
+export function poseClip(lib: AnimationLibrary, id: ClipId, t: number, pitch = 0): FigurePose {
+  return evaluate(lib.clips[id], t, pitch);
+}
+
+/**
+ * How long a clip takes to play through once at its usual pace (s), to preview it: a time clip, its
+ * length; a walk or a run, a stride at a walk's (1.4 m/s) or a run's (6 m/s) pace; a dig, its
+ * swing; a bow, a draw (`drawSeconds`); a still pose, a second.
+ */
+export function clipSeconds(lib: AnimationLibrary, id: ClipId, drawSeconds: number): number {
+  const c = lib.clips[id], s = lib.settings;
+  if (c.driver === 'time') return c.length ?? 1;
+  if (c.driver === 'stride') return id === 'run' ? s.runStride / 6 : s.walkStride / 1.4;
+  if (c.driver === 'swing') return s.digSeconds;
+  if (c.driver === 'draw') return drawSeconds;
+  return 1;
+}
+
 /** Which grip a thing is held by: a bow; a block (or a designed thing: anything drawn as a cube); anything else, by its handle. */
 export function gripKind(isBow: boolean, isCube: boolean): GripKind {
   return isBow ? 'bow' : isCube ? 'block' : 'tool';

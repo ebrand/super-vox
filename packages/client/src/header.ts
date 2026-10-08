@@ -10,6 +10,7 @@ const PAGES: readonly { href: string; name: string; wide?: boolean }[] = [
   { href: '/', name: 'Home' },
   { href: '/worlds.html', name: 'World management', wide: true },
   { href: '/designer.html', name: 'Object designer', wide: true },
+  { href: '/animator.html', name: 'Animation designer', wide: true },
   { href: '/players.html', name: 'Players', wide: true },
   { href: '/settings.html', name: 'Settings' },
 ];

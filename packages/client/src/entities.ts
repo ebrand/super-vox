@@ -277,10 +277,9 @@ export class EntityView {
  * right): the item's model, held in the fist; a tool by its handle, its head forward and up; a
  * block in the palm. (Its model comes a moment later if its icon's still being drawn.)
  */
-export function heldModel(item: number, material: THREE.Material): THREE.Group {
+export function heldModel(item: number, material: THREE.Material, grip: Grip = heldGrip(item)): THREE.Group {
   const hand = new THREE.Group();
-  // (As the animations' grip for its kind says.)
-  const grip = heldGrip(item);
+  // (As the animations' grip for its kind says, or the one given: the animation designer's draft.)
   hand.position.set(...grip.at);
   hand.rotation.set(...grip.turn);
   hand.scale.setScalar(grip.scale);
