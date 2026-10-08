@@ -811,6 +811,7 @@ connection = connect({
           });
           editTool = new EditTool(scene, camera, chunks, send, () => inventoryUi.material, () => (controls.collide ? playerBox(eyeUnits()) : null));
           editTool.enabled = !viewing;
+          editTool.showToolsInHand = settings.toolsInHand;
           // Right-clicking a furnace or stove opens it (the server answers with what's in it).
           editTool.onStation = (o) => send({ type: 'stationOpen', x: o.x, y: o.y, z: o.z });
           // Survival: removing is mining, held for as long as the material takes (a ring shows how far along).

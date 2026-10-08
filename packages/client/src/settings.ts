@@ -19,6 +19,8 @@ export interface Settings {
   fullscreen: boolean;
   /** How grass is drawn (see GrassSettings). */
   grass: GrassSettings;
+  /** Hybrid: tools for mining and blocks to place drawn in your hand (off: only weapons, food and such). */
+  toolsInHand: boolean;
 }
 
 /** How grass is drawn: blades near you, the texture on the ground, its patches, the wind in it. */
@@ -79,7 +81,7 @@ export function workersFor(p: Performance, cores: number): number {
 export const SETTINGS_LIMITS = { detail: [1, 32], view: [64, 16_000] } as const;
 
 export function defaultSettings(): Settings {
-  return { detail: 4, view: 2048, tolerance: null, world: null, performance: 'medium', fullscreen: false, grass: defaultGrass() };
+  return { detail: 4, view: 2048, tolerance: null, world: null, performance: 'medium', fullscreen: false, grass: defaultGrass(), toolsInHand: true };
 }
 
 const KEY = 'super-vox.settings';
@@ -98,6 +100,7 @@ export function parseSettings(raw: unknown): Settings {
     performance: isPerformance(r.performance) ? r.performance : d.performance,
     fullscreen: r.fullscreen === true,
     grass: parseGrass(r.grass),
+    toolsInHand: r.toolsInHand !== false,
   };
 }
 

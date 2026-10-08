@@ -61,10 +61,9 @@ describe('EditTool hybrid placement size', () => {
     window.dispatchEvent(key('keyup', 'MetaLeft', false));
     expect(told.at(-1)).toBeNull();
     expect(tool.chosenSize).toBeNull();
-    // In place mode, the selected size, always.
-    window.dispatchEvent(key('keydown', 'Tab', false));
-    window.dispatchEvent(key('keydown', 'Tab', false));
-    expect(tool.mode).toBe('place');
+    // In place mode (kept, out of Tab's cycle), the selected size, always.
+    tool.mode = 'place';
+    tool.update();
     expect(tool.chosenSize).toBe(tool.size);
     tool.scrollSize(-200, performance.now() + 10_000);
     expect(told.at(-1)).toBe(tool.size);
@@ -133,17 +132,21 @@ describe('EditTool mining (survival)', () => {
     expect(sent.filter((m) => m.type === 'mine').length).toBe(mines);
   });
 
-  it('breaks by hand with anything but a weapon (shown in hand: only a weapon), outlining only what what is in hand can work on', () => {
+  it('breaks by hand, or with a tool or a block (not a sword, food or a bow); with the setting off, shows only those in hand', () => {
     const outline = () => (tool as unknown as { outline: THREE.Object3D }).outline.visible;
-    for (const [what, item, breaks, outlined, shown] of [
-      ['a sword', Item.StoneSword, false, false, Item.StoneSword],
-      ['a bow', Item.Bow, false, false, Item.Bow],
-      ['cooked pork', Item.CookedPork, true, true, null],
-      ['a block (placed against it)', Material.Dirt, true, true, null],
-      ['a pickaxe', Item.WoodenPickaxe, true, true, null],
-      ['nothing', null, true, true, null],
+    for (const [what, item, breaks, outlined, hidden] of [
+      ['a sword', Item.StoneSword, false, false, false],
+      ['a bow', Item.Bow, false, false, false],
+      ['cooked pork', Item.CookedPork, false, false, false],
+      ['a block (placed against it)', Material.Dirt, true, true, true],
+      ['a pickaxe', Item.WoodenPickaxe, true, true, true],
+      ['nothing', null, true, true, true],
     ] as const) {
-      expect(((held = item), tool.shownInHand), what).toBe(shown);
+      held = item;
+      tool.showToolsInHand = true;
+      expect(tool.shownInHand, what).toBe(item);
+      tool.showToolsInHand = false;
+      expect(tool.shownInHand, what).toBe(hidden ? null : item);
       sent.length = 0;
       held = item;
       now += 100_000;
@@ -398,11 +401,11 @@ describe('EditTool build mode (creative)', () => {
   });
 
   it('is a mode in creative only', () => {
-    const modes = () => Array.from({ length: 5 }, () => (window.dispatchEvent(key('keydown', 'Tab', false)), tool.mode));
-    expect(modes()).toEqual(['dig', 'place', 'explore', 'hybrid', 'dig']);
+    const modes = () => Array.from({ length: 4 }, () => (window.dispatchEvent(key('keydown', 'Tab', false)), tool.mode));
+    expect(modes()).toEqual(['explore', 'hybrid', 'explore', 'hybrid']);
     tool.mode = 'hybrid';
     tool.bigBoxes = true;
-    expect(modes()).toEqual(['dig', 'place', 'build', 'explore', 'hybrid']);
+    expect(modes()).toEqual(['build', 'explore', 'hybrid', 'build']);
   });
 
   it('clicks out a box (base, then height) and sends it to be built; U and ⌘Z undo', () => {

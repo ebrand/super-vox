@@ -29,6 +29,7 @@ const GRASS_FIELDS = [
 ] as const;
 const grassEls = GRASS_FIELDS.map((f) => ({ ...f, box: document.getElementById(f.id) as HTMLInputElement, range: document.getElementById(`${f.id}-range`) as HTMLInputElement }));
 const grassTextureEl = document.getElementById('s-grass-texture') as HTMLInputElement;
+const toolsInHandEl = document.getElementById('s-tools-in-hand') as HTMLInputElement;
 const statusEl = document.getElementById('s-status')!;
 
 const back = returnTo(location.search);
@@ -68,6 +69,7 @@ function fillForm(s: Settings): void {
   fullscreenEl.checked = s.fullscreen;
   for (const g of grassEls) g.box.value = g.range.value = String(s.grass[g.key]);
   grassTextureEl.checked = s.grass.texture;
+  toolsInHandEl.checked = s.toolsInHand;
   detailText();
 }
 
@@ -90,6 +92,7 @@ function readForm(): Settings | string {
     performance: performanceEl.value as Performance,
     fullscreen: fullscreenEl.checked,
     grass,
+    toolsInHand: toolsInHandEl.checked,
   };
 }
 

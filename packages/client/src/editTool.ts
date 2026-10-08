@@ -80,9 +80,15 @@ const REACH = 32 * UNITS_PER_METER;
 /** Sizes the tool offers: the five that tile a 1 m block (1/16, 1/8, 1/4, 1/2, 1 m). */
 export const TOOL_SIZES = GRID_SIZES;
 
-/** Tool modes, in the order Tab cycles through them; the first is the default (build: creative only; explore: no tool at all, just looking round). */
-export const MODES = ['hybrid', 'dig', 'place', 'build', 'explore'] as const;
+/**
+ * Tool modes. Tab cycles through CYCLE (build: creative only; explore: no tool at all, just looking
+ * round); the first is the default. Dig and place (precise boxes) are kept, out of the cycle.
+ */
+export const MODES = ['hybrid', 'build', 'explore', 'dig', 'place'] as const;
 export type Mode = (typeof MODES)[number];
+export const CYCLE: readonly Mode[] = ['hybrid', 'build', 'explore'];
+/** The cycle as the HUD tells it. */
+const cycleText = (creative: boolean) => (creative ? 'hybrid / build / explore' : 'hybrid / explore');
 
 /** "1 m", "1/2 m", ... "1/16 m" for a size in units. */
 export function sizeLabel(size: number): string {
@@ -106,8 +112,8 @@ const floorDiv = (v: number, m: number) => Math.floor(v / m);
 /** What a sword cuts. */
 const LEAVES = new Set<number>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves]);
 const mod = (v: number, m: number) => ((v % m) + m) % m;
-/** Weapons: shown in hand and used as weapons in every mode (see shownInHand, breaks). */
-const isWeapon = (item: ItemId) => isSword(item) || item === Item.Bow;
+/** A tool for mining, or something to place (see breaks, shownInHand). */
+const isMiningOrPlacing = (item: ItemId) => isTool(item) || isBlock(item) || objectKindOf(item) !== null || !!designOfItem(item);
 /** Most faces a build's preview draws (more: just the box round its cells). */
 const BUILD_PREVIEW_FACES = 120_000;
 
@@ -181,23 +187,27 @@ export class EditTool {
   }
 
   /**
-   * Whether what's in hand breaks voxels (and takes down objects and boats), in hybrid: anything
-   * but a weapon (it's broken by hand, whatever's selected; in survival, as fast as the tool
-   * selected mines it, though it isn't shown).
+   * Whether what's in hand breaks voxels (and takes down objects and boats), in hybrid: nothing (a
+   * bare hand), a tool for mining (a pickaxe, an axe, a shovel), or something to place (a block, an
+   * object, a design: broken by hand). Not anything else: a weapon, food, a bucket, a boat...
+   * (Survival: as fast as the tool selected mines it.)
    */
   get breaks(): boolean {
     const held = this.materialOf();
-    return held === null || !isWeapon(held);
+    return held === null || isMiningOrPlacing(held);
   }
 
   /**
-   * What's drawn in your hand: what's selected; but in hybrid only a weapon (blocks are placed and
-   * voxels broken by hand, nothing shown); in explore, nothing.
+   * Hybrid: whether tools for mining and things to place are drawn in your hand (a setting); off,
+   * only the rest are (weapons, food, a bucket...): they're used by hand, nothing shown.
    */
+  showToolsInHand = true;
+
+  /** What's drawn in your hand: what's selected (but see showToolsInHand); in explore, nothing. */
   get shownInHand(): ItemId | null {
     const held = this.materialOf();
-    if (this.mode === 'explore') return null;
-    if (this.mode === 'hybrid') return held !== null && isWeapon(held) ? held : null;
+    if (this.mode === 'explore' || held === null) return null;
+    if (this.mode === 'hybrid' && !this.showToolsInHand && isMiningOrPlacing(held)) return null;
     return held;
   }
 
@@ -446,7 +456,7 @@ export class EditTool {
 
   /** Switches to the next mode (hybrid -> dig -> place -> hybrid). */
   cycleMode(): void {
-    this.mode = MODES[(MODES.indexOf(this.mode) + 1) % MODES.length]!;
+    this.mode = CYCLE[(CYCLE.indexOf(this.mode) + 1) % CYCLE.length]!;
     // (Build: creative only.)
     if (this.mode === 'build' && !this.bigBoxes) this.mode = 'explore';
     this.builder.cancel();
@@ -670,7 +680,7 @@ export class EditTool {
         // A geologist's hammer taps what it's aimed at, and names it, instead of mining it.
         else if (held === Item.GeologistsHammer) {
           if (this.target && this.targetMaterial !== null) this.tap(this.targetMaterial);
-        } else if (!this.breaks) return; // (a weapon doesn't break things)
+        } else if (!this.breaks) return; // (only by hand, or with a tool or a block: not a sword, food...)
         else if (this.survival) this.miningHeld = true; // (mined as it's held: see stepMining)
         else this.remove();
       } else if (button === 2) {
@@ -781,12 +791,12 @@ export class EditTool {
           ? `aiming at ${sizeLabel(this.target.size)} of ${materialName(this.targetMaterial)}${this.mode === 'hybrid' ? ' (click: light it, then stand back)' : ''}`
           : `aiming at a ${sizeLabel(this.target.size)} voxel${this.needsPickaxe()}`;
     const held = this.materialOf();
-    if (this.mode === 'explore') return `mode: explore (Tab: hybrid / dig / place${this.bigBoxes ? ' / build' : ''} / explore) · just looking round: nothing in hand · Tab: back to the tools${msg}`;
+    if (this.mode === 'explore') return `mode: explore (Tab: ${cycleText(this.bigBoxes)}) · just looking round: nothing in hand · Tab: back to the tools${msg}`;
     if (this.mode === 'build') {
       const b = this.builder;
       const round = b.tool === 'circle' || b.tool === 'dome' || b.tool === 'sphere';
       return (
-        `mode: build (Tab: hybrid / dig / place / build / explore) · ${b.tool}${round ? (b.hollow ? `, hollow ${b.thickness} thick` : ', solid') : ''}${b.tool === 'extrude' ? '' : b.tool === 'select' ? ` · ${sizeLabel(this.size)} grid` : ` · ${sizeLabel(this.size)} ${this.material?.name ?? 'nothing (E: inventory)'}`} · ${b.stage}${this.buildNote ? ` · ${this.buildNote}` : ''}\n` +
+        `mode: build (Tab: ${cycleText(this.bigBoxes)}) · ${b.tool}${round ? (b.hollow ? `, hollow ${b.thickness} thick` : ', solid') : ''}${b.tool === 'extrude' ? '' : b.tool === 'select' ? ` · ${sizeLabel(this.size)} grid` : ` · ${sizeLabel(this.size)} ${this.material?.name ?? 'nothing (E: inventory)'}`} · ${b.stage}${this.buildNote ? ` · ${this.buildNote}` : ''}\n` +
         (b.tool === 'select'
           ? 'G: line / box / circle / dome / sphere / extrude / select · click a corner, its base, its height · V: move it · ⇧V: copy it · R: turn it (carried) · click: put it down · right-click: put back, again: select nothing · U or ⌘Z: undo · ⌘+wheel or [ ]: grid size'
           : b.tool === 'extrude'
@@ -808,7 +818,7 @@ export class EditTool {
             ? 'click: fill the box (whole 1 m blocks, replacing what\'s there)'
             : `click: place · ⌥: 1/16 m steps${this.bigBoxes ? ' · bigger sizes: fill boxes up to 16 m' : ''}`;
     return (
-      `mode: ${this.mode} (Tab: hybrid / dig / place${this.bigBoxes ? ' / build' : ''} / explore) · ${size} ${this.material?.name ?? 'nothing (E: inventory)'} · ${target}\n` +
+      `mode: ${this.mode} (Tab: ${cycleText(this.bigBoxes)}) · ${size} ${this.material?.name ?? 'nothing (E: inventory)'} · ${target}\n` +
       `${actions} · middle-click: break smaller (⇧: to 1/16 m) · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-9: hotbar · E: inventory · O: just look around` +
       msg
     );
@@ -1092,7 +1102,7 @@ export class EditTool {
     else if (e.code === 'BracketRight') this.stepSize(1, false);
     else if (e.code === 'KeyX') {
       if (this.mode !== 'hybrid' || this.breaks) this.remove();
-      else this.say("a weapon doesn't break things: pick something else (or nothing)");
+      else this.say('pick a tool, a block or nothing to break things');
     }
     else if (e.code === 'KeyB' && this.target) {
       if (!breakSizesFor(this.target.size).includes(this.size)) {
