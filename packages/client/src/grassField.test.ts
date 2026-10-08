@@ -71,11 +71,10 @@ describe('GrassField', () => {
     field.dispose();
   });
 
-  it('a blade: four sides and a top, a unit square column', () => {
+  it('a tuft: one quad, a unit across and a unit up (turned and sized in the shader)', () => {
     const g = bladeGeometry();
-    expect(g.index!.count).toBe(5 * 6);
+    expect(g.index!.count).toBe(6);
     const p = g.getAttribute('position');
-    const ys = new Set(Array.from({ length: p.count }, (_, i) => p.getY(i)));
-    expect(ys).toEqual(new Set([0, 1]));
+    expect(Array.from({ length: p.count }, (_, i) => [p.getX(i), p.getY(i)])).toEqual([[-0.5, 0], [0.5, 0], [0.5, 1], [-0.5, 1]]);
   });
 });

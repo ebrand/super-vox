@@ -11,6 +11,8 @@ export const GRASS_RANGE = 24;
 const PATCH = 4;
 /** Chunks given blades (made, or let go) a frame at most: walking on, no hitch. */
 const BUILDS_PER_FRAME = 2;
+/** Blades drawn in each tuft. */
+const BLADES = 6;
 
 interface Tops {
   origin: { x: number; y: number; z: number };
@@ -19,12 +21,12 @@ interface Tops {
 
 /**
  * Grass blades near the eye: on the open tops of grass and dry grass (see grassTops), in its
- * patches (see grassPatch), one to a
- * 1/4 m patch, a column 1/16 m square and 2 to 6 sixteenths tall, where in its patch and how tall
- * by where it is; bending in the wind (the gusts the grass shader draws: see grassGust), the top
- * most. Lit and tinted as the ground (sharing its material's uniforms). Each chunk's blades are one
- * instanced mesh, made when the chunk comes within GRASS_RANGE and let go when it's left behind;
- * farther, the grass shader alone.
+ * patches (see grassPatch), a tuft to a 1/4 m patch: a flat quad turned to face the eye, 3 to 7
+ * sixteenths tall, with BLADES thin blades drawn on it (in texels 1/64 m square; the rest of it not
+ * drawn), bending in the wind (the gusts the grass shader draws: see grassGust), the top most. Lit
+ * and tinted as the ground (sharing its material's uniforms). Each chunk's tufts are one instanced
+ * mesh, made when the chunk comes within GRASS_RANGE and let go when it's left behind; farther,
+ * the grass shader alone.
  */
 export class GrassField {
   private readonly tops = new Map<string, Tops>();
@@ -48,14 +50,16 @@ export class GrassField {
         dryTinted: { value: TINTED.has(Material.DryGrass) ? 1 : 0 },
         bladeRange: { value: GRASS_RANGE },
       },
+      side: THREE.DoubleSide,
       vertexShader: /* glsl */ `
         attribute vec4 aPatch;
         attribute vec3 lit;
         uniform float bladeRange;
         varying vec3 vWorld;
         varying vec3 vNormal;
-        varying float vTip;
-        varying float vShade;
+        varying vec2 vUv;
+        varying float vTexels;
+        varying float vSeed;
         varying vec3 vLit;
         #include <common>
         #include <logdepthbuf_pars_vertex>
@@ -66,31 +70,33 @@ export class GrassField {
           vec3 corner = (modelMatrix * vec4(aPatch.xyz, 1.0)).xyz;
           vec2 key = floor(corner.xz * ${UNITS_PER_METER}.0 + 0.5);
           float r1 = cellHash(key), r2 = cellHash(key + 71.0), r3 = cellHash(key + 143.0), r4 = cellHash(key + 211.0);
-          // Where in its patch, how tall (none on part of a small patch: as many to a metre); shrinking away far off.
-          vec2 at = floor(vec2(r1 * pw, r2 * pd));
-          float h = (2.0 + floor(r3 * 5.0)) * step(r4, pw * pd / ${PATCH * PATCH}.0);
-          vec3 base = aPatch.xyz + vec3(at.x, 0.0, at.y);
-          vec3 foot = (modelMatrix * vec4(base + vec3(0.5, 0.0, 0.5), 1.0)).xyz;
+          // A tuft at the patch's middle (a little off it), as tall as it is (none on part of a small patch: as many to a metre); shrinking away far off.
+          vec3 foot = (modelMatrix * vec4(aPatch.xyz + vec3(pw * (0.3 + 0.4 * r1), 0.0, pd * (0.3 + 0.4 * r2)), 1.0)).xyz;
+          float h = (3.0 + floor(r3 * 5.0)) * step(r4, pw * pd / ${PATCH * PATCH}.0);
           h *= 1.0 - smoothstep(bladeRange * 0.66, bladeRange, distance(foot, cameraPosition));
           // Only in the grass's patches (fewer toward their edges: thinned, not stubs).
           h *= step(cellHash(key + 307.0), grassPatch(foot.xz));
-          // (None at all: folded to a point, not its top left lying on the ground.)
-          float w = step(0.05, h);
-          vec3 p = base + vec3(position.x * w, position.y * h, position.z * w);
+          // Turned to face the eye (about the upright: it stands up), a patch wide (m); none: folded to a point.
+          vec2 toEye = cameraPosition.xz - foot.xz;
+          vec2 f = length(toEye) > 1e-4 ? normalize(toEye) : vec2(0.0, 1.0);
+          vec2 right = vec2(-f.y, f.x);
+          float wide = ${PATCH}.0 / ${UNITS_PER_METER}.0 * step(0.05, h), tall = h / ${UNITS_PER_METER}.0;
+          vec3 p = foot + vec3(right.x * position.x * wide, position.y * tall, right.y * position.x * wide);
           // Bent downwind at the top, harder in a gust; and a little flutter of its own.
           float speed = length(grassWind);
           vec2 dir = speed > 0.01 ? grassWind / speed : vec2(1.0, 0.0);
           float gust = grassGust(foot.xz);
-          float bend = h * (0.1 + 0.35 * gust) * clamp(speed / 8.0, 0.15, 1.0)
-            + 0.25 * sin(grassTime * 6.283 * floor(40.0 + 30.0 * r1) / 100.0 + r2 * 6.283);
+          float bend = tall * (0.1 + 0.35 * gust) * clamp(speed / 8.0, 0.15, 1.0)
+            + 0.015 * sin(grassTime * 6.283 * floor(40.0 + 30.0 * r1) / 100.0 + r2 * 6.283);
           p.xz += dir * bend * position.y;
-          vec4 world = modelMatrix * vec4(p, 1.0);
-          vWorld = world.xyz;
-          vNormal = normal;
-          vTip = position.y;
-          vShade = 0.85 + 0.3 * r3;
+          vWorld = p;
+          // Lit as the ground is, leaning a little toward the eye.
+          vNormal = normalize(vec3(f.x * 0.4, 1.0, f.y * 0.4));
+          vUv = vec2(position.x + 0.5, position.y);
+          vTexels = h * 4.0;
+          vSeed = r3 * 97.0 + r1 * 13.0;
           vLit = lit;
-          gl_Position = projectionMatrix * viewMatrix * world;
+          gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
           #include <logdepthbuf_vertex>
         }
       `,
@@ -103,17 +109,30 @@ export class GrassField {
         uniform float dryTinted;
         varying vec3 vWorld;
         varying vec3 vNormal;
-        varying float vTip;
-        varying float vShade;
+        varying vec2 vUv;
+        varying float vTexels;
+        varying float vSeed;
         varying vec3 vLit;
         #include <logdepthbuf_pars_fragment>
         void main() {
           #include <logdepthbuf_fragment>
+          // Its blades, drawn in texels 1/64 m square (16 across the tuft): each from a place along
+          // its foot, leaning, up to its own height, thinning to a point; the rest isn't drawn.
+          vec2 t = floor(vec2(vUv.x * 16.0, vUv.y * vTexels)) + 0.5;
+          float u = t.x / 16.0, v = t.y / max(vTexels, 1.0);
+          float shade = -1.0;
+          for (int i = 0; i < ${BLADES}; i++) {
+            float k = vSeed + float(i) * 7.13;
+            float x0 = 0.12 + 0.76 * cellHash(vec2(k, 1.0)), top = 0.45 + 0.55 * cellHash(vec2(k, 2.0));
+            float lean = (cellHash(vec2(k, 3.0)) - 0.5) * 0.5;
+            float hw = mix(1.2, 0.5, v / top) / 16.0;
+            if (v < top && abs(u - (x0 + lean * v * v)) < hw) shade = 0.85 + 0.3 * cellHash(vec2(k, 4.0));
+          }
+          if (shade < 0.0) discard;
           bool dry = vLit.z > 0.5;
-          vec3 base = groundColor(dry ? dryColor : greenColor, dry ? dryTinted : greenTinted, vWorld) * vShade;
+          vec3 base = groundColor(dry ? dryColor : greenColor, dry ? dryTinted : greenTinted, vWorld) * shade;
           // Darker at the foot (in among the others), lighter at the tip.
-          float ao = mix(0.65, 1.0, vTip);
-          vec3 rgb = litColor(base * mix(0.9, 1.12, vTip), vNormal, ao, vLit.x, vLit.y, 0.0, vWorld);
+          vec3 rgb = litColor(base * mix(0.9, 1.12, v), vNormal, mix(0.6, 1.0, v), vLit.x, vLit.y, 0.0, vWorld);
           gl_FragColor = vec4(applyHaze(rgb, vWorld), 1.0);
           #include <colorspace_fragment>
         }
@@ -187,7 +206,6 @@ export class GrassField {
     const g = new THREE.InstancedBufferGeometry();
     g.index = this.blade.index;
     g.setAttribute('position', this.blade.getAttribute('position'));
-    g.setAttribute('normal', this.blade.getAttribute('normal'));
     g.setAttribute('aPatch', new THREE.InstancedBufferAttribute(new Float32Array(patches), 4));
     g.setAttribute('lit', new THREE.InstancedBufferAttribute(new Float32Array(lit), 3));
     g.instanceCount = patches.length / 4;
@@ -202,25 +220,10 @@ export class GrassField {
   }
 }
 
-/** A blade: a column 1 unit square, 1 tall (the shader stretches it), its four sides and its top. */
+/** A tuft: a quad, x -0.5..0.5 across (the shader turns it to the eye), y 0..1 up. */
 export function bladeGeometry(): THREE.BufferGeometry {
-  const pos: number[] = [], nor: number[] = [], idx: number[] = [];
-  const quad = (corners: number[][], n: number[]) => {
-    const i = pos.length / 3;
-    for (const c of corners) {
-      pos.push(...c);
-      nor.push(...n);
-    }
-    idx.push(i, i + 1, i + 2, i, i + 2, i + 3);
-  };
-  quad([[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]], [1, 0, 0]);
-  quad([[0, 0, 1], [0, 1, 1], [0, 1, 0], [0, 0, 0]], [-1, 0, 0]);
-  quad([[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], [0, 0, 1]);
-  quad([[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]], [0, 0, -1]);
-  quad([[0, 1, 0], [0, 1, 1], [1, 1, 1], [1, 1, 0]], [0, 1, 0]);
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-  g.setIndex(idx);
+  g.setAttribute('position', new THREE.Float32BufferAttribute([-0.5, 0, 0, 0.5, 0, 0, 0.5, 1, 0, -0.5, 1, 0], 3));
+  g.setIndex([0, 1, 2, 0, 2, 3]);
   return g;
 }
