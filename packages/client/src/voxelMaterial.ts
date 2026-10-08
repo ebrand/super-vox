@@ -39,15 +39,34 @@ export const NOISE_GLSL = /* glsl */ `
       }
 `;
 
+/** How much of the grass is in patches (blades drawn on it, and grown near the eye); the rest is plain. */
+export const GRASS_COVER = 0.65;
+
+/** valueNoise's spread: the value under which a fraction k/20 of it lies (measured: a million points). */
+const NOISE_QUANTILES = [0.001, 0.148, 0.21, 0.258, 0.299, 0.336, 0.372, 0.405, 0.437, 0.469, 0.5, 0.531, 0.563, 0.595, 0.628, 0.663, 0.701, 0.743, 0.791, 0.853, 1];
+
+/** The noise value that `cover` (0..1) of it lies under: grass patches cover that much (see grassPatch). */
+export function noiseCut(cover: number): number {
+  const f = Math.max(0, Math.min(1, cover)) * 20, i = Math.min(19, Math.floor(f));
+  return NOISE_QUANTILES[i]! + (NOISE_QUANTILES[i + 1]! - NOISE_QUANTILES[i]!) * (f - i);
+}
+
 /**
- * The wind over grass (see setGrassWind): its uniforms, and grassGust(xz): how hard a gust is
- * blowing at world point xz (m) now, 0 (between gusts) .. 1 (a strong wind's gust).
+ * The wind over grass (see setGrassWind): its uniforms; grassPatch(xz): whether there's a patch of
+ * grass there; and grassGust(xz): how hard a gust is blowing at world point xz (m) now, 0
+ * (between gusts) .. 1 (a strong wind's gust).
  */
 export const GRASS_WIND_GLSL = /* glsl */ `
       uniform float grassTime;
       uniform vec2 grassDrift;
       uniform vec2 grassWind;
+      uniform float grassCut;
       ${NOISE_GLSL}
+      // Whether world point xz (m) is in a patch of grass (1) or plain (0), soft at the edges: the
+      // patches a few metres across, GRASS_COVER of it all.
+      float grassPatch(vec2 xz) {
+        return 1.0 - smoothstep(grassCut - 0.03, grassCut + 0.03, valueNoise(xz * 0.25 + vec2(91.0, 37.0)));
+      }
       float grassGust(vec2 xz) {
         // The wind's frame: along it, and across it (the gusts long across, short along).
         float speed = length(grassWind);
@@ -162,6 +181,7 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
       grassTime: { value: 0 },
       grassDrift: { value: new THREE.Vector2() },
       grassWind: { value: new THREE.Vector2() },
+      grassCut: { value: noiseCut(GRASS_COVER) },
     },
     vertexShader: /* glsl */ `
       attribute vec4 face;
@@ -263,7 +283,8 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
         line *= 1.0 - smoothstep(0.15, 0.35, max(fw.x, fw.y));
         vec3 base = groundColor(vColor, vTinted, vWorld);
         // Grass tops: blades, clumps, and the wind over them.
-        if (grassOn > 0.5 && vGrass > 0.5 && n.y > 0.5) base *= grassShade(vWorld.xz);
+        // (In patches: between them, plain.)
+        if (grassOn > 0.5 && vGrass > 0.5 && n.y > 0.5) base *= mix(1.0, grassShade(vWorld.xz), grassPatch(vWorld.xz));
         // Corner occlusion: 0 (open) .. 3 (tucked into a corner).
         float ao = max(0.0, 1.0 - aoStrength * vAo);
         vec3 rgb = litColor(base, n, ao, vSkyLight, vBlockLight, vGlows, vWorld) * (1.0 - 0.35 * line);

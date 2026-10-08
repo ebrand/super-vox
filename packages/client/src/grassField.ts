@@ -18,7 +18,8 @@ interface Tops {
 }
 
 /**
- * Grass blades near the eye: on every open top of grass and dry grass (see grassTops), one to a
+ * Grass blades near the eye: on the open tops of grass and dry grass (see grassTops), in its
+ * patches (see grassPatch), one to a
  * 1/4 m patch, a column 1/16 m square and 2 to 6 sixteenths tall, where in its patch and how tall
  * by where it is; bending in the wind (the gusts the grass shader draws: see grassGust), the top
  * most. Lit and tinted as the ground (sharing its material's uniforms). Each chunk's blades are one
@@ -71,7 +72,11 @@ export class GrassField {
           vec3 base = aPatch.xyz + vec3(at.x, 0.0, at.y);
           vec3 foot = (modelMatrix * vec4(base + vec3(0.5, 0.0, 0.5), 1.0)).xyz;
           h *= 1.0 - smoothstep(bladeRange * 0.66, bladeRange, distance(foot, cameraPosition));
-          vec3 p = base + vec3(position.x, position.y * h, position.z);
+          // Only in the grass's patches (fewer toward their edges: thinned, not stubs).
+          h *= step(cellHash(key + 307.0), grassPatch(foot.xz));
+          // (None at all: folded to a point, not its top left lying on the ground.)
+          float w = step(0.05, h);
+          vec3 p = base + vec3(position.x * w, position.y * h, position.z * w);
           // Bent downwind at the top, harder in a gust; and a little flutter of its own.
           float speed = length(grassWind);
           vec2 dir = speed > 0.01 ? grassWind / speed : vec2(1.0, 0.0);
