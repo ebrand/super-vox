@@ -48,7 +48,7 @@ describe('PlayerFigure', () => {
     expect(run.joints.legL![0]).toBeGreaterThan(walk.joints.legL![0]);
     expect(run.lean).toBeLessThan(-0.15);
     // Standing: legs straight down.
-    expect(poseFor(still).joints.legL![0]).toBeCloseTo(0, 5);
+    expect(poseFor(still).joints.legL?.[0] ?? 0).toBeCloseTo(0, 5);
   });
 
   it('digs with the right arm, holds a bow out where it looks and draws it back', () => {
@@ -101,5 +101,25 @@ describe('FigureMotion', () => {
     s = m.step({ x: 22.4, y: 0, z: 0 }, 1550, PlayerAct.drawing, 0.2, null);
     expect(s.draw).toBeCloseTo(0.5, 2);
     expect(m.step({ x: 22.4, y: 0, z: 0 }, 1600, 0, 0, null).draw).toBeNull();
+  });
+});
+
+describe('the animations in play', () => {
+  it("are the server's library once it's sent: poses and grips follow it", async () => {
+    const { setAnimations, animations } = await import('./playerFigure.js');
+    const { defaultAnimations, Item } = await import('@super-vox/shared');
+    const { heldGrip } = await import('./entities.js');
+    try {
+      const lib = defaultAnimations();
+      lib.clips.jump.joints.legL = [{ at: 0, turn: [1.2, 0, 0] }];
+      lib.grips.bow = { ...lib.grips.bow, hand: 'right', scale: 0.8 };
+      setAnimations(lib);
+      expect(animations()).toBe(lib);
+      expect(poseFor({ ...still, airborne: true }).joints.legL![0]).toBeCloseTo(1.2, 5);
+      expect(heldGrip(Item.Bow)).toMatchObject({ hand: 'right', scale: 0.8 });
+    } finally {
+      setAnimations((await import('@super-vox/shared')).defaultAnimations());
+    }
+    expect(poseFor({ ...still, airborne: true }).joints.legL![0]).toBeCloseTo(0.55, 5);
   });
 });

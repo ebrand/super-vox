@@ -28,8 +28,8 @@ import { MeshWorkerPool } from './workerPool.js';
 import { WorldMapOverlay, decodeWorldMap } from './worldMap.js';
 import { rememberReturn, startFromParams, takeReturn } from './startAt.js';
 import { InventoryUi } from './inventory.js';
-import { EntityView, FigureMotion, entityBrightness, heldModel } from './entities.js';
-import { PlayerFigure, playerColor, poseFor } from './playerFigure.js';
+import { EntityView, FigureMotion, entityBrightness, heldGrip, heldModel } from './entities.js';
+import { PlayerFigure, playerColor, poseFor, setAnimations } from './playerFigure.js';
 import { raycastVoxels } from './picking.js';
 import { BoatView } from './boatView.js';
 import { ArrowView } from './arrowView.js';
@@ -1120,6 +1120,10 @@ connection = connect({
         inventoryUi.update(msg);
         updateHud();
         break;
+      case 'animations':
+        // How figures move (an admin's changed it, or it isn't the defaults).
+        setAnimations(msg.library);
+        break;
       case 'designs':
         // (Their items and recipes become known: see setDesigns.)
         setDesigns(msg.designs);
@@ -1347,7 +1351,7 @@ function thirdPersonFrame(now: number, down: boolean): THREE.Vector3 {
     f.hand?.removeFromParent();
     f.held = held;
     f.hand = held === null ? null : heldModel(held, f.handMaterial);
-    if (f.hand) f.figure.hand(held === Item.Bow ? 'left' : 'right').add(f.hand);
+    if (f.hand) f.figure.hand(heldGrip(held!).hand).add(f.hand);
   }
   // Back along the way we look, and up a little; short of anything solid between.
   const dir = camera.getWorldDirection(new THREE.Vector3());

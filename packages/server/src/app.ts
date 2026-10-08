@@ -106,6 +106,7 @@ import type { EditResult, World } from './world.js';
 import { Explosives } from './explosives.js';
 import { RequestQueue } from './requestQueue.js';
 import { DesignLibrary } from './designs.js';
+import { AnimationStore } from './animationStore.js';
 import { HISTORY, Metrics, percentile } from './metrics.js';
 import { MAX_PICTURE_BYTES, NoSuchWorldError, PICTURE_TYPES, WorldExistsError } from './worldFile.js';
 import { DefaultWorldError, StaleStrokesError, StrokesOverBuildsError, singleWorld, type WorldCatalog } from './worlds.js';
@@ -138,6 +139,8 @@ export type AppOptions = (
   miningTimeScale?: number;
   /** The library of designed objects (see DesignLibrary); default: an empty one in memory. */
   designs?: DesignLibrary;
+  /** How players' figures move (see AnimationStore); none: the defaults, in memory. */
+  animations?: AnimationStore;
   /** Which deployment this is (APP_ENV: production, staging, development), told by /api/health; default development. */
   environment?: string;
 };
@@ -419,6 +422,28 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     for (const [client] of clients) if (client.readyState === client.OPEN) out(client, bytes);
   };
   app.get('/api/designs', async (req) => ({ designs: designs.list(), canEdit: await operator(req) }));
+
+  // How players' figures move (see AnimationStore): for everyone; operators change it (the
+  // animation designer), and everyone connected gets it at once.
+  const animations = opts.animations ?? new AnimationStore(null);
+  const animationsChanged = () => {
+    const bytes = encodeMessage({ type: 'animations', library: animations.get() });
+    for (const [client] of clients) if (client.readyState === client.OPEN) out(client, bytes);
+  };
+  app.get('/api/animations', async (req) => ({ library: animations.get(), custom: animations.custom, canEdit: await operator(req) }));
+  app.put<{ Body: unknown }>('/api/animations', { bodyLimit: 4 * 1024 * 1024 }, async (req, reply) => {
+    if (!(await operator(req))) return reply.code(403).send(notOperator('changing animations'));
+    const lib = animations.put(req.body);
+    if (typeof lib === 'string') return reply.code(400).send({ error: lib });
+    animationsChanged();
+    return { library: lib };
+  });
+  app.delete('/api/animations', async (req, reply) => {
+    if (!(await operator(req))) return reply.code(403).send(notOperator('changing animations'));
+    animations.reset();
+    animationsChanged();
+    return { library: animations.get() };
+  });
 
   // Operators only: adds or replaces a design (body: the design, its id as in the URL; its item
   // number is kept or given). 400 with why, if it isn't a good one.
@@ -1230,6 +1255,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             const sendWelcome = (welcome: ServerMessage) => {
               send(welcome);
               send({ type: 'designs', designs: designs.list() });
+              // (How figures move, if it's not the defaults every client has.)
+              if (animations.custom) send({ type: 'animations', library: animations.get() });
               send({ type: 'objects', objects: world.designObjects() });
               world.onObjectsChanged ??= () => toWorld(world, { type: 'objects', objects: world.designObjects() });
               send({ type: 'boats', boats: world.boatList() });

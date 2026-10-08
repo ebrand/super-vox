@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+import { FIGURE_JOINTS, defaultAnimations, poseFigure, type AnimationLibrary, type FigurePose as Pose, type FigureState } from '@super-vox/shared';
 import manObj from './models/low-poly-man.obj?raw';
 
 /**
@@ -35,7 +36,7 @@ const SKELETON = {
 } as const satisfies Record<string, { parent?: string }>;
 
 export type Joint = keyof typeof SKELETON;
-export const JOINTS = Object.keys(SKELETON) as Joint[];
+export const JOINTS = FIGURE_JOINTS as readonly Joint[];
 
 /**
  * A model of a figure: its OBJ, which of its pieces (by name) each joint carries (null: not drawn,
@@ -156,130 +157,22 @@ function manModel(): FigureModel {
   return man;
 }
 
-/** What a player's doing this frame (see poseFor). */
-export interface FigureState {
-  /** Seconds since it was made (breathing, the swim stroke, a dig's rhythm). */
-  time: number;
-  /** How far along its stride (radians: a step each half turn), and how fast it's going over the ground (m/s). */
-  stride: number;
-  speed: number;
-  airborne: boolean;
-  swimming: boolean;
-  flying: boolean;
-  /** Mining (swinging over and over), or how far through one swing (0..1; null: not swinging). */
-  mining: boolean;
-  swing: number | null;
-  /** A bow drawn this far (0..1), or null. */
-  draw: number | null;
-  /** Where it looks: up + (radians). */
-  pitch: number;
+export type { FigureState, FigurePose as Pose } from '@super-vox/shared';
+
+/** The animations in play: the server's library (see setAnimations), else the defaults. */
+let library: AnimationLibrary = defaultAnimations();
+export function animations(): AnimationLibrary {
+  return library;
+}
+/** The server's animation library (it sends it, and again whenever an admin changes it). */
+export function setAnimations(lib: AnimationLibrary): void {
+  library = lib;
 }
 
-/** Joint turns (radians, about x, y, z) for a pose; joints not named stay straight. And the whole body's lean (about x) and how far it's lifted (m). */
-export interface Pose {
-  joints: Partial<Record<Joint, [number, number, number]>>;
-  lean: number;
-  lift: number;
-}
-
-/** How fast walking turns to running (m/s), and how long a dig's swing takes (s). */
-const RUN_FROM = 4.6;
-const DIG_S = 0.32;
-
-/**
- * The pose for what a player's doing. Turning about x tips a part's lower end forward (a leg
- * forward, an arm raised in front); a knee or elbow bends back with negative x (knee) or forward
- * with positive x (elbow); about z, an arm out to the side (left: -, right: +).
- */
+/** The pose for what a figure's doing, by the animations in play (see poseFigure). */
 export function poseFor(s: FigureState): Pose {
-  const j: Pose['joints'] = {};
-  const set = (k: Joint, x: number, y = 0, z = 0) => (j[k] = [x, y, z]);
-  let lean = 0, lift = 0;
-  const breath = Math.sin(s.time * 1.6) * 0.02;
-  // Arms hang a little out; a breath lifts the chest.
-  set('shoulderL', 0, 0, -0.08 - breath);
-  set('shoulderR', 0, 0, 0.08 + breath);
-  set('chest', -breath);
-  if (s.swimming) {
-    // Swimming: lying forward, legs fluttering, arms sweeping round in a stroke.
-    lean = -1.25;
-    const f = Math.sin(s.time * 9) * 0.35, stroke = s.time * 2.6;
-    set('legL', f);
-    set('legR', -f);
-    set('kneeL', -0.3 - Math.max(0, f));
-    set('kneeR', -0.3 - Math.max(0, -f));
-    set('shoulderL', 2.6 + Math.sin(stroke) * 0.6, 0, -0.6 - Math.cos(stroke) * 0.5);
-    set('shoulderR', 2.6 + Math.sin(stroke) * 0.6, 0, 0.6 + Math.cos(stroke) * 0.5);
-    set('elbowL', 0.4);
-    set('elbowR', 0.4);
-    set('head', 0.9 + s.pitch * 0.3);
-  } else if (s.flying) {
-    // Flying: legs together, a little back; arms a little out; leaning into it the faster it goes.
-    lean = -Math.min(0.5, s.speed * 0.03);
-    set('legL', -0.15);
-    set('legR', -0.1);
-    set('kneeL', -0.25);
-    set('kneeR', -0.2);
-    set('shoulderL', 0.1, 0, -0.35);
-    set('shoulderR', 0.1, 0, 0.35);
-    set('head', s.pitch * 0.6 - lean);
-  } else if (s.airborne) {
-    // Jumping or falling: knees up, arms out for balance.
-    set('legL', 0.55);
-    set('legR', 0.25);
-    set('kneeL', -0.9);
-    set('kneeR', -0.6);
-    set('shoulderL', 0.3, 0, -0.55);
-    set('shoulderR', 0.3, 0, 0.55);
-    set('head', s.pitch * 0.6);
-  } else {
-    // Standing, walking, running: legs swing (knees bending on the way back), arms the other way.
-    const go = Math.min(1, s.speed / 1.5), run = smooth(RUN_FROM, RUN_FROM + 1, s.speed);
-    const swing = go * (0.45 + 0.35 * run), sinS = Math.sin(s.stride), cosS = Math.cos(s.stride);
-    set('legL', swing * sinS);
-    set('legR', -swing * sinS);
-    set('kneeL', -go * (0.15 + 0.9 * run) * Math.max(0, -cosS) - go * 0.15);
-    set('kneeR', -go * (0.15 + 0.9 * run) * Math.max(0, cosS) - go * 0.15);
-    set('ankleL', go * 0.2 * Math.max(0, cosS));
-    set('ankleR', go * 0.2 * Math.max(0, -cosS));
-    set('shoulderL', -swing * 0.8 * sinS, 0, -0.08 - breath);
-    set('shoulderR', swing * 0.8 * sinS, 0, 0.08 + breath);
-    set('elbowL', go * (0.25 + 0.9 * run));
-    set('elbowR', go * (0.25 + 0.9 * run));
-    lean = -0.22 * run;
-    // A step's bob: lowest as the feet pass.
-    lift = -go * (0.02 + 0.03 * run) * Math.abs(cosS);
-    set('head', s.pitch * 0.6 - lean);
-    set('chest', -breath + s.pitch * 0.15);
-  }
-  // Digging (over and over) or a swing: the right arm up over the shoulder and chopping down, the body turning into it.
-  const chop = s.mining ? (s.time % DIG_S) / DIG_S : s.swing;
-  if (chop !== null && s.draw === null) {
-    const u = chop < 0.35 ? chop / 0.35 : 1 - (chop - 0.35) / 0.65;
-    set('shoulderR', 0.4 + 2.3 * u, 0, 0.15);
-    set('elbowR', 0.6 - 0.5 * u);
-    set('spine', 0, -0.25 * u, 0);
-  }
-  // A bow: the left arm holding it out where it looks; the right drawing the string back to the chin.
-  if (s.draw !== null) {
-    // (The body turned a little, its left shoulder toward the shot; the bow arm and the head turned
-    // back as much, so they point along it.)
-    const twist = -0.35, d = s.draw, lerp = (a: number, b: number) => a + (b - a) * d;
-    set('spine', 0, twist, 0);
-    set('shoulderL', Math.PI / 2 + s.pitch, -twist, 0);
-    set('elbowL', 0);
-    // The drawing arm: from out in front at the string, round until the hand's at the cheek.
-    set('shoulderR', lerp(Math.PI / 2 + s.pitch, 1.2), lerp(0.35, 0.6), lerp(0, -1.0));
-    set('elbowR', lerp(0.3, 1.6));
-    set('head', s.pitch * 0.8, -twist, 0);
-  }
-  return { joints: j, lean, lift };
+  return poseFigure(library, s);
 }
-
-const smooth = (a: number, b: number, x: number) => {
-  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
-  return t * t * (3 - 2 * t);
-};
 
 /** A figure: its joints (each a group, its pieces in it), coloured `color` (shaded by the material's colour). */
 export class PlayerFigure {

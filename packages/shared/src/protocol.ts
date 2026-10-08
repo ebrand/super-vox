@@ -1,6 +1,7 @@
 import type { DayClock } from './clock.js';
 import type { Edit } from './edit.js';
 import type { TransformOp } from './select.js';
+import type { AnimationLibrary } from './animations.js';
 import { isValidTileLevel } from './tile.js';
 import type { ColumnRange } from './chunk.js';
 import { HOTBAR_SLOTS, type GameMode } from './items.js';
@@ -162,6 +163,8 @@ export type ServerMessage =
   | { type: 'inventory'; mode: GameMode; items: [number, number][]; hotbar: (number | null)[] }
   /** The library of designed objects (see designs.ts): after welcome, and whenever an admin changes it. */
   | { type: 'designs'; designs: ObjectDesign[] }
+  /** How players' figures move (see animations.ts): sent when it isn't the defaults, and whenever it changes. */
+  | { type: 'animations'; library: AnimationLibrary }
   /**
    * The designed objects placed in the world (after welcome, and whenever one is placed, taken down
    * or changes state), so clients know a click on one means it (they're built of ordinary materials).

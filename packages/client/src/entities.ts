@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { ARROW, Item, MOBS, PlayerAct, UNITS_PER_METER, deltaX, type EntityKind, type EntitySnapshot, type WorldConfig } from '@super-vox/shared';
+import { ARROW, Item, MOBS, PlayerAct, UNITS_PER_METER, deltaX, gripKind, type EntityKind, type EntitySnapshot, type Grip, type WorldConfig } from '@super-vox/shared';
 import { isCubeModel, itemGeometry } from './itemModels.js';
 import { SWING_S } from './heldItem.js';
-import { FIGURE_HEIGHT, PlayerFigure, playerColor, poseFor, type FigureState } from './playerFigure.js';
+import { FIGURE_HEIGHT, PlayerFigure, animations, playerColor, poseFor, type FigureState } from './playerFigure.js';
 
 /**
  * How bright something is (0..1) with sky light `sky` and torchlight `block` (0..15) where it
@@ -73,8 +73,9 @@ export class FigureMotion {
       const d = Math.hypot(at.x - this.last.x, at.z - this.last.z) / UNITS_PER_METER;
       // (Eased: snapshots come ten times a second, frames many more.)
       this.speed += (Math.min(20, d / dt) - this.speed) * Math.min(1, dt * 8);
-      // A full stride (two steps) every 1.6 m walking, longer running.
-      this.stride += (d * 2 * Math.PI) / (this.speed > 4.6 ? 2.6 : 1.6);
+      // A full stride (two steps) every so far walking, further running (see the animations' settings).
+      const set = animations().settings;
+      this.stride += (d * 2 * Math.PI) / (this.speed > set.runFrom ? set.runStride : set.walkStride);
     }
     this.last = { ...at };
     this.lastAt = now;
@@ -221,7 +222,7 @@ export class EntityView {
     t.handMaterial ??= new THREE.MeshBasicMaterial({ vertexColors: true });
     const hand = heldModel(item, t.handMaterial);
     t.hand = hand;
-    t.figure.hand(item === Item.Bow ? 'left' : 'right').add(hand);
+    t.figure.hand(heldGrip(item).hand).add(hand);
   }
 
   /** The nearest mob (not player) a ray (units) hits within `maxDist` units, and how far along. */
@@ -278,23 +279,25 @@ export class EntityView {
  */
 export function heldModel(item: number, material: THREE.Material): THREE.Group {
   const hand = new THREE.Group();
-  hand.position.set(0, -0.11, 0);
+  // (As the animations' grip for its kind says.)
+  const grip = heldGrip(item);
+  hand.position.set(...grip.at);
+  hand.rotation.set(...grip.turn);
+  hand.scale.setScalar(grip.scale);
   const put = (g: THREE.BufferGeometry) => {
     const mesh = new THREE.Mesh(g, material);
     mesh.userData.shared = true;
-    const cube = isCubeModel(item);
-    mesh.scale.setScalar(cube ? 0.2 : 0.5);
-    if (cube) mesh.position.set(0, -0.04, -0.04);
-    else {
-      mesh.rotation.set(0, Math.PI / 2, 0);
-      mesh.position.set(0, 0.17, -0.17);
-    }
     hand.add(mesh);
   };
   const g = itemGeometry(item);
   if (g instanceof Promise) void g.then(put);
   else put(g);
   return hand;
+}
+
+/** How a thing's held (see the animations' grips): a bow, a block (or anything drawn as a cube), or anything else by its handle. */
+export function heldGrip(item: number): Grip {
+  return animations().grips[gripKind(item === Item.Bow, isCubeModel(item))];
 }
 
 /** A name over a player's head. */
