@@ -91,22 +91,25 @@ describe('aiming the bow', () => {
 });
 
 describe("other players' hands", () => {
-  it('hold what they hold (at their side), and swing it when they swing', () => {
+  it('hold what they hold in the right hand (a bow in the left), and swing that arm when they swing', () => {
     // (No names: a name tag needs a page to draw on.)
     const scene = new THREE.Scene();
     const view = new EntityView(scene, FLAT_WORLD_16KM, () => 0);
     view.update([{ id: 1, kind: 'player', x: 0, y: 0, z: 0, yaw: 0, held: Material.Stone, swings: 3 }], 0);
     const ann = scene.children.find((c) => c.name === 'player 1')!;
-    const hand = ann.children.find((c) => c instanceof THREE.Group && c.children.length === 1)!;
-    expect(hand).toBeDefined();
-    expect(hand.position.x).toBeGreaterThan(0.3);
+    const joint = (name: string) => ann.getObjectByName(name)!;
+    const held = (name: string) => joint(name).children.filter((c) => !c.name.endsWith(' part'));
+    expect(held('wristR')).toHaveLength(1);
+    expect(held('wristL')).toHaveLength(0);
     view.frame(10);
-    expect(hand.rotation.x).toBeCloseTo(0);
+    const rest = joint('shoulderR').rotation.x;
     view.update([{ id: 1, kind: 'player', x: 0, y: 0, z: 0, yaw: 0, held: Material.Stone, swings: 4 }], 100);
-    view.frame(100 + (SWING_S * 1000) / 2);
-    expect(hand.rotation.x).toBeLessThan(-0.5);
-    // Put away: nothing in hand.
-    view.update([{ id: 1, kind: 'player', x: 0, y: 0, z: 0, yaw: 0, swings: 4 }], 200);
-    expect(ann.children.includes(hand)).toBe(false);
+    view.frame(100 + SWING_S * 1000 * 0.35);
+    expect(joint('shoulderR').rotation.x).toBeGreaterThan(rest + 1.5); // raised to chop
+    // A bow: in the left hand. Put away: nothing in either.
+    view.update([{ id: 1, kind: 'player', x: 0, y: 0, z: 0, yaw: 0, held: Item.Bow, swings: 4 }], 200);
+    expect([held('wristL').length, held('wristR').length]).toEqual([1, 0]);
+    view.update([{ id: 1, kind: 'player', x: 0, y: 0, z: 0, yaw: 0, swings: 4 }], 300);
+    expect([held('wristL').length, held('wristR').length]).toEqual([0, 0]);
   });
 });

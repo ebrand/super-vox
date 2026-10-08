@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { MOBS, UNITS_PER_METER, deltaX, type EntityKind, type EntitySnapshot, type WorldConfig } from '@super-vox/shared';
+import { ARROW, Item, MOBS, PlayerAct, UNITS_PER_METER, deltaX, type EntityKind, type EntitySnapshot, type WorldConfig } from '@super-vox/shared';
 import { isCubeModel, itemGeometry } from './itemModels.js';
 import { SWING_S } from './heldItem.js';
+import { FIGURE_HEIGHT, PlayerFigure, playerColor, poseFor, type FigureState } from './playerFigure.js';
 
 /**
  * How bright something is (0..1) with sky light `sky` and torchlight `block` (0..15) where it
@@ -37,11 +38,61 @@ interface Tracked {
   /** When `to` arrived (ms). */
   at: number;
   hurtUntil: number;
-  /** Players: what's in their hand (its model in `hand`, at their right side), and when they last swung it (ms). */
+  /** Players: what's in their hand (its model in `hand`, in the figure's hand), and when they last swung it (ms). */
   held?: number | undefined;
   hand?: THREE.Group | undefined;
   handMaterial?: THREE.MeshBasicMaterial;
   swungAt: number;
+  /** Players: their figure (see PlayerFigure) and colour, and how it's moving (see FigureMotion). */
+  figure?: PlayerFigure;
+  color?: THREE.Color;
+  motion?: FigureMotion;
+}
+
+/** How a figure's going, from where it's drawn frame to frame: for its strides. */
+export class FigureMotion {
+  private last: { x: number; y: number; z: number } | null = null;
+  private lastAt = 0;
+  private readonly born: number;
+  speed = 0;
+  stride = 0;
+  /** When it started drawing a bow (ms), if it is. */
+  drawFrom: number | null = null;
+
+  constructor(now: number) {
+    this.born = now;
+  }
+
+  /**
+   * Moves on to where it's drawn now (units) at `now` (ms), doing `act` (PlayerAct flags), looking
+   * `pitch` up; swung `swingU` of the way through a swing (null: not). The state to pose it by.
+   */
+  step(at: { x: number; y: number; z: number }, now: number, act: number, pitch: number, swingU: number | null): FigureState {
+    const dt = this.last ? Math.min(0.25, (now - this.lastAt) / 1000) : 0;
+    if (this.last && dt > 0) {
+      const d = Math.hypot(at.x - this.last.x, at.z - this.last.z) / UNITS_PER_METER;
+      // (Eased: snapshots come ten times a second, frames many more.)
+      this.speed += (Math.min(20, d / dt) - this.speed) * Math.min(1, dt * 8);
+      // A full stride (two steps) every 1.6 m walking, longer running.
+      this.stride += (d * 2 * Math.PI) / (this.speed > 4.6 ? 2.6 : 1.6);
+    }
+    this.last = { ...at };
+    this.lastAt = now;
+    if (act & PlayerAct.drawing) this.drawFrom ??= now;
+    else this.drawFrom = null;
+    return {
+      time: (now - this.born) / 1000,
+      stride: this.stride,
+      speed: this.speed,
+      airborne: !!(act & PlayerAct.airborne),
+      swimming: !!(act & PlayerAct.swimming),
+      flying: !!(act & PlayerAct.flying),
+      mining: !!(act & PlayerAct.mining),
+      swing: swingU,
+      draw: this.drawFrom === null ? null : Math.min(1, (now - this.drawFrom) / ARROW.drawMs),
+      pitch,
+    };
+  }
 }
 
 /** Where to draw something between two snapshots `t` of the way (0..1); yaw the shortest way round. */
@@ -74,8 +125,9 @@ export function rayBox(origin: readonly number[], dir: readonly number[], min: r
 }
 
 /**
- * Mobs and other players: placeholder boxes (a darker block at the front, name tags over
- * players), moved smoothly between the server's snapshots and flashing red when hurt.
+ * Mobs and other players: mobs as placeholder boxes (a darker block at the front), players as
+ * jointed figures (see PlayerFigure) in their own colours with their names over them, posed by
+ * what they're doing; moved smoothly between the server's snapshots and flashing red when hurt.
  */
 export class EntityView {
   private readonly tracked = new Map<number, Tracked>();
@@ -119,7 +171,8 @@ export class EntityView {
       this.scene.remove(t.group);
       t.group.traverse((o) => {
         if (o instanceof THREE.Mesh || o instanceof THREE.Sprite) {
-          o.geometry.dispose();
+          // (Shared: a figure's parts, items' models.)
+          if (!o.userData.shared) o.geometry.dispose();
           (o.material as THREE.Material).dispose();
         }
       });
@@ -141,13 +194,17 @@ export class EntityView {
         const l = this.light(p.x, p.y + 8, p.z);
         t.brightness = l ? entityBrightness(l.sky, l.block, this.daylight()) : 1;
       }
-      t.body.color.setHex(now < t.hurtUntil ? 0xff3030 : LOOK[t.kind].color).multiplyScalar(t.brightness);
-      if (t.hand) {
-        t.handMaterial!.color.setScalar(t.brightness);
-        // A swing: the arm (its item) down and forward, and back.
-        const u = Math.min(1, (now - t.swungAt) / 1000 / SWING_S);
-        t.hand.rotation.x = -Math.sin(u * Math.PI) * 1.2;
+      if (t.figure) {
+        // A player: posed by what it's doing (walking as fast as it goes, swinging, drawing a bow...).
+        const u = (now - t.swungAt) / 1000 / SWING_S;
+        const pitch = (t.from.pitch ?? 0) + ((t.to.pitch ?? 0) - (t.from.pitch ?? 0)) * Math.min(1, (now - t.at) / INTERPOLATION_MS);
+        t.figure.pose(poseFor(t.motion!.step(p, now, t.to.act ?? 0, pitch, u < 1 ? u : null)));
+        if (now < t.hurtUntil) t.body.color.setHex(0xff3030).multiplyScalar(t.brightness);
+        else t.body.color.copy(t.color!).multiplyScalar(t.brightness);
+        if (t.handMaterial) t.handMaterial.color.setScalar(t.brightness);
+        continue;
       }
+      t.body.color.setHex(now < t.hurtUntil ? 0xff3030 : LOOK[t.kind].color).multiplyScalar(t.brightness);
       t.face.color.setHex(0x1b1b1b).multiplyScalar(t.brightness);
     }
   }
@@ -157,33 +214,14 @@ export class EntityView {
     if (t.kind !== 'player' || item === t.held) return;
     t.held = item;
     if (t.hand) {
-      t.group.remove(t.hand);
+      t.hand.removeFromParent();
       t.hand = undefined;
     }
-    if (item === undefined) return;
-    const hand = new THREE.Group();
-    // (At the right side, at the hand's height, a little forward: the way it faces is -z.)
-    hand.position.set(LOOK.player.w / 2 + 0.06, 0.95, -0.15);
+    if (item === undefined || !t.figure) return;
     t.handMaterial ??= new THREE.MeshBasicMaterial({ vertexColors: true });
-    const material = t.handMaterial;
-    const put = (g: THREE.BufferGeometry) => {
-      if (t.held !== item) return;
-      const mesh = new THREE.Mesh(g, material);
-      const cube = isCubeModel(item);
-      mesh.scale.setScalar(cube ? 0.25 : 0.5);
-      // A tool by its handle (the icon's lower left), its head up and forward; a block, held out.
-      if (cube) mesh.position.set(0, 0, -0.12);
-      else {
-        mesh.rotation.set(0, Math.PI / 2, 0);
-        mesh.position.set(0, 0.17, -0.17);
-      }
-      hand.add(mesh);
-    };
-    const g = itemGeometry(item);
-    if (g instanceof Promise) void g.then(put);
-    else put(g);
+    const hand = heldModel(item, t.handMaterial);
     t.hand = hand;
-    t.group.add(hand);
+    t.figure.hand(item === Item.Bow ? 'left' : 'right').add(hand);
   }
 
   /** The nearest mob (not player) a ray (units) hits within `maxDist` units, and how far along. */
@@ -205,10 +243,20 @@ export class EntityView {
     return this.tracked.size;
   }
 
-  private make(e: EntitySnapshot): { kind: EntityKind; group: THREE.Group; body: THREE.MeshBasicMaterial; face: THREE.MeshBasicMaterial } {
+  private make(e: EntitySnapshot): Pick<Tracked, 'kind' | 'group' | 'body' | 'face' | 'figure' | 'color' | 'motion'> {
     const look = LOOK[e.kind];
     const group = new THREE.Group();
     group.name = `${e.kind} ${e.id}`;
+    if (e.kind === 'player') {
+      // A player: the mannequin, in their own colour, their name over their head.
+      const color = playerColor(e.name ?? 'guest');
+      const figure = new PlayerFigure(color);
+      figure.root.traverse((o) => (o.userData.shared = true));
+      group.add(figure.root);
+      if (e.name) group.add(nameTag(e.name, FIGURE_HEIGHT + 0.3));
+      this.scene.add(group);
+      return { kind: e.kind, group, body: figure.material, face: figure.material, figure, color, motion: new FigureMotion(performance.now()) };
+    }
     const body = new THREE.MeshBasicMaterial({ color: look.color });
     // The box (its length along -Z, the way it faces), standing on the ground.
     const box = new THREE.Mesh(new THREE.BoxGeometry(look.w, look.h, look.long), body);
@@ -218,10 +266,35 @@ export class EntityView {
     const face = new THREE.Mesh(new THREE.BoxGeometry(look.w * 0.6, Math.min(0.3, look.h * 0.3), 0.08), faceMaterial);
     face.position.set(0, look.h * 0.82, -look.long / 2 - 0.04);
     group.add(box, face);
-    if (e.kind === 'player' && e.name) group.add(nameTag(e.name, look.h + 0.35));
     this.scene.add(group);
     return { kind: e.kind, group, body, face: faceMaterial };
   }
+}
+
+/**
+ * What a figure holds, for its hand (see PlayerFigure.hand: a bow in the left, anything else in the
+ * right): the item's model, held in the fist; a tool by its handle, its head forward and up; a
+ * block in the palm. (Its model comes a moment later if its icon's still being drawn.)
+ */
+export function heldModel(item: number, material: THREE.Material): THREE.Group {
+  const hand = new THREE.Group();
+  hand.position.set(0, -0.11, 0);
+  const put = (g: THREE.BufferGeometry) => {
+    const mesh = new THREE.Mesh(g, material);
+    mesh.userData.shared = true;
+    const cube = isCubeModel(item);
+    mesh.scale.setScalar(cube ? 0.2 : 0.5);
+    if (cube) mesh.position.set(0, -0.04, -0.04);
+    else {
+      mesh.rotation.set(0, Math.PI / 2, 0);
+      mesh.position.set(0, 0.17, -0.17);
+    }
+    hand.add(mesh);
+  };
+  const g = itemGeometry(item);
+  if (g instanceof Promise) void g.then(put);
+  else put(g);
+  return hand;
 }
 
 /** A name over a player's head. */

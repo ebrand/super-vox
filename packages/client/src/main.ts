@@ -28,12 +28,14 @@ import { MeshWorkerPool } from './workerPool.js';
 import { WorldMapOverlay, decodeWorldMap } from './worldMap.js';
 import { rememberReturn, startFromParams, takeReturn } from './startAt.js';
 import { InventoryUi } from './inventory.js';
-import { EntityView, entityBrightness } from './entities.js';
+import { EntityView, FigureMotion, entityBrightness, heldModel } from './entities.js';
+import { PlayerFigure, playerColor, poseFor } from './playerFigure.js';
+import { raycastVoxels } from './picking.js';
 import { BoatView } from './boatView.js';
 import { ArrowView } from './arrowView.js';
 import { DropView } from './dropView.js';
-import { HeldItem } from './heldItem.js';
-import { Item, getOutAt, stepBoat, waterSurface, type Boat, type BoatMotion, type DroppedItem, type Hull } from '@super-vox/shared';
+import { HeldItem, SWING_S } from './heldItem.js';
+import { Item, PlayerAct, getOutAt, stepBoat, waterSurface, type Boat, type BoatMotion, type DroppedItem, type Hull } from '@super-vox/shared';
 import type { Footprint } from './coverage.js';
 import { createCompassRose } from './compassRose.js';
 import { coveredAboveFor, materialAtFor, solidAtFor, waterAtFor } from './worldQuery.js';
@@ -460,6 +462,28 @@ let arrows: ArrowView | null = null;
 /** What's in hand, drawn at the lower right (see HeldItem); and how many times we've swung it (others are told, to swing it too). */
 const hand = new HeldItem();
 let swings = 0;
+/** When we last swung (ms): our own figure swings too (third person). */
+let swungAt = -Infinity;
+/** What we're doing, as PlayerAct flags (sent with where we are, and our own figure's pose). */
+function myAct(): number {
+  let act = 0;
+  if (editTool?.miningNow) act |= PlayerAct.mining;
+  if (editTool?.bowDraw !== null && editTool?.bowDraw !== undefined) act |= PlayerAct.drawing;
+  if (controls.swimming) act |= PlayerAct.swimming;
+  else if (!controls.walking) act |= PlayerAct.flying;
+  else if (!controls.grounded) act |= PlayerAct.airborne;
+  return act;
+}
+/**
+ * Third person (P): the camera behind and a little above us (pulled in short of anything in the
+ * way), ourselves drawn as others see us (see PlayerFigure).
+ */
+let thirdPerson = false;
+/** Our name (for our colour: others see us in it, see playerColor). */
+let myName = 'guest';
+let selfFigure: { figure: PlayerFigure; motion: FigureMotion; handMaterial: THREE.MeshBasicMaterial; held: number | null; hand: THREE.Group | null } | null = null;
+/** How far behind (m) and above (m) the camera goes in third person. */
+const THIRD_BACK = 3.5, THIRD_UP = 0.6;
 /** How bright it is where we stand (for the hand), looked at a few times a second. */
 let handLight = { at: 0, brightness: 1 };
 /** What's dropped on the ground (see DropView), and the list as last told (kept for when the view's made). */
@@ -627,6 +651,7 @@ connection = connect({
     switch (msg.type) {
       case 'welcome': {
         const w = msg.world;
+        myName = msg.player?.name ?? 'guest';
         worldLine =
           `world ${worldName ?? '(default)'}, ${unitsToMeters(w.widthUnits) / 1000} x ${unitsToMeters(w.depthUnits) / 1000} km` +
           (w.wrapX ? ', wraps east-west' : '') +
@@ -786,6 +811,12 @@ connection = connect({
               setViewing(!viewing);
               return;
             }
+            // P: third person (see thirdPerson), and back.
+            if (e.code === 'KeyP') {
+              thirdPerson = !thirdPerson;
+              editTool?.say(thirdPerson ? 'third person (P: back to your own eyes)' : 'first person');
+              return;
+            }
             if (e.code === 'KeyI') {
               setInfoVisible(statusEl.hidden === true);
               return;
@@ -870,6 +901,15 @@ connection = connect({
             real: { span: 1.6, height: [30, 60], crossing: 70 },
             brightness,
           });
+          // Ourselves, as others see us (shown in third person: see thirdPersonFrame).
+          if (selfFigure) {
+            selfFigure.figure.root.removeFromParent();
+            selfFigure.figure.dispose();
+          }
+          const figure = new PlayerFigure(playerColor(myName));
+          figure.root.visible = false;
+          scene.add(figure.root);
+          selfFigure = { figure, motion: new FigureMotion(performance.now()), handMaterial: new THREE.MeshBasicMaterial({ vertexColors: true }), held: null, hand: null };
           localBirds = new LocalBirds({ topAt: (x, z, y) => (chunks ? columnTop(chunks, x, z, y) : null), brightness });
           scene.add(flocks.group, localBirds.group);
           // A bow let go: shot from the eye, the way we look.
@@ -973,6 +1013,7 @@ connection = connect({
             if (button !== 1 && !(button === 2 && inventoryUi.material === Item.Bow)) {
               hand.swing();
               swings++;
+              swungAt = performance.now();
             }
           };
           controls.onRelease = (button) => editTool?.release(button);
@@ -1002,7 +1043,7 @@ connection = connect({
             if (error) editTool?.say(error);
             updateHud();
           };
-          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool, water, compassRose, inventoryUi, entities, explosions };
+          (window as unknown as { superVox: unknown }).superVox = { chunks, tiles, pool, camera, controls, renderer, scene, updateLod, editTool, water, compassRose, inventoryUi, entities, explosions, self: () => selfFigure, poseFor };
           // Start loading now rather than on the first frame (frames pause in hidden tabs).
           updateLod(true);
         } else {
@@ -1249,8 +1290,10 @@ setInterval(() => {
   const p = camera.position;
   // (With what's in hand, as we see it (see shownInHand), and how many swings: others see it.)
   const held = inventoryUi.enabled && editTool ? editTool.shownInHand : null;
-  const pose = { type: 'pose' as const, x: Math.round(p.x * UNITS_PER_METER), y: Math.round(p.y * UNITS_PER_METER), z: Math.round(p.z * UNITS_PER_METER), yaw: Math.round(controls.yaw * 1000) / 1000, ...(held !== null ? { held } : {}), swings };
-  const key = `${pose.x},${pose.y},${pose.z},${pose.yaw},${held},${swings}`;
+  // (And where we look and what we're doing: others draw us so.)
+  const pitch = Math.round(controls.pitch * 100) / 100, act = myAct();
+  const pose = { type: 'pose' as const, x: Math.round(p.x * UNITS_PER_METER), y: Math.round(p.y * UNITS_PER_METER), z: Math.round(p.z * UNITS_PER_METER), yaw: Math.round(controls.yaw * 1000) / 1000, ...(held !== null ? { held } : {}), swings, ...(pitch ? { pitch } : {}), ...(act ? { act } : {}) };
+  const key = `${pose.x},${pose.y},${pose.z},${pose.yaw},${held},${swings},${pitch},${act}`;
   if (key === lastPose) return;
   connection?.send(pose);
   lastPose = key;
@@ -1277,6 +1320,42 @@ function showPlaceSize(p: { size: number; why: string } | null): void {
   placeSizeEl.hidden = !p;
   placeSizeEl.textContent = text;
   placeSizeEl.classList.toggle('bad', !!p?.why);
+}
+
+/**
+ * Third person, each frame: our figure at our feet, facing our way, posed by what we're doing;
+ * returns how far to move the camera back for this frame (m; zero in first person).
+ */
+function thirdPersonFrame(now: number, down: boolean): THREE.Vector3 {
+  const off = new THREE.Vector3();
+  if (selfFigure) selfFigure.figure.root.visible = thirdPerson && !down;
+  if (!thirdPerson || !selfFigure || !chunks || down) return off;
+  const f = selfFigure, eye = camera.position;
+  const feet = { x: eye.x * UNITS_PER_METER, y: eye.y * UNITS_PER_METER - PLAYER.eye, z: eye.z * UNITS_PER_METER };
+  f.figure.root.position.set(feet.x / UNITS_PER_METER, feet.y / UNITS_PER_METER, feet.z / UNITS_PER_METER);
+  f.figure.root.rotation.y = controls.yaw;
+  const u = (now - swungAt) / 1000 / SWING_S;
+  f.figure.pose(poseFor(f.motion.step(feet, now, myAct(), controls.pitch, u < 1 ? u : null)));
+  // Lit as others are where we stand.
+  const l = lightAt(chunks.lightWorld(), Math.floor(feet.x / BLOCK_SIZE), Math.floor((feet.y + 8) / BLOCK_SIZE), Math.floor(feet.z / BLOCK_SIZE));
+  const b = entityBrightness(l.sky, l.block, 1 - 0.85 * atmosphere.uniforms.stars.value);
+  f.figure.material.color.copy(playerColor(myName)).multiplyScalar(b);
+  f.handMaterial.color.setScalar(b);
+  // What's in hand, as others see it.
+  const held = inventoryUi.enabled && editTool ? editTool.shownInHand : null;
+  if (held !== f.held) {
+    f.hand?.removeFromParent();
+    f.held = held;
+    f.hand = held === null ? null : heldModel(held, f.handMaterial);
+    if (f.hand) f.figure.hand(held === Item.Bow ? 'left' : 'right').add(f.hand);
+  }
+  // Back along the way we look, and up a little; short of anything solid between.
+  const dir = camera.getWorldDirection(new THREE.Vector3());
+  off.copy(dir).multiplyScalar(-THIRD_BACK).add(new THREE.Vector3(0, THIRD_UP, 0));
+  const len = off.length(), along = off.clone().normalize();
+  const hit = raycastVoxels([eye.x * UNITS_PER_METER, eye.y * UNITS_PER_METER, eye.z * UNITS_PER_METER], [along.x, along.y, along.z], len * UNITS_PER_METER, solidAtFor(chunks));
+  if (hit) off.setLength(Math.max(0, hit.distance / UNITS_PER_METER - 0.3));
+  return off;
 }
 
 let lastBoatFrame = performance.now();
@@ -1335,7 +1414,9 @@ renderer.setAnimationLoop(() => {
   // shakes the view, for this frame only.
   const shake = explosions.shake();
   const pose = camera.quaternion.clone();
-  camera.position.add(shake);
+  // Third person: ourselves where we stand, and the camera pulled back behind.
+  const behind = thirdPersonFrame(frameStart, !!downPose);
+  camera.position.add(shake).add(behind);
   if (downPose) {
     camera.position.y -= downPose.drop;
     // (Tumbling: turned over about the level axis across the way you're thrown; then rolled and tipped as you lie.)
@@ -1346,7 +1427,7 @@ renderer.setAnimationLoop(() => {
   if (!worldMap?.showing3d) {
     water.render(scene, camera);
     // What's in hand, over it all (not while knocked down, or with the map's 3D view up).
-    if (editTool && !downPose && !paused && !viewing && editTool.mode !== 'explore') {
+    if (editTool && !downPose && !paused && !viewing && editTool.mode !== 'explore' && !thirdPerson) {
       hand.setItem(inventoryUi.enabled ? editTool.shownInHand : null);
       if (frameStart - handLight.at > 250 && chunks) {
         const p = camera.position, l = lightAt(chunks.lightWorld(), Math.floor((p.x * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.y * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.z * UNITS_PER_METER) / BLOCK_SIZE));
@@ -1356,7 +1437,7 @@ renderer.setAnimationLoop(() => {
       hand.render(renderer);
     }
   }
-  camera.position.sub(shake);
+  camera.position.sub(shake).sub(behind);
   if (downPose) camera.position.y += downPose.drop;
   camera.quaternion.copy(pose);
 
