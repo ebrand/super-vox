@@ -106,7 +106,7 @@ const smooth = (a: number, b: number, x: number) => {
 
 
 describe('the default animation library', () => {
-  it('poses figures as the code did (but the swimming legs: four beats to a stroke; and the knees and bob of a stride, put right)', () => {
+  it('poses figures as the code did (but the swimming legs: four beats to a stroke; walking and running, made over)', () => {
     const lib = defaultAnimations();
     const base: FigureState = { time: 0, stride: 0, speed: 0, airborne: false, swimming: false, flying: false, mining: false, swing: null, draw: null, pitch: 0 };
     const states: FigureState[] = [];
@@ -120,6 +120,8 @@ describe('the default animation library', () => {
       }
     let worst = { d: 0, at: '' };
     for (const s of states) {
+      // (Walking and running: since made over as a gait, feet locked to the ground: see playerFigure.test.)
+      if (!s.swimming && !s.flying && !s.airborne && s.speed > 0) continue;
       const a = legacyPose(s), b = poseFigure(lib, s);
       for (const j of FIGURE_JOINTS) {
         if (s.swimming && /^(leg|knee)/.test(j)) continue;

@@ -63,6 +63,9 @@ export class StepCounter {
   private since = 0;
   private moving = false;
 
+  /** How far a step takes you (m), sprinting or not: the figure's own (half its stride: see strides), else STRIDE's. */
+  constructor(private readonly step: (sprinting: boolean) => number = (sprinting) => (sprinting ? SPRINT_STRIDE : STRIDE)) {}
+
   /** `walked` m along the ground since the last call (0: standing, or in the air); true: a step now. */
   update(walked: number, sprinting: boolean): boolean {
     if (walked <= 1e-4) {
@@ -76,7 +79,7 @@ export class StepCounter {
       return true;
     }
     this.since += walked;
-    const stride = sprinting ? SPRINT_STRIDE : STRIDE;
+    const stride = this.step(sprinting);
     if (this.since < stride) return false;
     this.since -= stride;
     return true;

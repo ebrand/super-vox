@@ -29,7 +29,7 @@ import { WorldMapOverlay, decodeWorldMap } from './worldMap.js';
 import { rememberReturn, startFromParams, takeReturn } from './startAt.js';
 import { InventoryUi } from './inventory.js';
 import { EntityView, FigureMotion, entityBrightness, heldGrip, heldModel } from './entities.js';
-import { PlayerFigure, playerColor, poseFor, setAnimations } from './playerFigure.js';
+import { PlayerFigure, playerColor, poseFor, setAnimations, strides } from './playerFigure.js';
 import { raycastVoxels } from './picking.js';
 import { BoatView } from './boatView.js';
 import { ArrowView } from './arrowView.js';
@@ -154,7 +154,8 @@ const explosions = new ExplosionView(scene, camera);
 const knockdown = new Knockdown();
 /** Footsteps (see footsteps.ts): a step each stride walked, of what's underfoot, wet after rain, crunching in snow. */
 const footsteps = new FootstepSound();
-const stepCounter = new StepCounter();
+// (A footstep each step the figure's legs take: half its stride, walking or running; see strides.)
+const stepCounter = new StepCounter((sprinting) => (sprinting ? strides().run : strides().walk) / 2);
 const footWeather = new FootstepWeather();
 const lastFeet = new THREE.Vector3();
 document.addEventListener('visibilitychange', () => footsteps.pause(document.hidden));

@@ -8,9 +8,7 @@ import {
   ARROW,
   CLIP_IDS,
   SPRINT,
-  SPRINT_STEPS_PER_MINUTE,
   WALK_SPEED,
-  WALK_STEPS_PER_MINUTE,
   FIGURE_JOINTS,
   Item,
   Material,
@@ -27,7 +25,7 @@ import {
   type GripKind,
 } from '@super-vox/shared';
 import { AnimEditor, nearestTurn } from './animEditor.js';
-import { PlayerFigure } from './playerFigure.js';
+import { PlayerFigure, measureStrides } from './playerFigure.js';
 import { heldModel } from './entities.js';
 import { isCubeModel } from './itemModels.js';
 
@@ -73,8 +71,8 @@ const SETTINGS: { key: keyof AnimSettings; name: string; min: number; max: numbe
   { key: 'walkFull', name: 'Full walk at', min: 0.2, max: 5, step: 0.1, unit: 'm/s' },
   { key: 'runFrom', name: 'Run from', min: 1, max: 12, step: 0.1, unit: 'm/s' },
   { key: 'runTo', name: 'Full run at', min: 1, max: 15, step: 0.1, unit: 'm/s' },
-  { key: 'walkStride', name: 'Walk stride', min: 0.4, max: 12, step: 0.05, unit: 'm' },
-  { key: 'runStride', name: 'Run stride', min: 0.4, max: 16, step: 0.05, unit: 'm' },
+  { key: 'walkStride', name: 'Walk stride', min: 0, max: 8, step: 0.05, unit: 'm (0: the feet\'s)' },
+  { key: 'runStride', name: 'Run stride', min: 0, max: 8, step: 0.05, unit: 'm (0: the feet\'s)' },
   { key: 'digSeconds', name: 'Dig swing', min: 0.1, max: 2, step: 0.01, unit: 's' },
   { key: 'flyLean', name: 'Fly lean', min: 0, max: 0.3, step: 0.005, unit: 'rad per m/s' },
   { key: 'flyLeanMax', name: 'Fly lean max', min: 0, max: 1.5, step: 0.05, unit: 'rad' },
@@ -359,11 +357,13 @@ function refresh(all = true): void {
     input('look-chest').value = String(c.look.chest);
     input('look-level').checked = c.look.level;
   }
-  // In game: the legs' steps a minute at walking and sprinting speeds, beside the footsteps heard.
+  // The strides as they'll be (the settings', or the feet's), and the steps a minute they make in game.
+  measured = measureStrides(editor.draft);
   const st = editor.draft.settings, sprint = WALK_SPEED * SPRINT;
+  const strideNote = (set: number, m: number) => (set ? `${set} m (set)` : `${m.toFixed(2)} m (the feet's: no sliding)`);
   $('tempo').textContent =
-    `In game: walking (${WALK_SPEED} m/s) ${Math.round((2 * WALK_SPEED * 60) / st.walkStride)} steps a minute (footsteps: ${WALK_STEPS_PER_MINUTE}); ` +
-    `sprinting (${Math.round(sprint * 100) / 100} m/s) ${Math.round((2 * sprint * 60) / (sprint > st.runFrom ? st.runStride : st.walkStride))} (footsteps: ${SPRINT_STEPS_PER_MINUTE}). "Full walk at" and the run speeds blend the swing in; the strides set the pace.`;
+    `Strides: walking ${strideNote(st.walkStride, measured.walk)}, running ${strideNote(st.runStride, measured.run)}. ` +
+    `In game: walking (${WALK_SPEED} m/s) ${Math.round((2 * WALK_SPEED * 60) / measured.walk)} steps a minute, sprinting (${Math.round(sprint * 100) / 100} m/s) ${Math.round((2 * sprint * 60) / measured.run)}; the footsteps heard keep time with them.`;
   for (const s of SETTINGS) {
     const v = editor.draft.settings[s.key], el = settingInputs.get(s.key)!;
     if (document.activeElement !== el.box) el.box.value = String(v);
@@ -412,7 +412,9 @@ function refresh(all = true): void {
 // --- The timeline: the clip's frames (30 a second of its playing), its keys, the playhead ---
 const FPS = 30;
 /** How long the clip plays (s), and its frames: a loop's last frame is its first again. */
-const clipLong = () => clipSeconds(editor.draft, editor.clip, ARROW.drawMs / 1000);
+const clipLong = () => clipSeconds(editor.draft, editor.clip, ARROW.drawMs / 1000, measured);
+/** The strides the draft's figures walk and run at (see measureStrides): worked out again as it changes. */
+let measured = { walk: 1.6, run: 2.6 };
 const frameCount = () => Math.max(2, Math.round(clipLong() * FPS));
 const timeline = $('timeline');
 function renderTimeline(): void {
@@ -557,6 +559,7 @@ $('play').onclick = () => {
 for (const b of document.querySelectorAll<HTMLButtonElement>('#modes button')) {
   b.onclick = () => {
     mode = b.dataset.mode as 'edit' | 'game';
+    grid.position.z = 0;
     for (const x of document.querySelectorAll<HTMLButtonElement>('#modes button')) x.classList.toggle('on', x === b);
     // (As in game: shown doing the clip picked, and going.)
     if (mode === 'game') {
@@ -660,7 +663,11 @@ renderer.setAnimationLoop(() => {
     // As players will see it: moving as chosen, looking, doing, the time going on.
     if (playing) gameTime += dt;
     const set = editor.draft.settings, moveKind = ($('g-move') as HTMLSelectElement).value, action = ($('g-action') as HTMLSelectElement).value;
-    if (playing) gameStride += (game.speed * dt * 2 * Math.PI) / (game.speed > set.runFrom ? set.runStride : set.walkStride);
+    // (Strides as the game takes them: walking's, running's, between as it speeds up.)
+    const run = Math.max(0, Math.min(1, (game.speed - set.runFrom) / Math.max(0.01, set.runTo - set.runFrom)));
+    if (playing) gameStride += (game.speed * dt * 2 * Math.PI) / (measured.walk + (measured.run - measured.walk) * run);
+    // The ground goes by under it as fast as it's going (on the ground), to see the feet keep to it.
+    if (playing && moveKind === 'ground') grid.position.z = (grid.position.z + game.speed * dt) % 0.25;
     const s: FigureState = {
       time: gameTime,
       stride: gameStride,

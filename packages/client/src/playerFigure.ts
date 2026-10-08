@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
-import { FIGURE_JOINTS, defaultAnimations, poseFigure, type AnimationLibrary, type FigurePose as Pose, type FigureState } from '@super-vox/shared';
+import { FIGURE_JOINTS, defaultAnimations, poseClip, poseFigure, type AnimationLibrary, type FigurePose as Pose, type FigureState } from '@super-vox/shared';
 import manObj from './models/low-poly-man.obj?raw';
 
 /**
@@ -167,6 +167,53 @@ export function animations(): AnimationLibrary {
 /** The server's animation library (it sends it, and again whenever an admin changes it). */
 export function setAnimations(lib: AnimationLibrary): void {
   library = lib;
+}
+
+/**
+ * How far a stride (two steps) of a walk or run clip carries the body with its feet planted (m):
+ * how fast the left foot goes back under the body while it's down (within 2.5 cm of as low as it
+ * goes; the middle half of those moments' speeds, on average, so its coming down and lifting don't count), in metres a
+ * stride. At that stride the body goes forward as fast as a planted foot goes back: no sliding.
+ * Null if the clip never puts a foot down and back.
+ */
+export function lockedStride(lib: AnimationLibrary, clip: 'walk' | 'run', figure = scratchFigure()): number | null {
+  const N = 128, ys: number[] = [], zs: number[] = [];
+  const foot = figure.joints.get('ankleL')!, box = new THREE.Box3();
+  for (let i = 0; i < N; i++) {
+    figure.pose(poseClip(lib, clip, i / N));
+    figure.root.updateMatrixWorld(true);
+    box.setFromObject(foot);
+    ys.push(box.min.y);
+    zs.push((box.min.z + box.max.z) / 2);
+  }
+  const low = Math.min(...ys), speeds: number[] = [];
+  for (let i = 0; i < N; i++) {
+    const j = (i + 1) % N;
+    // (Back is +z: the figure faces -z. Metres a stride: a step of 1/N of one.)
+    // (Down, and going back: not a foot just lifting into its swing forward, still low.)
+    if (ys[i]! < low + 0.025 && ys[j]! < low + 0.025 && zs[j]! > zs[i]!) speeds.push((zs[j]! - zs[i]!) * N);
+  }
+  if (speeds.length < 3) return null;
+  // (The middle half of them, on average: not the moments it's just coming down or lifting.)
+  speeds.sort((a, b) => a - b);
+  const middle = speeds.slice(Math.floor(speeds.length / 4), Math.ceil((speeds.length * 3) / 4));
+  const mean = middle.reduce((t, v) => t + v, 0) / middle.length;
+  return mean > 0.05 ? mean : null;
+}
+let scratch: PlayerFigure | null = null;
+const scratchFigure = () => (scratch ??= new PlayerFigure(0xffffff));
+
+/** The strides (m) a library's figures walk and run at: its settings', or (0) locked to their feet (see lockedStride). */
+export function measureStrides(lib: AnimationLibrary): { walk: number; run: number } {
+  const s = lib.settings;
+  return { walk: s.walkStride || lockedStride(lib, 'walk') || 1.6, run: s.runStride || lockedStride(lib, 'run') || 2.6 };
+}
+const strideCache = new WeakMap<AnimationLibrary, { walk: number; run: number }>();
+/** The strides the animations in play walk and run at (worked out once for each library). */
+export function strides(): { walk: number; run: number } {
+  let st = strideCache.get(library);
+  if (!st) strideCache.set(library, (st = measureStrides(library)));
+  return st;
 }
 
 /** The pose for what a figure's doing, by the animations in play (see poseFigure). */

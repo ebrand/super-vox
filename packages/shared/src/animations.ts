@@ -11,13 +11,11 @@
 import { SPRINT, WALK_SPEED } from './walking.js';
 
 /**
- * Steps a minute walking and sprinting at full pace (the footsteps heard: see the client's
- * footsteps.ts); the strides the legs take by default, to keep time with them (a stride is two steps).
+ * Steps a minute walking and sprinting at full pace, when there's no figure to take them from (the
+ * footsteps heard by default: see the client's footsteps.ts; in the game, the figure's own strides).
  */
 export const WALK_STEPS_PER_MINUTE = 80;
 export const SPRINT_STEPS_PER_MINUTE = 120;
-const WALK_STRIDE = (2 * WALK_SPEED * 60) / WALK_STEPS_PER_MINUTE;
-const SPRINT_STRIDE = (2 * WALK_SPEED * SPRINT * 60) / SPRINT_STEPS_PER_MINUTE;
 
 /** The figure's joints (see the client's PlayerFigure), parents before children. */
 export const FIGURE_JOINTS = [
@@ -63,7 +61,10 @@ export interface AnimSettings {
   walkFull: number;
   runFrom: number;
   runTo: number;
-  /** A full stride (two steps), walking and running (m). */
+  /**
+   * A full stride (two steps), walking and running (m); 0: locked to the feet (as far as a planted
+   * foot of the clip carries the body: see the client's lockedStride), so they don't slide.
+   */
   walkStride: number;
   runStride: number;
   /** A dig's swing, over and over (s). */
@@ -243,10 +244,12 @@ export function poseClip(lib: AnimationLibrary, id: ClipId, t: number, pitch = 0
  * length; a walk or a run, a stride at the game's walking or sprinting speed; a dig, its
  * swing; a bow, a draw (`drawSeconds`); a still pose, a second.
  */
-export function clipSeconds(lib: AnimationLibrary, id: ClipId, drawSeconds: number): number {
+export function clipSeconds(lib: AnimationLibrary, id: ClipId, drawSeconds: number, strides?: { walk: number; run: number }): number {
   const c = lib.clips[id], s = lib.settings;
   if (c.driver === 'time') return c.length ?? 1;
-  if (c.driver === 'stride') return id === 'run' ? s.runStride / (WALK_SPEED * SPRINT) : s.walkStride / WALK_SPEED;
+  // (The strides as they'll be: given, worked out from the feet; else the settings', when they're set.)
+  const walk = strides?.walk ?? (s.walkStride || 1.6), run = strides?.run ?? (s.runStride || 2.6);
+  if (c.driver === 'stride') return id === 'run' ? run / (WALK_SPEED * SPRINT) : walk / WALK_SPEED;
   if (c.driver === 'swing') return s.digSeconds;
   if (c.driver === 'draw') return drawSeconds;
   return 1;
@@ -266,30 +269,61 @@ function around(n: number, f: (t: number) => [number, number, number]): AnimKey[
 const still = (turn: [number, number, number]): AnimKey[] => [{ at: 0, turn }];
 const TAU = 2 * Math.PI;
 
-/** A walk (0) or a run (1): legs swing (knees bending as each comes forward), arms the other way, a step's bob. */
+/**
+ * A walk (0) or a run (1), from a foot coming down (the left, its leg forward): each leg goes back
+ * steadily while its foot is down (the walk: most of the stride, both feet down at the change; the
+ * run: under two fifths, both off the ground between), then swings forward quickly, its knee bent
+ * and toes up; the arms the other way. The hips drop at the ends of a step just enough to keep the
+ * planted foot on the ground (the leg's a little shorter, slanted), and lift a little in the air.
+ * Even back-going feet: a stride locked to them doesn't slide (see the client's lockedStride).
+ */
 function stride(run: number): AnimClip {
-  const swing = 0.45 + 0.35 * run, knee = 0.7 + 0.35 * run, N = 16;
-  const sin = (t: number) => Math.sin(t * TAU), cos = (t: number) => Math.cos(t * TAU);
+  const N = 32, lean = -0.22 * run;
+  /** How long a foot's down (of a stride), how far its leg's slanted at the ends of that (radians, to the ground), how far it reaches back and forward in its swing. */
+  const down = run ? 0.25 : 0.6, slant = run ? 0.5 : 0.45, reachBack = run ? 0.85 : slant, reachFwd = run ? 0.75 : slant;
+  const kneeSwing = 0.7 + 0.35 * run;
+  /** The leg (hip to sole, m, the man's). */
+  const LEG = 0.88;
+  const ease = (a: number, b: number, f: number) => a + (b - a) * (1 - Math.cos(Math.PI * f)) / 2;
+  const swingOf = (u: number) => (u - down) / (1 - down);
+  /** The leg's slant from straight down (to the ground: forward +), u of the way through its stride from coming down. */
+  const slantAt = (u: number) => {
+    if (u < down) return slant - (2 * slant * u) / down;
+    const f = swingOf(u);
+    // Walking: forward again at once. Running: on back a little (the push), right forward, down.
+    if (!run) return ease(-slant, slant, f);
+    if (f < 0.2) return ease(-slant, -reachBack, f / 0.2);
+    if (f < 0.8) return ease(-reachBack, reachFwd, (f - 0.2) / 0.6);
+    return ease(reachFwd, slant, (f - 0.8) / 0.2);
+  };
+  // (The body leans: the leg turns from it as much the other way, to be as slanted to the ground.)
+  const leg = (u: number) => slantAt(u) - lean;
+  const knee = (u: number) => (u < down ? -0.15 : -0.15 - kneeSwing * Math.sin(Math.PI * swingOf(u)));
+  const ankle = (u: number) => (u < down ? 0 : 0.2 * Math.sin(Math.PI * swingOf(u)));
+  const L = (t: number) => t, R = (t: number) => (t + 0.5) % 1;
+  /** Down as far as a slanted planted leg's short of straight; in the air (running), up and down again. */
+  const lift = (t: number) => {
+    const drops = [L(t), R(t)].filter((u) => u < down).map((u) => LEG * (1 - Math.cos(slantAt(u))));
+    if (drops.length) return -Math.max(...drops);
+    const end = LEG * (1 - Math.cos(slant)), u = L(t) < 0.5 ? L(t) : R(t);
+    return -end + (end + 0.05) * Math.sin((Math.PI * (u - down)) / (0.5 - down));
+  };
   return {
     driver: 'stride',
     smooth: true,
     joints: {
-      legL: around(N, (t) => [swing * sin(t), 0, 0]),
-      legR: around(N, (t) => [-swing * sin(t), 0, 0]),
-      // (A knee bends as its leg swings forward, the foot off the ground: the left's swinging
-      // forward while cos > 0, the right's while cos < 0. Straight-ish as it pushes back.)
-      kneeL: around(N, (t) => [-knee * Math.max(0, cos(t)) - 0.15, 0, 0]),
-      kneeR: around(N, (t) => [-knee * Math.max(0, -cos(t)) - 0.15, 0, 0]),
-      ankleL: around(N, (t) => [0.2 * Math.max(0, cos(t)), 0, 0]),
-      ankleR: around(N, (t) => [0.2 * Math.max(0, -cos(t)), 0, 0]),
-      shoulderL: around(N, (t) => [-swing * 0.8 * sin(t), 0, -0.08]),
-      shoulderR: around(N, (t) => [swing * 0.8 * sin(t), 0, 0.08]),
+      legL: around(N, (t) => [leg(L(t)), 0, 0]),
+      legR: around(N, (t) => [leg(R(t)), 0, 0]),
+      kneeL: around(N, (t) => [knee(L(t)), 0, 0]),
+      kneeR: around(N, (t) => [knee(R(t)), 0, 0]),
+      ankleL: around(N, (t) => [ankle(L(t)), 0, 0]),
+      ankleR: around(N, (t) => [ankle(R(t)), 0, 0]),
+      shoulderL: around(N, (t) => [-0.8 * slantAt(L(t)), 0, -0.08]),
+      shoulderR: around(N, (t) => [-0.8 * slantAt(R(t)), 0, 0.08]),
       elbowL: still([0.25 + 0.9 * run, 0, 0]),
       elbowR: still([0.25 + 0.9 * run, 0, 0]),
     },
-    // A step's bob: walking, lowest with the legs apart (both feet down) and highest as they pass;
-    // running, highest in the air (legs apart) and lowest as they pass (a foot down).
-    body: Array.from({ length: N }, (_, i) => ({ at: i / N, lean: -0.22 * run, lift: run ? -0.05 * Math.abs(cos(i / N)) : -0.02 * Math.abs(sin(i / N)) })),
+    body: Array.from({ length: N }, (_, i) => ({ at: i / N, lean, lift: lift(i / N) })),
     look: { head: 0.6, chest: 0.15, level: true },
   };
 }
@@ -363,7 +397,7 @@ export function defaultAnimations(): AnimationLibrary {
         },
       },
     },
-    settings: { walkFull: 1.5, runFrom: 4.6, runTo: 5.6, walkStride: Math.round(WALK_STRIDE * 100) / 100, runStride: Math.round(SPRINT_STRIDE * 100) / 100, digSeconds: 0.32, flyLean: 0.03, flyLeanMax: 0.5 },
+    settings: { walkFull: 1.5, runFrom: 4.6, runTo: 5.6, walkStride: 0, runStride: 0, digSeconds: 0.32, flyLean: 0.03, flyLeanMax: 0.5 },
     grips: {
       tool: { hand: 'right', at: [0, 0.06, -0.17], turn: [0, Math.PI / 2, 0], scale: 0.5 },
       block: { hand: 'right', at: [0, -0.15, -0.04], turn: [0, 0, 0], scale: 0.2 },

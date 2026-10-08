@@ -126,3 +126,12 @@ describe('stepSound', () => {
     expect((performance.now() - t) / 20).toBeLessThan(15);
   });
 });
+
+describe("StepCounter with the figure's strides", () => {
+  it("steps as often as the figure's legs do (half a stride a step)", () => {
+    const c = new StepCounter((sprinting) => (sprinting ? 3.8 : 1.28) / 2);
+    let n = 0;
+    for (let i = 0; i < 100; i++) if (c.update(0.1, false)) n++;
+    expect(n).toBe(1 + Math.floor((10 - 0.1) / 0.64));
+  });
+});

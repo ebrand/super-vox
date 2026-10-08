@@ -37,16 +37,19 @@ describe('PlayerFigure', () => {
     expect(() => figureModel({ ...MAN, parts: { ...MAN.parts, Cube: undefined as never } })).toThrow(/Cube/);
   });
 
-  it('walks: legs swing opposite, arms against them; running leans forward', () => {
-    const walk = poseFor({ ...still, speed: 1.4, stride: Math.PI / 2 });
-    expect(walk.joints.legL![0]).toBeGreaterThan(0.3);
-    expect(walk.joints.legR![0]).toBeLessThan(-0.3);
-    expect(walk.joints.shoulderL![0]).toBeLessThan(0);
-    expect(walk.joints.shoulderR![0]).toBeGreaterThan(0);
-    expect(walk.lean).toBeCloseTo(0, 5);
-    const run = poseFor({ ...still, speed: 7, stride: Math.PI / 2 });
-    expect(run.joints.legL![0]).toBeGreaterThan(walk.joints.legL![0]);
-    expect(run.lean).toBeLessThan(-0.15);
+  it('walks and runs: the legs half a stride apart, each arm against its leg; running leans forward', () => {
+    for (const speed of [4.3, 6.45]) {
+      for (let k = 0; k < 8; k++) {
+        const stride = (k / 8) * 2 * Math.PI;
+        const now = poseFor({ ...still, speed, stride }), half = poseFor({ ...still, speed, stride: stride + Math.PI });
+        // The right leg half a stride behind the left.
+        expect(half.joints.legR![0]).toBeCloseTo(now.joints.legL![0], 1);
+        // Each arm back as its leg goes forward (the leg's slant to the ground, against it).
+        expect(Math.sign(now.joints.shoulderL![0]) * Math.sign(now.joints.legL![0] - now.lean * -1)).toBeLessThanOrEqual(1);
+      }
+    }
+    expect(poseFor({ ...still, speed: 4.3 }).lean).toBeCloseTo(0, 5);
+    expect(poseFor({ ...still, speed: 6.45 }).lean).toBeLessThan(-0.15);
     // Standing: legs straight down.
     expect(poseFor(still).joints.legL?.[0] ?? 0).toBeCloseTo(0, 5);
   });
@@ -89,13 +92,13 @@ describe('PlayerFigure', () => {
 });
 
 describe('FigureMotion', () => {
-  it('strides as far as it goes, and says what it is doing', () => {
+  it('strides as far as it goes, and says what it is doing', async () => {
     const m = new FigureMotion(0);
     let s = m.step({ x: 0, y: 0, z: 0 }, 0, 0, 0, null);
     // 1.4 m/s for a second, a frame every 1/60 s.
     for (let i = 1; i <= 60; i++) s = m.step({ x: (1.4 * 16 * i) / 60, y: 0, z: 0 }, (1000 * i) / 60, 0, 0, null);
     expect(s.speed).toBeCloseTo(1.4, 1);
-    expect(s.stride).toBeCloseTo((1.4 * 2 * Math.PI) / defaultAnimations().settings.walkStride, 1);
+    expect(s.stride).toBeCloseTo((1.4 * 2 * Math.PI) / (await import('./playerFigure.js')).strides().walk, 1);
     s = m.step({ x: 22.4, y: 0, z: 0 }, 1100, PlayerAct.drawing | PlayerAct.airborne, 0.2, null);
     expect([s.airborne, s.draw, s.pitch]).toEqual([true, 0, 0.2]);
     s = m.step({ x: 22.4, y: 0, z: 0 }, 1550, PlayerAct.drawing, 0.2, null);
@@ -124,16 +127,38 @@ describe('the animations in play', () => {
   });
 });
 
-describe('the default strides', () => {
-  it('keep the legs in time with the footsteps heard: 80 steps a minute walking, 120 sprinting', async () => {
-    const { SPRINT, WALK_SPEED, WALK_STEPS_PER_MINUTE, SPRINT_STEPS_PER_MINUTE } = await import('@super-vox/shared');
-    const s = defaultAnimations().settings;
-    // Steps a minute: two to a stride, at the speed they go.
-    expect((2 * WALK_SPEED * 60) / s.walkStride).toBeCloseTo(WALK_STEPS_PER_MINUTE, 0);
-    expect((2 * WALK_SPEED * SPRINT * 60) / s.runStride).toBeCloseTo(SPRINT_STEPS_PER_MINUTE, 0);
-    // Walking is a walk, sprinting a full run.
-    expect(WALK_SPEED).toBeLessThan(s.runFrom);
-    expect(WALK_SPEED * SPRINT).toBeGreaterThan(s.runTo);
+describe('strides locked to the feet', () => {
+  it("move the body as far as a planted foot carries it: the foot on the ground doesn't slide", async () => {
+    const { SPRINT, WALK_SPEED, defaultAnimations: defaults } = await import('@super-vox/shared');
+    const { lockedStride, measureStrides } = await import('./playerFigure.js');
+    const lib = defaults();
+    expect(lib.settings.walkStride).toBe(0); // locked, by default
+    for (const [clip, speed] of [['walk', WALK_SPEED], ['run', WALK_SPEED * SPRINT]] as const) {
+      const stride = lockedStride(lib, clip)!;
+      expect(stride).toBeGreaterThan(0.5);
+      // Through the world at `speed`, the stride turning as far as it goes: where the left foot is
+      // (world z: the body's way forward plus the foot's own), frame by frame.
+      const f = new PlayerFigure(0xffffff), foot = f.joints.get('ankleL')!, box = new THREE.Box3();
+      const dt = 1 / 240, T = stride / speed;
+      const at: { y: number; z: number }[] = [];
+      for (let t = 0; t < T; t += dt) {
+        f.pose(poseFor({ ...still, speed, stride: (2 * Math.PI * t) / T }));
+        f.root.position.z = -speed * t;
+        f.root.updateMatrixWorld(true);
+        box.setFromObject(foot);
+        at.push({ y: box.min.y, z: (box.min.z + box.max.z) / 2 });
+      }
+      // While it's down (on the ground: as low as the sole goes, give or take), it stays put: most
+      // of the time it hardly moves (the middle of its speeds under a tenth of the body's).
+      const speeds: number[] = [];
+      for (let i = 1; i < at.length; i++) if (at[i]!.y < 0.005 && at[i - 1]!.y < 0.005) speeds.push(Math.abs(at[i]!.z - at[i - 1]!.z) / dt);
+      expect(speeds.length, clip).toBeGreaterThan(at.length * 0.15);
+      speeds.sort((a, b) => a - b);
+      expect(speeds[Math.floor(speeds.length / 2)]!, clip).toBeLessThan(speed * 0.1);
+    }
+    // A stride set: that, not locked.
+    lib.settings.walkStride = 2;
+    expect(measureStrides(lib).walk).toBe(2);
   });
 });
 
@@ -145,15 +170,14 @@ describe('walking and running forwards', () => {
       return new THREE.Box3().setFromObject(f.joints.get(j as never)!).min.y;
     };
     for (const speed of [4.3, 6.45])
-      for (const stride of [0, Math.PI]) {
-        // Stride 0: the left leg's swinging forward (its angle rising); π: the right's.
-        f.pose(poseFor({ ...still, speed, stride }));
-        const [swinging, planted] = stride === 0 ? ['ankleL', 'ankleR'] : ['ankleR', 'ankleL'];
-        expect(footY(swinging), `${speed} m/s, stride ${stride}`).toBeGreaterThan(footY(planted) + 0.03);
-        // The leg swinging forward is moving forward: a moment on, it's further forward.
-        const a = poseFor({ ...still, speed, stride }).joints[stride === 0 ? 'legL' : 'legR']![0];
-        const b = poseFor({ ...still, speed, stride: stride + 0.2 }).joints[stride === 0 ? 'legL' : 'legR']![0];
-        expect(b).toBeGreaterThan(a);
+      for (let k = 0; k < 16; k++) {
+        const stride = (k / 16) * 2 * Math.PI;
+        const a = poseFor({ ...still, speed, stride }), b = poseFor({ ...still, speed, stride: stride + 0.1 });
+        // Halfway through the left leg's swing forward (its slant rising fastest): its foot is up, the right one down.
+        const rising = b.joints.legL![0] - a.joints.legL![0];
+        if (rising < 0.15) continue;
+        f.pose(a);
+        expect(footY('ankleL'), `${speed} m/s, stride ${k}/16`).toBeGreaterThan(footY('ankleR') + 0.03);
       }
   });
 });

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ARROW, Item, MOBS, PlayerAct, UNITS_PER_METER, deltaX, gripKind, type EntityKind, type EntitySnapshot, type Grip, type WorldConfig } from '@super-vox/shared';
 import { isCubeModel, itemGeometry } from './itemModels.js';
 import { SWING_S } from './heldItem.js';
-import { FIGURE_HEIGHT, PlayerFigure, animations, playerColor, poseFor, type FigureState } from './playerFigure.js';
+import { FIGURE_HEIGHT, PlayerFigure, animations, playerColor, poseFor, strides, type FigureState } from './playerFigure.js';
 
 /**
  * How bright something is (0..1) with sky light `sky` and torchlight `block` (0..15) where it
@@ -73,9 +73,11 @@ export class FigureMotion {
       const d = Math.hypot(at.x - this.last.x, at.z - this.last.z) / UNITS_PER_METER;
       // (Eased: snapshots come ten times a second, frames many more.)
       this.speed += (Math.min(20, d / dt) - this.speed) * Math.min(1, dt * 8);
-      // A full stride (two steps) every so far walking, further running (see the animations' settings).
-      const set = animations().settings;
-      this.stride += (d * 2 * Math.PI) / (this.speed > set.runFrom ? set.runStride : set.walkStride);
+      // A full stride (two steps) every so far: walking's, running's, between them as it speeds up
+      // (see strides: the feet don't slide).
+      const set = animations().settings, st = strides();
+      const run = Math.max(0, Math.min(1, (this.speed - set.runFrom) / Math.max(0.01, set.runTo - set.runFrom)));
+      this.stride += (d * 2 * Math.PI) / (st.walk + (st.run - st.walk) * run);
     }
     this.last = { ...at };
     this.lastAt = now;
