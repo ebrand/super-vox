@@ -317,6 +317,34 @@ describe('EditTool breaking', () => {
   });
 });
 
+describe('EditTool placing (hybrid)', () => {
+  it("says what size a click places (matching the face aimed at), and why it won't fit", () => {
+    (globalThis as { window?: EventTarget }).window = new EventTarget();
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    chunk.blocks[blockIndex(0, 0, 0)] = { kind: 'uniform', size: 16, material: Material.Stone };
+    const chunks = { chunkAt: (c: { cx: number; cy: number; cz: number }) => (c.cx === 0 && c.cy === 0 && c.cz === 0 ? chunk : emptyChunk(c)) } as unknown as ChunkManager;
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(0.5, 3, 0.5);
+    camera.lookAt(0.5, 0, 0.5);
+    camera.updateMatrixWorld();
+    let held: number | null = Material.Dirt;
+    const tool = new EditTool(new THREE.Scene(), camera, chunks, () => {}, () => held);
+    tool.update();
+    // On top of a 1 m block: 1 m, and there's room.
+    expect(tool.placing).toEqual({ size: 16, why: '' });
+    // Something small where it'd go: what, and how big.
+    chunk.blocks[blockIndex(0, 1, 0)] = blockFromVoxels([{ x: 12, y: 0, z: 12, size: 4, material: Material.Planks }]);
+    tool.update();
+    expect(tool.placing).toEqual({ size: 16, why: '1/4 m of planks is in the way' });
+    // Not a block in hand: nothing said.
+    held = Item.StoneSword;
+    tool.update();
+    expect(tool.placing).toBeNull();
+    tool.dispose();
+    delete (globalThis as { window?: EventTarget }).window;
+  });
+});
+
 describe('EditTool TNT', () => {
   it('lights TNT with a click in hybrid (and never mines it, even in survival)', () => {
     (globalThis as { window?: EventTarget }).window = new EventTarget();

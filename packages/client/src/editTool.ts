@@ -189,6 +189,16 @@ export class EditTool {
     return !!design && (isBed(design) || isStationKind(objectStation(design)) || usable(design));
   }
 
+  /**
+   * Hybrid, a block in hand: the size a click would place (picked to match the voxel aimed at, or
+   * chosen with ⌘+wheel), and why it wouldn't fit, if it wouldn't; null otherwise.
+   */
+  get placing(): { size: number; why: string } | null {
+    const held = this.materialOf();
+    if (this.mode !== 'hybrid' || !this.placement || held === null || !isBlock(held) || !canPlace(held, this.survival ? 'survival' : 'creative')) return null;
+    return { size: this.placement.size, why: this.placement.valid ? '' : this.placement.reason };
+  }
+
   /** Whether something's being mined (survival, the button held). */
   get miningNow(): boolean {
     return this.mining !== null;
@@ -763,7 +773,7 @@ export class EditTool {
 
   private place(): void {
     if (!this.placement) return;
-    if (!this.placement.valid) return this.say(`can't place: ${this.placement.reason}`);
+    if (!this.placement.valid) return this.say(`can't place ${sizeLabel(this.placement.size)}: ${this.placement.reason}`);
     const { x, y, z, size } = this.placement;
     const material = this.material;
     if (!material) {
@@ -974,7 +984,11 @@ export class EditTool {
         for (let x = b.x; x < b.x + b.size; x++) {
           const s = this.solidAt(x, y, z);
           if (s === undefined) return 'not loaded yet';
-          if (s) return 'space is occupied';
+          if (s) {
+            // (What's in the way, and how big: why it doesn't fit.)
+            const v = this.voxelBox([x, y, z]);
+            return v ? `${sizeLabel(v.size)} of ${materialName(v.material)} is in the way` : 'space is occupied';
+          }
         }
       }
     }

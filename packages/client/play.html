@@ -28,6 +28,9 @@
       #mode[data-mode="place"] { border-left-color: #40ff60; }
       #mode:empty { display: none; }
       /* The size chosen (see main.ts): under the crosshair for a moment after it changes. */
+      /* Hybrid, a block in hand: the size a click places, just under the crosshair (red, with why, if it won't fit). */
+      #place-size { position: fixed; left: 50%; top: calc(50% + 30px); transform: translateX(-50%); z-index: 5; pointer-events: none; font: 600 11px ui-monospace, monospace; color: #fff; text-shadow: 0 1px 2px #000, 0 0 2px #000; white-space: nowrap; }
+      #place-size.bad { color: #ff8a80; }
       #size-badge {
         position: fixed; left: 50%; top: calc(50% + 34px); transform: translateX(-50%);
         display: flex; align-items: center; gap: 8px; padding: 4px 10px;
@@ -191,6 +194,7 @@
     </dialog>
     <div id="crosshair"></div>
     <div id="size-badge"><span></span><span></span></div>
+    <div id="place-size" hidden></div>
     <div id="note"></div>
     <div id="mining" hidden></div>
     <div id="mode"></div>

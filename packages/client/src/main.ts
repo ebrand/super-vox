@@ -1186,6 +1186,18 @@ setInterval(() => {
   tiles.retireCovered(covered, STALE_MAX_MS);
 }, 500);
 
+/** The size a click places (hybrid, a block in hand), under the crosshair; red, with why, when it won't fit (see EditTool.placing). */
+const placeSizeEl = document.getElementById('place-size')!;
+let placeSizeShown = '';
+function showPlaceSize(p: { size: number; why: string } | null): void {
+  const text = p ? (p.why ? `${sizeLabel(p.size)}: ${p.why}` : `places ${sizeLabel(p.size)}`) : '';
+  if (text === placeSizeShown) return;
+  placeSizeShown = text;
+  placeSizeEl.hidden = !p;
+  placeSizeEl.textContent = text;
+  placeSizeEl.classList.toggle('bad', !!p?.why);
+}
+
 let lastBoatFrame = performance.now();
 let handDt = 0;
 renderer.setAnimationLoop(() => {
@@ -1207,6 +1219,7 @@ renderer.setAnimationLoop(() => {
   chunks?.setViewY(camera.position.y * UNITS_PER_METER);
   updateLod();
   if (!paused) editTool?.update();
+  showPlaceSize(paused ? null : (editTool?.placing ?? null));
   compassRose.update(controls.yaw);
   entities?.frame();
   boats?.frame(Math.min(0.25, (frameStart - lastBoatFrame) / 1000));
