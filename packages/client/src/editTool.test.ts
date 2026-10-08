@@ -82,8 +82,8 @@ describe('EditTool mining (survival)', () => {
   let tool: EditTool;
   let sent: { type: string; [k: string]: unknown }[];
   let now = 0;
-  /** What's in hand. */
-  let held: number | null = Material.Stone;
+  /** What's in hand (nothing: a bare hand). */
+  let held: number | null = null;
   const stone = emptyChunk({ cx: 0, cy: 0, cz: 0 });
   stone.blocks[blockIndex(0, 0, 0)] = { kind: 'uniform', size: 16, material: Material.Stone };
 
@@ -97,7 +97,7 @@ describe('EditTool mining (survival)', () => {
     camera.lookAt(0.5, 0, 0.5);
     camera.updateMatrixWorld();
     sent = [];
-    held = Material.Stone;
+    held = null;
     tool = new EditTool(new THREE.Scene(), camera, chunks, (m) => sent.push(m as never), () => held);
     tool.survival = true;
   });
@@ -130,6 +130,28 @@ describe('EditTool mining (survival)', () => {
     for (now = 10100; now <= 20000; now += 500) tool.update();
     expect(edits().length).toBe(1);
     expect(sent.filter((m) => m.type === 'mine').length).toBe(mines);
+  });
+
+  it('breaks only with a tool or a bare hand (not a sword, food or a block), outlining only what what is in hand can work on', () => {
+    const outline = () => (tool as unknown as { outline: THREE.Object3D }).outline.visible;
+    for (const [what, item, breaks, outlined] of [
+      ['a sword', Item.StoneSword, false, false],
+      ['cooked pork', Item.CookedPork, false, false],
+      ['a bow', Item.Bow, false, false],
+      ['a block (placed against it)', Material.Dirt, false, true],
+      ['a pickaxe', Item.WoodenPickaxe, true, true],
+      ['nothing', null, true, true],
+    ] as const) {
+      sent.length = 0;
+      held = item;
+      now += 100_000;
+      tool.update();
+      expect(outline(), what).toBe(outlined);
+      tool.click(0, { meta: false, alt: false });
+      tool.update();
+      expect(sent.some((m) => m.type === 'mine'), what).toBe(breaks);
+      tool.release(0);
+    }
   });
 
   it('stops when the button is let go, and starts again from nothing', () => {

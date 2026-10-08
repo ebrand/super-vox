@@ -10,6 +10,7 @@ import {
   breakSizesFor,
   editMiningTime,
   isTool,
+  canPlace,
   canHarvest,
   pickaxeTierFor,
   BIG_BOX_SIZES,
@@ -159,6 +160,33 @@ export class EditTool {
   /** How far the bow in hand is drawn (0..1), if it's being drawn. */
   get bowDraw(): number | null {
     return this.drawnAt === null ? null : drawCharge(performance.now() - this.drawnAt);
+  }
+
+  /**
+   * Whether what's in hand breaks voxels (and takes down objects and boats), in hybrid: a pickaxe,
+   * an axe, a shovel, or nothing (a bare hand: a new survival player has no tools). Anything else
+   * (a sword, food, a bow, a block...) doesn't.
+   */
+  get breaks(): boolean {
+    const held = this.materialOf();
+    return held === null || isTool(held);
+  }
+
+  /**
+   * Whether the voxel aimed at is outlined (hybrid): when what's in hand can do something to it or
+   * against it (break it; place a block, an object, a torch there; a bucket, a hammer, a boat), or
+   * it's something anything can (light an explosive; cut leaves with a sword; open a door, a gate,
+   * a design that changes, a station or a bed). Not with a sword at stone, or pork, say.
+   */
+  private outlined(): boolean {
+    if (this.mode !== 'hybrid' || this.breaks) return true;
+    const held = this.materialOf()!;
+    const m = this.targetMaterial;
+    if (held === Item.Bucket || held === Item.Boat || held === Item.GeologistsHammer) return true;
+    if (isBlock(held) ? canPlace(held, this.survival ? 'survival' : 'creative') : objectKindOf(held) !== null || !!designOfItem(held)) return true;
+    if (m !== null && (isExplosive(m) || isUsableMaterial(m) || (isSword(held) && LEAVES.has(m)))) return true;
+    const design = this.aimedDesign();
+    return !!design && (isBed(design) || isStationKind(objectStation(design)) || usable(design));
   }
 
   /** Whether something's being mined (survival, the button held). */
@@ -485,7 +513,7 @@ export class EditTool {
         }
       }
     }
-    this.show(this.outline, this.target, 1.004);
+    this.show(this.outline, this.outlined() ? this.target : null, 1.004);
     this.showDesignPreview();
     // Hybrid previews only while Command is held (when choosing a size), like Minecraft otherwise.
     const preview = this.mode === 'place' || (this.mode === 'hybrid' && this.modifiers.meta);
@@ -514,7 +542,7 @@ export class EditTool {
       }
       // A boat in reach, nearer than the voxel aimed at: right-click gets in, left-click takes it.
       const boat = this.aimedBoat();
-      if (boat && (button === 0 || button === 2)) {
+      if (boat && (button === 2 || (button === 0 && this.breaks))) {
         const id = this.nextId++;
         if (button === 2) {
           this.pending.set(id, 'getting in');
@@ -543,7 +571,8 @@ export class EditTool {
         // A geologist's hammer taps what it's aimed at, and names it, instead of mining it.
         else if (held === Item.GeologistsHammer) {
           if (this.target && this.targetMaterial !== null) this.tap(this.targetMaterial);
-        } else if (this.survival) this.miningHeld = true; // (mined as it's held: see stepMining)
+        } else if (!this.breaks) return; // (only a tool, or a bare hand, breaks things)
+        else if (this.survival) this.miningHeld = true; // (mined as it's held: see stepMining)
         else this.remove();
       } else if (button === 2) {
         // Right-click: with a bucket, fills it at water or pours it out; makes a bed ours; opens and
@@ -718,7 +747,10 @@ export class EditTool {
     if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && this.mode === 'hybrid') this.say('hybrid: hold ⌘ and turn the wheel to choose a size');
     else if (e.code === 'BracketLeft') this.stepSize(-1, false);
     else if (e.code === 'BracketRight') this.stepSize(1, false);
-    else if (e.code === 'KeyX') this.remove();
+    else if (e.code === 'KeyX') {
+      if (this.mode !== 'hybrid' || this.breaks) this.remove();
+      else this.say('hold a pickaxe, an axe or a shovel (or nothing) to break things');
+    }
     else if (e.code === 'KeyB' && this.target) {
       if (!breakSizesFor(this.target.size).includes(this.size)) {
         const options = breakSizesFor(this.target.size).map(sizeLabel).join(', ') || 'nothing smaller';
@@ -859,6 +891,7 @@ export class EditTool {
     if (this.mode === 'dig' && this.dig) return { op: 'removeBox', x: this.dig.x, y: this.dig.y, z: this.dig.z, size: this.dig.size };
     if (this.mode === 'place' || !this.target) return null;
     if (this.mode === 'hybrid' && this.targetMaterial !== null && isExplosive(this.targetMaterial)) return null; // (lit, not mined)
+    if (this.mode === 'hybrid' && !this.breaks) return null;
     const held = this.materialOf();
     if (held !== null && isSword(held) && this.targetMaterial !== null && LEAVES.has(this.targetMaterial)) return null;
     return { op: 'remove', x: this.target.x, y: this.target.y, z: this.target.z };
