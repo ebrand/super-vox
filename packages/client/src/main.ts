@@ -1246,8 +1246,8 @@ let lastPose = '';
 setInterval(() => {
   if (!world) return;
   const p = camera.position;
-  // (With what's in hand, and how many swings: others see it.)
-  const held = inventoryUi.enabled ? inventoryUi.material : null;
+  // (With what's in hand, as we see it (see shownInHand), and how many swings: others see it.)
+  const held = inventoryUi.enabled && editTool ? editTool.shownInHand : null;
   const pose = { type: 'pose' as const, x: Math.round(p.x * UNITS_PER_METER), y: Math.round(p.y * UNITS_PER_METER), z: Math.round(p.z * UNITS_PER_METER), yaw: Math.round(controls.yaw * 1000) / 1000, ...(held !== null ? { held } : {}), swings };
   const key = `${pose.x},${pose.y},${pose.z},${pose.yaw},${held},${swings}`;
   if (key === lastPose) return;
@@ -1346,7 +1346,7 @@ renderer.setAnimationLoop(() => {
     water.render(scene, camera);
     // What's in hand, over it all (not while knocked down, or with the map's 3D view up).
     if (editTool && !downPose && !paused && !viewing && editTool.mode !== 'explore') {
-      hand.setItem(inventoryUi.enabled ? inventoryUi.material : null);
+      hand.setItem(inventoryUi.enabled ? editTool.shownInHand : null);
       if (frameStart - handLight.at > 250 && chunks) {
         const p = camera.position, l = lightAt(chunks.lightWorld(), Math.floor((p.x * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.y * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.z * UNITS_PER_METER) / BLOCK_SIZE));
         handLight = { at: frameStart, brightness: entityBrightness(l.sky, l.block, 1 - 0.85 * atmosphere.uniforms.stars.value) };

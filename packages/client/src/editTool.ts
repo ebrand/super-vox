@@ -106,6 +106,8 @@ const floorDiv = (v: number, m: number) => Math.floor(v / m);
 /** What a sword cuts. */
 const LEAVES = new Set<number>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves]);
 const mod = (v: number, m: number) => ((v % m) + m) % m;
+/** Weapons: shown in hand and used as weapons in every mode (see shownInHand, breaks). */
+const isWeapon = (item: ItemId) => isSword(item) || item === Item.Bow;
 /** Most faces a build's preview draws (more: just the box round its cells). */
 const BUILD_PREVIEW_FACES = 120_000;
 
@@ -179,13 +181,24 @@ export class EditTool {
   }
 
   /**
-   * Whether what's in hand breaks voxels (and takes down objects and boats), in hybrid: a pickaxe,
-   * an axe, a shovel, or nothing (a bare hand: a new survival player has no tools). Anything else
-   * (a sword, food, a bow, a block...) doesn't.
+   * Whether what's in hand breaks voxels (and takes down objects and boats), in hybrid: anything
+   * but a weapon (it's broken by hand, whatever's selected; in survival, as fast as the tool
+   * selected mines it, though it isn't shown).
    */
   get breaks(): boolean {
     const held = this.materialOf();
-    return held === null || isTool(held);
+    return held === null || !isWeapon(held);
+  }
+
+  /**
+   * What's drawn in your hand: what's selected; but in hybrid only a weapon (blocks are placed and
+   * voxels broken by hand, nothing shown); in explore, nothing.
+   */
+  get shownInHand(): ItemId | null {
+    const held = this.materialOf();
+    if (this.mode === 'explore') return null;
+    if (this.mode === 'hybrid') return held !== null && isWeapon(held) ? held : null;
+    return held;
   }
 
   /**
@@ -657,7 +670,7 @@ export class EditTool {
         // A geologist's hammer taps what it's aimed at, and names it, instead of mining it.
         else if (held === Item.GeologistsHammer) {
           if (this.target && this.targetMaterial !== null) this.tap(this.targetMaterial);
-        } else if (!this.breaks) return; // (only a tool, or a bare hand, breaks things)
+        } else if (!this.breaks) return; // (a weapon doesn't break things)
         else if (this.survival) this.miningHeld = true; // (mined as it's held: see stepMining)
         else this.remove();
       } else if (button === 2) {
@@ -1079,7 +1092,7 @@ export class EditTool {
     else if (e.code === 'BracketRight') this.stepSize(1, false);
     else if (e.code === 'KeyX') {
       if (this.mode !== 'hybrid' || this.breaks) this.remove();
-      else this.say('hold a pickaxe, an axe or a shovel (or nothing) to break things');
+      else this.say("a weapon doesn't break things: pick something else (or nothing)");
     }
     else if (e.code === 'KeyB' && this.target) {
       if (!breakSizesFor(this.target.size).includes(this.size)) {

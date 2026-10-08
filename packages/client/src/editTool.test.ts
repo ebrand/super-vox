@@ -133,16 +133,17 @@ describe('EditTool mining (survival)', () => {
     expect(sent.filter((m) => m.type === 'mine').length).toBe(mines);
   });
 
-  it('breaks only with a tool or a bare hand (not a sword, food or a block), outlining only what what is in hand can work on', () => {
+  it('breaks by hand with anything but a weapon (shown in hand: only a weapon), outlining only what what is in hand can work on', () => {
     const outline = () => (tool as unknown as { outline: THREE.Object3D }).outline.visible;
-    for (const [what, item, breaks, outlined] of [
-      ['a sword', Item.StoneSword, false, false],
-      ['cooked pork', Item.CookedPork, false, false],
-      ['a bow', Item.Bow, false, false],
-      ['a block (placed against it)', Material.Dirt, false, true],
-      ['a pickaxe', Item.WoodenPickaxe, true, true],
-      ['nothing', null, true, true],
+    for (const [what, item, breaks, outlined, shown] of [
+      ['a sword', Item.StoneSword, false, false, Item.StoneSword],
+      ['a bow', Item.Bow, false, false, Item.Bow],
+      ['cooked pork', Item.CookedPork, true, true, null],
+      ['a block (placed against it)', Material.Dirt, true, true, null],
+      ['a pickaxe', Item.WoodenPickaxe, true, true, null],
+      ['nothing', null, true, true, null],
     ] as const) {
+      expect(((held = item), tool.shownInHand), what).toBe(shown);
       sent.length = 0;
       held = item;
       now += 100_000;
