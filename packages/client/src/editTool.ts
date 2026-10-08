@@ -145,6 +145,8 @@ export class EditTool {
    * null (hybrid without ⌘: it matches whatever's aimed at, as it goes).
    */
   get chosenSize(): number | null {
+    // (Extrude copies voxels as they are: no size of its own.)
+    if (this.mode === 'build' && this.builder.tool === 'extrude') return null;
     if (this.mode !== 'hybrid') return this.size;
     if (!this.modifiers.meta) return null;
     return this.hybridSize ?? (this.target ? nearestToolSize(this.target.size) : null);
@@ -282,6 +284,13 @@ export class EditTool {
     private readonly body: () => Aabb | null = () => null,
   ) {
     this.solidAt = solidAtFor(chunks);
+    // (Extrude finds its face in the blocks as loaded here.)
+    this.builder.reader = (bx, by, bz) => {
+      const n = CHUNK_SIZE / BLOCK_SIZE;
+      const chunk = this.chunks.chunkAt({ cx: floorDiv(bx, n), cy: floorDiv(by, n), cz: floorDiv(bz, n) });
+      if (!chunk) return undefined;
+      return chunk.blocks[blockIndex(mod(bx, n), mod(by, n), mod(bz, n))] ?? null;
+    };
     const waterAt = waterAtFor(chunks);
     // With a bucket in hand, water stops the aim (to fill it there).
     this.solidOrWaterAt = (x, y, z) => {
@@ -725,10 +734,12 @@ export class EditTool {
     const held = this.materialOf();
     if (this.mode === 'build') {
       const b = this.builder;
-      const round = b.tool !== 'line' && b.tool !== 'box';
+      const round = b.tool === 'circle' || b.tool === 'dome' || b.tool === 'sphere';
       return (
-        `mode: build (Tab: hybrid / dig / place / build) · ${b.tool}${round ? (b.hollow ? `, hollow ${b.thickness} thick` : ', solid') : ''} · ${sizeLabel(this.size)} ${this.material?.name ?? 'nothing (E: inventory)'} · ${b.stage}${this.buildNote ? ` · ${this.buildNote}` : ''}\n` +
-        `G: line / box / circle / dome / sphere · click: start, then click again${b.tool === 'box' ? ' (base, then height)' : ''} · ⇧+click to start: clear instead · right-click: never mind · H: hollow · T: thickness · U or ⌘Z: undo · ⌘+wheel or [ ]: size` +
+        `mode: build (Tab: hybrid / dig / place / build) · ${b.tool}${round ? (b.hollow ? `, hollow ${b.thickness} thick` : ', solid') : ''}${b.tool === 'extrude' ? '' : ` · ${sizeLabel(this.size)} ${this.material?.name ?? 'nothing (E: inventory)'}`} · ${b.stage}${this.buildNote ? ` · ${this.buildNote}` : ''}\n` +
+        (b.tool === 'extrude'
+          ? 'G: line / box / circle / dome / sphere / extrude · click a face (the flat face it is in lights up), aim out or in along it, click · right-click: never mind · U or ⌘Z: undo'
+          : `G: line / box / circle / dome / sphere / extrude · click: start, then click again${b.tool === 'box' ? ' (base, then height)' : ''} · ⇧+click to start: clear instead · right-click: never mind · H: hollow · T: thickness · U or ⌘Z: undo · ⌘+wheel or [ ]: size`) +
         msg
       );
     }
@@ -763,7 +774,7 @@ export class EditTool {
     }
     if (button !== 0) return;
     const material = this.materialOf();
-    if (!shift && !this.builder.active && (material === null || !isBlock(material) || !canPlace(material, 'creative') || isWater(material)))
+    if (!shift && !this.builder.active && this.builder.tool !== 'extrude' && (material === null || !isBlock(material) || !canPlace(material, 'creative') || isWater(material)))
       return this.say(material === null ? 'nothing in this hotbar slot to build with (E: inventory) · ⇧+click clears' : `a ${itemName(material)} can't be built with`);
     const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
     const dir = this.camera.getWorldDirection(new THREE.Vector3());
@@ -772,6 +783,13 @@ export class EditTool {
     const op = this.builder.click(aim, { origin: [origin.x, origin.y, origin.z], dir: [dir.x, dir.y, dir.z] }, this.size, material ?? Material.Stone, shift);
     this.onModeChange?.(this.mode);
     if (!op) return;
+    if (typeof op === 'string') return this.say(op);
+    if ('kind' in op) {
+      const id = this.nextId++;
+      this.pending.set(id, op.depth > 0 ? 'extrude' : 'cut back');
+      this.send({ type: 'extrude', id, x: op.x, y: op.y, z: op.z, axis: op.axis, sign: op.sign, depth: op.depth });
+      return;
+    }
     const cells = buildCells(op);
     if (typeof cells === 'string') return this.say(`can't build that: ${cells}`);
     const id = this.nextId++;
@@ -809,6 +827,7 @@ export class EditTool {
 
   /** Build mode: shows the shape drawn so far, voxel by voxel (big ones: the box round them). */
   private showBuild(): void {
+    if (this.mode === 'build' && this.builder.tool === 'extrude') return this.showExtrude();
     const material = this.materialOf();
     const op = this.mode === 'build' ? this.builder.op(this.size, material ?? Material.Stone) : null;
     const key = op ? JSON.stringify(op) : '';
@@ -845,6 +864,41 @@ export class EditTool {
     const n = cells.length;
     this.buildNote = `${op.clear ? 'clears' : 'builds'} ${n} voxel${n === 1 ? '' : 's'} of ${sizeLabel(op.size)}${each ? '' : ' (too many to show each: the box round them)'}`;
     this.showBuildBox(op, { lo, hi });
+  }
+
+  /**
+   * Build mode, Extrude: the face aimed at, lit up (what a click would take); started, each of its
+   * voxels' columns as far as they'd go (whole copies), or the depth they'd cut back.
+   */
+  private showExtrude(): void {
+    const x = this.builder.extrusion;
+    const aim = !x && this.hit ? { point: this.hit.point, normal: this.hit.normal } : null;
+    // (Worked out again only when what's aimed at, or how far, changes.)
+    const key = x ? `x ${x.at} ${x.axis} ${x.sign} ${x.depth}` : aim ? `a ${this.hit!.cell} ${aim.normal}` : '';
+    if (key === this.shownBuild) return;
+    this.shownBuild = key;
+    this.buildNote = '';
+    this.buildBox.visible = false;
+    const f = x ?? (aim ? this.builder.faceAt(aim) : null);
+    if (!f || typeof f === 'string') {
+      this.buildCellsMesh.visible = false;
+      if (typeof f === 'string') this.buildNote = f;
+      return;
+    }
+    const depth = x?.depth ?? 0, d = Math.abs(depth);
+    const height = (v: { size: number }) => (depth > 0 ? Math.floor(d / v.size) * v.size : d);
+    const o = f.face[0]!;
+    const faces = extrudeFaces(f.face, f.axis, f.sign, depth < 0 ? -1 : 1, height, [o.x, o.y, o.z], BUILD_PREVIEW_FACES);
+    this.buildCellsMaterial.color.set(depth < 0 ? 0xff4040 : depth > 0 ? 0x40ff60 : 0x40c0ff);
+    this.buildCellsMesh.visible = !!faces;
+    if (faces) {
+      this.buildCellsMesh.geometry.dispose();
+      this.buildCellsMesh.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(faces, 3));
+      this.buildCellsMesh.position.set(o.x / UNITS_PER_METER, o.y / UNITS_PER_METER, o.z / UNITS_PER_METER);
+      this.buildCellsMesh.scale.setScalar(1 / UNITS_PER_METER);
+    }
+    const n = f.face.length, grown = depth > 0 ? f.face.reduce((t, v) => t + Math.floor(d / v.size), 0) : 0;
+    this.buildNote = `a face of ${n} voxel${n === 1 ? '' : 's'}` + (depth > 0 ? ` · extrudes ${grown} voxel${grown === 1 ? '' : 's'}${grown ? '' : ' (aim further: whole copies only)'}` : depth < 0 ? ` · cuts back ${d / UNITS_PER_METER} m (what it touches goes)` : '');
   }
 
   /** The box round a shape's cells (lo..hi: their corners, units; null: just where it started). */
@@ -1224,6 +1278,84 @@ export function surfaceFaces(cells: readonly { x: number; y: number; z: number }
     }
   }
   return out;
+}
+
+/**
+ * Extrude's preview: each voxel of a face (side `axis`, `sign`) as a column out of it (`dir` 1) or
+ * into it (-1), `height(v)` units long (0: just its face, lit, a hair out); as triangles (units,
+ * from `origin`), the columns' outsides only (between two, the taller's wall above the other's
+ * top). Null if more than `most` rectangles.
+ */
+export function extrudeFaces(
+  face: readonly { x: number; y: number; z: number; size: number }[],
+  axis: 0 | 1 | 2,
+  sign: 1 | -1,
+  dir: 1 | -1,
+  height: (v: { size: number }) => number,
+  origin: readonly number[],
+  most: number,
+): Float32Array | null {
+  const K = ['x', 'y', 'z'] as const, k = K[axis];
+  const ua = ((axis + 1) % 3) as 0 | 1 | 2, va = ((axis + 2) % 3) as 0 | 1 | 2;
+  // The face's voxels by size, then by where they are across it.
+  const bySize = new Map<number, Map<string, (typeof face)[number]>>();
+  for (const v of face) {
+    let m = bySize.get(v.size);
+    if (!m) bySize.set(v.size, (m = new Map()));
+    m.set(`${v[K[ua]]},${v[K[va]]}`, v);
+  }
+  const at = (u: number, w: number) => {
+    for (const [s, m] of bySize) {
+      const v = m.get(`${Math.floor(u / s) * s},${Math.floor(w / s) * s}`);
+      if (v) return v;
+    }
+    return undefined;
+  };
+  const step = Math.min(...face.map((v) => v.size));
+  const out: number[] = [];
+  let rects = 0;
+  // A rectangle square to axis `f` at `c`, over r1 on the next axis round and r2 on the one after.
+  const rect = (f: number, c: number, r1: readonly number[], r2: readonly number[]) => {
+    rects++;
+    const a1 = (f + 1) % 3, a2 = (f + 2) % 3, p = [0, 0, 0];
+    for (const [i, j] of [[0, 0], [1, 0], [1, 1], [0, 0], [1, 1], [0, 1]] as const) {
+      p[f] = c - origin[f]!;
+      p[a1] = r1[i]! - origin[a1]!;
+      p[a2] = r2[j]! - origin[a2]!;
+      out.push(p[0]!, p[1]!, p[2]!);
+    }
+  };
+  // (Order a range low to high: the columns may go either way along the axis.)
+  const span = (a: number, b: number) => (a < b ? [a, b] : [b, a]);
+  const across = (u: number[], w: number[], f: 0 | 1 | 2) => (((f + 1) % 3) === ua ? [u, w] : [w, u]);
+  for (const v of face) {
+    const p = v[k] + (sign > 0 ? v.size : 0), h = height(v), u0 = v[K[ua]], w0 = v[K[va]], s = v.size;
+    const out1 = p + sign * dir * h;
+    if (h === 0) {
+      const [r1, r2] = across([u0, u0 + s], [w0, w0 + s], axis);
+      rect(axis, p + sign * 0.1, r1!, r2!);
+      continue;
+    }
+    for (const c of [p, out1]) {
+      const [r1, r2] = across([u0, u0 + s], [w0, w0 + s], axis);
+      rect(axis, c, r1!, r2!);
+    }
+    // Its four sides, a step at a time: a wall where the column beside it is shorter (or none).
+    for (const [side, c, inside] of [[ua, u0, u0 - 1], [ua, u0 + s, u0 + s], [va, w0, w0 - 1], [va, w0 + s, w0 + s]] as const) {
+      for (let t = 0; t < s; t += step) {
+        const n = side === ua ? at(inside, w0 + t) : at(u0 + t, inside);
+        const hn = n ? height(n) : 0;
+        if (hn >= h) continue;
+        const along = side === ua ? [w0 + t, w0 + t + step] : [u0 + t, u0 + t + step];
+        const up = span(p + sign * dir * hn, out1);
+        // (A wall square to `side`: over the main axis and the other across-axis, in the right order.)
+        if ((side + 1) % 3 === axis) rect(side, c, up, along);
+        else rect(side, c, along, up);
+      }
+    }
+    if (rects > most) return null;
+  }
+  return new Float32Array(out);
 }
 
 /**

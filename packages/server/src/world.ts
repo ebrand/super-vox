@@ -59,6 +59,8 @@ import {
   SKY_LIGHT_LEVEL,
   type LightWorld,
   type BlockVoxel,
+  type BuildPiece,
+  type BlockReader,
   blockVoxels,
   editMiningTime,
   fenceJoins,
@@ -1019,6 +1021,9 @@ export class World {
     return undefined;
   }
 
+  /** The world's blocks as they are now (block X wrapping round), for Extrude's face (see flatFace). */
+  readonly blockReader: BlockReader = (bx, by, bz) => this.blockAt(this.wrapBlockX(bx), by, bz);
+
   /** The current block at (bx, by, bz), and where it lives; null outside the world. */
   private blockAt(bx: number, by: number, bz: number): Block | undefined {
     const n = BLOCKS_PER_CHUNK_AXIS;
@@ -1328,15 +1333,21 @@ export class World {
    * was and as it is now (to undo it: see unbuild).
    */
   build(cells: readonly { x: number; y: number; z: number }[], size: number, material: MaterialId, clear: boolean): { result: EditResult | null; count: number; blocks: BuildChange[] } {
+    return this.buildPieces(cells.map((c) => ({ x: c.x, y: c.y, z: c.z, size, material })), clear);
+  }
+
+  /** As build, of pieces each with its own size and material (Extrude's copies: see extrudePieces). */
+  buildPieces(pieces: readonly BuildPiece[], clear: boolean): { result: EditResult | null; count: number; blocks: BuildChange[] } {
     const B = BLOCK_SIZE;
-    const byBlock = new Map<string, { bx: number; by: number; bz: number; cells: { x: number; y: number; z: number }[] }>();
-    for (const c of cells) {
+    const byBlock = new Map<string, { bx: number; by: number; bz: number; cells: BlockVoxel[] }>();
+    for (const c of pieces) {
+      const size = c.size;
       if (this.objects.size && this.objectIn({ x0: c.x, y0: c.y, z0: c.z, x1: c.x + size, y1: c.y + size, z1: c.z + size })) continue;
       const bx = this.wrapBlockX(Math.floor(c.x / B)), by = Math.floor(c.y / B), bz = Math.floor(c.z / B);
       const key = objectKey(bx, by, bz);
       let g = byBlock.get(key);
       if (!g) byBlock.set(key, (g = { bx, by, bz, cells: [] }));
-      g.cells.push({ x: mod(c.x, B), y: mod(c.y, B), z: mod(c.z, B) });
+      g.cells.push({ x: mod(c.x, B), y: mod(c.y, B), z: mod(c.z, B), size, material: c.material });
     }
     const writes: { bx: number; by: number; bz: number; block: Block }[] = [], changes: BuildChange[] = [];
     let count = 0;
@@ -1347,7 +1358,7 @@ export class World {
       if (before === undefined) continue;
       // (Filling an empty block: just the cells.)
       if (!clear && before === null) {
-        const after = blockFromVoxels(g.cells.map((c) => ({ ...c, size, material })));
+        const after = blockFromVoxels(g.cells);
         count += g.cells.length;
         writes.push({ bx: g.bx, by: g.by, bz: g.bz, block: after });
         changes.push({ bx: g.bx, by: g.by, bz: g.bz, before, after });
@@ -1365,17 +1376,16 @@ export class World {
       };
       let next: BlockVoxel[];
       if (clear) {
-        for (const c of g.cells) mark({ ...c, size }, taken);
+        for (const c of g.cells) mark(c, taken);
         next = voxels.filter((v) => isWater(v.material) || !touches(v, taken));
         count += voxels.length - next.length;
       } else {
         for (const v of voxels) if (!isWater(v.material)) mark(v, taken);
         const added: BlockVoxel[] = [];
-        for (const c of g.cells) {
-          const v = { ...c, size };
+        for (const v of g.cells) {
           if (touches(v, taken)) continue;
           mark(v, taken);
-          added.push({ ...v, material });
+          added.push(v);
         }
         if (!added.length) continue;
         count += added.length;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Material, buildCells, type Cell } from '@super-vox/shared';
+import { Material, blockFromVoxels, buildCells, type BlockReader, type BuildOp, type Cell } from '@super-vox/shared';
 import { BuildMode, type Ray } from './buildMode.js';
 
 const S = 4; // 1/4 m cells
@@ -24,7 +24,7 @@ describe('BuildMode', () => {
     // Up the line through that corner's middle (130, *, 222): from the side, at y = 2 + 10.
     const up = ray([150, 2, 222], [130, 12, 222]);
     b.move(up, S);
-    const op = b.click(null, up, S, stone, false)!;
+    const op = b.click(null, up, S, stone, false) as BuildOp;
     expect(op).toEqual({ shape: { kind: 'box', a: { x: 100, y: 0, z: 200 }, b: { x: 128, y: 12, z: 220 } }, size: S, material: stone, clear: false });
     expect(b.active).toBe(false);
     // 8 x 4 x 6 cells.
@@ -51,7 +51,7 @@ describe('BuildMode', () => {
     // Now up: from the side, at the column above the start.
     b.move(ray([102, 30, 230], [102, 30, 202]), S);
     expect(b.op(S, stone)!.shape).toEqual({ kind: 'box', a: { x: 100, y: 0, z: 200 }, b: { x: 100, y: 28, z: 200 } });
-    const op = b.click(null, ray([102, 30, 230], [102, 30, 202]), S, stone, false)!;
+    const op = b.click(null, ray([102, 30, 230], [102, 30, 202]), S, stone, false) as BuildOp;
     expect((buildCells(op) as Cell[]).length).toBe(8);
   });
 
@@ -109,7 +109,7 @@ describe('BuildMode', () => {
     b.nextTool();
     expect(b.active).toBe(false);
     expect(b.tool).toBe('circle');
-    for (let i = 0; i < 4; i++) b.nextTool();
+    for (let i = 0; i < 5; i++) b.nextTool();
     expect(b.tool).toBe('box');
   });
 
@@ -118,5 +118,44 @@ describe('BuildMode', () => {
     b.click(ground, ray(eye, ground.point), 16, stone, false);
     b.move(ray(eye, [140, 8, 230]), 16);
     expect(b.op(16, stone)!.shape).toEqual({ kind: 'box', a: { x: 96, y: 0, z: 192 }, b: { x: 128, y: 0, z: 224 } });
+  });
+});
+
+describe('BuildMode extrude', () => {
+  /** Stone blocks 1 m: x 6..8, y 0, z 12 (block coordinates); the one at x 8 broken to 1/4 m. */
+  const reader: BlockReader = (bx, by, bz) => {
+    if (by !== 0 || bz !== 12 || bx < 6 || bx > 8) return null;
+    if (bx < 8) return { kind: 'uniform', size: 16, material: stone };
+    return blockFromVoxels(Array.from({ length: 64 }, (_, i) => ({ x: (i % 4) * 4, y: (Math.floor(i / 4) % 4) * 4, z: Math.floor(i / 16) * 4, size: 4, material: stone })));
+  };
+  const top = { point: [100.5, 16, 200.5], normal: [0, 1, 0] };
+
+  it('takes the face clicked, then the depth aimed out or in, in steps of its smallest voxel', () => {
+    const b = new BuildMode();
+    b.reader = reader;
+    b.tool = 'extrude';
+    expect(b.stage).toMatch(/click a face/);
+    const face = b.faceAt(top);
+    expect(typeof face === 'string' ? face : face.face.length).toBe(2 + 16);
+    expect(b.click(top, ray(eye, top.point), S, stone, false)).toBeNull();
+    expect(b.extrusion!.step).toBe(4);
+    // Aimed at the face itself: nothing yet (a click says so, and keeps it).
+    expect(b.click(null, ray([130, 16, 200.5], [100.5, 16, 200.5]), S, stone, false)).toMatch(/aim out/);
+    expect(b.active).toBe(true);
+    // Up the line through the point clicked: 1.3 m up, 1.25 m in quarter-metre steps... 21 units: 20.
+    b.move(ray([130, 37, 200.5], [100.5, 37, 200.5]), S);
+    expect(b.extrusion!.depth).toBe(20);
+    b.move(ray([130, 6, 200.5], [100.5, 6, 200.5]), S);
+    expect(b.extrusion!.depth).toBe(-8);
+    expect(b.click(null, ray([130, 6, 200.5], [100.5, 6, 200.5]), S, stone, false)).toEqual({ kind: 'extrude', x: 100, y: 15, z: 200, axis: 1, sign: 1, depth: -8 });
+    expect(b.active).toBe(false);
+  });
+
+  it('says why a face cannot be taken', () => {
+    const b = new BuildMode();
+    b.reader = reader;
+    b.tool = 'extrude';
+    expect(b.click({ point: [100.5, 40, 200.5], normal: [0, 1, 0] }, ray(eye, [100, 40, 200]), S, stone, false)).toMatch(/nothing/);
+    expect(b.active).toBe(false);
   });
 });

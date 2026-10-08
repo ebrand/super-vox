@@ -74,6 +74,8 @@ export type ClientMessage =
    */
   | { type: 'build'; id: number; op: BuildOp }
   | { type: 'undo'; id: number }
+  /** Build mode, Extrude: the flat face of the voxel covering unit cell (x, y, z) on side axis/sign, grown out `depth` units (negative: cut back). See flatFace. */
+  | { type: 'extrude'; id: number; x: number; y: number; z: number; axis: 0 | 1 | 2; sign: 1 | -1; depth: number }
   /** Shoots an arrow (a bow in hand, see arrows.ts): from the eye at (x, y, z) (units) along (dx, dy, dz), drawn `charge` (0..1). */
   | { type: 'shoot'; x: number; y: number; z: number; dx: number; dy: number; dz: number; charge: number }
   /** A sword's sweep (`sword`: the item) cutting leaves around block (x, y, z); answered with `editResult`. */
@@ -433,6 +435,9 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
     if (op) return { type: 'build', id: msg.id as number, op };
   }
   if (msg.type === 'undo' && isWhole(msg.id)) return { type: 'undo', id: msg.id as number };
+  if (msg.type === 'extrude' && isWhole(msg.id) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z) && [0, 1, 2].includes(msg.axis as number) && [1, -1].includes(msg.sign as number) && isInt32(msg.depth)) {
+    return { type: 'extrude', id: msg.id as number, x: msg.x as number, y: msg.y as number, z: msg.z as number, axis: msg.axis as 0 | 1 | 2, sign: msg.sign as 1 | -1, depth: msg.depth as number };
+  }
   if (msg.type === 'shoot' && finite(msg.x, msg.y, msg.z, msg.dx, msg.dy, msg.dz, msg.charge)) {
     return { type: 'shoot', x: msg.x as number, y: msg.y as number, z: msg.z as number, dx: msg.dx as number, dy: msg.dy as number, dz: msg.dz as number, charge: msg.charge as number };
   }

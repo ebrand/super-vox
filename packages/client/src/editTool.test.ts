@@ -434,7 +434,7 @@ describe('EditTool build mode (creative)', () => {
     expect(tool.builder.active).toBe(false);
     window.dispatchEvent(key('keydown', 'KeyG', false));
     expect(tool.builder.tool).toBe('circle');
-    for (let i = 0; i < 3; i++) window.dispatchEvent(key('keydown', 'KeyG', false));
+    for (let i = 0; i < 4; i++) window.dispatchEvent(key('keydown', 'KeyG', false));
     expect(tool.builder.tool).toBe('line');
     tool.click(0, { meta: false, alt: false, shift: true });
     tool.click(0, { meta: false, alt: false });
@@ -479,5 +479,44 @@ describe('surfaceFaces (the build preview)', () => {
     const lo = [0, 1, 2].map((a) => cells.reduce((m, c) => Math.min(m, [c.x, c.y, c.z][a]!), Infinity));
     const hi = [0, 1, 2].map((a) => cells.reduce((m, c) => Math.max(m, [c.x, c.y, c.z][a]!), -Infinity));
     expect(surfaceFaces(cells, 4, lo, hi, 2e6)!.length).toBeGreaterThan(cells.length * 18);
+  });
+});
+
+describe('extrudeFaces (the extrude preview)', () => {
+  /** The rectangles of a preview, each as its six corners' min and max (units). */
+  const rects = (f: Float32Array) => {
+    const out: { lo: number[]; hi: number[] }[] = [];
+    for (let i = 0; i < f.length; i += 18) {
+      const pts = [0, 1, 2, 3, 4, 5].map((j) => [f[i + j * 3]!, f[i + j * 3 + 1]!, f[i + j * 3 + 2]!]);
+      out.push({ lo: [0, 1, 2].map((a) => Math.min(...pts.map((p) => p[a]!))), hi: [0, 1, 2].map((a) => Math.max(...pts.map((p) => p[a]!))) });
+    }
+    return out;
+  };
+  it('draws each column as a box, without the walls between columns as tall', async () => {
+    const { extrudeFaces } = await import('./editTool.js');
+    // One 1 m voxel at (0, 0, 0), its top (y = 16) grown 2 m: a box 16 x 32 x 16 on top of it.
+    const one = rects(extrudeFaces([{ x: 0, y: 0, z: 0, size: 16 }], 1, 1, 1, () => 32, [0, 0, 0], 100)!);
+    expect(one).toHaveLength(6);
+    expect(one.map((r) => r.lo[1])).toContain(16);
+    expect(Math.max(...one.map((r) => r.hi[1]!))).toBe(48);
+    expect(one.every((r) => r.lo[0]! >= 0 && r.hi[0]! <= 16 && r.lo[2]! >= 0 && r.hi[2]! <= 16)).toBe(true);
+    // Two side by side (x), as tall: 2 x 2 caps, and 6 outside walls (none between them).
+    const two = rects(extrudeFaces([{ x: 0, y: 0, z: 0, size: 16 }, { x: 16, y: 0, z: 0, size: 16 }], 1, 1, 1, () => 16, [0, 0, 0], 100)!);
+    expect(two).toHaveLength(10);
+    expect(two.some((r) => r.lo[0] === 16 && r.hi[0] === 16)).toBe(false);
+    // A 1/4 m voxel beside a 1 m one, the 1 m one taller: its wall above the small one's top.
+    const mixed = rects(extrudeFaces([{ x: 0, y: 0, z: 0, size: 16 }, { x: 16, y: 12, z: 0, size: 4 }], 1, 1, 1, (v) => (v.size === 16 ? 32 : 8), [0, 0, 0], 100)!);
+    const between = mixed.filter((r) => r.lo[0] === 16 && r.hi[0] === 16);
+    expect(between.find((r) => r.lo[2] === 0 && r.hi[2] === 4)).toMatchObject({ lo: [16, 24, 0], hi: [16, 48, 4] });
+    expect(between.find((r) => r.lo[2] === 4)).toMatchObject({ lo: [16, 16, 4], hi: [16, 48, 8] });
+    // Cut back: into the voxel. Not grown: its face, lit, a hair out. Too many: null.
+    const cut = rects(extrudeFaces([{ x: 0, y: 0, z: 0, size: 16 }], 1, 1, -1, () => 8, [0, 0, 0], 100)!);
+    expect(Math.min(...cut.map((r) => r.lo[1]!))).toBe(8);
+    expect(Math.max(...cut.map((r) => r.hi[1]!))).toBe(16);
+    const lit = rects(extrudeFaces([{ x: 0, y: 0, z: 0, size: 16 }], 1, 1, 1, () => 0, [0, 0, 0], 100)!);
+    expect(lit).toHaveLength(1);
+    expect(lit[0]!.lo[1]).toBeCloseTo(16.1, 5);
+    expect([lit[0]!.lo[0], lit[0]!.hi[0], lit[0]!.lo[2], lit[0]!.hi[2], lit[0]!.hi[1]! - lit[0]!.lo[1]!]).toEqual([0, 16, 0, 16, 0]);
+    expect(extrudeFaces([{ x: 0, y: 0, z: 0, size: 16 }], 1, 1, 1, () => 16, [0, 0, 0], 3)).toBeNull();
   });
 });

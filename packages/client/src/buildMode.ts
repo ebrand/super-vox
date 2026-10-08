@@ -1,4 +1,4 @@
-import { buildCells, type BuildOp, type Cell, type MaterialId, type RoundShape } from '@super-vox/shared';
+import { buildCells, flatFace, type BlockReader, type BlockVoxel, type BuildOp, type Cell, type MaterialId, type RoundShape } from '@super-vox/shared';
 
 /**
  * Build mode (creative): the object designer's shape tools, in the world. In the game the mouse
@@ -6,9 +6,36 @@ import { buildCells, type BuildOp, type Cell, type MaterialId, type RoundShape }
  * face aimed at: or, clearing, in what's aimed at), aim, click again; a box's base first, then
  * its height (aim up or down the line out of the corner just clicked), then a third click. Right-click: never mind.
  * What's drawn so far is a BuildOp (see buildCells), sent to the server whole.
+ *
+ * Extrude: click a voxel's face (the flat open face it's in is taken: see flatFace), aim out along
+ * it (or in), click: each of its voxels grows a column of copies of itself (or it's cut back). The
+ * server works out the face again from where it was clicked (an ExtrudeOp).
  */
-export type BuildTool = 'line' | 'box' | RoundShape;
-export const BUILD_TOOLS: readonly BuildTool[] = ['line', 'box', 'circle', 'dome', 'sphere'];
+export type BuildTool = 'line' | 'box' | RoundShape | 'extrude';
+export const BUILD_TOOLS: readonly BuildTool[] = ['line', 'box', 'circle', 'dome', 'sphere', 'extrude'];
+
+/** An extrusion, as sent: the face of the voxel covering unit cell (x, y, z) on side axis/sign, `depth` units out (negative: in). */
+export interface ExtrudeOp {
+  kind: 'extrude';
+  x: number;
+  y: number;
+  z: number;
+  axis: 0 | 1 | 2;
+  sign: 1 | -1;
+  depth: number;
+}
+
+interface Extruding {
+  /** The unit cell clicked (in the face's voxel), the point on the face, and the face's voxels. */
+  at: [number, number, number];
+  point: readonly number[];
+  axis: 0 | 1 | 2;
+  sign: 1 | -1;
+  face: BlockVoxel[];
+  /** Depth steps: the smallest voxel in the face. */
+  step: number;
+  depth: number;
+}
 
 /** A ray (units): where from, and which way (any length). */
 export interface Ray {
@@ -23,7 +50,7 @@ export interface FaceAim {
 }
 
 interface Drawing {
-  tool: BuildTool;
+  tool: Exclude<BuildTool, 'extrude'>;
   clear: boolean;
   /** The cell it started at (units), and the axis out of the face it started on. */
   start: Cell;
@@ -43,16 +70,35 @@ export class BuildMode {
   hollow = false;
   thickness = 1;
   private drawing: Drawing | null = null;
+  private extruding: Extruding | null = null;
+  /** The world's blocks (Extrude: to find the face). */
+  reader: BlockReader | null = null;
 
   /** Whether a shape's being drawn (started, not yet finished). */
   get active(): boolean {
-    return this.drawing !== null;
+    return this.drawing !== null || this.extruding !== null;
+  }
+
+  /** Extrude, started: its face, the way out of it, and how far it's aimed out (units; negative: in). */
+  get extrusion(): Readonly<Extruding> | null {
+    return this.extruding;
+  }
+
+  /** The face Extrude would take at the face aimed at (or why none). */
+  faceAt(aim: FaceAim): { face: BlockVoxel[]; at: [number, number, number]; axis: 0 | 1 | 2; sign: 1 | -1 } | string {
+    if (!this.reader) return 'not loaded yet';
+    const axis = Math.max(0, aim.normal.findIndex((c) => Math.abs(c) > 0.5)) as 0 | 1 | 2;
+    const sign: 1 | -1 = aim.normal[axis]! < 0 ? -1 : 1;
+    const at = aim.point.map((c, a) => Math.floor(c - aim.normal[a]! * 0.01)) as [number, number, number];
+    const face = flatFace(this.reader, at, axis, sign);
+    return typeof face === 'string' ? face : { face, at, axis, sign };
   }
 
   /** What the shape needs next, for people. */
   get stage(): string {
     const d = this.drawing;
-    if (!d) return this.tool === 'line' || this.tool === 'box' ? 'click where it starts' : 'click where its middle goes';
+    if (this.extruding) return this.extruding.depth === 0 ? 'aim out to extrude, or in to cut back, click' : `${this.extruding.depth > 0 ? 'extrude' : 'cut back'} ${Math.abs(this.extruding.depth) / 16} m, click`;
+    if (!d) return this.tool === 'extrude' ? 'click a face to extrude' : this.tool === 'line' || this.tool === 'box' ? 'click where it starts' : 'click where its middle goes';
     if (d.tool === 'box') return d.stage === 'drag' ? 'aim out its base, click' : 'aim up or down for its height, click';
     return d.tool === 'line' ? 'aim along a row, click' : 'aim out its radius, click';
   }
@@ -65,6 +111,7 @@ export class BuildMode {
 
   cancel(): void {
     this.drawing = null;
+    this.extruding = null;
   }
 
   /**
@@ -72,7 +119,8 @@ export class BuildMode {
    * moves a box on to its height, or finishes the shape (then it's returned, made of cells of
    * `size` in `material`).
    */
-  click(aim: FaceAim | null, ray: Ray, size: number, material: MaterialId, clear: boolean): BuildOp | null {
+  click(aim: FaceAim | null, ray: Ray, size: number, material: MaterialId, clear: boolean): BuildOp | ExtrudeOp | string | null {
+    if (this.tool === 'extrude' || this.extruding) return this.clickExtrude(aim, ray);
     const d = this.drawing;
     if (!d) {
       if (!aim) return null;
@@ -82,7 +130,7 @@ export class BuildMode {
       const p = aim.point.map((c, a) => c + aim.normal[a]! * (clear ? -0.01 : 0.01));
       const [x, y, z] = p.map((c) => Math.floor(c / size) * size) as [number, number, number];
       const start = { x, y, z };
-      this.drawing = { tool: this.tool, clear, start, axis, sign, end: { ...start }, stage: 'drag', depth: 0 };
+      this.drawing = { tool: this.tool as Drawing['tool'], clear, start, axis, sign, end: { ...start }, stage: 'drag', depth: 0 };
       return null;
     }
     this.move(ray, size);
@@ -95,15 +143,38 @@ export class BuildMode {
     return op;
   }
 
+  /** Extrude: a click on a face takes it; then one aimed out (or in) does it (or says why not). */
+  private clickExtrude(aim: FaceAim | null, ray: Ray): ExtrudeOp | string | null {
+    const x = this.extruding;
+    if (!x) {
+      if (!aim) return 'aim at a face to extrude';
+      const f = this.faceAt(aim);
+      if (typeof f === 'string') return f;
+      this.extruding = { ...f, point: aim.point, step: Math.min(...f.face.map((v) => v.size)), depth: 0 };
+      return null;
+    }
+    this.move(ray, 0);
+    if (x.depth === 0) return 'aim out to extrude, or in to cut back';
+    this.extruding = null;
+    return { kind: 'extrude', x: x.at[0], y: x.at[1], z: x.at[2], axis: x.axis, sign: x.sign, depth: x.depth };
+  }
+
   /** Follows the aim (each frame): the line's end, the base's corner, the radius, or the height. */
   move(ray: Ray, size: number): void {
+    const x = this.extruding;
+    if (x) {
+      // Out (or in) along the line through the point clicked, square to the face.
+      const a = this.along(x.point, x.axis, ray);
+      if (a) x.depth = Math.round((a.t * x.sign) / x.step) * x.step || 0;
+      return;
+    }
     const d = this.drawing;
     if (!d) return;
     // (How far from cell `c`, along `axis`, to the cell the point `t` from its middle is in.)
     const cellsOn = (c: Cell, axis: number, t: number) => Math.floor((c[KEYS[axis]!] + size / 2 + t) / size) * size - c[KEYS[axis]!];
     if (d.stage === 'raise') {
       // Up (or down) the line through the corner just clicked, where the aim is.
-      const a = this.along(d.end, d.axis, ray, size);
+      const a = this.along(this.mid(d.end, size), d.axis, ray);
       if (a) d.depth = cellsOn(d.end, d.axis, a.t);
       return;
     }
@@ -111,7 +182,7 @@ export class BuildMode {
       // Along whichever axis the aim passes nearest.
       let best: { axis: number; t: number; off: number } | null = null;
       for (let axis = 0; axis < 3; axis++) {
-        const a = this.along(d.start, axis, ray, size);
+        const a = this.along(this.mid(d.start, size), axis, ray);
         if (a && (!best || a.off < best.off)) best = { axis, ...a };
       }
       if (best) {
@@ -164,12 +235,15 @@ export class BuildMode {
     return { x: c.x + size / 2, y: c.y + size / 2, z: c.z + size / 2 };
   }
 
+  private mid(c: Cell, size: number): number[] {
+    return [c.x + size / 2, c.y + size / 2, c.z + size / 2];
+  }
+
   /**
-   * Along axis `axis` through cell `c`'s middle: the point nearest the aim's ray (`t`, units from
-   * the middle), and how far the ray passes from it (units); null if the axis points along the ray.
+   * Along axis `axis` through point `origin`: the point nearest the aim's ray (`t`, units from
+   * `origin`), and how far the ray passes from it (units); null if the axis points along the ray.
    */
-  private along(c: Cell, axis: number, ray: Ray, size: number): { t: number; off: number } | null {
-    const o = this.centre(c, size), origin = [o.x, o.y, o.z];
+  private along(origin: readonly number[], axis: number, ray: Ray): { t: number; off: number } | null {
     const len = Math.hypot(ray.dir[0]!, ray.dir[1]!, ray.dir[2]!);
     const dir = ray.dir.map((v) => v / len);
     const w0 = origin.map((v, i) => v - ray.origin[i]!);

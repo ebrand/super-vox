@@ -23,6 +23,8 @@ import {
   type DroppedItem,
   playerBox,
   buildCells,
+  extrudePieces,
+  flatFace,
   canPlace,
   CHUNK_SIZE,
   resolveChunk,
@@ -1575,6 +1577,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         }
 
         case 'build':
+        case 'extrude':
         case 'undo': {
           if (!greeted) return;
           const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
@@ -1583,6 +1586,12 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           const p = players.get(socket)!;
           let result: EditResult | null;
           let note: string;
+          // (Kept to undo: the last 20, and none too big to keep.)
+          const keep = (blocks: BuildChange[]) => {
+            if (blocks.length > BUILD_UNDO_BLOCKS) return;
+            p.builds.push(blocks);
+            while (p.builds.length > 20 || p.builds.reduce((n, b) => n + b.length, 0) > BUILD_UNDO_BLOCKS) p.builds.shift();
+          };
           if (msg.type === 'undo') {
             const last = p.builds.pop();
             if (!last) return fail('nothing to undo');
@@ -1590,6 +1599,16 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             if (typeof r === 'string') return fail(`can't undo it: ${r}`);
             result = r;
             note = `undone (${p.builds.length} more to undo)`;
+          } else if (msg.type === 'extrude') {
+            const face = flatFace(world.blockReader, [msg.x, msg.y, msg.z], msg.axis, msg.sign);
+            if (typeof face === 'string') return fail(face);
+            const made = extrudePieces(face, msg.axis, msg.sign, msg.depth);
+            if (typeof made === 'string') return fail(made);
+            const r = world.buildPieces(made.pieces, made.clear);
+            result = r.result;
+            if (!result) return fail(made.clear ? 'nothing there to cut back' : 'no room there: everything in the way is taken');
+            keep(r.blocks);
+            note = `${made.clear ? 'cut back' : 'extruded'}: ${r.count} voxel${r.count === 1 ? '' : 's'} (a face of ${face.length})${r.blocks.length > BUILD_UNDO_BLOCKS ? ' (too big to undo)' : ''}`;
           } else {
             const cells = buildCells(msg.op);
             if (typeof cells === 'string') return fail(cells);
@@ -1598,11 +1617,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             const r = world.build(cells, msg.op.size, msg.op.material, msg.op.clear);
             result = r.result;
             if (!result) return fail(msg.op.clear ? 'nothing there to clear' : 'no room there: everything in it is taken');
-            // (Kept to undo: the last 20, and none too big to keep.)
-            if (r.blocks.length <= BUILD_UNDO_BLOCKS) {
-              p.builds.push(r.blocks);
-              while (p.builds.length > 20 || p.builds.reduce((n, b) => n + b.length, 0) > BUILD_UNDO_BLOCKS) p.builds.shift();
-            }
+            keep(r.blocks);
             note = `${msg.op.clear ? 'cleared' : 'built'}: ${r.count} voxel${r.count === 1 ? '' : 's'}${r.blocks.length > BUILD_UNDO_BLOCKS ? ' (too big to undo)' : ''}`;
           }
           metrics.totals.edits++;
