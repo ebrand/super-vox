@@ -6,6 +6,7 @@ import { ArrowFlights } from './arrowFlights.js';
 import { buildApp } from './app.js';
 import { Auth, SESSION_COOKIE, sessionToken } from './auth.js';
 import { MemoryInventoryStore } from './inventories.js';
+import { MobManager } from './mobManager.js';
 import { World } from './world.js';
 import { singleWorld } from './worlds.js';
 
@@ -70,6 +71,52 @@ describe('arrows in the world', () => {
 });
 
 describe('arrows in play', () => {
+  it('kill pigs for pork, for whoever shot them (survival)', async () => {
+    const SECRET = 'k'.repeat(40);
+    const accounts = new MemoryAccountStore();
+    const inventories = new MemoryInventoryStore();
+    const world = flat();
+    let manager: MobManager | null = null;
+    const auth = new Auth({ googleClientId: 'c', googleClientSecret: 's', sessionSecret: SECRET, adminEmails: [], secureCookies: false }, accounts);
+    const app = await buildApp({ catalog: singleWorld(world, undefined, 'default', 24, 'survival'), auth, inventories, mobs: (w) => (manager = new MobManager(w, () => 0.999)) });
+    try {
+      const base = await app.listen({ port: 0, host: '127.0.0.1' });
+      const ann = await accounts.signIn({ sub: 'g-ann', email: 'ann@x.com', name: 'Ann' });
+      await inventories.save(ann.id, 'default@single', { items: new Map([[Item.Bow, 1]]), hotbar: Array(HOTBAR_SLOTS).fill(null) });
+      const until = async (f: () => boolean, ms = 3000) => {
+        for (let i = 0; i < ms / 10 && !f(); i++) await new Promise((r) => setTimeout(r, 10));
+        if (!f()) throw new Error(`timed out: ${f.toString().slice(0, 100)}`);
+      };
+      const ws = new WebSocket(base.replace(/^http/, 'ws') + '/ws', { headers: { cookie: `${SESSION_COOKIE}=${sessionToken(ann.id, Date.now() + 1e6, SECRET)}` } });
+      const msgs: ServerMessage[] = [];
+      ws.on('message', (d, bin) => !bin && msgs.push(JSON.parse(String(d)) as ServerMessage));
+      await new Promise((r) => ws.once('open', r));
+      ws.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION }));
+      await until(() => msgs.some((m) => m.type === 'inventory'));
+      const eye = { x: 1600, y: 26, z: 1600 };
+      ws.send(JSON.stringify({ type: 'pose', ...eye, yaw: 0 }));
+      await until(() => manager !== null);
+      const pig = manager!.add('pig', eye.x, 0, eye.z - 5 * 16, Date.now());
+      const pork = () => new Map(msgs.filter((m): m is Extract<ServerMessage, { type: 'inventory' }> => m.type === 'inventory').at(-1)?.items ?? []).get(Item.Pork) ?? 0;
+      // Two arrows (7 each: a pig has 10), each at where it is now.
+      for (let n = 0; n < 2 && manager!.get(pig.id); n++) {
+        const at = manager!.get(pig.id)!;
+        const d = [at.x - eye.x, at.y + 8 - eye.y, at.z - eye.z];
+        ws.send(JSON.stringify({ type: 'shoot', ...eye, dx: d[0], dy: d[1], dz: d[2], charge: 1 }));
+        await until(() => msgs.filter((m) => m.type === 'arrowHit').length === n + 1);
+        expect(msgs.filter((m): m is Extract<ServerMessage, { type: 'arrowHit' }> => m.type === 'arrowHit').at(-1)!.what).toBe('mob');
+        await new Promise((r) => setTimeout(r, ARROW.cooldownMs + 50));
+      }
+      expect(manager!.get(pig.id)).toBeUndefined();
+      await until(() => pork() > 0);
+      expect(pork()).toBeGreaterThanOrEqual(1);
+      expect(pork()).toBeLessThanOrEqual(3);
+      ws.close();
+    } finally {
+      await app.close();
+    }
+  });
+
   let close: (() => Promise<void>) | null = null;
   afterEach(async () => {
     await close?.();

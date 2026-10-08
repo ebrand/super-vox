@@ -161,6 +161,8 @@ interface Player {
   settleUntil: number;
   /** Signed in: keeps their vitals and bed (see PlayerState), once they've been loaded. */
   saveState: (() => void) | null;
+  /** Puts `amount` of `item` in their inventory and tells them (nothing without one: not signed in, or not loaded yet). */
+  give: (item: ItemId, amount: number) => void;
 }
 
 /** Time between water flow steps. */
@@ -828,7 +830,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         const damage = arrowDamage(Math.hypot(shot.vx, shot.vy, shot.vz));
         if (hit?.what === 'thing' && hit.kind === 'mob') {
           what = 'mob';
-          mobs?.hurt(hit.id, damage, shot.x, shot.z, now);
+          const r = mobs?.hurt(hit.id, damage, shot.x, shot.z, now);
+          // A pig killed: pork (1 to 3) for whoever shot it, as for a sword (survival).
+          const shooter = shooters.get(shot.by)?.[1];
+          if (r?.killed && r.kind === 'pig' && shooter?.vulnerable) shooter.give(Item.Pork, 1 + Math.floor(Math.random() * 3));
         } else if (hit?.what === 'thing' && hit.kind === 'player') {
           what = 'player';
           const target = shooters.get(hit.id);
@@ -1147,6 +1152,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               id: nextPlayer++, world: msg.world ?? catalog.defaultName, connectedAt: Date.now(), tolerance: world.tolerance,
               name: who?.account.name ?? null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
               vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0, lastShot: 0, bed: null, settleUntil: Infinity, saveState: null,
+              give: (item, amount) => {
+                if (!inventory) return;
+                inventory.addItem(item, amount);
+                send(inventory.message());
+              },
             });
             // Designs (named: some may be in their inventory) before the inventory, and where they're placed.
             const sendWelcome = (welcome: ServerMessage) => {
