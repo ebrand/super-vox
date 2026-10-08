@@ -25,6 +25,9 @@ import {
   buildCells,
   extrudePieces,
   flatFace,
+  transformPieces,
+  transformProblem,
+  voxelsIn,
   canPlace,
   CHUNK_SIZE,
   resolveChunk,
@@ -1578,6 +1581,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
 
         case 'build':
         case 'extrude':
+        case 'transform':
         case 'undo': {
           if (!greeted) return;
           const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
@@ -1599,6 +1603,20 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             if (typeof r === 'string') return fail(`can't undo it: ${r}`);
             result = r;
             note = `undone (${p.builds.length} more to undo)`;
+          } else if (msg.type === 'transform') {
+            const why = transformProblem(msg.op);
+            if (why) return fail(why);
+            const taken = voxelsIn(world.blockReader, msg.op.region);
+            if (typeof taken === 'string') return fail(taken);
+            if (!taken.length) return fail('nothing there to move');
+            const pieces = transformPieces(taken, msg.op);
+            if (typeof pieces === 'string') return fail(pieces);
+            // (Moved: all of it, or none: what had no room would be lost. Copied: what fits.)
+            const r = world.transform(msg.op.copy ? [] : taken, pieces, !msg.op.copy);
+            result = r.result;
+            if (!result) return fail(r.blocked ? `no room there for all of it: ${r.blocked} voxel${r.blocked === 1 ? '' : 's'} in the way` : 'no room there: everything in the way is taken');
+            keep(r.blocks);
+            note = `${msg.op.copy ? 'copied' : 'moved'}: ${r.count} voxel${r.count === 1 ? '' : 's'}${r.blocked > 0 ? ` (${r.blocked} with no room, left out)` : ''}${r.blocks.length > BUILD_UNDO_BLOCKS ? ' (too big to undo)' : ''}`;
           } else if (msg.type === 'extrude') {
             const face = flatFace(world.blockReader, [msg.x, msg.y, msg.z], msg.axis, msg.sign);
             if (typeof face === 'string') return fail(face);

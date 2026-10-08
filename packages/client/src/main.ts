@@ -858,7 +858,7 @@ connection = connect({
           // The mode, and the size chosen (dig, place; hybrid while ⌘ is held: else it matches what's aimed at).
           const showMode = () => {
             const size = editTool!.chosenSize;
-            const tool = editTool!.mode === 'build' ? ` · ${editTool!.builder.tool.toUpperCase()}${editTool!.builder.hollow && !['line', 'box', 'extrude'].includes(editTool!.builder.tool) ? ' (HOLLOW)' : ''}` : '';
+            const tool = editTool!.mode === 'build' ? ` · ${editTool!.builder.tool.toUpperCase()}${editTool!.builder.hollow && !['line', 'box', 'extrude', 'select'].includes(editTool!.builder.tool) ? ' (HOLLOW)' : ''}` : '';
             modeTag.textContent = editTool!.mode.toUpperCase() + tool + (size !== null ? ` · ${sizeLabel(size)}` : '');
             modeTag.dataset.mode = editTool!.mode;
           };

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { Item, Material, blockFromVoxels, blockIndex, emptyChunk } from '@super-vox/shared';
 import { EditTool, sizeLabel } from './editTool.js';
+import { BUILD_TOOLS } from './buildMode.js';
 import type { ChunkManager } from './chunkManager.js';
 
 /** Key events as the tool reads them (node has no KeyboardEvent). */
@@ -434,7 +435,7 @@ describe('EditTool build mode (creative)', () => {
     expect(tool.builder.active).toBe(false);
     window.dispatchEvent(key('keydown', 'KeyG', false));
     expect(tool.builder.tool).toBe('circle');
-    for (let i = 0; i < 4; i++) window.dispatchEvent(key('keydown', 'KeyG', false));
+    for (let i = 0; i < BUILD_TOOLS.length - 2; i++) window.dispatchEvent(key('keydown', 'KeyG', false)); // (round to the first)
     expect(tool.builder.tool).toBe('line');
     tool.click(0, { meta: false, alt: false, shift: true });
     tool.click(0, { meta: false, alt: false });
@@ -518,5 +519,80 @@ describe('extrudeFaces (the extrude preview)', () => {
     expect(lit[0]!.lo[1]).toBeCloseTo(16.1, 5);
     expect([lit[0]!.lo[0], lit[0]!.hi[0], lit[0]!.lo[2], lit[0]!.hi[2], lit[0]!.hi[1]! - lit[0]!.lo[1]!]).toEqual([0, 16, 0, 16, 0]);
     expect(extrudeFaces([{ x: 0, y: 0, z: 0, size: 16 }], 1, 1, 1, () => 16, [0, 0, 0], 3)).toBeNull();
+  });
+});
+
+describe('pieceFaces (the selection ghost)', () => {
+  it('draws the outside of cubes of any sizes, the faces between them left out', async () => {
+    const { pieceFaces } = await import('./editTool.js');
+    const n = (f: Float32Array | null) => f!.length / 18;
+    expect(n(pieceFaces([{ x: 0, y: 0, z: 0, size: 16 }], [0, 0, 0], 100))).toBe(6);
+    // Two 1 m cubes side by side: 10 faces.
+    expect(n(pieceFaces([{ x: 0, y: 0, z: 0, size: 16 }, { x: 16, y: 0, z: 0, size: 16 }], [0, 0, 0], 100))).toBe(10);
+    // A 1/4 m cube against a 1 m one's side: the big one's side in sixteen squares, one of them hidden.
+    const mixed = pieceFaces([{ x: 0, y: 0, z: 0, size: 16 }, { x: 16, y: 0, z: 0, size: 4 }], [0, 0, 0], 100);
+    expect(n(mixed)).toBe(5 + 15 + 5);
+    // Too many.
+    expect(pieceFaces([{ x: 0, y: 0, z: 0, size: 16 }, { x: 16, y: 0, z: 0, size: 16 }], [0, 0, 0], 1)).toBeNull();
+  });
+});
+
+describe('EditTool select (creative)', () => {
+  let tool: EditTool;
+  let camera: THREE.PerspectiveCamera;
+  let sent: { type: string; [k: string]: unknown }[];
+  const ground = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+  // A floor of stone, 1 m blocks, y 0 (x and z 0..3), and a plank on it at (1, 1, 1).
+  for (let x = 0; x < 4; x++) for (let z = 0; z < 4; z++) ground.blocks[blockIndex(x, 0, z)] = { kind: 'uniform', size: 16, material: Material.Stone };
+  ground.blocks[blockIndex(1, 1, 1)] = { kind: 'uniform', size: 16, material: Material.Planks };
+  const look = (x: number, y: number, z: number) => {
+    camera.lookAt(x, y, z);
+    camera.updateMatrixWorld();
+    tool.update();
+  };
+  beforeEach(() => {
+    (globalThis as { window?: EventTarget }).window = new EventTarget();
+    const chunks = { chunkAt: (c: { cx: number; cy: number; cz: number }) => (c.cx === 0 && c.cy === 0 && c.cz === 0 ? ground : emptyChunk(c)) } as unknown as ChunkManager;
+    camera = new THREE.PerspectiveCamera();
+    camera.position.set(1.6, 6, 1.6);
+    sent = [];
+    tool = new EditTool(new THREE.Scene(), camera, chunks, (m) => sent.push(m as never), () => Material.Stone);
+    tool.bigBoxes = true;
+    tool.mode = 'build';
+    tool.size = 16;
+    tool.builder.tool = 'select';
+  });
+  afterEach(() => {
+    tool.dispose();
+    delete (globalThis as { window?: EventTarget }).window;
+  });
+
+  it('selects the plank, carries it (turned) to where aimed, puts it down; refused, the selection goes back', () => {
+    look(1.6, 0, 1.6); // straight down at the plank's top: in it
+    tool.click(0, { meta: false, alt: false });
+    tool.click(0, { meta: false, alt: false });
+    tool.click(0, { meta: false, alt: false });
+    expect(tool.builder.selection).toEqual({ region: { x0: 16, y0: 16, z0: 16, x1: 32, y1: 32, z1: 32 }, size: 16 });
+    window.dispatchEvent(key('keydown', 'KeyR', false)); // nothing picked up yet
+    expect(tool.builder.carried).toBeNull();
+    window.dispatchEvent(key('keydown', 'KeyV', false));
+    expect(tool.builder.carried).toMatchObject({ copy: false, turns: 0 });
+    window.dispatchEvent(key('keydown', 'KeyR', false));
+    expect(tool.builder.carried!.turns).toBe(1);
+    // Aim at the floor at (3.5, 1, 2.5) m: it goes on top of it there.
+    look(3.5, 1, 2.5);
+    tool.click(0, { meta: false, alt: false });
+    expect(sent).toEqual([{ type: 'transform', id: expect.any(Number), op: { region: { x0: 16, y0: 16, z0: 16, x1: 32, y1: 32, z1: 32 }, size: 16, to: { x: 48, y: 16, z: 32 }, turns: 1, copy: false } }]);
+    expect(tool.builder.selection!.region).toEqual({ x0: 48, y0: 16, z0: 32, x1: 64, y1: 32, z1: 48 });
+    tool.onServerMessage({ type: 'editResult', id: sent[0]!.id as number, ok: false, error: 'no room there' });
+    expect(tool.builder.selection!.region).toEqual({ x0: 16, y0: 16, z0: 16, x1: 32, y1: 32, z1: 32 });
+    // Copying (⇧V), then right-click: put back; again: nothing selected.
+    window.dispatchEvent(Object.assign(key('keydown', 'KeyV', false), { shiftKey: true }));
+    expect(tool.builder.carried).toMatchObject({ copy: true });
+    tool.click(2, { meta: false, alt: false });
+    expect(tool.builder.carried).toBeNull();
+    expect(tool.builder.selection).not.toBeNull();
+    tool.click(2, { meta: false, alt: false });
+    expect(tool.builder.selection).toBeNull();
   });
 });

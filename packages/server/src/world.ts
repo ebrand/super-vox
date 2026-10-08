@@ -1405,6 +1405,70 @@ export class World {
   }
 
   /**
+   * A selection moved (or copied): the voxels `taken` (world units, whole, as they are there) go,
+   * and `pieces` go in where there's room once they have (what's there stays; water goes), objects
+   * kept clear of. As build: what changed, how many went in, and each block before and after.
+   * `whole`: all of them or nothing (moving: what didn't fit would be lost); then `blocked`: how
+   * many had no room.
+   */
+  transform(taken: readonly BlockVoxel[], pieces: readonly BuildPiece[], whole = false): { result: EditResult | null; count: number; blocks: BuildChange[]; blocked: number } {
+    const B = BLOCK_SIZE;
+    const groups = new Map<string, { bx: number; by: number; bz: number; gone: Set<string>; add: BlockVoxel[] }>();
+    const group = (x: number, y: number, z: number) => {
+      const bx = this.wrapBlockX(Math.floor(x / B)), by = Math.floor(y / B), bz = Math.floor(z / B), key = objectKey(bx, by, bz);
+      let g = groups.get(key);
+      if (!g) groups.set(key, (g = { bx, by, bz, gone: new Set(), add: [] }));
+      return g;
+    };
+    const local = (v: { x: number; y: number; z: number; size: number }) => `${mod(v.x, B)},${mod(v.y, B)},${mod(v.z, B)},${v.size}`;
+    for (const v of taken) group(v.x, v.y, v.z).gone.add(local(v));
+    let blocked = 0;
+    for (const c of pieces) {
+      if (this.objects.size && this.objectIn({ x0: c.x, y0: c.y, z0: c.z, x1: c.x + c.size, y1: c.y + c.size, z1: c.z + c.size })) {
+        blocked++;
+        continue;
+      }
+      group(c.x, c.y, c.z).add.push({ x: mod(c.x, B), y: mod(c.y, B), z: mod(c.z, B), size: c.size, material: c.material });
+    }
+    const writes: { bx: number; by: number; bz: number; block: Block }[] = [], changes: BuildChange[] = [];
+    const taken3 = new Uint8Array(B * B * B);
+    const cells = (v: BlockVoxel, f: (i: number) => boolean | void) => {
+      for (let y = v.y; y < v.y + v.size; y++) for (let z = v.z; z < v.z + v.size; z++) for (let x = v.x; x < v.x + v.size; x++) if (f(x + B * (z + B * y))) return true;
+      return false;
+    };
+    let count = 0;
+    for (const g of groups.values()) {
+      const before = this.blockAt(g.bx, g.by, g.bz);
+      if (before === undefined) continue;
+      const voxels = blockVoxels(before);
+      const kept = voxels.filter((v) => !g.gone.has(local(v)));
+      taken3.fill(0);
+      for (const v of kept) if (!isWater(v.material)) cells(v, (i) => void (taken3[i] = 1));
+      const added: BlockVoxel[] = [];
+      for (const v of g.add) {
+        if (cells(v, (i) => taken3[i] === 1)) {
+          blocked++;
+          continue;
+        }
+        cells(v, (i) => void (taken3[i] = 1));
+        added.push(v);
+      }
+      if (!added.length && kept.length === voxels.length) continue;
+      count += added.length;
+      // (Water where they went: gone.)
+      const next = [...kept.filter((v) => !isWater(v.material) || !cells(v, (i) => added.length > 0 && taken3[i] === 1)), ...added];
+      const after = blockFromVoxels(next);
+      writes.push({ bx: g.bx, by: g.by, bz: g.bz, block: after });
+      changes.push({ bx: g.bx, by: g.by, bz: g.bz, before, after });
+    }
+    if (!writes.length || (whole && blocked > 0)) return { result: null, count: 0, blocks: [], blocked };
+    const result = this.writeBlocks(writes);
+    for (const w of writes) this.flow.touch(w.bx, w.by, w.bz);
+    this.stats.edits++;
+    return { result, count, blocks: changes, blocked };
+  }
+
+  /**
    * Undoes a build (its blocks as they were: see build), if none of them has changed since (else
    * nothing, and why not).
    */

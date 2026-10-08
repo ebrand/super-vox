@@ -50,7 +50,12 @@ import {
   MIN_VOXEL_SIZE,
   nextBreakSize,
   type BuildOp,
+  type BlockVoxel,
+  regionBetween,
   buildCells,
+  transformPieces,
+  turnedSpan,
+  voxelsIn,
   type ClientMessage,
   type Edit,
   type MaterialId,
@@ -60,7 +65,7 @@ import type { ChunkManager } from './chunkManager.js';
 import type { Aabb } from './physics.js';
 import { digBox, placementBox, raycastVoxels, type Box, type SolidAt } from './picking.js';
 import { solidAtFor, waterAtFor } from './worldQuery.js';
-import { BuildMode } from './buildMode.js';
+import { BuildMode, type Selection } from './buildMode.js';
 
 /** While scrolling continuously, wheel travel (pixels) per further voxel-size step. */
 const WHEEL_STEP = 30;
@@ -242,6 +247,11 @@ export class EditTool {
   private readonly buildCellsMaterial: THREE.MeshBasicMaterial;
   private readonly buildBox: THREE.Group;
   private shownBuild = '';
+  /** Moves and copies sent, by message id: the selection as it was (put back if refused). */
+  private readonly unselect = new Map<number, Selection>();
+  /** Select: what's picked up (the voxels, as when picked up), and the ghost of it drawn where it'd go. */
+  private carriedVoxels: BlockVoxel[] | null = null;
+  private readonly selectBox: THREE.Group;
   /** What the shape drawn so far would make (voxels), or why it can't be built; '' when none is. */
   private buildNote = '';
   private readonly digPreview: THREE.Mesh;
@@ -332,6 +342,9 @@ export class EditTool {
     this.buildCellsMesh = new THREE.Mesh(new THREE.BufferGeometry(), this.buildCellsMaterial);
     this.buildCellsMesh.frustumCulled = false;
     this.buildBox = seeThroughOutline(box, 0x40ff60);
+    this.selectBox = seeThroughOutline(box, 0x40c0ff);
+    this.selectBox.visible = false;
+    scene.add(this.selectBox);
     this.buildCellsMesh.visible = this.buildBox.visible = false;
     scene.add(this.buildCellsMesh, this.buildBox);
     this.onKeyDown = (e) => {
@@ -562,7 +575,7 @@ export class EditTool {
     if (this.mode === 'build') {
       const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
       const dir = this.camera.getWorldDirection(new THREE.Vector3());
-      this.builder.move({ origin: [origin.x, origin.y, origin.z], dir: [dir.x, dir.y, dir.z] }, this.size);
+      this.builder.move({ origin: [origin.x, origin.y, origin.z], dir: [dir.x, dir.y, dir.z] }, this.size, this.hit && { point: this.hit.point, normal: this.hit.normal });
     }
     this.showBuild();
     this.show(this.outline, this.outlined() ? this.target : null, 1.004);
@@ -705,6 +718,9 @@ export class EditTool {
     const boat = this.boarding.get(msg.id);
     this.boarding.delete(msg.id);
     if (msg.ok && boat !== undefined) this.onBoarded?.(boat);
+    const was = this.unselect.get(msg.id);
+    this.unselect.delete(msg.id);
+    if (!msg.ok && was) this.builder.select(was);
     if (!msg.ok) this.say(`${what ?? 'edit'} failed: ${msg.error}`);
     else if (msg.note) this.say(msg.note);
     return true;
@@ -736,10 +752,12 @@ export class EditTool {
       const b = this.builder;
       const round = b.tool === 'circle' || b.tool === 'dome' || b.tool === 'sphere';
       return (
-        `mode: build (Tab: hybrid / dig / place / build) · ${b.tool}${round ? (b.hollow ? `, hollow ${b.thickness} thick` : ', solid') : ''}${b.tool === 'extrude' ? '' : ` · ${sizeLabel(this.size)} ${this.material?.name ?? 'nothing (E: inventory)'}`} · ${b.stage}${this.buildNote ? ` · ${this.buildNote}` : ''}\n` +
-        (b.tool === 'extrude'
-          ? 'G: line / box / circle / dome / sphere / extrude · click a face (the flat face it is in lights up), aim out or in along it, click · right-click: never mind · U or ⌘Z: undo'
-          : `G: line / box / circle / dome / sphere / extrude · click: start, then click again${b.tool === 'box' ? ' (base, then height)' : ''} · ⇧+click to start: clear instead · right-click: never mind · H: hollow · T: thickness · U or ⌘Z: undo · ⌘+wheel or [ ]: size`) +
+        `mode: build (Tab: hybrid / dig / place / build) · ${b.tool}${round ? (b.hollow ? `, hollow ${b.thickness} thick` : ', solid') : ''}${b.tool === 'extrude' ? '' : b.tool === 'select' ? ` · ${sizeLabel(this.size)} grid` : ` · ${sizeLabel(this.size)} ${this.material?.name ?? 'nothing (E: inventory)'}`} · ${b.stage}${this.buildNote ? ` · ${this.buildNote}` : ''}\n` +
+        (b.tool === 'select'
+          ? 'G: line / box / circle / dome / sphere / extrude / select · click a corner, its base, its height · V: move it · ⇧V: copy it · R: turn it (carried) · click: put it down · right-click: put back, again: select nothing · U or ⌘Z: undo · ⌘+wheel or [ ]: grid size'
+          : b.tool === 'extrude'
+          ? 'G: line / box / circle / dome / sphere / extrude / select · click a face (the flat face it is in lights up), aim out or in along it, click · right-click: never mind · U or ⌘Z: undo'
+          : `G: line / box / circle / dome / sphere / extrude / select · click: start, then click again${b.tool === 'box' ? ' (base, then height)' : ''} · ⇧+click to start: clear instead · right-click: never mind · H: hollow · T: thickness · U or ⌘Z: undo · ⌘+wheel or [ ]: size`) +
         msg
       );
     }
@@ -768,13 +786,15 @@ export class EditTool {
    */
   private buildClick(button: number, shift: boolean): void {
     if (button === 2) {
-      if (this.builder.active) this.say('never mind');
+      // (Select: what's picked up goes back; again, the selection goes.)
+      if (this.builder.active) this.say(this.builder.carried ? 'put back' : 'never mind');
+      else if (this.builder.selection) this.builder.select(null);
       this.builder.cancel();
       return;
     }
     if (button !== 0) return;
     const material = this.materialOf();
-    if (!shift && !this.builder.active && this.builder.tool !== 'extrude' && (material === null || !isBlock(material) || !canPlace(material, 'creative') || isWater(material)))
+    if (!shift && !this.builder.active && this.builder.tool !== 'extrude' && this.builder.tool !== 'select' && (material === null || !isBlock(material) || !canPlace(material, 'creative') || isWater(material)))
       return this.say(material === null ? 'nothing in this hotbar slot to build with (E: inventory) · ⇧+click clears' : `a ${itemName(material)} can't be built with`);
     const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
     const dir = this.camera.getWorldDirection(new THREE.Vector3());
@@ -784,6 +804,15 @@ export class EditTool {
     this.onModeChange?.(this.mode);
     if (!op) return;
     if (typeof op === 'string') return this.say(op);
+    if ('kind' in op && op.kind === 'transform') {
+      const id = this.nextId++;
+      this.pending.set(id, op.copy ? 'copy' : 'move');
+      // (Put back as it was if the server won't: see onServerMessage.)
+      this.unselect.set(id, { region: op.region, size: op.size });
+      const { kind: _, ...t } = op;
+      this.send({ type: 'transform', id, op: t });
+      return;
+    }
     if ('kind' in op) {
       const id = this.nextId++;
       this.pending.set(id, op.depth > 0 ? 'extrude' : 'cut back');
@@ -806,9 +835,20 @@ export class EditTool {
   }
 
   /** Build mode's keys (true: it was one). */
-  private buildKey(code: string): boolean {
+  private buildKey(code: string, shift = false): boolean {
     const b = this.builder;
-    if (code === 'KeyG') {
+    if (code === 'KeyV' && b.tool === 'select') {
+      if (!b.pickUp(shift)) this.say('select something first: click out a box');
+      else {
+        // (What's in it, now, as the ghost to carry.)
+        const taken = b.reader && voxelsIn(b.reader, b.selection!.region);
+        this.carriedVoxels = Array.isArray(taken) ? taken : null;
+        if (typeof taken === 'string') this.say(taken);
+        else if (taken && !taken.length) this.say('nothing in it to move (only its outline goes)');
+      }
+    } else if (code === 'KeyR' && b.tool === 'select') {
+      if (!b.turn()) this.say('pick it up first (V: move, ⇧V: copy), then R turns it');
+    } else if (code === 'KeyG') {
       b.nextTool();
       this.say(`build: ${b.tool}`);
     } else if (code === 'KeyH') {
@@ -827,7 +867,9 @@ export class EditTool {
 
   /** Build mode: shows the shape drawn so far, voxel by voxel (big ones: the box round them). */
   private showBuild(): void {
+    this.selectBox.visible = false;
     if (this.mode === 'build' && this.builder.tool === 'extrude') return this.showExtrude();
+    if (this.mode === 'build' && this.builder.tool === 'select') return this.showSelect();
     const material = this.materialOf();
     const op = this.mode === 'build' ? this.builder.op(this.size, material ?? Material.Stone) : null;
     const key = op ? JSON.stringify(op) : '';
@@ -901,6 +943,42 @@ export class EditTool {
     this.buildNote = `a face of ${n} voxel${n === 1 ? '' : 's'}` + (depth > 0 ? ` · extrudes ${grown} voxel${grown === 1 ? '' : 's'}${grown ? '' : ' (aim further: whole copies only)'}` : depth < 0 ? ` · cuts back ${d / UNITS_PER_METER} m (what it touches goes)` : '');
   }
 
+  /** Select: the box selected (or being clicked out), cyan; picked up, a ghost of what's in it where it'd go. */
+  private showSelect(): void {
+    const b = this.builder, sel = b.selection, f = b.carried;
+    const op = b.op(this.size, Material.Stone);
+    const region = f && sel && f.to
+      ? (() => {
+          const [w, h, d] = turnedSpan(sel.region, f.turns);
+          return { x0: f.to.x, y0: f.to.y, z0: f.to.z, x1: f.to.x + w, y1: f.to.y + h, z1: f.to.z + d };
+        })()
+      : op?.shape.kind === 'box'
+        ? regionBetween(op.shape.a, op.shape.b, op.size)
+        : sel?.region ?? null;
+    if (region) {
+      const M = UNITS_PER_METER;
+      this.selectBox.visible = true;
+      this.selectBox.scale.set((region.x1 - region.x0) / M + 0.01, (region.y1 - region.y0) / M + 0.01, (region.z1 - region.z0) / M + 0.01);
+      this.selectBox.position.set((region.x0 + region.x1) / 2 / M, (region.y0 + region.y1) / 2 / M, (region.z0 + region.z1) / 2 / M);
+    }
+    const key = f && sel && f.to ? `s ${JSON.stringify(f)} ${JSON.stringify(sel)}` : '';
+    if (key === this.shownBuild) return;
+    this.shownBuild = key;
+    this.buildBox.visible = false;
+    this.buildNote = sel ? `${(sel.region.x1 - sel.region.x0) / UNITS_PER_METER} x ${(sel.region.y1 - sel.region.y0) / UNITS_PER_METER} x ${(sel.region.z1 - sel.region.z0) / UNITS_PER_METER} m selected (on the ${sizeLabel(sel.size)} grid)` : '';
+    const pieces = f && sel && f.to && this.carriedVoxels ? transformPieces(this.carriedVoxels, { region: sel.region, size: sel.size, to: f.to, turns: f.turns, copy: f.copy }) : null;
+    const faces = Array.isArray(pieces) && pieces.length ? pieceFaces(pieces, [f!.to!.x, f!.to!.y, f!.to!.z], BUILD_PREVIEW_FACES) : null;
+    this.buildCellsMesh.visible = !!faces;
+    if (faces) {
+      this.buildCellsMaterial.color.set(0x40c0ff);
+      this.buildCellsMesh.geometry.dispose();
+      this.buildCellsMesh.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(faces, 3));
+      this.buildCellsMesh.position.set(f!.to!.x / UNITS_PER_METER, f!.to!.y / UNITS_PER_METER, f!.to!.z / UNITS_PER_METER);
+      this.buildCellsMesh.scale.setScalar(1 / UNITS_PER_METER);
+    }
+    if (f && Array.isArray(pieces)) this.buildNote += ` · ${f.copy ? 'copies' : 'moves'} ${this.carriedVoxels!.length} voxel${this.carriedVoxels!.length === 1 ? '' : 's'}${f.turns ? `, turned ${f.turns * 90}°` : ''}`;
+  }
+
   /** The box round a shape's cells (lo..hi: their corners, units; null: just where it started). */
   private showBuildBox(op: BuildOp, span: { lo: number[]; hi: number[] } | null): void {
     const box = this.buildBox;
@@ -943,6 +1021,7 @@ export class EditTool {
     this.buildCellsMesh.removeFromParent();
     this.buildCellsMesh.geometry.dispose();
     this.buildBox.removeFromParent();
+    this.selectBox.removeFromParent();
   }
 
   private readModifiers(e: KeyboardEvent): void {
@@ -969,7 +1048,7 @@ export class EditTool {
       this.cycleMode();
       return;
     }
-    if (this.mode === 'build' && this.buildKey(e.code)) return;
+    if (this.mode === 'build' && this.buildKey(e.code, e.shiftKey)) return;
     // (In hybrid the size follows the target unless Command is held, so [ ] only work in dig and place.)
     if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && this.mode === 'hybrid') this.say('hybrid: hold ⌘ and turn the wheel to choose a size');
     else if (e.code === 'BracketLeft') this.stepSize(-1, false);
@@ -1353,6 +1432,73 @@ export function extrudeFaces(
         else rect(side, c, along, up);
       }
     }
+    if (rects > most) return null;
+  }
+  return new Float32Array(out);
+}
+
+/**
+ * The outsides of cubes (`pieces`: each on its own size's grid, none overlapping, any sizes): each
+ * face not against another of them, as triangles (units, from `origin`); a face partly against
+ * smaller ones, in squares of the smallest size. Null if more than `most` squares.
+ */
+export function pieceFaces(pieces: readonly { x: number; y: number; z: number; size: number }[], origin: readonly number[], most: number): Float32Array | null {
+  const bySize = new Map<number, Set<string>>();
+  for (const p of pieces) {
+    let m = bySize.get(p.size);
+    if (!m) bySize.set(p.size, (m = new Set()));
+    m.add(`${p.x},${p.y},${p.z}`);
+  }
+  // (Covered at a point by a piece at least `atLeast` across, or any.)
+  const covered = (x: number, y: number, z: number, atLeast = 0) => {
+    for (const [s, m] of bySize) if (s >= atLeast && m.has(`${Math.floor(x / s) * s},${Math.floor(y / s) * s},${Math.floor(z / s) * s}`)) return true;
+    return false;
+  };
+  const sizes = [...bySize.keys()];
+  if (pieces.length > most) return null;
+  const out: number[] = [];
+  let rects = 0;
+  const rect = (f: number, c: number, r1: readonly number[], r2: readonly number[]) => {
+    rects++;
+    const a1 = (f + 1) % 3, a2 = (f + 2) % 3, q = [0, 0, 0];
+    for (const [i, j] of [[0, 0], [1, 0], [1, 1], [0, 0], [1, 1], [0, 1]] as const) {
+      q[f] = c - origin[f]!;
+      q[a1] = r1[i]! - origin[a1]!;
+      q[a2] = r2[j]! - origin[a2]!;
+      out.push(q[0]!, q[1]!, q[2]!);
+    }
+  };
+  for (const p of pieces) {
+    const lo = [p.x, p.y, p.z], s = p.size;
+    for (let f = 0; f < 3; f++)
+      for (const side of [0, 1]) {
+        const c = lo[f]! + side * s;
+        const a1 = (f + 1) % 3, a2 = (f + 2) % 3;
+        // Against one as big or bigger: covered, all of it. No smaller ones about: open, all of it.
+        const mid = [0, 0, 0];
+        mid[f] = side ? c + 0.5 : c - 0.5;
+        mid[a1] = lo[a1]! + s / 2;
+        mid[a2] = lo[a2]! + s / 2;
+        if (covered(mid[0]!, mid[1]!, mid[2]!, s)) continue;
+        const smaller = sizes.filter((z) => z < s);
+        if (!smaller.length) {
+          rect(f, c, [lo[a1]!, lo[a1]! + s], [lo[a2]!, lo[a2]! + s]);
+          continue;
+        }
+        const step = Math.min(...smaller), beyond = side ? c + step / 2 : c - step / 2;
+        // The face's squares (of the smallest size) with nothing beyond them.
+        const open: [number, number][] = [];
+        for (let u = 0; u < s; u += step)
+          for (let v = 0; v < s; v += step) {
+            const q = [0, 0, 0];
+            q[f] = beyond;
+            q[a1] = lo[a1]! + u + step / 2;
+            q[a2] = lo[a2]! + v + step / 2;
+            if (!covered(q[0]!, q[1]!, q[2]!)) open.push([u, v]);
+          }
+        if (open.length === (s / step) ** 2) rect(f, c, [lo[a1]!, lo[a1]! + s], [lo[a2]!, lo[a2]! + s]);
+        else for (const [u, v] of open) rect(f, c, [lo[a1]! + u, lo[a1]! + u + step], [lo[a2]! + v, lo[a2]! + v + step]);
+      }
     if (rects > most) return null;
   }
   return new Float32Array(out);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
-import { FLAT_WORLD_16KM, FlatGenerator, Material, PROTOCOL_VERSION, blockIndex, blockVoxels, buildCells, decodeChunk, defaultFlatGen, extrudePieces, flatFace, type Block, type BuildOp, type ServerMessage } from '@super-vox/shared';
+import { FLAT_WORLD_16KM, FlatGenerator, Material, PROTOCOL_VERSION, blockIndex, blockVoxels, buildCells, decodeChunk, defaultFlatGen, extrudePieces, flatFace, transformPieces, voxelsIn, type TransformOp, type Block, type BuildOp, type ServerMessage } from '@super-vox/shared';
 import { buildApp } from './app.js';
 import { World } from './world.js';
 import { singleWorld } from './worlds.js';
@@ -201,6 +201,112 @@ describe('extruding in the world', () => {
       expect(await ask({ type: 'extrude', x: 1700, y: -1, z: 1700, axis: 1, sign: 1, depth: 16 })).toMatchObject({ ok: false, error: /too big/ });
       expect(await ask({ type: 'undo' })).toMatchObject({ ok: true });
       expect(block(world, 100, 3, 100)).toBeNull();
+      ws.close();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('moving and copying a selection', () => {
+  /** Stone blocks in an L: (100, 1, 100), (101, 1, 100), (100, 1, 101); and a 1/4 m plank on the first's top corner. */
+  function ell() {
+    const w = flat();
+    for (const [bx, bz] of [[100, 100], [101, 100], [100, 101]]) w.applyEdit({ op: 'place', x: bx! * 16, y: 16, z: bz! * 16, size: 16, material: Material.Stone });
+    w.applyEdit({ op: 'place', x: 1600, y: 32, z: 1600, size: 4, material: Material.Planks });
+    return w;
+  }
+  const region = { x0: 1600, y0: 16, z0: 1600, x1: 1632, y1: 48, z1: 1632 };
+  const run = (w: World, op: TransformOp) => {
+    const taken = voxelsIn(w.blockReader, op.region);
+    if (typeof taken === 'string') throw new Error(taken);
+    const pieces = transformPieces(taken, op);
+    if (typeof pieces === 'string') throw new Error(pieces);
+    return { taken, r: w.transform(op.copy ? [] : taken, pieces, !op.copy) };
+  };
+  const stone = (w: World, bx: number, bz: number, by = 1) => block(w, bx, by, bz)?.kind === 'uniform';
+
+  it('moves what is in the box (not the ground under it), and undoes', () => {
+    const w = ell();
+    const { taken, r } = run(w, { region, size: 16, to: { x: 1680, y: 16, z: 1600 }, turns: 0, copy: false });
+    expect(taken).toHaveLength(4);
+    expect(r.count).toBe(4);
+    expect([stone(w, 100, 100), stone(w, 101, 100), stone(w, 100, 101)]).toEqual([false, false, false]);
+    expect(block(w, 100, 2, 100)).toBeNull();
+    expect([stone(w, 105, 100), stone(w, 106, 100), stone(w, 105, 101)]).toEqual([true, true, true]);
+    expect(solidIn(w, 105, 2, 100)).toEqual([{ x: 0, y: 0, z: 0, size: 4, material: Material.Planks }]);
+    expect(typeof w.unbuild(r.blocks)).toBe('object');
+    expect([stone(w, 100, 100), stone(w, 105, 100)]).toEqual([true, false]);
+  });
+
+  it('moves onto itself, shifted (what it leaves makes room)', () => {
+    const w = ell();
+    const { r } = run(w, { region, size: 16, to: { x: 1616, y: 16, z: 1600 }, turns: 0, copy: false });
+    expect(r.count).toBe(4);
+    expect([stone(w, 100, 100), stone(w, 101, 100), stone(w, 102, 100), stone(w, 101, 101), stone(w, 100, 101)]).toEqual([false, true, true, true, false]);
+  });
+
+  it('turns on the grid: the L to NE, SE, NW; the plank to the NE corner', () => {
+    const w = ell();
+    const { r } = run(w, { region, size: 16, to: { x: 1696, y: 16, z: 1600 }, turns: 1, copy: true });
+    expect(r.count).toBe(4);
+    expect([stone(w, 106, 100), stone(w, 107, 100), stone(w, 107, 101), stone(w, 106, 101)]).toEqual([true, true, true, false]);
+    // The plank (was at the NW block's NW top corner) is at the NE block's NE corner: x 12..16 of it.
+    expect(solidIn(w, 107, 2, 100)).toEqual([{ x: 12, y: 0, z: 0, size: 4, material: Material.Planks }]);
+    // Twice round: back as it was (a half turn and another).
+    const w2 = ell();
+    run(w2, { region, size: 16, to: { x: 1696, y: 16, z: 1600 }, turns: 2, copy: true });
+    expect([stone(w2, 106, 100), stone(w2, 107, 100), stone(w2, 107, 101), stone(w2, 106, 101)]).toEqual([false, true, true, true]);
+  });
+
+  it('a 1 m voxel moved off the 1 m grid goes as pieces of the selection size', () => {
+    const w = ell();
+    const one = { x0: 1600, y0: 16, z0: 1600, x1: 1616, y1: 32, z1: 1616 };
+    const { r } = run(w, { region: one, size: 4, to: { x: 1684, y: 16, z: 1600 }, turns: 0, copy: true });
+    expect(r.count).toBe(64);
+    expect(solidIn(w, 105, 1, 100)).toHaveLength(48);
+    expect(solidIn(w, 106, 1, 100)).toHaveLength(16);
+  });
+
+  it("won't move into what's in the way (nothing changes); a copy leaves out what has no room", () => {
+    const w = ell();
+    w.applyEdit({ op: 'place', x: 1680, y: 16, z: 1600, size: 16, material: Material.Planks });
+    const { r } = run(w, { region, size: 16, to: { x: 1680, y: 16, z: 1600 }, turns: 0, copy: false });
+    expect(r.result).toBeNull();
+    expect(r.blocked).toBe(1);
+    expect(stone(w, 100, 100)).toBe(true);
+    const c = run(w, { region, size: 16, to: { x: 1680, y: 16, z: 1600 }, turns: 0, copy: true }).r;
+    expect([c.count, c.blocked]).toEqual([3, 1]);
+  });
+
+  it('over the connection', async () => {
+    const world = ell();
+    const app = await buildApp({ catalog: singleWorld(world, undefined, 'default', 24, 'creative') });
+    try {
+      const base = await app.listen({ port: 0, host: '127.0.0.1' });
+      const ws = new WebSocket(base.replace(/^http/, 'ws') + '/ws');
+      const msgs: ServerMessage[] = [];
+      ws.on('message', (d, bin) => !bin && msgs.push(JSON.parse(String(d)) as ServerMessage));
+      await new Promise((r) => ws.once('open', r));
+      ws.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION }));
+      const until = async (f: () => boolean) => {
+        for (let i = 0; i < 300 && !f(); i++) await new Promise((r) => setTimeout(r, 10));
+        if (!f()) throw new Error('timed out');
+      };
+      let id = 0;
+      const ask = async (msg: object) => {
+        const n = ++id;
+        ws.send(JSON.stringify({ ...msg, id: n }));
+        await until(() => msgs.some((m) => m.type === 'editResult' && m.id === n));
+        return msgs.find((m) => m.type === 'editResult' && m.id === n) as Extract<ServerMessage, { type: 'editResult' }>;
+      };
+      await until(() => msgs.some((m) => m.type === 'welcome'));
+      expect(await ask({ type: 'transform', op: { region, size: 16, to: { x: 1680, y: 16, z: 1600 }, turns: 0, copy: false } })).toMatchObject({ ok: true, note: 'moved: 4 voxels' });
+      expect(stone(world, 105, 100)).toBe(true);
+      expect(await ask({ type: 'transform', op: { region, size: 16, to: { x: 1681, y: 16, z: 1600 }, turns: 0, copy: false } })).toMatchObject({ ok: false, error: 'not on the grid' });
+      expect(await ask({ type: 'transform', op: { region: { ...region, x1: 1600 + 65 * 16 }, size: 16, to: { x: 0, y: 0, z: 0 }, turns: 0, copy: true } })).toMatchObject({ ok: false, error: /too big/ });
+      expect(await ask({ type: 'undo' })).toMatchObject({ ok: true });
+      expect([stone(world, 100, 100), stone(world, 105, 100)]).toEqual([true, false]);
       ws.close();
     } finally {
       await app.close();

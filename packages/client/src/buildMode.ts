@@ -1,4 +1,4 @@
-import { buildCells, flatFace, type BlockReader, type BlockVoxel, type BuildOp, type Cell, type MaterialId, type RoundShape } from '@super-vox/shared';
+import { buildCells, flatFace, regionBetween, turnedSpan, type BlockReader, type BlockVoxel, type BuildOp, type Cell, type MaterialId, type Region, type RoundShape, type TransformOp } from '@super-vox/shared';
 
 /**
  * Build mode (creative): the object designer's shape tools, in the world. In the game the mouse
@@ -11,8 +11,23 @@ import { buildCells, flatFace, type BlockReader, type BlockVoxel, type BuildOp, 
  * it (or in), click: each of its voxels grows a column of copies of itself (or it's cut back). The
  * server works out the face again from where it was clicked (an ExtrudeOp).
  */
-export type BuildTool = 'line' | 'box' | RoundShape | 'extrude';
-export const BUILD_TOOLS: readonly BuildTool[] = ['line', 'box', 'circle', 'dome', 'sphere', 'extrude'];
+export type BuildTool = 'line' | 'box' | RoundShape | 'extrude' | 'select';
+export const BUILD_TOOLS: readonly BuildTool[] = ['line', 'box', 'circle', 'dome', 'sphere', 'extrude', 'select'];
+
+/**
+ * Select: a box clicked out as a box is (in what's aimed at), then (M) picked up to move, or (C) a
+ * copy of it: it follows the aim (against the face aimed at), R turns it a quarter turn; a click
+ * puts it down (a TransformOp), and the selection's then where it went.
+ */
+export interface Selection {
+  region: Region;
+  size: number;
+}
+interface Floating {
+  copy: boolean;
+  turns: 0 | 1 | 2 | 3;
+  to: { x: number; y: number; z: number } | null;
+}
 
 /** An extrusion, as sent: the face of the voxel covering unit cell (x, y, z) on side axis/sign, `depth` units out (negative: in). */
 export interface ExtrudeOp {
@@ -71,12 +86,58 @@ export class BuildMode {
   thickness = 1;
   private drawing: Drawing | null = null;
   private extruding: Extruding | null = null;
+  private selected: Selection | null = null;
+  private floating: Floating | null = null;
   /** The world's blocks (Extrude: to find the face). */
   reader: BlockReader | null = null;
 
   /** Whether a shape's being drawn (started, not yet finished). */
   get active(): boolean {
-    return this.drawing !== null || this.extruding !== null;
+    return this.drawing !== null || this.extruding !== null || this.floating !== null;
+  }
+
+  /** What's selected (Select), if anything; and, picked up, where it'd go and how it's turned. */
+  get selection(): Readonly<Selection> | null {
+    return this.selected;
+  }
+  get carried(): Readonly<Floating> | null {
+    return this.floating;
+  }
+
+  /** Sets (or, null, drops) the selection: e.g. back where it was, a move having failed. */
+  select(s: Selection | null): void {
+    this.selected = s && { region: { ...s.region }, size: s.size };
+    this.floating = null;
+  }
+
+  /** Picks the selection up, to move it or (copy) a copy of it; false: nothing selected. */
+  pickUp(copy: boolean): boolean {
+    if (!this.selected) return false;
+    this.drawing = null;
+    this.floating = { copy, turns: 0, to: null };
+    return true;
+  }
+
+  /** Turns what's picked up a quarter turn (clockwise, seen from above); false: nothing is. */
+  turn(): boolean {
+    if (!this.floating) return false;
+    this.floating.turns = ((this.floating.turns + 1) % 4) as 0 | 1 | 2 | 3;
+    return true;
+  }
+
+  /** Where what's picked up would go against the face aimed at: square to it, centred on the aim across it, standing on the aim's level up a wall. */
+  private placeAt(aim: FaceAim): { x: number; y: number; z: number } {
+    const s = this.selected!, f = this.floating!, g = s.size;
+    const span = turnedSpan(s.region, f.turns);
+    const axis = Math.max(0, aim.normal.findIndex((c) => Math.abs(c) > 0.5));
+    const sign = aim.normal[axis]! < 0 ? -1 : 1;
+    const to = [0, 1, 2].map((i) => {
+      const p = aim.point[i]!;
+      if (i === axis) return sign > 0 ? Math.ceil(p / g - 1e-9) * g : Math.floor(p / g + 1e-9) * g - span[i]!;
+      if (i === 1) return Math.floor(p / g) * g;
+      return Math.round((p - span[i]! / 2) / g) * g;
+    });
+    return { x: to[0]!, y: to[1]!, z: to[2]! };
   }
 
   /** Extrude, started: its face, the way out of it, and how far it's aimed out (units; negative: in). */
@@ -98,20 +159,24 @@ export class BuildMode {
   get stage(): string {
     const d = this.drawing;
     if (this.extruding) return this.extruding.depth === 0 ? 'aim out to extrude, or in to cut back, click' : `${this.extruding.depth > 0 ? 'extrude' : 'cut back'} ${Math.abs(this.extruding.depth) / 16} m, click`;
+    if (this.floating) return `${this.floating.copy ? 'copy' : 'move'}: aim where it goes, click (R: turn it) · right-click: put it back`;
+    if (!d && this.tool === 'select') return this.selected ? 'M: move it · C: copy it · click: select another · right-click: select nothing' : 'click a corner (in what you aim at)';
     if (!d) return this.tool === 'extrude' ? 'click a face to extrude' : this.tool === 'line' || this.tool === 'box' ? 'click where it starts' : 'click where its middle goes';
-    if (d.tool === 'box') return d.stage === 'drag' ? 'aim out its base, click' : 'aim up or down for its height, click';
+    if (d.tool === 'box' || d.tool === 'select') return d.stage === 'drag' ? 'aim out its base, click' : 'aim up or down for its height, click';
     return d.tool === 'line' ? 'aim along a row, click' : 'aim out its radius, click';
   }
 
   /** The next tool round. */
   nextTool(): void {
     this.cancel();
+    this.selected = null;
     this.tool = BUILD_TOOLS[(BUILD_TOOLS.indexOf(this.tool) + 1) % BUILD_TOOLS.length]!;
   }
 
   cancel(): void {
     this.drawing = null;
     this.extruding = null;
+    this.floating = null;
   }
 
   /**
@@ -119,8 +184,21 @@ export class BuildMode {
    * moves a box on to its height, or finishes the shape (then it's returned, made of cells of
    * `size` in `material`).
    */
-  click(aim: FaceAim | null, ray: Ray, size: number, material: MaterialId, clear: boolean): BuildOp | ExtrudeOp | string | null {
+  click(aim: FaceAim | null, ray: Ray, size: number, material: MaterialId, clear: boolean): BuildOp | ExtrudeOp | (TransformOp & { kind: 'transform' }) | string | null {
     if (this.tool === 'extrude' || this.extruding) return this.clickExtrude(aim, ray);
+    if (this.floating) {
+      if (aim) this.floating.to = this.placeAt(aim);
+      const f = this.floating, s = this.selected!;
+      if (!f.to) return 'aim at where it goes';
+      const op = { kind: 'transform' as const, region: { ...s.region }, size: s.size, to: { ...f.to }, turns: f.turns, copy: f.copy };
+      // (Selected where it went.)
+      const [w, h, dd] = turnedSpan(s.region, f.turns);
+      this.selected = { region: { x0: f.to.x, y0: f.to.y, z0: f.to.z, x1: f.to.x + w, y1: f.to.y + h, z1: f.to.z + dd }, size: s.size };
+      this.floating = null;
+      return op;
+    }
+    // (Selecting: from the cell in what's aimed at, as clearing does.)
+    if (this.tool === 'select') clear = true;
     const d = this.drawing;
     if (!d) {
       if (!aim) return null;
@@ -134,12 +212,16 @@ export class BuildMode {
       return null;
     }
     this.move(ray, size);
-    if (d.tool === 'box' && d.stage === 'drag') {
+    if ((d.tool === 'box' || d.tool === 'select') && d.stage === 'drag') {
       d.stage = 'raise';
       return null;
     }
     const op = this.op(size, material);
     this.drawing = null;
+    if (d.tool === 'select' && op?.shape.kind === 'box') {
+      this.selected = { region: regionBetween(op.shape.a, op.shape.b, size), size };
+      return null;
+    }
     return op;
   }
 
@@ -160,7 +242,11 @@ export class BuildMode {
   }
 
   /** Follows the aim (each frame): the line's end, the base's corner, the radius, or the height. */
-  move(ray: Ray, size: number): void {
+  move(ray: Ray, size: number, aim: FaceAim | null = null): void {
+    if (this.floating) {
+      if (aim) this.floating.to = this.placeAt(aim);
+      return;
+    }
     const x = this.extruding;
     if (x) {
       // Out (or in) along the line through the point clicked, square to the face.
@@ -206,9 +292,9 @@ export class BuildMode {
   op(size: number, material: MaterialId): BuildOp | null {
     const d = this.drawing;
     if (!d) return null;
-    if (d.tool === 'line' || d.tool === 'box') {
+    if (d.tool === 'line' || d.tool === 'box' || d.tool === 'select') {
       const b = { ...d.end };
-      if (d.tool === 'box') b[KEYS[d.axis]!] = d.start[KEYS[d.axis]!] + d.depth;
+      if (d.tool !== 'line') b[KEYS[d.axis]!] = d.start[KEYS[d.axis]!] + d.depth;
       return { shape: { kind: 'box', a: d.start, b }, size, material, clear: d.clear };
     }
     // Round: centred on the start cell, out to the aimed cell (in half cells, as the designer).

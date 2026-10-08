@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Material, blockFromVoxels, buildCells, type BlockReader, type BuildOp, type Cell } from '@super-vox/shared';
-import { BuildMode, type Ray } from './buildMode.js';
+import { BUILD_TOOLS, BuildMode, type Ray } from './buildMode.js';
 
 const S = 4; // 1/4 m cells
 const stone = Material.Stone;
@@ -109,7 +109,7 @@ describe('BuildMode', () => {
     b.nextTool();
     expect(b.active).toBe(false);
     expect(b.tool).toBe('circle');
-    for (let i = 0; i < 5; i++) b.nextTool();
+    for (let i = 0; i < BUILD_TOOLS.length - 1; i++) b.nextTool(); // (round to where it started)
     expect(b.tool).toBe('box');
   });
 

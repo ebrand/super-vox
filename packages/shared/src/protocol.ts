@@ -1,5 +1,6 @@
 import type { DayClock } from './clock.js';
 import type { Edit } from './edit.js';
+import type { TransformOp } from './select.js';
 import { isValidTileLevel } from './tile.js';
 import type { ColumnRange } from './chunk.js';
 import { HOTBAR_SLOTS, type GameMode } from './items.js';
@@ -75,6 +76,8 @@ export type ClientMessage =
   | { type: 'build'; id: number; op: BuildOp }
   | { type: 'undo'; id: number }
   /** Build mode, Extrude: the flat face of the voxel covering unit cell (x, y, z) on side axis/sign, grown out `depth` units (negative: cut back). See flatFace. */
+  /** Build mode, Select: a box of the world moved (or copied) and turned (see TransformOp). */
+  | { type: 'transform'; id: number; op: TransformOp }
   | { type: 'extrude'; id: number; x: number; y: number; z: number; axis: 0 | 1 | 2; sign: 1 | -1; depth: number }
   /** Shoots an arrow (a bow in hand, see arrows.ts): from the eye at (x, y, z) (units) along (dx, dy, dz), drawn `charge` (0..1). */
   | { type: 'shoot'; x: number; y: number; z: number; dx: number; dy: number; dz: number; charge: number }
@@ -435,6 +438,19 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
     if (op) return { type: 'build', id: msg.id as number, op };
   }
   if (msg.type === 'undo' && isWhole(msg.id)) return { type: 'undo', id: msg.id as number };
+  if (msg.type === 'transform' && isWhole(msg.id)) {
+    const o = msg.op as Record<string, unknown> | null;
+    const r = o && typeof o === 'object' ? (o.region as Record<string, unknown> | null) : null;
+    const to = o && typeof o === 'object' ? (o.to as Record<string, unknown> | null) : null;
+    if (o && r && to && typeof r === 'object' && typeof to === 'object' && ['x0', 'y0', 'z0', 'x1', 'y1', 'z1'].every((k) => isInt32(r[k])) && ['x', 'y', 'z'].every((k) => isInt32(to[k])) && isInt32(o.size) && [0, 1, 2, 3].includes(o.turns as number) && typeof o.copy === 'boolean') {
+      const n = (k: string) => r[k] as number;
+      return {
+        type: 'transform',
+        id: msg.id as number,
+        op: { region: { x0: n('x0'), y0: n('y0'), z0: n('z0'), x1: n('x1'), y1: n('y1'), z1: n('z1') }, size: o.size as number, to: { x: to.x as number, y: to.y as number, z: to.z as number }, turns: o.turns as 0 | 1 | 2 | 3, copy: o.copy },
+      };
+    }
+  }
   if (msg.type === 'extrude' && isWhole(msg.id) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z) && [0, 1, 2].includes(msg.axis as number) && [1, -1].includes(msg.sign as number) && isInt32(msg.depth)) {
     return { type: 'extrude', id: msg.id as number, x: msg.x as number, y: msg.y as number, z: msg.z as number, axis: msg.axis as 0 | 1 | 2, sign: msg.sign as 1 | -1, depth: msg.depth as number };
   }
