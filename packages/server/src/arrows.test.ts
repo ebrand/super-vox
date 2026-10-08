@@ -71,7 +71,7 @@ describe('arrows in the world', () => {
 });
 
 describe('arrows in play', () => {
-  it('kill pigs for pork, for whoever shot them (survival)', async () => {
+  it('kill pigs, which drop their pork where they fall (survival)', async () => {
     const SECRET = 'k'.repeat(40);
     const accounts = new MemoryAccountStore();
     const inventories = new MemoryInventoryStore();
@@ -108,9 +108,15 @@ describe('arrows in play', () => {
         await new Promise((r) => setTimeout(r, ARROW.cooldownMs + 50));
       }
       expect(manager!.get(pig.id)).toBeUndefined();
+      // On the ground 5 m off (and more: knocked back); walked up to, picked up.
+      const lying = () => msgs.filter((m): m is Extract<ServerMessage, { type: 'drops' }> => m.type === 'drops').at(-1)?.drops ?? [];
+      await until(() => lying().length === 1);
+      const dropped = lying()[0]!;
+      expect(dropped.item).toBe(Item.Pork);
+      expect(pork()).toBe(0);
+      ws.send(JSON.stringify({ type: 'pose', x: dropped.x, y: dropped.y + 26, z: dropped.z, yaw: 0 }));
       await until(() => pork() > 0);
-      expect(pork()).toBeGreaterThanOrEqual(1);
-      expect(pork()).toBeLessThanOrEqual(3);
+      expect(pork()).toBe(dropped.amount);
       ws.close();
     } finally {
       await app.close();

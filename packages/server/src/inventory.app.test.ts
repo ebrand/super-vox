@@ -189,7 +189,7 @@ describe('survival needs', () => {
     p.ws.close();
   }, 10_000);
 
-  it('pigs give pork; going places makes you hungry; eating pork fills you up (not past full)', async () => {
+  it('pigs drop pork where they fall, to be picked up; going places makes you hungry; eating pork fills you up (not past full)', async () => {
     let manager: MobManager | null = null;
     const { url, cookie, inventories, ann } = await setup('survival', (w) => (manager = new MobManager(w, () => 0.999)));
     await inventories.save(ann.id, 'default@single', { items: new Map([[Item.StoneSword, 1]]), hotbar: Array(HOTBAR_SLOTS).fill(null) });
@@ -207,10 +207,21 @@ describe('survival needs', () => {
     p.ws.send(JSON.stringify({ type: 'attack', target: pig.id, weapon: Item.StoneSword }));
     await new Promise((r) => setTimeout(r, 450));
     p.ws.send(JSON.stringify({ type: 'attack', target: pig.id, weapon: Item.StoneSword }));
+    // Dropped where it fell (on the ground: y 0), 2 m off and more (it was knocked back): not picked up yet.
+    const lying = () => (p.msgs.filter((m): m is Extract<ServerMessage, { type: 'drops' }> => m.type === 'drops').at(-1)?.drops ?? []);
+    await p.until(() => lying().length === 1);
+    const dropped = lying()[0]!;
+    expect(dropped).toMatchObject({ item: Item.Pork, y: 0 });
+    expect(dropped.amount).toBeGreaterThanOrEqual(1);
+    expect(dropped.amount).toBeLessThanOrEqual(3);
+    await new Promise((r) => setTimeout(r, 250));
+    expect(p.inventory()!.items.some(([id]) => id === Item.Pork)).toBe(false);
+    // Walked up to: picked up (gone from the ground, for everyone).
+    p.ws.send(JSON.stringify({ type: 'pose', x: dropped.x + 8, y: 26, z: dropped.z, yaw: 0 }));
     await p.until(() => (p.inventory()!.items.find(([id]) => id === Item.Pork)?.[1] ?? 0) > 0);
     const pork = p.inventory()!.items.find(([id]) => id === Item.Pork)![1];
-    expect(pork).toBeGreaterThanOrEqual(1);
-    expect(pork).toBeLessThanOrEqual(3);
+    expect(pork).toBe(dropped.amount);
+    await p.until(() => lying().length === 0);
     // Full: not hungry.
     p.ws.send(JSON.stringify({ type: 'eat', item: Item.Pork }));
     await p.until(() => errors().length === 2);

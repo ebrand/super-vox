@@ -10,6 +10,7 @@ import { isFacing, type Facing, type PlacedObject } from './objects.js';
 import { isDesignOffset, type ObjectDesign } from './designs.js';
 import type { Boat } from './boats.js';
 import type { ArrowShot } from './arrows.js';
+import type { DroppedItem } from './drops.js';
 import type { EntityKind } from './mobs.js';
 import type { StationKind, StationState } from './stations.js';
 import { UNITS_PER_METER } from './units.js';
@@ -144,6 +145,8 @@ export type ServerMessage =
   | { type: 'objects'; objects: PlacedObject[] }
   /** The world's boats (see Boat), on joining and whenever one's put in, taken, got into or out of. */
   | { type: 'boats'; boats: Boat[] }
+  /** What's dropped on the ground in the world (see DroppedItem): on joining, and whenever it changes. */
+  | { type: 'drops'; drops: DroppedItem[] }
   /** An arrow shot (see ArrowShot): everyone near flies it, from now. */
   | { type: 'arrow'; arrow: ArrowShot }
   /** Where an arrow stopped: stuck in the world, in water, in a mob or a player, or gone (flown its time). */

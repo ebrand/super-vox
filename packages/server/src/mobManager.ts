@@ -169,7 +169,7 @@ export class MobManager {
    * A player at eye (x, y, z) (units) hits mob `id` for `damage`: if it's within `reach` metres.
    * Returns whether it was hit, whether that killed it, and what it was.
    */
-  attack(id: number, eyeX: number, eyeY: number, eyeZ: number, damage: number, reach: number, now: number): { hit: boolean; killed: boolean; kind?: MobKind } {
+  attack(id: number, eyeX: number, eyeY: number, eyeZ: number, damage: number, reach: number, now: number): { hit: boolean; killed: boolean; kind?: MobKind; at?: { x: number; y: number; z: number } } {
     const m = this.mobs.get(id);
     if (!m) return { hit: false, killed: false };
     const b = mobBox(m.kind, m.x, m.y, m.z);
@@ -178,7 +178,7 @@ export class MobManager {
     if (gap > reach) return { hit: false, killed: false, kind: m.kind };
     const killed = hurtMob(m, damage, x, eyeZ, now);
     if (killed) this.mobs.delete(id);
-    return { hit: true, killed, kind: m.kind };
+    return { hit: true, killed, kind: m.kind, at: { x: m.x, y: m.y, z: m.z } };
   }
 
   /** Every mob's box (units), by id: what an arrow can hit (see arrowStep). */
@@ -187,12 +187,12 @@ export class MobManager {
   }
 
   /** Mob `id` hurt for `damage` by something from (fromX, fromZ) (units: knocked away from it), as an arrow. */
-  hurt(id: number, damage: number, fromX: number, fromZ: number, now: number): { killed: boolean; kind?: MobKind } {
+  hurt(id: number, damage: number, fromX: number, fromZ: number, now: number): { killed: boolean; kind?: MobKind; at?: { x: number; y: number; z: number } } {
     const m = this.mobs.get(id);
     if (!m) return { killed: false };
     const killed = hurtMob(m, damage, m.x + deltaX(this.world.config, m.x, fromX), fromZ, now);
     if (killed) this.mobs.delete(id);
-    return { killed, kind: m.kind };
+    return { killed, kind: m.kind, at: { x: m.x, y: m.y, z: m.z } };
   }
 
   /** A blast at (x, y, z) (units) of `radius`: every mob in reach hurt (see blastDamage), knocked away from it. */

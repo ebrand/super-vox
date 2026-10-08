@@ -15,6 +15,11 @@ import {
   BLOCK_SIZE,
   ARROW,
   arrowDamage,
+  DROP,
+  PLAYER,
+  canPickUp,
+  restingY,
+  type DroppedItem,
   playerBox,
   CHUNK_SIZE,
   resolveChunk,
@@ -161,8 +166,8 @@ interface Player {
   settleUntil: number;
   /** Signed in: keeps their vitals and bed (see PlayerState), once they've been loaded. */
   saveState: (() => void) | null;
-  /** Puts `amount` of `item` in their inventory and tells them (nothing without one: not signed in, or not loaded yet). */
-  give: (item: ItemId, amount: number) => void;
+  /** Puts `amount` of `item` in their inventory and tells them; false (nothing) without one (not signed in, or not loaded yet). */
+  give: (item: ItemId, amount: number) => boolean;
 }
 
 /** Time between water flow steps. */
@@ -810,6 +815,48 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       }
     }
   }), 1000);
+  // Things dropped on the ground (see DroppedItem), by world: a pig's pork, for anyone to pick up
+  // (in survival) by walking up to it; gone after DROP.lifeMs.
+  const dropsOf = new Map<World, { list: Map<number, DroppedItem>; next: number }>();
+  const showDrops = (world: World) => toWorld(world, { type: 'drops', drops: [...(dropsOf.get(world)?.list.values() ?? [])] });
+  /** Drops `amount` of `item` at (x, y, z) (units): it comes to rest on the ground there. */
+  const drop = (world: World, item: ItemId, amount: number, x: number, y: number, z: number) => {
+    let d = dropsOf.get(world);
+    if (!d) dropsOf.set(world, (d = { list: new Map(), next: 1 }));
+    if (d.list.size >= DROP.max) d.list.delete(d.list.keys().next().value!);
+    const id = d.next++;
+    d.list.set(id, { id, item, amount, x, y: restingY(x, y + 8, z, world.solidAt), z });
+    dropTimes.set(d.list.get(id)!, Date.now());
+    showDrops(world);
+  };
+  const dropTimes = new WeakMap<DroppedItem, number>();
+  /** A pig killed (by a player who can be hurt: survival): its pork (1 to 3) dropped where it fell. */
+  const porkFrom = (world: World, killer: Player, r: { killed: boolean; kind?: string; at?: { x: number; y: number; z: number } } | undefined) => {
+    if (r?.killed && r.kind === 'pig' && r.at && killer.vulnerable) drop(world, Item.Pork, 1 + Math.floor(Math.random() * 3), r.at.x, r.at.y, r.at.z);
+  };
+  // Picked up (survival: those who can be hurt, with an inventory), and gone in time: ten times a second.
+  const pickingUp = setInterval(timed('drops', () => {
+    const now = Date.now();
+    for (const [world, d] of dropsOf) {
+      if (!d.list.size) continue;
+      let changed = false;
+      for (const [id, item] of d.list)
+        if (now - (dropTimes.get(item) ?? now) > DROP.lifeMs) {
+          d.list.delete(id);
+          changed = true;
+        }
+      for (const [client, p] of players) {
+        if (clients.get(client) !== world || !p.pose || !p.vulnerable) continue;
+        const feet = p.pose.y - PLAYER.eye;
+        for (const [id, item] of d.list) {
+          if (!canPickUp(item, p.pose.x, feet, p.pose.z) || !p.give(item.item, item.amount)) continue;
+          d.list.delete(id);
+          changed = true;
+        }
+      }
+      if (changed) showDrops(world);
+    }
+  }), 100);
   // Arrows in flight (see ArrowFlights), flown twenty times a second: what one hits is hurt, or
   // chipped (the world); everyone in its world is told where it stopped.
   const arrowsOf = new Map<World, ArrowFlights>();
@@ -831,9 +878,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         if (hit?.what === 'thing' && hit.kind === 'mob') {
           what = 'mob';
           const r = mobs?.hurt(hit.id, damage, shot.x, shot.z, now);
-          // A pig killed: pork (1 to 3) for whoever shot it, as for a sword (survival).
+          // A pig killed: its pork dropped where it fell (as for a sword).
           const shooter = shooters.get(shot.by)?.[1];
-          if (r?.killed && r.kind === 'pig' && shooter?.vulnerable) shooter.give(Item.Pork, 1 + Math.floor(Math.random() * 3));
+          if (shooter) porkFrom(world, shooter, r);
         } else if (hit?.what === 'thing' && hit.kind === 'player') {
           what = 'player';
           const target = shooters.get(hit.id);
@@ -987,6 +1034,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     clearInterval(flowing);
     clearInterval(mobbing);
     clearInterval(flying);
+    clearInterval(pickingUp);
     clearInterval(stationTicking);
     clearInterval(sampling);
     metrics.stop();
@@ -1153,9 +1201,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               name: who?.account.name ?? null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
               vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0, lastShot: 0, bed: null, settleUntil: Infinity, saveState: null,
               give: (item, amount) => {
-                if (!inventory) return;
+                if (!inventory) return false;
                 inventory.addItem(item, amount);
                 send(inventory.message());
+                return true;
               },
             });
             // Designs (named: some may be in their inventory) before the inventory, and where they're placed.
@@ -1165,6 +1214,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               send({ type: 'objects', objects: world.designObjects() });
               world.onObjectsChanged ??= () => toWorld(world, { type: 'objects', objects: world.designObjects() });
               send({ type: 'boats', boats: world.boatList() });
+              send({ type: 'drops', drops: [...(dropsOf.get(world)?.list.values() ?? [])] });
               world.onBoatsChanged ??= () => toWorld(world, { type: 'boats', boats: world.boatList() });
             };
             sendWelcome({
@@ -1541,11 +1591,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (p.vulnerable) p.vitals.exert(EXHAUSTION.attack);
           // (A little reach to spare: the pose is up to a tenth of a second old.)
           const r = mobManagers.get(world)?.attack(msg.target, p.pose.x, p.pose.y, p.pose.z, attackDamage(weapon), ATTACK_REACH + 1, now);
-          // A pig killed: pork (1 to 3).
-          if (r?.killed && r.kind === 'pig' && inventory && p.vulnerable) {
-            inventory.addItem(Item.Pork, 1 + Math.floor(Math.random() * 3));
-            send(inventory.message());
-          }
+          // A pig killed: its pork (1 to 3) dropped where it fell, to be picked up.
+          porkFrom(world, p, r);
           break;
         }
 

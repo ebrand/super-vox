@@ -28,7 +28,8 @@ import { InventoryUi } from './inventory.js';
 import { EntityView } from './entities.js';
 import { BoatView } from './boatView.js';
 import { ArrowView } from './arrowView.js';
-import { getOutAt, stepBoat, waterSurface, type Boat, type BoatMotion, type Hull } from '@super-vox/shared';
+import { DropView } from './dropView.js';
+import { getOutAt, stepBoat, waterSurface, type Boat, type BoatMotion, type DroppedItem, type Hull } from '@super-vox/shared';
 import type { Footprint } from './coverage.js';
 import { createCompassRose } from './compassRose.js';
 import { coveredAboveFor, materialAtFor, solidAtFor, waterAtFor } from './worldQuery.js';
@@ -412,6 +413,9 @@ const sessionStore = (): Storage | null => {
 let entities: EntityView | null = null;
 /** Arrows in flight, and stuck where they hit (see ArrowView). */
 let arrows: ArrowView | null = null;
+/** What's dropped on the ground (see DropView), and the list as last told (kept for when the view's made). */
+let drops: DropView | null = null;
+let dropList: DroppedItem[] = [];
 /** The world's boats (see BoatView), and the one we're in, if any: the keys steer it (see FlyControls.ride). */
 let boats: BoatView | null = null;
 /** The boats as the server last told them (kept for when the view's made, or the designs they're made from arrive). */
@@ -777,6 +781,14 @@ connection = connect({
           boats.setBoats(boatList);
           editTool.pickBoat = (origin, dir, maxDist) => boats!.pick(origin, dir, maxDist);
           arrows = new ArrowView(scene, w, () => camera.position.x * UNITS_PER_METER);
+          drops = new DropView(
+            scene,
+            w,
+            () => camera.position.x * UNITS_PER_METER,
+            (x, y, z) => (chunks ? lightAt(chunks.lightWorld(), Math.floor(x / BLOCK_SIZE), Math.floor(y / BLOCK_SIZE), Math.floor(z / BLOCK_SIZE)) : null),
+            () => 1 - 0.85 * atmosphere.uniforms.stars.value,
+          );
+          drops.setDrops(dropList);
           // A bow let go: shot from the eye, the way we look.
           editTool.onShoot = (charge) => {
             const d = camera.getWorldDirection(new THREE.Vector3());
@@ -987,6 +999,10 @@ connection = connect({
         // (Ours gone from under us: taken, or the server restarted.)
         if (riding && !msg.boats.some((b) => b.id === riding!.id)) endRide(true);
         break;
+      case 'drops':
+        dropList = msg.drops;
+        drops?.setDrops(msg.drops);
+        break;
       case 'arrow':
         arrows?.shoot(msg.arrow);
         break;
@@ -1179,6 +1195,7 @@ renderer.setAnimationLoop(() => {
   entities?.frame();
   boats?.frame(Math.min(0.25, (frameStart - lastBoatFrame) / 1000));
   arrows?.frame();
+  drops?.frame();
   lastBoatFrame = frameStart;
   worldMap?.update();
   if (sea) sea.position.set(camera.position.x, sea.position.y, camera.position.z);
