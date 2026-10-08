@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type { Account, AccountStore, GoogleIdentity } from './accounts.js';
+import type { Account, AccountStore, GoogleIdentity, Role } from './accounts.js';
 
 /** Signing in with Google (OAuth 2 authorization code flow, OpenID Connect). */
 export interface AuthConfig {
@@ -10,7 +10,7 @@ export interface AuthConfig {
   sessionSecret: string;
   /** This site's address as Google redirects back to it (e.g. https://voxel.ericbrandcode.com); else from the request. */
   publicUrl?: string;
-  /** Accounts with these emails are admins. */
+  /** Accounts with these emails are admins (whatever their role), and may always make one. */
   adminEmails: string[];
   /** Secure cookies (HTTPS only): on in production. */
   secureCookies: boolean;
@@ -26,7 +26,16 @@ const GOOGLE_TOKEN = 'https://oauth2.googleapis.com/token';
 /** What a page or connection knows about who is signed in. */
 export interface SignedIn {
   account: Account;
+  /** Runs the place: ADMIN_EMAILS, or the admin role. */
   admin: boolean;
+  /** May change the world: admins and builders (not visitors). */
+  builds: boolean;
+}
+
+/** What an account may do (see SignedIn), given the admins' emails. */
+export function accessOf(account: Account, adminEmails: readonly string[]): { admin: boolean; builds: boolean } {
+  const admin = adminEmails.includes(account.email.toLowerCase()) || account.role === 'admin';
+  return { admin, builds: admin || account.role === 'builder' };
 }
 
 /** `value.signature`, the signature an HMAC-SHA256 of the value. */
@@ -95,7 +104,25 @@ export class Auth {
   async signedIn(cookies: Record<string, string | undefined>): Promise<SignedIn | null> {
     const id = sessionAccountId(cookies[SESSION_COOKIE], this.config.sessionSecret);
     const account = id ? await this.accounts.get(id) : null;
-    return account ? { account, admin: this.config.adminEmails.includes(account.email.toLowerCase()) } : null;
+    // (Banned: as if signed out; they can still look round, as anyone can.)
+    return account && !account.banned ? { account, ...accessOf(account, this.config.adminEmails) } : null;
+  }
+
+  /**
+   * Lets someone Google vouches for in: their account (kept current), or for someone new, one made
+   * if they're invited (their invitation's role) or an admin; else why not.
+   */
+  async admit(identity: GoogleIdentity): Promise<Account | 'not invited' | 'banned'> {
+    const existing = await this.accounts.findBySub(identity.sub);
+    if (existing) return existing.banned ? 'banned' : this.accounts.signIn(identity);
+    const email = identity.email.toLowerCase();
+    const admin = this.config.adminEmails.includes(email);
+    const invite = (await this.accounts.invites()).find((i) => i.email === email && !i.usedBy);
+    if (!admin && !invite) return 'not invited';
+    const role: Role = admin ? 'admin' : invite!.role;
+    const account = await this.accounts.signIn(identity, role);
+    if (invite) await this.accounts.takeInvite(email, account.id);
+    return account;
   }
 
   private redirectUri(req: FastifyRequest): string {
@@ -162,7 +189,11 @@ export class Auth {
         req.log.warn({ err: (err as Error).message }, 'Google ID token rejected');
         return reply.code(403).send({ error: (err as Error).message });
       }
-      const account = await this.accounts.signIn(identity);
+      const account = await this.admit(identity);
+      if (typeof account === 'string') {
+        req.log.info({ email: identity.email, why: account }, 'sign-in refused');
+        return reply.redirect(`${back}${back.includes('?') ? '&' : '?'}signin=${account === 'banned' ? 'banned' : 'uninvited'}`);
+      }
       reply.setCookie(SESSION_COOKIE, sessionToken(account.id, Date.now() + SESSION_DAYS * 86_400_000, this.config.sessionSecret), cookie(SESSION_DAYS * 86_400));
       req.log.info({ account: account.id }, 'signed in');
       return reply.redirect(back);
@@ -170,7 +201,7 @@ export class Auth {
 
     app.get('/api/auth/me', async (req) => {
       const who = await this.signedIn(req.cookies);
-      return { signedIn: !!who, ...(who ? { name: who.account.name, email: who.account.email, admin: who.admin } : {}) };
+      return { signedIn: !!who, ...(who ? { id: who.account.id, name: who.account.name, email: who.account.email, admin: who.admin, builds: who.builds } : {}) };
     });
 
     app.post('/api/auth/logout', async (_req, reply) => {

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SuperVoxel players</title>
+    <style>
+      :root { color-scheme: dark; --bg: #0b0d10; --panel: #14181d; --line: #262c34; --text: #e6e6e6; --dim: #8b949e; --accent: #58a6ff; --bad: #ff7b72; --good: #7ee787; --warn: #e3b341; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 system-ui, sans-serif; }
+      #status { margin-left: auto; font-size: 12px; }
+      #status.bad { color: var(--bad); } #status.good { color: var(--good); }
+      main { padding: 16px; display: grid; gap: 16px; max-width: 1100px; margin: 0 auto; }
+      section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+      section h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); font-weight: 600; }
+      p.about { margin: 0 0 10px; color: var(--dim); font-size: 12px; }
+      table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+      th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+      th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+      td.dim { color: var(--dim); }
+      .scroll { overflow-x: auto; }
+      form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+      input, select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px; font: inherit; }
+      input[type='email'] { min-width: 260px; }
+      button { background: #21262d; color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+      button:hover:not(:disabled) { border-color: var(--dim); }
+      button.primary { background: #1f6feb; border-color: #1f6feb; }
+      button.bad { color: var(--bad); }
+      button:disabled { opacity: 0.45; cursor: default; }
+      .badge { display: inline-block; padding: 0 6px; border-radius: 9px; font-size: 11px; border: 1px solid var(--line); color: var(--dim); margin-left: 6px; }
+      .badge.on { color: var(--good); border-color: #2e5c36; }
+      .badge.bad { color: var(--bad); border-color: #6e4040; }
+      tr.banned td { opacity: 0.6; }
+      #denied { color: var(--dim); }
+    </style>
+  </head>
+  <body>
+    <header id="sv-header" data-title="Players"><span id="status">loading…</span></header>
+    <main>
+      <p id="denied" hidden></p>
+      <section class="admin" hidden>
+        <h2>Invite</h2>
+        <p class="about">Only invited people can make an account: enter the email of their Google account. No email is sent: tell them to sign in on the front page with it. Builders build; visitors only look round; admins also manage players, worlds and designs.</p>
+        <form id="invite">
+          <input type="email" id="invite-email" placeholder="name@gmail.com" required />
+          <select id="invite-role"></select>
+          <button type="submit" class="primary">Invite</button>
+        </form>
+        <div class="scroll"><table id="invites"></table></div>
+      </section>
+      <section class="admin" hidden>
+        <h2>Players</h2>
+        <div class="scroll"><table id="players"></table></div>
+      </section>
+    </main>
+    <script type="module" src="/src/players.ts"></script>
+  </body>
+</html>

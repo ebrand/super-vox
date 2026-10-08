@@ -4,6 +4,7 @@ import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import fastifyCookie from '@fastify/cookie';
 import type { Auth, SignedIn } from './auth.js';
+import { isRole, type Role } from './accounts.js';
 import { starterInventory, type InventoryStore } from './inventories.js';
 import { PlayerInventory } from './playerInventory.js';
 import { MobManager } from './mobManager.js';
@@ -266,6 +267,67 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     return !!(opts.auth && (await opts.auth.signedIn(req.cookies))?.admin);
   };
   const notOperator = (what: string) => ({ error: `${what} is only for ${opts.auth ? 'admins (sign in on the menu page)' : 'development servers'}` });
+
+  // --- Players (sign-in on): who's played, invitations, roles and bans; admins only (even on
+  // development servers: these are real accounts).
+  /** Each signed-in account's open connections (to tell them at once when their access changes). */
+  const connections = new Map<string, Set<WebSocket>>();
+  /** Tells an account's connections something (an error with `code`), then closes them. */
+  const letGo = (accountId: string, code: string, message: string) => {
+    for (const s of connections.get(accountId) ?? []) {
+      if (s.readyState !== s.OPEN) continue;
+      s.send(encodeMessage({ type: 'error', code, message }));
+      s.close(4003, code);
+    }
+  };
+  const admin = async (req: FastifyRequest) => (opts.auth ? await opts.auth.signedIn(req.cookies) : null)?.admin ?? false;
+  const notAdmin = { error: opts.auth ? 'managing players is only for admins (sign in on the menu page)' : 'sign-in is off on this server: there are no players to manage' };
+  app.get('/api/players', async (req, reply) => {
+    if (!opts.auth || !(await admin(req))) return reply.code(403).send(notAdmin);
+    const accounts = opts.auth.accounts;
+    const [list, invites] = await Promise.all([accounts.list(), accounts.invites()]);
+    const online = new Set([...connections].filter(([, ss]) => [...ss].some((s) => s.readyState === s.OPEN)).map(([id]) => id));
+    const adminEmails = opts.auth.config.adminEmails;
+    return {
+      players: list.map((a) => ({ ...a, online: online.has(a.id), adminByEmail: adminEmails.includes(a.email.toLowerCase()) })),
+      invites,
+    };
+  });
+  app.post<{ Body: unknown }>('/api/invites', async (req, reply) => {
+    if (!opts.auth || !(await admin(req))) return reply.code(403).send(notAdmin);
+    const b = (req.body ?? {}) as { email?: unknown; role?: unknown };
+    const email = typeof b.email === 'string' ? b.email.trim().toLowerCase() : '';
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 254) return reply.code(400).send({ error: 'that isn\'t an email address' });
+    const role = b.role === undefined ? 'builder' : b.role;
+    if (!isRole(role)) return reply.code(400).send({ error: 'no such role' });
+    const me = await opts.auth.signedIn(req.cookies);
+    return { invite: await opts.auth.accounts.invite(email, role, me?.account.id ?? null) };
+  });
+  app.delete<{ Params: { email: string } }>('/api/invites/:email', async (req, reply) => {
+    if (!opts.auth || !(await admin(req))) return reply.code(403).send(notAdmin);
+    if (!(await opts.auth.accounts.uninvite(req.params.email))) return reply.code(404).send({ error: 'no such invitation' });
+    return { ok: true };
+  });
+  app.patch<{ Params: { id: string }; Body: unknown }>('/api/players/:id', async (req, reply) => {
+    if (!opts.auth || !(await admin(req))) return reply.code(403).send(notAdmin);
+    const me = (await opts.auth.signedIn(req.cookies))!;
+    const b = (req.body ?? {}) as { role?: unknown; banned?: unknown };
+    if (b.role !== undefined && !isRole(b.role)) return reply.code(400).send({ error: 'no such role' });
+    if (b.banned !== undefined && typeof b.banned !== 'boolean') return reply.code(400).send({ error: 'banned is true or false' });
+    let account = await opts.auth.accounts.get(req.params.id);
+    if (!account) return reply.code(404).send({ error: 'no such player' });
+    // (Not yourself: an admin can't lock themselves out by a slip.)
+    if (account.id === me.account.id && (b.banned === true || (b.role !== undefined && b.role !== 'admin'))) return reply.code(400).send({ error: "you can't ban yourself or take away your own admin" });
+    if (b.role !== undefined && b.role !== account.role) {
+      account = (await opts.auth.accounts.setRole(account.id, b.role as Role))!;
+      if (!account.banned) letGo(account.id, 'access_changed', 'an admin changed what you can do');
+    }
+    if (b.banned !== undefined && b.banned !== account.banned) {
+      account = (await opts.auth.accounts.setBanned(account.id, b.banned))!;
+      if (account.banned) letGo(account.id, 'banned', "you've been banned from this server");
+    }
+    return { player: account };
+  });
 
   // What the server and its worlds are doing, for the dashboard page (operators only). The
   // history holds a sample per second for the last few minutes.
@@ -902,7 +964,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     // Who's connecting (their session cookie came with the upgrade request).
     const whoReady: Promise<SignedIn | null> = opts.auth ? opts.auth.signedIn(req.cookies).catch(() => null) : Promise.resolve(null);
     let who: SignedIn | null = null;
-    const canEdit = () => !opts.auth || who !== null;
+    // (Visitors look round; builders and admins build.)
+    const canEdit = () => !opts.auth || (who !== null && who.builds);
+    const cantBuild = () => (who ? "you're a visitor here: an admin can let you build" : 'sign in to build');
     /** Survival: where this player started mining, and when (see the `mine` message). */
     let mining: { x: number; y: number; z: number; at: number; tool: ItemId | null } | null = null;
     /** The signed-in player's inventory here; null until loaded (or without accounts). */
@@ -976,6 +1040,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       savePlace(true);
       clients.delete(socket);
       clientWorld.delete(socket);
+      if (who) connections.get(who.account.id)?.delete(socket);
       // (Out of any boat they were in: it stays where it was.)
       const gone = players.get(socket);
       if (gone && greeted) world.riderGone(gone.id);
@@ -1028,6 +1093,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           void whoReady.then((signedIn) => {
             if (socket.readyState !== socket.OPEN) return;
             who = signedIn;
+            if (who) {
+              const mine = connections.get(who.account.id) ?? new Set<WebSocket>();
+              connections.set(who.account.id, mine.add(socket));
+            }
             greeted = true;
             clients.set(socket, world);
             clientWorld.set(socket, msg.world ?? catalog.defaultName);
@@ -1185,7 +1254,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             return;
           }
           if (!canEdit()) {
-            send({ type: 'editResult', id: msg.id, ok: false, error: 'sign in to build' });
+            send({ type: 'editResult', id: msg.id, ok: false, error: cantBuild() });
             return;
           }
           if (opts.inventories && who && !inventory) {
@@ -1258,7 +1327,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         case 'ignite': {
           if (!greeted) return;
           const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
-          if (!canEdit()) return fail('sign in to build');
+          if (!canEdit()) return fail(cantBuild());
           const tnt = world.explosiveAt(msg.x, msg.y, msg.z);
           if (!tnt) return fail('nothing to light there');
           let explosives = explosivesOf.get(world);
@@ -1278,7 +1347,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         case 'cut': {
           if (!greeted) return;
           const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
-          if (!canEdit()) return fail('sign in to build');
+          if (!canEdit()) return fail(cantBuild());
           if (opts.inventories && who && !inventory) return fail(inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded");
           let result: EditResult;
           try {
@@ -1349,7 +1418,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         case 'boatTake': {
           if (!greeted) return;
           const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
-          if (!canEdit()) return fail('sign in to build');
+          if (!canEdit()) return fail(cantBuild());
           if (opts.inventories && who && !inventory) return fail(inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded");
           const p = players.get(socket)!;
           // (Within reach of where they last said they were.)

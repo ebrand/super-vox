@@ -59,16 +59,21 @@ describe('signing in', () => {
     await app.close();
   });
 
-  /** The app with sign-in; Google's token endpoint answers with `token` (or fails). */
-  async function setup(token: Record<string, unknown> | null = GOOD) {
+  /** The app with sign-in; Google's token endpoint answers with `token` (or fails). Ann's invited (`invite`). */
+  async function setup(token: Record<string, unknown> | null = GOOD, invite = true) {
     const exchanges: URLSearchParams[] = [];
+    let current = token;
     const fakeFetch = (async (_url: string, init: { body: URLSearchParams }) => {
       exchanges.push(init.body);
-      return token ? new Response(JSON.stringify({ id_token: idToken(token) })) : new Response('no', { status: 400 });
+      return current ? new Response(JSON.stringify({ id_token: idToken(current) })) : new Response('no', { status: 400 });
     }) as unknown as typeof fetch;
-    const auth = new Auth(CONFIG, new MemoryAccountStore(), fakeFetch);
+    const accounts = new MemoryAccountStore();
+    if (invite) await accounts.invite('Ann@Example.com', 'builder', null);
+    const auth = new Auth(CONFIG, accounts, fakeFetch);
     app = await buildApp({ world: new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4))), auth });
-    return { exchanges };
+    /** Google says it's someone else from now on. */
+    const as = (claims: Record<string, unknown>) => (current = { ...GOOD, ...claims });
+    return { exchanges, accounts, as };
   }
 
   const cookieOf = (setCookie: string | string[] | undefined, name: string) =>
@@ -96,7 +101,7 @@ describe('signing in', () => {
     expect(exchanges[0]!.get('client_secret')).toBe('shh');
     expect(session).toBeDefined();
     const me = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: session! } });
-    expect(me.json()).toEqual({ signedIn: true, name: 'Ann', email: 'ann@example.com', admin: false });
+    expect(me.json()).toMatchObject({ signedIn: true, name: 'Ann', email: 'ann@example.com', admin: false, builds: true });
     expect((await app.inject({ method: 'GET', url: '/api/auth/me' })).json()).toEqual({ signedIn: false });
     const out = await app.inject({ method: 'POST', url: '/api/auth/logout', headers: { cookie: session! } });
     expect(String(out.headers['set-cookie'])).toMatch(/sv_session=;/);
@@ -182,5 +187,126 @@ describe('sign-in settings', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('players: invitations, roles and bans', () => {
+  let app: FastifyInstance;
+  afterEach(async () => {
+    await app.close();
+  });
+
+  async function setup() {
+    let current: Record<string, unknown> = GOOD;
+    const fakeFetch = (async () => new Response(JSON.stringify({ id_token: idToken(current) }))) as unknown as typeof fetch;
+    const accounts = new MemoryAccountStore();
+    const auth = new Auth(CONFIG, accounts, fakeFetch);
+    app = await buildApp({ world: new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4))), auth });
+    const cookieOf = (setCookie: string | string[] | undefined, name: string) =>
+      ([] as string[]).concat(setCookie ?? []).map((c) => c.split(';')[0]!).find((c) => c.startsWith(`${name}=`));
+    /** Signs in as whoever has these claims: where it ends up, and the session (if any). */
+    const signIn = async (claims: Record<string, unknown>) => {
+      current = { ...GOOD, ...claims };
+      const start = await app.inject({ method: 'GET', url: '/api/auth/google?return=/', headers: { host: 'game.test' } });
+      const state = new URL(start.headers.location as string).searchParams.get('state')!;
+      const done = await app.inject({ method: 'GET', url: `/api/auth/google/callback?code=abc&state=${state}`, headers: { host: 'game.test', cookie: cookieOf(start.headers['set-cookie'], 'sv_oauth')! } });
+      return { location: done.headers.location as string, session: cookieOf(done.headers['set-cookie'], SESSION_COOKIE) };
+    };
+    const call = (method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, cookie?: string, payload?: unknown) =>
+      app.inject({ method, url, headers: cookie ? { cookie } : {}, ...(payload !== undefined ? { payload: payload as Record<string, unknown> } : {}) });
+    return { accounts, signIn, call };
+  }
+
+  it('let in only the invited (as their invitation says) and admins; those already here stay', async () => {
+    const { accounts, signIn } = await setup();
+    // Not invited: back to the page, told so; no account.
+    const no = await signIn({ sub: 'g-1', email: 'cat@example.com', name: 'Cat' });
+    expect(no.location).toBe('/?signin=uninvited');
+    expect(no.session).toBeUndefined();
+    expect(await accounts.list()).toEqual([]);
+    // An admin's email: in, as an admin.
+    const boss = await signIn({ sub: 'g-2', email: 'Boss@example.com', name: 'Boss' });
+    expect(boss.session).toBeDefined();
+    expect((await accounts.findBySub('g-2'))!.role).toBe('admin');
+    // Invited as a visitor: in, as one; the invitation's used (not again, by another account).
+    await accounts.invite('cat@example.com', 'visitor', null);
+    expect((await signIn({ sub: 'g-1', email: 'cat@example.com', name: 'Cat' })).session).toBeDefined();
+    expect((await accounts.findBySub('g-1'))!.role).toBe('visitor');
+    expect((await accounts.invites())[0]).toMatchObject({ email: 'cat@example.com', usedBy: (await accounts.findBySub('g-1'))!.id });
+    expect((await signIn({ sub: 'g-9', email: 'cat@example.com', name: 'Cat 2' })).location).toBe('/?signin=uninvited');
+    // An account made before invitations (or by the store directly): in, as it was.
+    await accounts.signIn({ sub: 'g-3', email: 'old@example.com', name: 'Old' });
+    expect((await signIn({ sub: 'g-3', email: 'old@example.com', name: 'Old' })).session).toBeDefined();
+  });
+
+  it('are managed by admins only: invitations, roles and bans (which sign them out, and keep them out)', async () => {
+    const { accounts, signIn, call } = await setup();
+    await accounts.invite('ann@example.com', 'builder', null);
+    const ann = (await signIn({})).session!;
+    const boss = (await signIn({ sub: 'g-2', email: 'boss@example.com', name: 'Boss' })).session!;
+    // Not for builders, or anyone not signed in.
+    expect((await call('GET', '/api/players', ann)).statusCode).toBe(403);
+    expect((await call('GET', '/api/players')).statusCode).toBe(403);
+    expect((await call('POST', '/api/invites', ann, { email: 'x@example.com' })).statusCode).toBe(403);
+    // Admins: the list, invitations made and taken back.
+    const list = (await call('GET', '/api/players', boss)).json() as { players: { id: string; name: string; role: string; adminByEmail: boolean }[] };
+    expect(list.players.map((p) => [p.name, p.role, p.adminByEmail]).sort()).toEqual([['Ann', 'builder', false], ['Boss', 'admin', true]]);
+    expect((await call('POST', '/api/invites', boss, { email: 'not an email' })).statusCode).toBe(400);
+    expect((await call('POST', '/api/invites', boss, { email: 'Dan@Example.com', role: 'visitor' })).json()).toMatchObject({ invite: { email: 'dan@example.com', role: 'visitor' } });
+    expect((await call('DELETE', '/api/invites/dan%40example.com', boss)).statusCode).toBe(200);
+    expect((await call('DELETE', '/api/invites/dan%40example.com', boss)).statusCode).toBe(404);
+    const annId = list.players.find((p) => p.name === 'Ann')!.id, bossId = list.players.find((p) => p.name === 'Boss')!.id;
+    // Not themselves.
+    expect((await call('PATCH', `/api/players/${bossId}`, boss, { banned: true })).statusCode).toBe(400);
+    expect((await call('PATCH', `/api/players/${bossId}`, boss, { role: 'visitor' })).statusCode).toBe(400);
+    // Ann a visitor: still signed in, but builds no more.
+    expect((await call('PATCH', `/api/players/${annId}`, boss, { role: 'visitor' })).json()).toMatchObject({ player: { role: 'visitor' } });
+    expect((await call('GET', '/api/auth/me', ann)).json()).toMatchObject({ signedIn: true, builds: false });
+    // Banned: her session's no good, and she can't sign in again; unbanned, she can.
+    expect((await call('PATCH', `/api/players/${annId}`, boss, { banned: true })).json()).toMatchObject({ player: { banned: true } });
+    expect((await call('GET', '/api/auth/me', ann)).json()).toEqual({ signedIn: false });
+    expect((await signIn({})).location).toBe('/?signin=banned');
+    await call('PATCH', `/api/players/${annId}`, boss, { banned: false });
+    expect((await signIn({})).session).toBeDefined();
+  });
+
+  it('take effect at once for those playing: a visitor can\'t build; a ban or a new role lets them go, saying why', async () => {
+    const { accounts, signIn, call } = await setup();
+    await accounts.invite('ann@example.com', 'visitor', null);
+    const ann = (await signIn({})).session!;
+    const boss = (await signIn({ sub: 'g-2', email: 'boss@example.com', name: 'Boss' })).session!;
+    const address = await app.listen({ port: 0, host: '127.0.0.1' });
+    const ws = new WebSocket(address.replace(/^http/, 'ws') + '/ws', { headers: { cookie: ann } });
+    const msgs: ServerMessage[] = [];
+    ws.on('message', (d, bin) => !bin && msgs.push(JSON.parse(String(d)) as ServerMessage));
+    const closed = new Promise<number>((r) => ws.once('close', (code) => r(code)));
+    await new Promise((r) => ws.once('open', r));
+    ws.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION }));
+    const until = async (f: () => boolean) => {
+      for (let i = 0; i < 300 && !f(); i++) await new Promise((r) => setTimeout(r, 10));
+      if (!f()) throw new Error(`timed out: ${f.toString().slice(0, 80)}`);
+    };
+    await until(() => msgs.some((m) => m.type === 'boats'));
+    expect(msgs.find((m) => m.type === 'welcome')).toMatchObject({ player: { name: 'Ann', admin: false }, canEdit: false });
+    ws.send(JSON.stringify({ type: 'edit', id: 1, edit: { op: 'remove', x: 1000, y: -1, z: 1000 } }));
+    await until(() => msgs.some((m) => m.type === 'editResult'));
+    expect(msgs.find((m) => m.type === 'editResult')).toMatchObject({ ok: false, error: /visitor/ });
+    const annId = (await accounts.findBySub('g-123'))!.id;
+    await call('PATCH', `/api/players/${annId}`, boss, { role: 'builder' });
+    await until(() => msgs.some((m) => m.type === 'error'));
+    expect(msgs.find((m) => m.type === 'error')).toMatchObject({ code: 'access_changed' });
+    expect(await closed).toBe(4003);
+    // Back in as a builder: banned while playing.
+    const ws2 = new WebSocket(address.replace(/^http/, 'ws') + '/ws', { headers: { cookie: ann } });
+    const msgs2: ServerMessage[] = [];
+    ws2.on('message', (d, bin) => !bin && msgs2.push(JSON.parse(String(d)) as ServerMessage));
+    const closed2 = new Promise<number>((r) => ws2.once('close', (code) => r(code)));
+    await new Promise((r) => ws2.once('open', r));
+    ws2.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION }));
+    await until(() => msgs2.some((m) => m.type === 'boats'));
+    expect(msgs2.find((m) => m.type === 'welcome')).toMatchObject({ canEdit: true });
+    await call('PATCH', `/api/players/${annId}`, boss, { banned: true });
+    expect(await closed2).toBe(4003);
+    expect(msgs2.find((m) => m.type === 'error')).toMatchObject({ code: 'banned' });
   });
 });

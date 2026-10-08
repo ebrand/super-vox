@@ -195,7 +195,7 @@ void loadWorlds();
 /** Who is signed in (the server says, from its session cookie); hidden on servers without sign-in. */
 async function showAccount(): Promise<void> {
   const el = document.getElementById('account')!;
-  let me: { signedIn: boolean; name?: string; email?: string; admin?: boolean };
+  let me: { signedIn: boolean; name?: string; email?: string; admin?: boolean; builds?: boolean };
   try {
     const res = await fetch('/api/auth/me');
     if (!res.ok) return; // no sign-in here
@@ -213,6 +213,7 @@ async function showAccount(): Promise<void> {
     b.textContent = me.name ?? '';
     who.append(b);
     if (me.admin) who.append(' (admin)');
+    else if (me.builds === false) who.append(' (visitor: an admin can let you build)');
     who.title = me.email ?? '';
     const out = document.createElement('button');
     out.type = 'button';
@@ -222,7 +223,7 @@ async function showAccount(): Promise<void> {
     });
     el.append(who, out);
   } else {
-    who.textContent = 'Sign in to build; anyone can look around.';
+    who.textContent = 'Anyone can look around; invited players sign in to build.';
     const signIn = document.createElement('a');
     signIn.className = 'button';
     signIn.href = '/api/auth/google?return=/';
@@ -231,6 +232,8 @@ async function showAccount(): Promise<void> {
   }
   const params = new URLSearchParams(location.search);
   if (params.get('signin') === 'cancelled') status('Sign-in cancelled.', 'bad');
+  else if (params.get('signin') === 'uninvited') status("That Google account hasn't been invited: ask an admin to invite its email address. You can still look around.", 'bad');
+  else if (params.get('signin') === 'banned') status("That account has been banned from this server. You can still look around.", 'bad');
 }
 
 void showAccount();

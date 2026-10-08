@@ -11,8 +11,8 @@ export default defineConfig({
     rollupOptions: {
       // The entry page, the game (/play.html), the world generator (/generator.html), world
       // management (/worlds.html; /dashboard.html sends there), the castle site finder (/sites.html), the terraformer
-      // (/terraform.html), the object designer (/designer.html), claims (/claim.html) and settings
-      // (/settings.html).
+      // (/terraform.html), the object designer (/designer.html), claims (/claim.html), settings
+      // (/settings.html) and players (/players.html: admins).
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         play: fileURLToPath(new URL('./play.html', import.meta.url)),
@@ -24,6 +24,7 @@ export default defineConfig({
         designer: fileURLToPath(new URL('./designer.html', import.meta.url)),
         claim: fileURLToPath(new URL('./claim.html', import.meta.url)),
         settings: fileURLToPath(new URL('./settings.html', import.meta.url)),
+        players: fileURLToPath(new URL('./players.html', import.meta.url)),
       },
     },
   },

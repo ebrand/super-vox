@@ -2,12 +2,24 @@ import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import { SCHEMA } from './db.js';
 
+/**
+ * What a player may do: admins run the place (players, worlds, designs: as ADMIN_EMAILS are), and
+ * build; builders build; visitors only look round.
+ */
+export type Role = 'admin' | 'builder' | 'visitor';
+export const ROLES: readonly Role[] = ['admin', 'builder', 'visitor'];
+export const isRole = (v: unknown): v is Role => typeof v === 'string' && (ROLES as readonly string[]).includes(v);
+
 /** A player's account (signed in with Google). */
 export interface Account {
   id: string;
   email: string;
   name: string;
   createdAt: string;
+  lastSignedIn: string;
+  role: Role;
+  /** Banned: signed out, and can't sign in again (until unbanned). */
+  banned: boolean;
 }
 
 /** Who someone is at Google, from a verified ID token. */
@@ -17,54 +29,211 @@ export interface GoogleIdentity {
   name: string;
 }
 
-export interface AccountStore {
-  /** The account for a Google identity, created on first sign-in; email and name kept current. */
-  signIn(identity: GoogleIdentity): Promise<Account>;
-  get(id: string): Promise<Account | null>;
+/** An invitation to make an account: for a Google account's email, with the role it'll have. */
+export interface Invite {
+  email: string;
+  role: Role;
+  createdAt: string;
+  /** Who invited them (an account's id), if known. */
+  invitedBy: string | null;
+  /** Used: the account it made, and when. */
+  usedBy: string | null;
+  usedAt: string | null;
 }
+
+export interface AccountStore {
+  /**
+   * The account for a Google identity, created on first sign-in (with `role`, default builder);
+   * email and name kept current. (Whether someone new may have one is for the caller: see Auth.)
+   */
+  signIn(identity: GoogleIdentity, role?: Role): Promise<Account>;
+  get(id: string): Promise<Account | null>;
+  /** The account for a Google identity, if there is one. */
+  findBySub(sub: string): Promise<Account | null>;
+  /** Every account, the most recently signed in first. */
+  list(): Promise<Account[]>;
+  setRole(id: string, role: Role): Promise<Account | null>;
+  setBanned(id: string, banned: boolean): Promise<Account | null>;
+  /** Invitations, newest first. */
+  invites(): Promise<Invite[]>;
+  /** Invites `email` (lower-cased), as `role`; again: the role changes (an unused one). */
+  invite(email: string, role: Role, by: string | null): Promise<Invite>;
+  /** Takes an invitation back (true if there was one). */
+  uninvite(email: string): Promise<boolean>;
+  /** Uses the invitation for `email`, for account `accountId`: its role, or null if there's none unused. */
+  takeInvite(email: string, accountId: string): Promise<Role | null>;
+}
+
+const lower = (e: string) => e.trim().toLowerCase();
 
 /** Accounts in memory (tests, and development without a database). */
 export class MemoryAccountStore implements AccountStore {
   private readonly bySub = new Map<string, Account>();
   private readonly byId = new Map<string, Account>();
+  private readonly invited = new Map<string, Invite>();
 
-  async signIn({ sub, email, name }: GoogleIdentity): Promise<Account> {
+  async signIn({ sub, email, name }: GoogleIdentity, role: Role = 'builder'): Promise<Account> {
     const existing = this.bySub.get(sub);
-    const account = existing ? { ...existing, email, name } : { id: randomUUID(), email, name, createdAt: new Date().toISOString() };
-    this.bySub.set(sub, account);
-    this.byId.set(account.id, account);
+    const now = new Date().toISOString();
+    const account = existing ? { ...existing, email, name, lastSignedIn: now } : { id: randomUUID(), email, name, createdAt: now, lastSignedIn: now, role, banned: false };
+    this.put(sub, account);
     return account;
   }
 
   async get(id: string): Promise<Account | null> {
     return this.byId.get(id) ?? null;
   }
+
+  async findBySub(sub: string): Promise<Account | null> {
+    return this.bySub.get(sub) ?? null;
+  }
+
+  async list(): Promise<Account[]> {
+    return [...this.byId.values()].sort((a, b) => b.lastSignedIn.localeCompare(a.lastSignedIn));
+  }
+
+  async setRole(id: string, role: Role): Promise<Account | null> {
+    return this.update(id, { role });
+  }
+
+  async setBanned(id: string, banned: boolean): Promise<Account | null> {
+    return this.update(id, { banned });
+  }
+
+  async invites(): Promise<Invite[]> {
+    return [...this.invited.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async invite(email: string, role: Role, by: string | null): Promise<Invite> {
+    const e = lower(email), was = this.invited.get(e);
+    const inv: Invite = was && !was.usedBy ? { ...was, role } : { email: e, role, createdAt: new Date().toISOString(), invitedBy: by, usedBy: null, usedAt: null };
+    this.invited.set(e, inv);
+    return inv;
+  }
+
+  async uninvite(email: string): Promise<boolean> {
+    return this.invited.delete(lower(email));
+  }
+
+  async takeInvite(email: string, accountId: string): Promise<Role | null> {
+    const inv = this.invited.get(lower(email));
+    if (!inv || inv.usedBy) return null;
+    this.invited.set(inv.email, { ...inv, usedBy: accountId, usedAt: new Date().toISOString() });
+    return inv.role;
+  }
+
+  private put(sub: string, account: Account): void {
+    this.bySub.set(sub, account);
+    this.byId.set(account.id, account);
+  }
+
+  private update(id: string, change: Partial<Account>): Account | null {
+    const a = this.byId.get(id);
+    if (!a) return null;
+    const next = { ...a, ...change };
+    for (const [sub, b] of this.bySub) if (b.id === id) this.put(sub, next);
+    return next;
+  }
 }
+
+type Row = { id: string; email: string; name: string; created_at: Date; last_signed_in: Date; role: string; banned_at: Date | null };
+const COLUMNS = 'id, email, name, created_at, last_signed_in, role, banned_at';
+type InviteRow = { email: string; role: string; created_at: Date; invited_by: string | null; used_by: string | null; used_at: Date | null };
+const INVITE_COLUMNS = 'email, role, created_at, invited_by, used_by, used_at';
 
 /** Accounts in Postgres (Supabase), in the "super-vox" schema (see db.ts). */
 export class PgAccountStore implements AccountStore {
   constructor(private readonly pool: pg.Pool) {}
 
-  async signIn({ sub, email, name }: GoogleIdentity): Promise<Account> {
-    const { rows } = await this.pool.query<{ id: string; email: string; name: string; created_at: Date }>(
-      `insert into ${SCHEMA}.accounts (id, google_sub, email, name) values ($1, $2, $3, $4)
+  async signIn({ sub, email, name }: GoogleIdentity, role: Role = 'builder'): Promise<Account> {
+    const { rows } = await this.pool.query<Row>(
+      `insert into ${SCHEMA}.accounts (id, google_sub, email, name, role) values ($1, $2, $3, $4, $5)
        on conflict (google_sub) do update set email = excluded.email, name = excluded.name, last_signed_in = now()
-       returning id, email, name, created_at`,
-      [randomUUID(), sub, email, name],
+       returning ${COLUMNS}`,
+      [randomUUID(), sub, email, name, role],
     );
     return toAccount(rows[0]!);
   }
 
   async get(id: string): Promise<Account | null> {
-    const { rows } = await this.pool.query<{ id: string; email: string; name: string; created_at: Date }>(
-      `select id, email, name, created_at from ${SCHEMA}.accounts where id = $1`,
+    const { rows } = await this.pool.query<Row>(`select ${COLUMNS} from ${SCHEMA}.accounts where id = $1`, [id]);
+    return rows[0] ? toAccount(rows[0]) : null;
+  }
+
+  async findBySub(sub: string): Promise<Account | null> {
+    const { rows } = await this.pool.query<Row>(`select ${COLUMNS} from ${SCHEMA}.accounts where google_sub = $1`, [sub]);
+    return rows[0] ? toAccount(rows[0]) : null;
+  }
+
+  async list(): Promise<Account[]> {
+    const { rows } = await this.pool.query<Row>(`select ${COLUMNS} from ${SCHEMA}.accounts order by last_signed_in desc`);
+    return rows.map(toAccount);
+  }
+
+  async setRole(id: string, role: Role): Promise<Account | null> {
+    const { rows } = await this.pool.query<Row>(`update ${SCHEMA}.accounts set role = $2 where id = $1 returning ${COLUMNS}`, [id, role]);
+    return rows[0] ? toAccount(rows[0]) : null;
+  }
+
+  async setBanned(id: string, banned: boolean): Promise<Account | null> {
+    const { rows } = await this.pool.query<Row>(
+      `update ${SCHEMA}.accounts set banned_at = ${banned ? 'coalesce(banned_at, now())' : 'null'} where id = $1 returning ${COLUMNS}`,
       [id],
     );
     return rows[0] ? toAccount(rows[0]) : null;
   }
 
+  async invites(): Promise<Invite[]> {
+    const { rows } = await this.pool.query<InviteRow>(`select ${INVITE_COLUMNS} from ${SCHEMA}.invites order by created_at desc`);
+    return rows.map(toInvite);
+  }
+
+  async invite(email: string, role: Role, by: string | null): Promise<Invite> {
+    const { rows } = await this.pool.query<InviteRow>(
+      `insert into ${SCHEMA}.invites (email, role, invited_by) values ($1, $2, $3)
+       on conflict (email) do update set role = excluded.role where ${SCHEMA}.invites.used_by is null
+       returning ${INVITE_COLUMNS}`,
+      [lower(email), role, by],
+    );
+    if (rows[0]) return toInvite(rows[0]);
+    // (Already used: as it was.)
+    const used = await this.pool.query<InviteRow>(`select ${INVITE_COLUMNS} from ${SCHEMA}.invites where email = $1`, [lower(email)]);
+    return toInvite(used.rows[0]!);
+  }
+
+  async uninvite(email: string): Promise<boolean> {
+    const { rowCount } = await this.pool.query(`delete from ${SCHEMA}.invites where email = $1`, [lower(email)]);
+    return (rowCount ?? 0) > 0;
+  }
+
+  async takeInvite(email: string, accountId: string): Promise<Role | null> {
+    const { rows } = await this.pool.query<{ role: string }>(
+      `update ${SCHEMA}.invites set used_by = $2, used_at = now() where email = $1 and used_by is null returning role`,
+      [lower(email), accountId],
+    );
+    return rows[0] && isRole(rows[0].role) ? rows[0].role : null;
+  }
 }
 
-function toAccount(r: { id: string; email: string; name: string; created_at: Date }): Account {
-  return { id: r.id, email: r.email, name: r.name, createdAt: r.created_at.toISOString() };
+function toAccount(r: Row): Account {
+  return {
+    id: r.id,
+    email: r.email,
+    name: r.name,
+    createdAt: r.created_at.toISOString(),
+    lastSignedIn: r.last_signed_in.toISOString(),
+    role: isRole(r.role) ? r.role : 'builder',
+    banned: r.banned_at !== null,
+  };
+}
+
+function toInvite(r: InviteRow): Invite {
+  return {
+    email: r.email,
+    role: isRole(r.role) ? r.role : 'builder',
+    createdAt: r.created_at.toISOString(),
+    invitedBy: r.invited_by,
+    usedBy: r.used_by,
+    usedAt: r.used_at?.toISOString() ?? null,
+  };
 }

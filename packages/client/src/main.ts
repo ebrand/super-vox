@@ -578,7 +578,7 @@ connection = connect({
           (toleranceWarning ? `\n${toleranceWarning}` : '') +
           `\ndetail ${detail} chunks, view ${view} m` +
           (msg.player ? `\nsigned in as ${msg.player.name}${msg.player.admin ? ' (admin)' : ''}` : '') +
-          (msg.canEdit ? '' : '\nnot signed in: look around, or sign in on the menu (/) to build');
+          (msg.canEdit ? '' : msg.player ? '\na visitor here: look around (an admin can let you build)' : '\nnot signed in: look around, or sign in on the menu (/) to build');
         clock = msg.clock;
         serverOffset = msg.serverTime - Date.now();
         inventoryUi.enabled = msg.canEdit;
@@ -1033,6 +1033,13 @@ connection = connect({
           joinError = `${msg.message}: reloading`;
           rememberReturn(sessionStore(), worldName, camera.position.x, camera.position.z);
           setTimeout(() => location.reload(), 1500);
+        } else if (msg.code === 'access_changed') {
+          // (An admin changed what we can do: come back in as we are now, here.)
+          joinError = `${msg.message}: reloading`;
+          rememberReturn(sessionStore(), worldName, camera.position.x, camera.position.z);
+          setTimeout(() => location.reload(), 1500);
+        } else if (msg.code === 'banned') {
+          joinError = msg.message;
         } else if (msg.code === 'world_deleted') {
           joinError = `${msg.message}: back to the Menu to pick another`;
         }

@@ -65,6 +65,22 @@ const MIGRATIONS: { name: string; sql: string }[] = [
         primary key (account_id, world)
       );`,
   },
+  {
+    // Players: what each may do (accounts there already build, as they did), bans, and invitations
+    // (only those invited make an account: see Auth).
+    name: '005_access',
+    sql: `
+      alter table ${SCHEMA}.accounts add column role text not null default 'builder' check (role in ('admin', 'builder', 'visitor'));
+      alter table ${SCHEMA}.accounts add column banned_at timestamptz;
+      create table ${SCHEMA}.invites (
+        email text primary key,
+        role text not null default 'builder' check (role in ('admin', 'builder', 'visitor')),
+        created_at timestamptz not null default now(),
+        invited_by uuid references ${SCHEMA}.accounts (id) on delete set null,
+        used_by uuid references ${SCHEMA}.accounts (id) on delete set null,
+        used_at timestamptz
+      );`,
+  },
 ];
 
 /** Connects to Postgres (Supabase) and brings the schema (SCHEMA) up to date. */
