@@ -7,6 +7,10 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import {
   ARROW,
   CLIP_IDS,
+  SPRINT,
+  SPRINT_STEPS_PER_MINUTE,
+  WALK_SPEED,
+  WALK_STEPS_PER_MINUTE,
   FIGURE_JOINTS,
   Item,
   Material,
@@ -69,8 +73,8 @@ const SETTINGS: { key: keyof AnimSettings; name: string; min: number; max: numbe
   { key: 'walkFull', name: 'Full walk at', min: 0.2, max: 5, step: 0.1, unit: 'm/s' },
   { key: 'runFrom', name: 'Run from', min: 1, max: 12, step: 0.1, unit: 'm/s' },
   { key: 'runTo', name: 'Full run at', min: 1, max: 15, step: 0.1, unit: 'm/s' },
-  { key: 'walkStride', name: 'Walk stride', min: 0.4, max: 4, step: 0.05, unit: 'm' },
-  { key: 'runStride', name: 'Run stride', min: 0.4, max: 6, step: 0.05, unit: 'm' },
+  { key: 'walkStride', name: 'Walk stride', min: 0.4, max: 12, step: 0.05, unit: 'm' },
+  { key: 'runStride', name: 'Run stride', min: 0.4, max: 16, step: 0.05, unit: 'm' },
   { key: 'digSeconds', name: 'Dig swing', min: 0.1, max: 2, step: 0.01, unit: 's' },
   { key: 'flyLean', name: 'Fly lean', min: 0, max: 0.3, step: 0.005, unit: 'rad per m/s' },
   { key: 'flyLeanMax', name: 'Fly lean max', min: 0, max: 1.5, step: 0.05, unit: 'rad' },
@@ -194,8 +198,9 @@ function showDoing(id: ClipId): void {
   const set = editor.draft.settings, sel = (el: string, v: string) => (($(el) as HTMLSelectElement).value = v);
   const moving: Partial<Record<ClipId, string>> = { swim: 'swim', fly: 'fly', jump: 'air' };
   sel('g-move', moving[id] ?? 'ground');
-  if (id === 'run') game.speed = Math.round((set.runTo + 1) * 10) / 10;
-  else if (id === 'walk') game.speed = Math.min(1.4, set.runFrom - 0.1);
+  // (At the game's own speeds: walking, and sprinting.)
+  if (id === 'run') game.speed = Math.round(WALK_SPEED * SPRINT * 100) / 100;
+  else if (id === 'walk') game.speed = WALK_SPEED;
   else if (id === 'idle' || id === 'breathe' || id === 'dig' || id === 'bow') game.speed = 0;
   if (id === 'dig' || id === 'bow') sel('g-action', id);
   else sel('g-action', 'none');
@@ -293,7 +298,7 @@ const showLift = pair('lift', (cm) => {
   editor.setBody(editor.bodyAt().lean, cm / 100);
   refresh(false);
 });
-const game = { speed: 1.4, pitch: 0, draw: 1 };
+const game = { speed: WALK_SPEED, pitch: 0, draw: 1 };
 const showSpeed = pair('g-speed', (v) => (game.speed = v));
 const showPitch = pair('g-pitch', (v) => (game.pitch = v / DEG));
 const showDraw = pair('g-draw', (v) => (game.draw = v));
@@ -354,6 +359,11 @@ function refresh(all = true): void {
     input('look-chest').value = String(c.look.chest);
     input('look-level').checked = c.look.level;
   }
+  // In game: the legs' steps a minute at walking and sprinting speeds, beside the footsteps heard.
+  const st = editor.draft.settings, sprint = WALK_SPEED * SPRINT;
+  $('tempo').textContent =
+    `In game: walking (${WALK_SPEED} m/s) ${Math.round((2 * WALK_SPEED * 60) / st.walkStride)} steps a minute (footsteps: ${WALK_STEPS_PER_MINUTE}); ` +
+    `sprinting (${Math.round(sprint * 100) / 100} m/s) ${Math.round((2 * sprint * 60) / (sprint > st.runFrom ? st.runStride : st.walkStride))} (footsteps: ${SPRINT_STEPS_PER_MINUTE}). "Full walk at" and the run speeds blend the swing in; the strides set the pace.`;
   for (const s of SETTINGS) {
     const v = editor.draft.settings[s.key], el = settingInputs.get(s.key)!;
     if (document.activeElement !== el.box) el.box.value = String(v);

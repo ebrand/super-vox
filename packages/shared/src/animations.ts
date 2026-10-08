@@ -8,6 +8,17 @@
  * Grips: how each kind of thing is held. One library for the whole server (admins change it).
  */
 
+import { SPRINT, WALK_SPEED } from './walking.js';
+
+/**
+ * Steps a minute walking and sprinting at full pace (the footsteps heard: see the client's
+ * footsteps.ts); the strides the legs take by default, to keep time with them (a stride is two steps).
+ */
+export const WALK_STEPS_PER_MINUTE = 80;
+export const SPRINT_STEPS_PER_MINUTE = 120;
+const WALK_STRIDE = (2 * WALK_SPEED * 60) / WALK_STEPS_PER_MINUTE;
+const SPRINT_STRIDE = (2 * WALK_SPEED * SPRINT * 60) / SPRINT_STEPS_PER_MINUTE;
+
 /** The figure's joints (see the client's PlayerFigure), parents before children. */
 export const FIGURE_JOINTS = [
   'hips', 'spine', 'chest', 'neck', 'head',
@@ -229,13 +240,13 @@ export function poseClip(lib: AnimationLibrary, id: ClipId, t: number, pitch = 0
 
 /**
  * How long a clip takes to play through once at its usual pace (s), to preview it: a time clip, its
- * length; a walk or a run, a stride at a walk's (1.4 m/s) or a run's (6 m/s) pace; a dig, its
+ * length; a walk or a run, a stride at the game's walking or sprinting speed; a dig, its
  * swing; a bow, a draw (`drawSeconds`); a still pose, a second.
  */
 export function clipSeconds(lib: AnimationLibrary, id: ClipId, drawSeconds: number): number {
   const c = lib.clips[id], s = lib.settings;
   if (c.driver === 'time') return c.length ?? 1;
-  if (c.driver === 'stride') return id === 'run' ? s.runStride / 6 : s.walkStride / 1.4;
+  if (c.driver === 'stride') return id === 'run' ? s.runStride / (WALK_SPEED * SPRINT) : s.walkStride / WALK_SPEED;
   if (c.driver === 'swing') return s.digSeconds;
   if (c.driver === 'draw') return drawSeconds;
   return 1;
@@ -348,7 +359,7 @@ export function defaultAnimations(): AnimationLibrary {
         },
       },
     },
-    settings: { walkFull: 1.5, runFrom: 4.6, runTo: 5.6, walkStride: 1.6, runStride: 2.6, digSeconds: 0.32, flyLean: 0.03, flyLeanMax: 0.5 },
+    settings: { walkFull: 1.5, runFrom: 4.6, runTo: 5.6, walkStride: Math.round(WALK_STRIDE * 100) / 100, runStride: Math.round(SPRINT_STRIDE * 100) / 100, digSeconds: 0.32, flyLean: 0.03, flyLeanMax: 0.5 },
     grips: {
       tool: { hand: 'right', at: [0, 0.06, -0.17], turn: [0, Math.PI / 2, 0], scale: 0.5 },
       block: { hand: 'right', at: [0, -0.15, -0.04], turn: [0, 0, 0], scale: 0.2 },

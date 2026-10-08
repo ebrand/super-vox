@@ -1,4 +1,4 @@
-import { Material, SPRINT, WALK_SPEED, isWater, type MaterialId } from '@super-vox/shared';
+import { Material, SPRINT, SPRINT_STEPS_PER_MINUTE, WALK_SPEED, WALK_STEPS_PER_MINUTE, isWater, type MaterialId } from '@super-vox/shared';
 
 /**
  * Footsteps: a step every stride walked on the ground (80 a minute walking, 120 sprinting) (and a thump landing from a jump or a fall),
@@ -52,9 +52,8 @@ export function underSnow(surface: Surface, snowCover: number): Surface {
   return snowCover > 0.3 && (surface === 'soft' || surface === 'sand' || surface === 'gravel') ? 'snow' : surface;
 }
 
-/** Steps a minute at full pace: walking, and sprinting. */
-export const WALK_STEPS_PER_MINUTE = 80;
-export const SPRINT_STEPS_PER_MINUTE = 120;
+/** Steps a minute at full pace: walking, and sprinting (the figures' legs keep time with them by default: see animations.ts). */
+export { SPRINT_STEPS_PER_MINUTE, WALK_STEPS_PER_MINUTE };
 /** How far a step takes you (m), so that at full pace the steps come as often as that (slower, fewer). */
 export const STRIDE = (WALK_SPEED * 60) / WALK_STEPS_PER_MINUTE;
 export const SPRINT_STRIDE = (WALK_SPEED * SPRINT * 60) / SPRINT_STEPS_PER_MINUTE;

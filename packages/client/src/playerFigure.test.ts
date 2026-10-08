@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { PlayerAct } from '@super-vox/shared';
+import { PlayerAct, defaultAnimations } from '@super-vox/shared';
 import { FIGURE_HEIGHT, JOINTS, MAN, PlayerFigure, figureModel, playerColor, poseFor, type FigureState } from './playerFigure.js';
 import { FigureMotion } from './entities.js';
 
@@ -95,7 +95,7 @@ describe('FigureMotion', () => {
     // 1.4 m/s for a second, a frame every 1/60 s.
     for (let i = 1; i <= 60; i++) s = m.step({ x: (1.4 * 16 * i) / 60, y: 0, z: 0 }, (1000 * i) / 60, 0, 0, null);
     expect(s.speed).toBeCloseTo(1.4, 1);
-    expect(s.stride).toBeCloseTo((1.4 * 2 * Math.PI) / 1.6, 1);
+    expect(s.stride).toBeCloseTo((1.4 * 2 * Math.PI) / defaultAnimations().settings.walkStride, 1);
     s = m.step({ x: 22.4, y: 0, z: 0 }, 1100, PlayerAct.drawing | PlayerAct.airborne, 0.2, null);
     expect([s.airborne, s.draw, s.pitch]).toEqual([true, 0, 0.2]);
     s = m.step({ x: 22.4, y: 0, z: 0 }, 1550, PlayerAct.drawing, 0.2, null);
@@ -121,5 +121,18 @@ describe('the animations in play', () => {
       setAnimations((await import('@super-vox/shared')).defaultAnimations());
     }
     expect(poseFor({ ...still, airborne: true }).joints.legL![0]).toBeCloseTo(0.55, 5);
+  });
+});
+
+describe('the default strides', () => {
+  it('keep the legs in time with the footsteps heard: 80 steps a minute walking, 120 sprinting', async () => {
+    const { SPRINT, WALK_SPEED, WALK_STEPS_PER_MINUTE, SPRINT_STEPS_PER_MINUTE } = await import('@super-vox/shared');
+    const s = defaultAnimations().settings;
+    // Steps a minute: two to a stride, at the speed they go.
+    expect((2 * WALK_SPEED * 60) / s.walkStride).toBeCloseTo(WALK_STEPS_PER_MINUTE, 0);
+    expect((2 * WALK_SPEED * SPRINT * 60) / s.runStride).toBeCloseTo(SPRINT_STEPS_PER_MINUTE, 0);
+    // Walking is a walk, sprinting a full run.
+    expect(WALK_SPEED).toBeLessThan(s.runFrom);
+    expect(WALK_SPEED * SPRINT).toBeGreaterThan(s.runTo);
   });
 });
