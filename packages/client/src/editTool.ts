@@ -520,8 +520,24 @@ export class EditTool {
 
   /** Re-aims from the camera; call every frame. */
   update(): void {
+    if (!this.enabled) return this.hideAll();
     this.aim();
     this.tellSize();
+  }
+
+  /**
+   * Whether the tool works: off (just looking round, nothing in hand), nothing's aimed at, shown
+   * or done: clicks and its keys do nothing.
+   */
+  enabled = true;
+
+  /** Nothing shown: no outline, no previews, no mining ring. */
+  private hideAll(): void {
+    for (const o of [this.outline, this.preview, this.digPreview, this.digEntry, this.designPreview, this.designBlocksPreview, this.buildCellsMesh, this.buildBox, this.selectBox]) o.visible = false;
+    this.miningHeld = false;
+    this.mining = null;
+    this.drawnAt = null;
+    this.onMiningProgress?.(null);
   }
 
   /** Says if the size chosen changed (see onSizeChange): it can with what's aimed at, in hybrid with ⌘ held. */
@@ -594,6 +610,7 @@ export class EditTool {
    * 2 = right. `mods` are the modifier keys held at that moment.
    */
   click(button: number, mods: Modifiers = this.modifiers): void {
+    if (!this.enabled) return;
     this.setMeta(mods.meta);
     this.modifiers.alt = mods.alt;
     this.update(); // aim with the modifiers as they are right now
@@ -775,7 +792,7 @@ export class EditTool {
             : `click: place · ⌥: 1/16 m steps${this.bigBoxes ? ' · bigger sizes: fill boxes up to 16 m' : ''}`;
     return (
       `mode: ${this.mode} (Tab: hybrid / dig / place${this.bigBoxes ? ' / build' : ''}) · ${size} ${this.material?.name ?? 'nothing (E: inventory)'} · ${target}\n` +
-      `${actions} · middle-click: break smaller (⇧: to 1/16 m) · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-9: hotbar · E: inventory` +
+      `${actions} · middle-click: break smaller (⇧: to 1/16 m) · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-9: hotbar · E: inventory · O: just look around` +
       msg
     );
   }
@@ -1037,6 +1054,7 @@ export class EditTool {
   }
 
   private handleKey(e: KeyboardEvent): void {
+    if (!this.enabled) return;
     // Tab and Alt have browser defaults (focus moves, menu bar); the game uses them.
     if (e.code === 'Tab' || e.code === 'AltLeft' || e.code === 'AltRight') e.preventDefault();
     if (this.mode === 'build' && e.code === 'KeyZ' && (e.metaKey || e.ctrlKey) && !e.repeat) {

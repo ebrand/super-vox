@@ -396,6 +396,14 @@ let pool: MeshWorkerPool | null = null;
 let chunks: ChunkManager | null = null;
 /** Grass blades near the eye (see GrassField), on the chunks' grass. */
 let grass: GrassField | null = null;
+/** Just looking round (O): empty-handed, the tool off, nothing on screen but the world. */
+let viewing = false;
+function setViewing(on: boolean): void {
+  viewing = on;
+  document.body.classList.toggle('viewing', on);
+  if (editTool) editTool.enabled = !on;
+  if (on) editTool?.say(''); // (what it last said goes with the rest)
+}
 let tiles: TileManager | null = null;
 let editTool: EditTool | null = null;
 /** Designed objects placed in the world (see the `objects` message), for the edit tool. */
@@ -739,6 +747,11 @@ connection = connect({
               inventoryUi.select((Number(e.code.slice(5)) + 9) % 10); // (1 is the first slot, 0 the tenth)
               return;
             }
+            // O: just looking round (nothing in hand, nothing on screen but the world); again: back.
+            if (e.code === 'KeyO') {
+              setViewing(!viewing);
+              return;
+            }
             if (e.code === 'KeyI') {
               setInfoVisible(statusEl.hidden === true);
               return;
@@ -763,6 +776,7 @@ connection = connect({
             updateHud();
           });
           editTool = new EditTool(scene, camera, chunks, send, () => inventoryUi.material, () => (controls.collide ? playerBox(eyeUnits()) : null));
+          editTool.enabled = !viewing;
           // Right-clicking a furnace or stove opens it (the server answers with what's in it).
           editTool.onStation = (o) => send({ type: 'stationOpen', x: o.x, y: o.y, z: o.z });
           // Survival: removing is mining, held for as long as the material takes (a ring shows how far along).
@@ -896,6 +910,7 @@ connection = connect({
             if (editTool!.mode !== 'hybrid') sizeBadgeTimer = setTimeout(() => sizeBadge.classList.remove('shown'), 1200);
           };
           controls.onClick = (button, mods) => {
+            if (viewing) return;
             editTool?.click(button, mods);
             // (Swung at a click: not a bow being drawn, and not the middle button.)
             if (button !== 1 && !(button === 2 && inventoryUi.material === Item.Bow)) {
@@ -1272,7 +1287,7 @@ renderer.setAnimationLoop(() => {
   if (!worldMap?.showing3d) {
     water.render(scene, camera);
     // What's in hand, over it all (not while knocked down, or with the map's 3D view up).
-    if (editTool && !downPose && !paused) {
+    if (editTool && !downPose && !paused && !viewing) {
       hand.setItem(inventoryUi.enabled ? inventoryUi.material : null);
       if (frameStart - handLight.at > 250 && chunks) {
         const p = camera.position, l = lightAt(chunks.lightWorld(), Math.floor((p.x * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.y * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.z * UNITS_PER_METER) / BLOCK_SIZE));

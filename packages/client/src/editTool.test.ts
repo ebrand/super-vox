@@ -596,3 +596,36 @@ describe('EditTool select (creative)', () => {
     expect(tool.builder.selection).toBeNull();
   });
 });
+
+describe('EditTool off (just looking round)', () => {
+  it('shows nothing, and clicks and its keys do nothing, until it is on again', () => {
+    (globalThis as { window?: EventTarget }).window = new EventTarget();
+    const stone = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    stone.blocks[blockIndex(0, 0, 0)] = { kind: 'uniform', size: 16, material: Material.Stone };
+    const chunks = { chunkAt: (c: { cx: number; cy: number; cz: number }) => (c.cx === 0 && c.cy === 0 && c.cz === 0 ? stone : emptyChunk(c)) } as unknown as ChunkManager;
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(0.5, 3, 0.5);
+    camera.lookAt(0.5, 0, 0.5);
+    camera.updateMatrixWorld();
+    const sent: unknown[] = [];
+    const scene = new THREE.Scene();
+    const tool = new EditTool(scene, camera, chunks, (m) => sent.push(m), () => null);
+    const shown = () => scene.children.filter((o) => o.visible).length;
+    tool.update();
+    expect(shown()).toBeGreaterThan(0); // the outline on the stone
+    tool.enabled = false;
+    tool.update();
+    expect(shown()).toBe(0);
+    tool.click(0, { meta: false, alt: false });
+    window.dispatchEvent(key('keydown', 'KeyX', false));
+    window.dispatchEvent(key('keydown', 'Tab', false));
+    expect(sent).toEqual([]);
+    expect(tool.mode).toBe('hybrid');
+    tool.enabled = true;
+    tool.update();
+    tool.click(0, { meta: false, alt: false });
+    expect(sent).toHaveLength(1);
+    tool.dispose();
+    delete (globalThis as { window?: EventTarget }).window;
+  });
+});

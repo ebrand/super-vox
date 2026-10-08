@@ -82,6 +82,8 @@
       #mining[hidden] { display: none; }
       #hotbar { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 4px; padding: 4px; background: rgba(0,0,0,0.45); border-radius: 8px; z-index: 5; }
       #hotbar[hidden] { display: none; }
+      /* Just looking round (O): nothing on screen but the world. */
+      body.viewing #crosshair, body.viewing #compass, body.viewing #hotbar, body.viewing #mode, body.viewing #status, body.viewing #note, body.viewing #size-badge, body.viewing #place-size, body.viewing #mining { display: none !important; }
       #hotbar .slot, #inventory .window-bar .slot { position: relative; width: 46px; height: 46px; border: 2px solid rgba(255,255,255,0.18); border-radius: 6px; padding: 3px; cursor: pointer; box-sizing: content-box; }
       #hotbar .slot.selected, #inventory .window-bar .slot.selected { border-color: #fff; }
       #hotbar .slot.empty .swatch, #inventory .window-bar .slot.empty .swatch { opacity: 0.35; }
