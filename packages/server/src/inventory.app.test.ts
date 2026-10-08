@@ -486,9 +486,12 @@ describe('inventories', () => {
     z.nextAttack = 0;
     await p.until(() => healths().some((h) => h < 20), 4000);
     expect(healths().find((h) => h < 20)).toBe(17);
-    // Seven hits kill (20 / 3): once a second each; the respawn comes before the full health.
+    // Seven hits kill (20 / 3): once a second each; the respawn comes before the full health
+    // (a message of its own: under load it can arrive a moment later, so it's waited for).
     await p.until(() => p.msgs.some((m) => m.type === 'respawn'), 12_000);
-    expect(healths().at(-1)).toBe(20);
+    const respawnAt = p.msgs.findIndex((m) => m.type === 'respawn');
+    await p.until(() => p.msgs.slice(respawnAt).some((m) => m.type === 'health'), 2000);
+    expect(p.msgs.slice(respawnAt).find((m) => m.type === 'health')).toMatchObject({ health: 20 });
     p.ws.close();
   }, 30_000);
 

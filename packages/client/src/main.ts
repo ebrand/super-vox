@@ -27,6 +27,7 @@ import { rememberReturn, startFromParams, takeReturn } from './startAt.js';
 import { InventoryUi } from './inventory.js';
 import { EntityView } from './entities.js';
 import { BoatView } from './boatView.js';
+import { ArrowView } from './arrowView.js';
 import { getOutAt, stepBoat, waterSurface, type Boat, type BoatMotion, type Hull } from '@super-vox/shared';
 import type { Footprint } from './coverage.js';
 import { createCompassRose } from './compassRose.js';
@@ -409,6 +410,8 @@ const sessionStore = (): Storage | null => {
 
 /** Mobs and other players (see EntityView). */
 let entities: EntityView | null = null;
+/** Arrows in flight, and stuck where they hit (see ArrowView). */
+let arrows: ArrowView | null = null;
 /** The world's boats (see BoatView), and the one we're in, if any: the keys steer it (see FlyControls.ride). */
 let boats: BoatView | null = null;
 /** The boats as the server last told them (kept for when the view's made, or the designs they're made from arrive). */
@@ -448,7 +451,7 @@ document.body.append(healthEl, hurtEl);
 let health: number | null = null;
 /** What to say when we died, by how. */
 const RESPAWNED = { here: 'back at your bed', gone: 'your bed is gone, so back at the spawn point', blocked: 'your bed is built over, so back at the spawn point', none: 'back at the spawn point' } as const;
-const DEATHS: Record<DeathCause, string> = { fell: 'you fell to your death', drowned: 'you drowned', starved: 'you starved', mob: 'you were killed', blast: 'you were blown up' };
+const DEATHS: Record<DeathCause, string> = { fell: 'you fell to your death', drowned: 'you drowned', starved: 'you starved', mob: 'you were killed', blast: 'you were blown up', shot: 'you were shot' };
 function showHealth(h: number, max: number, food: number, air: number): void {
   if (health !== null && h < health) {
     hurtEl.classList.remove('flash');
@@ -773,6 +776,13 @@ connection = connect({
           );
           boats.setBoats(boatList);
           editTool.pickBoat = (origin, dir, maxDist) => boats!.pick(origin, dir, maxDist);
+          arrows = new ArrowView(scene, w, () => camera.position.x * UNITS_PER_METER);
+          // A bow let go: shot from the eye, the way we look.
+          editTool.onShoot = (charge) => {
+            const d = camera.getWorldDirection(new THREE.Vector3());
+            const [x, y, z] = eyeUnits();
+            send({ type: 'shoot', x, y, z, dx: d.x, dy: d.y, dz: d.z, charge });
+          };
           editTool.onBoarded = (id) => startRide(id);
           {
             const surface = (x: number, y: number, z: number) => waterSurface(waterAt, x, y, z);
@@ -977,6 +987,12 @@ connection = connect({
         // (Ours gone from under us: taken, or the server restarted.)
         if (riding && !msg.boats.some((b) => b.id === riding!.id)) endRide(true);
         break;
+      case 'arrow':
+        arrows?.shoot(msg.arrow);
+        break;
+      case 'arrowHit':
+        arrows?.stop(msg.id, msg.x, msg.y, msg.z, msg.what === 'world');
+        break;
       case 'boatMoved':
         if (riding?.id !== msg.id) boats?.moved(msg.id, msg.x, msg.y, msg.z, msg.yaw);
         break;
@@ -1162,6 +1178,7 @@ renderer.setAnimationLoop(() => {
   compassRose.update(controls.yaw);
   entities?.frame();
   boats?.frame(Math.min(0.25, (frameStart - lastBoatFrame) / 1000));
+  arrows?.frame();
   lastBoatFrame = frameStart;
   worldMap?.update();
   if (sea) sea.position.set(camera.position.x, sea.position.y, camera.position.z);

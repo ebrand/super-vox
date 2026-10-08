@@ -55,7 +55,7 @@ export function fallDamage(speed: number): number {
   return Math.max(0, Math.floor((v * v) / (2 * GRAVITY) - FALL_SAFE_METRES + 1e-9));
 }
 
-export type DeathCause = 'fell' | 'drowned' | 'starved' | 'mob' | 'blast';
+export type DeathCause = 'fell' | 'drowned' | 'starved' | 'mob' | 'blast' | 'shot';
 
 /** Vitals as kept between visits (see Vitals.saved, Vitals.restore). */
 export interface SavedVitals {

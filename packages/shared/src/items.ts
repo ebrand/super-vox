@@ -76,6 +76,8 @@ export const Item = {
   GoldCoin: 1029,
   /** Put in the water (right-click), and ridden (see boats.ts): once a design stands in for it. */
   Boat: 1030,
+  /** Drawn (hold right-click) and let go, shoots an arrow (see arrows.ts); arrows aren't used up. */
+  Bow: 1031,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -112,6 +114,7 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.CopperCoin]: 'copper coin',
   [Item.GoldCoin]: 'gold coin',
   [Item.Boat]: 'boat',
+  [Item.Bow]: 'bow',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */

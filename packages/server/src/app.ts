@@ -8,10 +8,14 @@ import { isRole, type Role } from './accounts.js';
 import { starterInventory, type InventoryStore } from './inventories.js';
 import { PlayerInventory } from './playerInventory.js';
 import { MobManager } from './mobManager.js';
+import { ArrowFlights, type Target } from './arrowFlights.js';
 import {
   BinaryTag,
   BOAT,
   BLOCK_SIZE,
+  ARROW,
+  arrowDamage,
+  playerBox,
   CHUNK_SIZE,
   resolveChunk,
   EditError,
@@ -148,8 +152,9 @@ interface Player {
   vitals: Vitals;
   vulnerable: boolean;
   vitalsSent: string;
-  /** When they last attacked (ms). */
+  /** When they last attacked (ms); and last shot an arrow. */
   lastAttack: number;
+  lastShot: number;
   /** Their bed (its block, 1 m block coordinates), if they've made one theirs: where they come back to after dying. */
   bed: { x: number; y: number; z: number } | null;
   /** Poses reported before this (ms) aren't kept as where they are (they've just been sent somewhere: see PLACE_SETTLE_MS). */
@@ -803,6 +808,43 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       }
     }
   }), 1000);
+  // Arrows in flight (see ArrowFlights), flown twenty times a second: what one hits is hurt, or
+  // chipped (the world); everyone in its world is told where it stopped.
+  const arrowsOf = new Map<World, ArrowFlights>();
+  const flying = setInterval(timed('arrows', () => {
+    const now = Date.now();
+    for (const [world, flights] of arrowsOf) {
+      if (!flights.count) continue;
+      const mobs = mobManagers.get(world);
+      const shooters = new Map<number, [WebSocket, Player]>();
+      const targets: Target[] = [...(mobs?.boxes() ?? []).map((m) => ({ ...m, kind: 'mob' as const }))];
+      for (const [client, p] of players) {
+        if (clients.get(client) !== world) continue;
+        shooters.set(p.id, [client, p]);
+        if (p.pose) targets.push({ id: p.id, kind: 'player', box: playerBox([p.pose.x, p.pose.y, p.pose.z]) });
+      }
+      for (const { shot, hit, at } of flights.step(now, targets)) {
+        let what: 'world' | 'water' | 'mob' | 'player' | 'gone' = 'gone';
+        const damage = arrowDamage(Math.hypot(shot.vx, shot.vy, shot.vz));
+        if (hit?.what === 'thing' && hit.kind === 'mob') {
+          what = 'mob';
+          mobs?.hurt(hit.id, damage, shot.x, shot.z, now);
+        } else if (hit?.what === 'thing' && hit.kind === 'player') {
+          what = 'player';
+          const target = shooters.get(hit.id);
+          if (target) harm(target[0], target[1], world, damage, 'shot', now);
+        } else if (hit?.what === 'world') {
+          what = hit.water ? 'water' : 'world';
+          const result = hit.water ? null : world.chip(...hit.cell, ARROW.chip);
+          if (result) {
+            metrics.totals.edits++;
+            broadcast(world, result);
+          }
+        }
+        toWorld(world, { type: 'arrowHit', id: shot.id, x: at[0], y: at[1], z: at[2], what });
+      }
+    }
+  }), 50);
   const mobbing = setInterval(timed('mobs', () => {
     const now = Date.now();
     const byWorld = new Map<World, WebSocket[]>();
@@ -939,6 +981,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     clearTimeout(blasting);
     clearInterval(flowing);
     clearInterval(mobbing);
+    clearInterval(flying);
     clearInterval(stationTicking);
     clearInterval(sampling);
     metrics.stop();
@@ -1103,7 +1146,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             players.set(socket, {
               id: nextPlayer++, world: msg.world ?? catalog.defaultName, connectedAt: Date.now(), tolerance: world.tolerance,
               name: who?.account.name ?? null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
-              vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0, bed: null, settleUntil: Infinity, saveState: null,
+              vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0, lastShot: 0, bed: null, settleUntil: Infinity, saveState: null,
             });
             // Designs (named: some may be in their inventory) before the inventory, and where they're placed.
             const sendWelcome = (welcome: ServerMessage) => {
@@ -1457,6 +1500,23 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (!world.moveBoat(msg.boat, p.id, msg.x, msg.y, msg.z, msg.yaw, msg.leave ?? false)) return;
           const bytes = encodeMessage({ type: 'boatMoved', id: msg.boat, x: msg.x, y: msg.y, z: msg.z, yaw: msg.yaw });
           for (const [client, w] of clients) if (w === world && client !== socket && client.readyState === client.OPEN) out(client, bytes);
+          break;
+        }
+
+        case 'shoot': {
+          const p = players.get(socket);
+          if (!greeted || !p?.pose || !canEdit()) return;
+          const now = Date.now();
+          if (now - p.lastShot < ARROW.cooldownMs) return;
+          // A bow, if they have one (creative: anyone); from about where they last said they were.
+          if (inventory && inventory.mode === 'survival' && inventory.count(Item.Bow) < 1) return;
+          if (Math.hypot(msg.x - p.pose.x, msg.y - p.pose.y, msg.z - p.pose.z) > 3 * BLOCK_SIZE) return;
+          if (Math.hypot(msg.dx, msg.dy, msg.dz) < 1e-6) return;
+          p.lastShot = now;
+          let flights = arrowsOf.get(world);
+          if (!flights) arrowsOf.set(world, (flights = new ArrowFlights(world)));
+          const arrow = flights.shoot(p.id, msg.x, msg.y, msg.z, [msg.dx, msg.dy, msg.dz], Math.max(0, Math.min(1, msg.charge)), now);
+          toWorld(world, { type: 'arrow', arrow });
           break;
         }
 

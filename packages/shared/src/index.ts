@@ -24,6 +24,8 @@ export * from './items.js';
 export * from './recipes.js';
 export * from './designs.js';
 export * from './boats.js';
+export * from './raycast.js';
+export * from './arrows.js';
 export * from './objects.js';
 export * from './physics.js';
 export * from './flocking.js';

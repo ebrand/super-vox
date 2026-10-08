@@ -66,6 +66,7 @@ const BUILT_IN: readonly Recipe[] = [
   r('gate', 'building', [[Item.Stick, 4], [Material.Planks, 2]], [Item.Gate, 1], true),
   r('doors', 'building', [[Material.Planks, 6]], [Item.Door, 3], true),
   r('bucket', 'tools', [[Material.Planks, 3]], [Item.Bucket, 1], true),
+  r('bow', 'tools', [[Item.Stick, 3], [Material.Planks, 2]], [Item.Bow, 1], true),
   r('wooden-pickaxe', 'tools', [[Material.Planks, 3], [Item.Stick, 2]], [Item.WoodenPickaxe, 1], true),
   r('stone-pickaxe', 'tools', [[Material.Cobblestone, 3], [Item.Stick, 2]], [Item.StonePickaxe, 1], true),
   r('wooden-axe', 'tools', [[Material.Planks, 3], [Item.Stick, 2]], [Item.WoodenAxe, 1], true),

@@ -181,6 +181,20 @@ export class MobManager {
     return { hit: true, killed, kind: m.kind };
   }
 
+  /** Every mob's box (units), by id: what an arrow can hit (see arrowStep). */
+  boxes(): { id: number; box: ReturnType<typeof mobBox> }[] {
+    return [...this.mobs.values()].map((m) => ({ id: m.id, box: mobBox(m.kind, m.x, m.y, m.z) }));
+  }
+
+  /** Mob `id` hurt for `damage` by something from (fromX, fromZ) (units: knocked away from it), as an arrow. */
+  hurt(id: number, damage: number, fromX: number, fromZ: number, now: number): { killed: boolean; kind?: MobKind } {
+    const m = this.mobs.get(id);
+    if (!m) return { killed: false };
+    const killed = hurtMob(m, damage, m.x + deltaX(this.world.config, m.x, fromX), fromZ, now);
+    if (killed) this.mobs.delete(id);
+    return { killed, kind: m.kind };
+  }
+
   /** A blast at (x, y, z) (units) of `radius`: every mob in reach hurt (see blastDamage), knocked away from it. */
   blast(x: number, y: number, z: number, radius: number, now: number): void {
     for (const [id, m] of this.mobs) {

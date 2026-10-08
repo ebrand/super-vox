@@ -19,6 +19,7 @@ import {
   isBlock,
   isWater,
   BOAT,
+  drawCharge,
   isObjectMaterial,
   isUsableMaterial,
   isFood,
@@ -150,6 +151,10 @@ export class EditTool {
   pickBoat: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { id: number; dist: number } | null) | null = null;
   /** We're in boat `id` now (the server said so). */
   onBoarded: ((id: number) => void) | null = null;
+  /** A bow let go, drawn `charge` (0..1): shoot (the game sends it, from the eye, the way we look). */
+  onShoot: ((charge: number) => void) | null = null;
+  /** When the bow in hand started being drawn (right button held; ms), if it is. */
+  private drawnAt: number | null = null;
   /** Requests to get into a boat, by message id: the boat's. */
   private readonly boarding = new Map<number, number>();
   private placement: (Box & { valid: boolean; reason: string }) | null = null;
@@ -492,6 +497,11 @@ export class EditTool {
     if (button === 1) return this.breakSmaller(mods.shift ? MIN_VOXEL_SIZE : null);
     if (this.mode === 'hybrid') {
       const held = this.materialOf();
+      // A bow: right button held draws it (let go: it shoots; see release).
+      if (button === 2 && held === Item.Bow) {
+        this.drawnAt = performance.now();
+        return;
+      }
       // A boat in reach, nearer than the voxel aimed at: right-click gets in, left-click takes it.
       const boat = this.aimedBoat();
       if (boat && (button === 0 || button === 2)) {
@@ -822,6 +832,13 @@ export class EditTool {
 
   /** A mouse button let go (0 = left): stops mining. */
   release(button: number): void {
+    if (button === 2 && this.drawnAt !== null) {
+      const charge = drawCharge(performance.now() - this.drawnAt);
+      this.drawnAt = null;
+      if (this.materialOf() === Item.Bow) this.onShoot?.(charge);
+      this.onMiningProgress?.(null);
+      return;
+    }
     if (button !== 0) return;
     this.miningHeld = false;
     this.stepMining();
@@ -843,6 +860,11 @@ export class EditTool {
    * again on the new thing; letting go stops.
    */
   private stepMining(): void {
+    // Drawing a bow: how far, shown as mining is (put away: no longer drawn).
+    if (this.drawnAt !== null) {
+      if (this.materialOf() !== Item.Bow) this.drawnAt = null;
+      else return this.onMiningProgress?.(drawCharge(performance.now() - this.drawnAt));
+    }
     const edit = this.survival && this.miningHeld ? this.aimedRemoval() : null;
     // (With the tool in hand: changing it starts again, at its pace.)
     const held = this.materialOf();

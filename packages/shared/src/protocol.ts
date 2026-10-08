@@ -9,6 +9,7 @@ import type { DeathCause } from './survival.js';
 import { isFacing, type Facing, type PlacedObject } from './objects.js';
 import { isDesignOffset, type ObjectDesign } from './designs.js';
 import type { Boat } from './boats.js';
+import type { ArrowShot } from './arrows.js';
 import type { EntityKind } from './mobs.js';
 import type { StationKind, StationState } from './stations.js';
 import { UNITS_PER_METER } from './units.js';
@@ -65,6 +66,8 @@ export type ClientMessage =
   | { type: 'boatTake'; id: number; boat: number }
   /** Where the boat we're in is now (a few times a second while it moves; no answer); `leave`: and we've got out. */
   | { type: 'boatMove'; boat: number; x: number; y: number; z: number; yaw: number; leave?: boolean }
+  /** Shoots an arrow (a bow in hand, see arrows.ts): from the eye at (x, y, z) (units) along (dx, dy, dz), drawn `charge` (0..1). */
+  | { type: 'shoot'; x: number; y: number; z: number; dx: number; dy: number; dz: number; charge: number }
   /** A sword's sweep (`sword`: the item) cutting leaves around block (x, y, z); answered with `editResult`. */
   | { type: 'cut'; id: number; sword: number; x: number; y: number; z: number }
   /**
@@ -141,6 +144,10 @@ export type ServerMessage =
   | { type: 'objects'; objects: PlacedObject[] }
   /** The world's boats (see Boat), on joining and whenever one's put in, taken, got into or out of. */
   | { type: 'boats'; boats: Boat[] }
+  /** An arrow shot (see ArrowShot): everyone near flies it, from now. */
+  | { type: 'arrow'; arrow: ArrowShot }
+  /** Where an arrow stopped: stuck in the world, in water, in a mob or a player, or gone (flown its time). */
+  | { type: 'arrowHit'; id: number; x: number; y: number; z: number; what: 'world' | 'water' | 'mob' | 'player' | 'gone' }
   /** A boat someone's in has moved. */
   | { type: 'boatMoved'; id: number; x: number; y: number; z: number; yaw: number }
   /**
@@ -409,6 +416,9 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   }
   const finite = (...vs: unknown[]) => vs.every((v) => typeof v === 'number' && Number.isFinite(v));
   const isWhole = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 2 ** 32;
+  if (msg.type === 'shoot' && finite(msg.x, msg.y, msg.z, msg.dx, msg.dy, msg.dz, msg.charge)) {
+    return { type: 'shoot', x: msg.x as number, y: msg.y as number, z: msg.z as number, dx: msg.dx as number, dy: msg.dy as number, dz: msg.dz as number, charge: msg.charge as number };
+  }
   if (msg.type === 'boatLaunch' && isWhole(msg.id) && finite(msg.x, msg.y, msg.z, msg.yaw)) {
     return { type: 'boatLaunch', id: msg.id as number, x: msg.x as number, y: msg.y as number, z: msg.z as number, yaw: msg.yaw as number };
   }

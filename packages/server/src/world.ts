@@ -1303,6 +1303,30 @@ export class World {
   }
 
 
+  /**
+   * An arrow's hit at unit cell (x, y, z): knocks out the `piece` (units) of the voxel there (a
+   * bigger one broken down to pieces that size first; a smaller one, whole). Nothing for water, a
+   * placed object, an explosive (it only sticks in those) or nothing solid there; null then.
+   */
+  chip(x: number, y: number, z: number, piece: number): EditResult | null {
+    const n = CHUNK_SIZE, cx = Math.floor(x / n), cy = Math.floor(y / n), cz = Math.floor(z / n);
+    const resolved = resolveChunk(this.config, { cx, cy, cz });
+    if (!resolved) return null;
+    const chunk = this.current(resolved);
+    const lx = x - cx * n, ly = y - cy * n, lz = z - cz * n;
+    const block = chunk.blocks[blockIndex(Math.floor(lx / BLOCK_SIZE), Math.floor(ly / BLOCK_SIZE), Math.floor(lz / BLOCK_SIZE))] ?? null;
+    const v = blockVoxelContaining(block, lx % BLOCK_SIZE, ly % BLOCK_SIZE, lz % BLOCK_SIZE);
+    if (!v || isWater(v.material) || isExplosive(v.material) || this.objectAtPoint(x, y, z)) return null;
+    try {
+      const broken = v.size > piece ? this.applyEdit({ op: 'break', x, y, z, pieceSize: piece }) : null;
+      const gone = this.applyEdit({ op: 'remove', x, y, z });
+      return broken ? mergeResults(broken, gone) : gone;
+    } catch (err) {
+      if (err instanceof EditError) return null;
+      throw err;
+    }
+  }
+
   /** The explosive voxel (TNT, C4) covering unit (x, y, z) (its corner and size, units, and material), or null if there's none. */
   explosiveAt(x: number, y: number, z: number): Explosive | null {
     const n = CHUNK_SIZE, cx = Math.floor(x / n), cy = Math.floor(y / n), cz = Math.floor(z / n);
