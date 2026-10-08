@@ -476,32 +476,10 @@ export class DesignEditor {
   }
 }
 
-/** A box of units, [x0, x1) x [y0, y1) x [z0, z1). */
-export interface Region {
-  x0: number;
-  y0: number;
-  z0: number;
-  x1: number;
-  y1: number;
-  z1: number;
-}
+export { cellsIn, regionBetween, roundCells, shapeCells, type Region, type RoundShape, type RoundSpec } from '@super-vox/shared';
+import type { Region } from '@super-vox/shared';
 
 type Cell = { x: number; y: number; z: number };
-
-/** The region spanning two cells of `size` (corners, units; either way round), both included. */
-export function regionBetween(a: Cell, b: Cell, size: number): Region {
-  return {
-    x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y), z0: Math.min(a.z, b.z),
-    x1: Math.max(a.x, b.x) + size, y1: Math.max(a.y, b.y) + size, z1: Math.max(a.z, b.z) + size,
-  };
-}
-
-/** The cells of `size` filling a region (its corners on that grid). */
-export function cellsIn(r: Region, size: number): Cell[] {
-  const out: Cell[] = [];
-  for (let y = r.y0; y < r.y1; y += size) for (let z = r.z0; z < r.z1; z += size) for (let x = r.x0; x < r.x1; x += size) out.push({ x, y, z });
-  return out;
-}
 
 /** The region clipped to a box `extent` (units) across (null: nothing left). */
 export function clipRegion(r: Region, extent: readonly number[]): Region | null {
@@ -574,60 +552,3 @@ export function aimSurface(
   return { point: p, normal: back(exitAxis), on: 'wall' };
 }
 
-/** Round shapes the designer draws (see shapeCells). */
-export type RoundShape = 'circle' | 'dome' | 'sphere';
-
-/**
- * The cells of `size` (units) making a round shape centred on cell `centre`, of `radius` (units,
- * between cell centres): a circle (a disk) across axis `axis` (0 x, 1 y, 2 z) through the centre;
- * a sphere around it; a dome, the sphere's half on the `sign` side (1 or -1) of that axis (the
- * centre's layer included, as its floor). Hollow: a ring, or a shell, one cell thick. A cell is in
- * if its centre is within the radius (and half a cell, so a radius of 0 is the centre cell alone).
- */
-export function shapeCells(kind: RoundShape, centre: Cell, axis: 0 | 1 | 2, sign: 1 | -1, radius: number, size: number, hollow: boolean): Cell[] {
-  const n = Math.max(0, Math.round(radius / size));
-  const mid = { x: centre.x + size / 2, y: centre.y + size / 2, z: centre.z + size / 2 };
-  return roundCells({ kind, centre: mid, axis, sign, outer: (n + 0.5) * size, thickness: hollow ? size : null, size });
-}
-
-/**
- * A round shape (see RoundShape) as cells of `size` (units): every cell whose centre is within
- * `outer` (units) of `centre` (any point, units: a cell's centre, or a corner between cells, so
- * even widths come out right), across `axis` for a circle (the layer `centre` is in), all round for
- * a sphere, on the `sign` side of `centre` (its layer included) for a dome. `thickness` (units):
- * only the cells within that of the outside (a ring, a shell); null: solid.
- */
-export interface RoundSpec {
-  kind: RoundShape;
-  centre: { x: number; y: number; z: number };
-  axis: 0 | 1 | 2;
-  sign: 1 | -1;
-  outer: number;
-  thickness: number | null;
-  size: number;
-}
-
-export function roundCells(r: RoundSpec): Cell[] {
-  const out: Cell[] = [];
-  const keys = ['x', 'y', 'z'] as const, ax = keys[r.axis];
-  const eps = 1e-6, outer2 = r.outer * r.outer + eps;
-  const inner = r.thickness === null ? -1 : r.outer - r.thickness, inner2 = inner > 0 ? inner * inner + eps : -1;
-  const lo = (v: number) => Math.floor((v - r.outer) / r.size) * r.size, hi = (v: number) => Math.floor((v + r.outer) / r.size) * r.size;
-  // (Along the axis: the circle's one layer, the one the centre's in.)
-  const layer = Math.floor(r.centre[ax] / r.size) * r.size;
-  const range = (k: (typeof keys)[number]) => (k === ax && r.kind === 'circle' ? [layer, layer] : [lo(r.centre[k]), hi(r.centre[k])]);
-  const [x0, x1] = range('x'), [y0, y1] = range('y'), [z0, z1] = range('z');
-  for (let y = y0!; y <= y1!; y += r.size)
-    for (let z = z0!; z <= z1!; z += r.size)
-      for (let x = x0!; x <= x1!; x += r.size) {
-        const c = { x, y, z };
-        const d = { x: x + r.size / 2 - r.centre.x, y: y + r.size / 2 - r.centre.y, z: z + r.size / 2 - r.centre.z };
-        // (A dome: its half on the sign side, the centre's own layer as its floor.)
-        if (r.kind === 'dome' && d[ax] * r.sign < -r.size / 2 + eps) continue;
-        const d2 = keys.reduce((s, k) => s + (r.kind === 'circle' && k === ax ? 0 : d[k] * d[k]), 0);
-        if (d2 > outer2) continue;
-        if (inner2 >= 0 && d2 <= inner2) continue;
-        out.push(c);
-      }
-  return out;
-}

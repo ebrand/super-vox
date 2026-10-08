@@ -11,6 +11,7 @@ import { isDesignOffset, type ObjectDesign } from './designs.js';
 import type { Boat } from './boats.js';
 import type { ArrowShot } from './arrows.js';
 import type { DroppedItem } from './drops.js';
+import type { BuildOp } from './shapes.js';
 import type { EntityKind } from './mobs.js';
 import type { StationKind, StationState } from './stations.js';
 import { UNITS_PER_METER } from './units.js';
@@ -67,6 +68,12 @@ export type ClientMessage =
   | { type: 'boatTake'; id: number; boat: number }
   /** Where the boat we're in is now (a few times a second while it moves; no answer); `leave`: and we've got out. */
   | { type: 'boatMove'; boat: number; x: number; y: number; z: number; yaw: number; leave?: boolean }
+  /**
+   * Creative: builds a shape (see BuildOp: the build mode's tools), all at once; and undoes this
+   * player's last build. Each answered with `editResult` (a build's note: how many voxels).
+   */
+  | { type: 'build'; id: number; op: BuildOp }
+  | { type: 'undo'; id: number }
   /** Shoots an arrow (a bow in hand, see arrows.ts): from the eye at (x, y, z) (units) along (dx, dy, dz), drawn `charge` (0..1). */
   | { type: 'shoot'; x: number; y: number; z: number; dx: number; dy: number; dz: number; charge: number }
   /** A sword's sweep (`sword`: the item) cutting leaves around block (x, y, z); answered with `editResult`. */
@@ -421,6 +428,11 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   }
   const finite = (...vs: unknown[]) => vs.every((v) => typeof v === 'number' && Number.isFinite(v));
   const isWhole = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 2 ** 32;
+  if (msg.type === 'build' && isWhole(msg.id)) {
+    const op = decodeBuildOp(msg.op);
+    if (op) return { type: 'build', id: msg.id as number, op };
+  }
+  if (msg.type === 'undo' && isWhole(msg.id)) return { type: 'undo', id: msg.id as number };
   if (msg.type === 'shoot' && finite(msg.x, msg.y, msg.z, msg.dx, msg.dy, msg.dz, msg.charge)) {
     return { type: 'shoot', x: msg.x as number, y: msg.y as number, z: msg.z as number, dx: msg.dx as number, dy: msg.dy as number, dz: msg.dz as number, charge: msg.charge as number };
   }
@@ -466,6 +478,31 @@ export function decodeServerMessage(raw: string): ServerMessage | null {
     }
   } catch {
     // fall through
+  }
+  return null;
+}
+
+/** A build as sent (its shape's numbers checked here; whether it can be built: see buildCells). */
+function decodeBuildOp(v: unknown): BuildOp | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  const num = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
+  const cell = (c: unknown) => !!c && typeof c === 'object' && ['x', 'y', 'z'].every((k) => num((c as Record<string, unknown>)[k]));
+  if (!num(o.size) || !isInt32(o.material) || typeof o.clear !== 'boolean') return null;
+  const shape = o.shape as Record<string, unknown> | null;
+  if (!shape || typeof shape !== 'object') return null;
+  const xyz = (c: unknown) => { const r = c as Record<string, number>; return { x: r.x!, y: r.y!, z: r.z! }; };
+  if (shape.kind === 'box' && cell(shape.a) && cell(shape.b)) {
+    return { shape: { kind: 'box', a: xyz(shape.a), b: xyz(shape.b) }, size: o.size as number, material: o.material as number, clear: o.clear };
+  }
+  const r = shape.spec as Record<string, unknown> | null;
+  if (shape.kind === 'round' && r && typeof r === 'object' && typeof r.kind === 'string' && cell(r.centre) && num(r.axis) && num(r.sign) && num(r.outer) && (r.thickness === null || num(r.thickness))) {
+    return {
+      shape: { kind: 'round', spec: { kind: r.kind as 'circle', centre: xyz(r.centre), axis: r.axis as 0, sign: r.sign as 1, outer: r.outer as number, thickness: r.thickness as number | null } },
+      size: o.size as number,
+      material: o.material as number,
+      clear: o.clear,
+    };
   }
   return null;
 }

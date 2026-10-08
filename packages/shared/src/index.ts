@@ -27,6 +27,7 @@ export * from './boats.js';
 export * from './raycast.js';
 export * from './arrows.js';
 export * from './drops.js';
+export * from './shapes.js';
 export * from './objects.js';
 export * from './physics.js';
 export * from './flocking.js';

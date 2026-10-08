@@ -49,6 +49,8 @@ import {
   type ItemId,
   MIN_VOXEL_SIZE,
   nextBreakSize,
+  type BuildOp,
+  buildCells,
   type ClientMessage,
   type Edit,
   type MaterialId,
@@ -58,6 +60,7 @@ import type { ChunkManager } from './chunkManager.js';
 import type { Aabb } from './physics.js';
 import { digBox, placementBox, raycastVoxels, type Box, type SolidAt } from './picking.js';
 import { solidAtFor, waterAtFor } from './worldQuery.js';
+import { BuildMode } from './buildMode.js';
 
 /** While scrolling continuously, wheel travel (pixels) per further voxel-size step. */
 const WHEEL_STEP = 30;
@@ -72,8 +75,8 @@ const REACH = 32 * UNITS_PER_METER;
 /** Sizes the tool offers: the five that tile a 1 m block (1/16, 1/8, 1/4, 1/2, 1 m). */
 export const TOOL_SIZES = GRID_SIZES;
 
-/** Tool modes, in the order Tab cycles through them; the first is the default. */
-export const MODES = ['hybrid', 'dig', 'place'] as const;
+/** Tool modes, in the order Tab cycles through them; the first is the default (build: creative only). */
+export const MODES = ['hybrid', 'dig', 'place', 'build'] as const;
 export type Mode = (typeof MODES)[number];
 
 /** "1 m", "1/2 m", ... "1/16 m" for a size in units. */
@@ -98,6 +101,8 @@ const floorDiv = (v: number, m: number) => Math.floor(v / m);
 /** What a sword cuts. */
 const LEAVES = new Set<number>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves]);
 const mod = (v: number, m: number) => ((v % m) + m) % m;
+/** Most faces a build's preview draws (more: just the box round its cells). */
+const BUILD_PREVIEW_FACES = 120_000;
 
 /**
  * Crosshair voxel editing, in three modes cycled with Tab:
@@ -115,6 +120,10 @@ const mod = (v: number, m: number) => ((v % m) + m) % m;
  *   the ground. Command + left click removes every voxel with any part inside it.
  * - place: a preview of the selected size shows against the face you aim
  *   at; left click places it.
+ *
+ * - build (creative): the object designer's shapes, in the world (see BuildMode): G picks line,
+ *   box, circle, dome or sphere; click, aim, click (a box: and again, for its height); Shift as
+ *   it starts: clears instead; H hollow, T thickness, U or ⌘Z undoes; right-click: never mind.
  *
  * In dig and place, Option positions the box in 1/16 m steps instead of
  * snapping to its size. In every mode, middle click breaks the aimed voxel into the next
@@ -224,6 +233,15 @@ export class EditTool {
   wrapBlocks: number | null = null;
   private readonly preview: THREE.Mesh;
   private readonly previewMaterial: THREE.MeshBasicMaterial;
+  /** Build mode: the shape being drawn (see BuildMode). */
+  readonly builder = new BuildMode();
+  /** ...its cells, as they'd go (green: filled; red: cleared), and the box round them; made when the shape changes. */
+  private readonly buildCellsMesh: THREE.Mesh;
+  private readonly buildCellsMaterial: THREE.MeshBasicMaterial;
+  private readonly buildBox: THREE.Group;
+  private shownBuild = '';
+  /** What the shape drawn so far would make (voxels), or why it can't be built; '' when none is. */
+  private buildNote = '';
   private readonly digPreview: THREE.Mesh;
   /** The dig box's entry face, drawn on the surface so it's clear where digging starts. */
   private readonly digEntry: THREE.Group;
@@ -301,6 +319,12 @@ export class EditTool {
     this.digEntry.renderOrder = 11;
     this.outline.visible = this.preview.visible = this.digPreview.visible = this.digEntry.visible = false;
     scene.add(this.outline, this.preview, this.digPreview, this.digEntry);
+    this.buildCellsMaterial = new THREE.MeshBasicMaterial({ color: 0x40ff60, transparent: true, opacity: 0.3, depthWrite: false, side: THREE.DoubleSide });
+    this.buildCellsMesh = new THREE.Mesh(new THREE.BufferGeometry(), this.buildCellsMaterial);
+    this.buildCellsMesh.frustumCulled = false;
+    this.buildBox = seeThroughOutline(box, 0x40ff60);
+    this.buildCellsMesh.visible = this.buildBox.visible = false;
+    scene.add(this.buildCellsMesh, this.buildBox);
     this.onKeyDown = (e) => {
       this.readModifiers(e);
       // (Typing in a text field, such as the inventory's search: not for the tool.)
@@ -329,7 +353,7 @@ export class EditTool {
 
   /** The sizes to choose from in this mode. */
   private sizes(): readonly number[] {
-    return this.bigBoxes && this.mode !== 'hybrid' ? [...TOOL_SIZES, ...BIG_BOX_SIZES] : TOOL_SIZES;
+    return this.bigBoxes && (this.mode === 'dig' || this.mode === 'place') ? [...TOOL_SIZES, ...BIG_BOX_SIZES] : TOOL_SIZES;
   }
 
   /** Selected size in units; always one of the sizes on offer (see sizes). Setting snaps to the nearest. */
@@ -388,6 +412,9 @@ export class EditTool {
   /** Switches to the next mode (hybrid -> dig -> place -> hybrid). */
   cycleMode(): void {
     this.mode = MODES[(MODES.indexOf(this.mode) + 1) % MODES.length]!;
+    // (Build: creative only.)
+    if (this.mode === 'build' && !this.bigBoxes) this.mode = MODES[0];
+    this.builder.cancel();
     this.hybridSize = null;
     this.onModeChange?.(this.mode);
   }
@@ -523,6 +550,12 @@ export class EditTool {
         }
       }
     }
+    if (this.mode === 'build') {
+      const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
+      const dir = this.camera.getWorldDirection(new THREE.Vector3());
+      this.builder.move({ origin: [origin.x, origin.y, origin.z], dir: [dir.x, dir.y, dir.z] }, this.size);
+    }
+    this.showBuild();
     this.show(this.outline, this.outlined() ? this.target : null, 1.004);
     this.showDesignPreview();
     // Hybrid previews only while Command is held (when choosing a size), like Minecraft otherwise.
@@ -543,6 +576,7 @@ export class EditTool {
     this.modifiers.alt = mods.alt;
     this.update(); // aim with the modifiers as they are right now
     if (button === 1) return this.breakSmaller(mods.shift ? MIN_VOXEL_SIZE : null);
+    if (this.mode === 'build') return this.buildClick(button, !!mods.shift);
     if (this.mode === 'hybrid') {
       const held = this.materialOf();
       // A bow: right button held draws it (let go: it shoots; see release).
@@ -689,6 +723,15 @@ export class EditTool {
           ? `aiming at ${sizeLabel(this.target.size)} of ${materialName(this.targetMaterial)}${this.mode === 'hybrid' ? ' (click: light it, then stand back)' : ''}`
           : `aiming at a ${sizeLabel(this.target.size)} voxel${this.needsPickaxe()}`;
     const held = this.materialOf();
+    if (this.mode === 'build') {
+      const b = this.builder;
+      const round = b.tool !== 'line' && b.tool !== 'box';
+      return (
+        `mode: build (Tab: hybrid / dig / place / build) · ${b.tool}${round ? (b.hollow ? `, hollow ${b.thickness} thick` : ', solid') : ''} · ${sizeLabel(this.size)} ${this.material?.name ?? 'nothing (E: inventory)'} · ${b.stage}${this.buildNote ? ` · ${this.buildNote}` : ''}\n` +
+        `G: line / box / circle / dome / sphere · click: start, then click again${b.tool === 'box' ? ' (base, then height)' : ''} · ⇧+click to start: clear instead · right-click: never mind · H: hollow · T: thickness · U or ⌘Z: undo · ⌘+wheel or [ ]: size` +
+        msg
+      );
+    }
     const actions =
       this.mode === 'hybrid'
         ? held === Item.Bucket
@@ -702,10 +745,122 @@ export class EditTool {
             ? 'click: fill the box (whole 1 m blocks, replacing what\'s there)'
             : `click: place · ⌥: 1/16 m steps${this.bigBoxes ? ' · bigger sizes: fill boxes up to 16 m' : ''}`;
     return (
-      `mode: ${this.mode} (Tab: hybrid / dig / place) · ${size} ${this.material?.name ?? 'nothing (E: inventory)'} · ${target}\n` +
+      `mode: ${this.mode} (Tab: hybrid / dig / place${this.bigBoxes ? ' / build' : ''}) · ${size} ${this.material?.name ?? 'nothing (E: inventory)'} · ${target}\n` +
       `${actions} · middle-click: break smaller (⇧: to 1/16 m) · B: break to size · X: remove · ⌘+wheel or [ ]: size · 1-9: hotbar · E: inventory` +
       msg
     );
+  }
+
+  /**
+   * Build mode, a click: left starts the shape, takes it a step on, or (finished) builds it (with
+   * Shift as it starts: clears it out); right: never mind.
+   */
+  private buildClick(button: number, shift: boolean): void {
+    if (button === 2) {
+      if (this.builder.active) this.say('never mind');
+      this.builder.cancel();
+      return;
+    }
+    if (button !== 0) return;
+    const material = this.materialOf();
+    if (!shift && !this.builder.active && (material === null || !isBlock(material) || !canPlace(material, 'creative') || isWater(material)))
+      return this.say(material === null ? 'nothing in this hotbar slot to build with (E: inventory) · ⇧+click clears' : `a ${itemName(material)} can't be built with`);
+    const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const aim = this.hit && { point: this.hit.point, normal: this.hit.normal };
+    if (!this.builder.active && !aim) return this.say('aim at something to start from');
+    const op = this.builder.click(aim, { origin: [origin.x, origin.y, origin.z], dir: [dir.x, dir.y, dir.z] }, this.size, material ?? Material.Stone, shift);
+    this.onModeChange?.(this.mode);
+    if (!op) return;
+    const cells = buildCells(op);
+    if (typeof cells === 'string') return this.say(`can't build that: ${cells}`);
+    const id = this.nextId++;
+    this.pending.set(id, op.clear ? 'clear' : 'build');
+    this.send({ type: 'build', id, op });
+  }
+
+  /** Build mode: takes back the last shape built (the server keeps each player's last few). */
+  private undoBuild(): void {
+    this.builder.cancel();
+    const id = this.nextId++;
+    this.pending.set(id, 'undo');
+    this.send({ type: 'undo', id });
+  }
+
+  /** Build mode's keys (true: it was one). */
+  private buildKey(code: string): boolean {
+    const b = this.builder;
+    if (code === 'KeyG') {
+      b.nextTool();
+      this.say(`build: ${b.tool}`);
+    } else if (code === 'KeyH') {
+      b.hollow = !b.hollow;
+      this.say(b.tool === 'line' || b.tool === 'box' ? `hollow: ${b.hollow ? 'on' : 'off'} (for circles, domes and spheres)` : `${b.hollow ? 'hollow' : 'solid'} ${b.tool}`);
+    } else if (code === 'KeyT') {
+      b.thickness = (b.thickness % 4) + 1;
+      if (!b.hollow) b.hollow = true;
+      this.say(`hollow, ${b.thickness} voxel${b.thickness > 1 ? 's' : ''} thick`);
+    } else if (code === 'KeyU') this.undoBuild();
+    else return false;
+    this.shownBuild = ''; // (redrawn: the shape may have changed)
+    this.onModeChange?.(this.mode);
+    return true;
+  }
+
+  /** Build mode: shows the shape drawn so far, voxel by voxel (big ones: the box round them). */
+  private showBuild(): void {
+    const material = this.materialOf();
+    const op = this.mode === 'build' ? this.builder.op(this.size, material ?? Material.Stone) : null;
+    const key = op ? JSON.stringify(op) : '';
+    if (key === this.shownBuild) return;
+    this.shownBuild = key;
+    this.buildNote = '';
+    const cells = op && buildCells(op);
+    if (!op || !cells || typeof cells === 'string' || cells.length === 0) {
+      this.buildCellsMesh.visible = false;
+      this.buildBox.visible = !!op;
+      if (op && typeof cells === 'string') this.buildNote = `can't build that: ${cells}`;
+      if (op) this.showBuildBox(op, null);
+      return;
+    }
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const c of cells) {
+      lo[0] = Math.min(lo[0]!, c.x); lo[1] = Math.min(lo[1]!, c.y); lo[2] = Math.min(lo[2]!, c.z);
+      hi[0] = Math.max(hi[0]!, c.x); hi[1] = Math.max(hi[1]!, c.y); hi[2] = Math.max(hi[2]!, c.z);
+    }
+    const color = op.clear ? 0xff4040 : 0x40ff60;
+    this.buildCellsMaterial.color.set(color);
+    // Only its outside faces (every cube's own, translucent, would stack up into a solid wall of colour).
+    const faces = surfaceFaces(cells, op.size, lo, hi, BUILD_PREVIEW_FACES);
+    const each = faces !== null;
+    this.buildCellsMesh.visible = each;
+    if (faces) {
+      // (A new geometry each time, the old one let go: its buffers on the GPU too.)
+      this.buildCellsMesh.geometry.dispose();
+      this.buildCellsMesh.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(faces, 3));
+      // (Made from lo, so the numbers stay small: far out, a float's too coarse for 1/16 m.)
+      this.buildCellsMesh.position.set(lo[0]! / UNITS_PER_METER, lo[1]! / UNITS_PER_METER, lo[2]! / UNITS_PER_METER);
+      this.buildCellsMesh.scale.setScalar(1 / UNITS_PER_METER);
+    }
+    const n = cells.length;
+    this.buildNote = `${op.clear ? 'clears' : 'builds'} ${n} voxel${n === 1 ? '' : 's'} of ${sizeLabel(op.size)}${each ? '' : ' (too many to show each: the box round them)'}`;
+    this.showBuildBox(op, { lo, hi });
+  }
+
+  /** The box round a shape's cells (lo..hi: their corners, units; null: just where it started). */
+  private showBuildBox(op: BuildOp, span: { lo: number[]; hi: number[] } | null): void {
+    const box = this.buildBox;
+    box.visible = true;
+    for (const line of box.children) ((line as THREE.LineSegments).material as THREE.LineBasicMaterial).color.set(op.clear ? 0xff4040 : 0x40ff60);
+    const lo = span?.lo ?? [0, 0, 0], hi = span?.hi ?? [0, 0, 0];
+    if (!span) {
+      const c = op.shape.kind === 'box' ? op.shape.a : { x: op.shape.spec.centre.x - op.size / 2, y: op.shape.spec.centre.y - op.size / 2, z: op.shape.spec.centre.z - op.size / 2 };
+      [lo[0], lo[1], lo[2]] = [c.x, c.y, c.z];
+      [hi[0], hi[1], hi[2]] = [c.x, c.y, c.z];
+    }
+    const M = UNITS_PER_METER;
+    box.scale.set((hi[0]! - lo[0]! + op.size) / M + 0.01, (hi[1]! - lo[1]! + op.size) / M + 0.01, (hi[2]! - lo[2]! + op.size) / M + 0.01);
+    box.position.set((lo[0]! + hi[0]! + op.size) / 2 / M, (lo[1]! + hi[1]! + op.size) / 2 / M, (lo[2]! + hi[2]! + op.size) / 2 / M);
   }
 
   /** A geologist's hammer tapped on `material`: what it is, said. */
@@ -731,6 +886,9 @@ export class EditTool {
     this.preview.removeFromParent();
     this.digPreview.removeFromParent();
     this.digEntry.removeFromParent();
+    this.buildCellsMesh.removeFromParent();
+    this.buildCellsMesh.geometry.dispose();
+    this.buildBox.removeFromParent();
   }
 
   private readModifiers(e: KeyboardEvent): void {
@@ -748,11 +906,16 @@ export class EditTool {
   private handleKey(e: KeyboardEvent): void {
     // Tab and Alt have browser defaults (focus moves, menu bar); the game uses them.
     if (e.code === 'Tab' || e.code === 'AltLeft' || e.code === 'AltRight') e.preventDefault();
+    if (this.mode === 'build' && e.code === 'KeyZ' && (e.metaKey || e.ctrlKey) && !e.repeat) {
+      e.preventDefault();
+      return this.undoBuild();
+    }
     if (e.ctrlKey || e.repeat || (e.metaKey && e.code !== 'MetaLeft' && e.code !== 'MetaRight')) return;
     if (e.code === 'Tab') {
       this.cycleMode();
       return;
     }
+    if (this.mode === 'build' && this.buildKey(e.code)) return;
     // (In hybrid the size follows the target unless Command is held, so [ ] only work in dig and place.)
     if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && this.mode === 'hybrid') this.say('hybrid: hold ⌘ and turn the wheel to choose a size');
     else if (e.code === 'BracketLeft') this.stepSize(-1, false);
@@ -899,7 +1062,7 @@ export class EditTool {
   /** What holding the left button would mine now: the dig box (dig mode) or the voxel aimed at; null for nothing. */
   private aimedRemoval(): (Edit & { op: 'remove' | 'removeBox' }) | null {
     if (this.mode === 'dig' && this.dig) return { op: 'removeBox', x: this.dig.x, y: this.dig.y, z: this.dig.z, size: this.dig.size };
-    if (this.mode === 'place' || !this.target) return null;
+    if (this.mode === 'place' || this.mode === 'build' || !this.target) return null;
     if (this.mode === 'hybrid' && this.targetMaterial !== null && isExplosive(this.targetMaterial)) return null; // (lit, not mined)
     if (this.mode === 'hybrid' && !this.breaks) return null;
     const held = this.materialOf();
@@ -1015,6 +1178,52 @@ export class EditTool {
     obj.scale.setScalar((b.size / UNITS_PER_METER) * scale);
     obj.position.set((b.x + b.size / 2) / UNITS_PER_METER, (b.y + b.size / 2) / UNITS_PER_METER, (b.z + b.size / 2) / UNITS_PER_METER);
   }
+}
+
+/**
+ * The faces of `cells` (of `size`, within lo..hi) that aren't against another of them: two
+ * triangles each, as positions (units, from lo); null if there are more than `most`.
+ */
+export function surfaceFaces(cells: readonly { x: number; y: number; z: number }[], size: number, lo: readonly number[], hi: readonly number[], most: number): Float32Array | null {
+  // (Numbered in a grid a cell wider than lo..hi all round, so neighbours are plain offsets.)
+  const nx = (hi[0]! - lo[0]!) / size + 3, ny = (hi[1]! - lo[1]!) / size + 3, nz = (hi[2]! - lo[2]!) / size + 3;
+  const index = (c: { x: number; y: number; z: number }) => ((c.y - lo[1]!) / size + 1) * nx * nz + ((c.z - lo[2]!) / size + 1) * nx + ((c.x - lo[0]!) / size + 1);
+  // (A grid of flags while that's small enough; a set of the numbers when it isn't: a big thin shell.)
+  let has: (i: number) => boolean;
+  if (nx * ny * nz <= 8_000_000) {
+    const filled = new Uint8Array(nx * ny * nz);
+    for (const c of cells) filled[index(c)] = 1;
+    has = (i) => filled[i] === 1;
+  } else {
+    const filled = new Set(cells.map(index));
+    has = (i) => filled.has(i);
+  }
+  // Each side: the step to the neighbour, the axis it's across, and which end of the cell.
+  const sides = [[1, 0, 1], [-1, 0, 0], [nx * nz, 1, 1], [-nx * nz, 1, 0], [nx, 2, 1], [-nx, 2, 0]] as const;
+  const open: number[] = [];
+  for (let k = 0; k < cells.length; k++) {
+    const i = index(cells[k]!);
+    for (let f = 0; f < 6; f++) if (!has(i + sides[f]![0])) open.push(k * 6 + f);
+    if (open.length > most) return null;
+  }
+  const out = new Float32Array(open.length * 18);
+  let o = 0;
+  const corner = [0, 0, 0];
+  for (const kf of open) {
+    const c = cells[Math.floor(kf / 6)]!, [, axis, end] = sides[kf % 6]!;
+    const base = [c.x - lo[0]!, c.y - lo[1]!, c.z - lo[2]!];
+    const u = (axis + 1) % 3, v = (axis + 2) % 3;
+    // The quad's corners (0,0) (1,0) (1,1), (0,0) (1,1) (0,1) across u and v.
+    for (const [a, b] of [[0, 0], [1, 0], [1, 1], [0, 0], [1, 1], [0, 1]] as const) {
+      corner[axis] = base[axis]! + end * size;
+      corner[u] = base[u]! + a * size;
+      corner[v] = base[v]! + b * size;
+      out[o++] = corner[0]!;
+      out[o++] = corner[1]!;
+      out[o++] = corner[2]!;
+    }
+  }
+  return out;
 }
 
 /**

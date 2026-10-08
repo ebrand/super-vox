@@ -175,6 +175,23 @@ const mod = (v: number, m: number) => ((v % m) + m) % m;
 /** What a sword cuts. */
 const LEAVES = new Set<number>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves]);
 const objectKey = (x: number, y: number, z: number) => `${x},${y},${z}`;
+/** A block a build changed: where, as it was, and as it was left (see World.build). */
+export interface BuildChange {
+  bx: number;
+  by: number;
+  bz: number;
+  before: Block;
+  after: Block;
+}
+
+/** Whether two blocks hold the same voxels (blocks decoded again aren't the same objects). */
+function sameBlock(a: Block, b: Block): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const key = (blk: Block) => blockVoxels(blk).map((v) => `${v.x},${v.y},${v.z},${v.size},${v.material}`).sort().join(';');
+  return key(a) === key(b);
+}
+
 /** A moving boat is kept at most this often (ms; and whenever it's left). */
 const BOATS_SAVE_MS = 2000;
 /**
@@ -1302,6 +1319,95 @@ export class World {
       .map((v) => ({ x: bx * B + v.x, y: by * B + v.y, z: bz * B + v.z, size: v.size, material: v.material }));
   }
 
+
+  /**
+   * Builds cells (units, each `size` across, on that grid: see buildCells) in one go: filled with
+   * `material` (only where there's room: what's there stays; water there goes), or (`clear`)
+   * cleared (every solid voxel touching them goes). Placed objects are kept clear of. Returns what
+   * changed (null: nothing), how many cells went in (or voxels went), and each block changed, as it
+   * was and as it is now (to undo it: see unbuild).
+   */
+  build(cells: readonly { x: number; y: number; z: number }[], size: number, material: MaterialId, clear: boolean): { result: EditResult | null; count: number; blocks: BuildChange[] } {
+    const B = BLOCK_SIZE;
+    const byBlock = new Map<string, { bx: number; by: number; bz: number; cells: { x: number; y: number; z: number }[] }>();
+    for (const c of cells) {
+      if (this.objects.size && this.objectIn({ x0: c.x, y0: c.y, z0: c.z, x1: c.x + size, y1: c.y + size, z1: c.z + size })) continue;
+      const bx = this.wrapBlockX(Math.floor(c.x / B)), by = Math.floor(c.y / B), bz = Math.floor(c.z / B);
+      const key = objectKey(bx, by, bz);
+      let g = byBlock.get(key);
+      if (!g) byBlock.set(key, (g = { bx, by, bz, cells: [] }));
+      g.cells.push({ x: mod(c.x, B), y: mod(c.y, B), z: mod(c.z, B) });
+    }
+    const writes: { bx: number; by: number; bz: number; block: Block }[] = [], changes: BuildChange[] = [];
+    let count = 0;
+    // Which unit cells of a block the cells take (fill: and the solid voxels already there).
+    const taken = new Uint8Array(B * B * B);
+    for (const g of byBlock.values()) {
+      const before = this.blockAt(g.bx, g.by, g.bz);
+      if (before === undefined) continue;
+      // (Filling an empty block: just the cells.)
+      if (!clear && before === null) {
+        const after = blockFromVoxels(g.cells.map((c) => ({ ...c, size, material })));
+        count += g.cells.length;
+        writes.push({ bx: g.bx, by: g.by, bz: g.bz, block: after });
+        changes.push({ bx: g.bx, by: g.by, bz: g.bz, before, after });
+        continue;
+      }
+      if (clear && before === null) continue;
+      const voxels = blockVoxels(before);
+      taken.fill(0);
+      const mark = (v: { x: number; y: number; z: number; size: number }, into: Uint8Array) => {
+        for (let y = v.y; y < v.y + v.size; y++) for (let z = v.z; z < v.z + v.size; z++) for (let x = v.x; x < v.x + v.size; x++) into[x + B * (z + B * y)] = 1;
+      };
+      const touches = (v: { x: number; y: number; z: number; size: number }, m: Uint8Array) => {
+        for (let y = v.y; y < v.y + v.size; y++) for (let z = v.z; z < v.z + v.size; z++) for (let x = v.x; x < v.x + v.size; x++) if (m[x + B * (z + B * y)]) return true;
+        return false;
+      };
+      let next: BlockVoxel[];
+      if (clear) {
+        for (const c of g.cells) mark({ ...c, size }, taken);
+        next = voxels.filter((v) => isWater(v.material) || !touches(v, taken));
+        count += voxels.length - next.length;
+      } else {
+        for (const v of voxels) if (!isWater(v.material)) mark(v, taken);
+        const added: BlockVoxel[] = [];
+        for (const c of g.cells) {
+          const v = { ...c, size };
+          if (touches(v, taken)) continue;
+          mark(v, taken);
+          added.push({ ...v, material });
+        }
+        if (!added.length) continue;
+        count += added.length;
+        // (Water where they went: gone, as placing a voxel does.)
+        next = [...voxels.filter((v) => !isWater(v.material) || !touches(v, taken)), ...added];
+      }
+      if (next.length === voxels.length && clear) continue;
+      const after = blockFromVoxels(next);
+      writes.push({ bx: g.bx, by: g.by, bz: g.bz, block: after });
+      changes.push({ bx: g.bx, by: g.by, bz: g.bz, before, after });
+    }
+    if (!writes.length) return { result: null, count: 0, blocks: [] };
+    const result = this.writeBlocks(writes);
+    for (const w of writes) this.flow.touch(w.bx, w.by, w.bz);
+    this.stats.edits++;
+    return { result, count, blocks: changes };
+  }
+
+  /**
+   * Undoes a build (its blocks as they were: see build), if none of them has changed since (else
+   * nothing, and why not).
+   */
+  unbuild(changes: readonly BuildChange[]): EditResult | string {
+    for (const c of changes) {
+      const now = this.blockAt(c.bx, c.by, c.bz);
+      if (now === undefined || !sameBlock(now, c.after)) return 'something there has changed since';
+    }
+    const result = this.writeBlocks(changes.map((c) => ({ bx: c.bx, by: c.by, bz: c.bz, block: c.before })));
+    for (const c of changes) this.flow.touch(c.bx, c.by, c.bz);
+    this.stats.edits++;
+    return result;
+  }
 
   /**
    * An arrow's hit at unit cell (x, y, z): knocks out the `piece` (units) of the voxel there (a

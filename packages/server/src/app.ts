@@ -9,6 +9,7 @@ import { starterInventory, type InventoryStore } from './inventories.js';
 import { PlayerInventory } from './playerInventory.js';
 import { MobManager } from './mobManager.js';
 import { ArrowFlights, type Target } from './arrowFlights.js';
+import type { BuildChange } from './world.js';
 import {
   BinaryTag,
   BOAT,
@@ -21,6 +22,8 @@ import {
   restingY,
   type DroppedItem,
   playerBox,
+  buildCells,
+  canPlace,
   CHUNK_SIZE,
   resolveChunk,
   EditError,
@@ -149,6 +152,8 @@ interface Player {
   name: string | null;
   /** Last reported position (units) and heading, and when. */
   pose: { x: number; y: number; z: number; yaw: number; at: number } | null;
+  /** Their builds (creative: see World.build), the latest last: to undo. */
+  builds: BuildChange[][];
   /** What's in their hand (an item), and how many times they've swung it (see the pose message). */
   held: number | null;
   swings: number;
@@ -172,6 +177,9 @@ interface Player {
   /** Puts `amount` of `item` in their inventory and tells them; false (nothing) without one (not signed in, or not loaded yet). */
   give: (item: ItemId, amount: number) => boolean;
 }
+
+/** The most blocks a player's builds keep to undo, all told (a bigger build: not undoable). */
+const BUILD_UNDO_BLOCKS = 100_000;
 
 /** Time between water flow steps. */
 export const WATER_STEP_MS = 200;
@@ -1202,7 +1210,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             players.set(socket, {
               id: nextPlayer++, world: msg.world ?? catalog.defaultName, connectedAt: Date.now(), tolerance: world.tolerance,
               name: who?.account.name ?? null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
-              vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0, lastShot: 0, held: null, swings: 0, bed: null, settleUntil: Infinity, saveState: null,
+              vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0, lastShot: 0, held: null, swings: 0, builds: [], bed: null, settleUntil: Infinity, saveState: null,
               give: (item, amount) => {
                 if (!inventory) return false;
                 inventory.addItem(item, amount);
@@ -1563,6 +1571,44 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (!world.moveBoat(msg.boat, p.id, msg.x, msg.y, msg.z, msg.yaw, msg.leave ?? false)) return;
           const bytes = encodeMessage({ type: 'boatMoved', id: msg.boat, x: msg.x, y: msg.y, z: msg.z, yaw: msg.yaw });
           for (const [client, w] of clients) if (w === world && client !== socket && client.readyState === client.OPEN) out(client, bytes);
+          break;
+        }
+
+        case 'build':
+        case 'undo': {
+          if (!greeted) return;
+          const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
+          if (!canEdit()) return fail(cantBuild());
+          if ((catalog.play(clientWorld.get(socket))?.mode ?? 'creative') !== 'creative') return fail('building with shapes is for creative worlds');
+          const p = players.get(socket)!;
+          let result: EditResult | null;
+          let note: string;
+          if (msg.type === 'undo') {
+            const last = p.builds.pop();
+            if (!last) return fail('nothing to undo');
+            const r = world.unbuild(last);
+            if (typeof r === 'string') return fail(`can't undo it: ${r}`);
+            result = r;
+            note = `undone (${p.builds.length} more to undo)`;
+          } else {
+            const cells = buildCells(msg.op);
+            if (typeof cells === 'string') return fail(cells);
+            if (!msg.op.clear && !canPlace(msg.op.material, 'creative')) return fail(`${itemName(msg.op.material)} can't be built with`);
+            if (msg.op.clear === false && isWater(msg.op.material)) return fail("water isn't built with: pour it");
+            const r = world.build(cells, msg.op.size, msg.op.material, msg.op.clear);
+            result = r.result;
+            if (!result) return fail(msg.op.clear ? 'nothing there to clear' : 'no room there: everything in it is taken');
+            // (Kept to undo: the last 20, and none too big to keep.)
+            if (r.blocks.length <= BUILD_UNDO_BLOCKS) {
+              p.builds.push(r.blocks);
+              while (p.builds.length > 20 || p.builds.reduce((n, b) => n + b.length, 0) > BUILD_UNDO_BLOCKS) p.builds.shift();
+            }
+            note = `${msg.op.clear ? 'cleared' : 'built'}: ${r.count} voxel${r.count === 1 ? '' : 's'}${r.blocks.length > BUILD_UNDO_BLOCKS ? ' (too big to undo)' : ''}`;
+          }
+          metrics.totals.edits++;
+          p.edits++;
+          send({ type: 'editResult', id: msg.id, ok: true, note });
+          broadcast(world, result);
           break;
         }
 

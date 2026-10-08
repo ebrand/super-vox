@@ -367,3 +367,117 @@ describe('EditTool TNT', () => {
     delete (globalThis as { window?: EventTarget }).window;
   });
 });
+
+describe('EditTool build mode (creative)', () => {
+  let tool: EditTool;
+  let camera: THREE.PerspectiveCamera;
+  let sent: { type: string; [k: string]: unknown }[];
+  let held: number | null;
+  const stone = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+  stone.blocks[blockIndex(0, 0, 0)] = { kind: 'uniform', size: 16, material: Material.Stone };
+  const look = (x: number, y: number, z: number) => {
+    camera.lookAt(x, y, z);
+    camera.updateMatrixWorld();
+  };
+
+  beforeEach(() => {
+    (globalThis as { window?: EventTarget }).window = new EventTarget();
+    const chunks = { chunkAt: (c: { cx: number; cy: number; cz: number }) => (c.cx === 0 && c.cy === 0 && c.cz === 0 ? stone : emptyChunk(c)) } as unknown as ChunkManager;
+    camera = new THREE.PerspectiveCamera();
+    camera.position.set(0.6, 3, 0.6); // (off the cells' corners: (9.6, 48, 9.6))
+    look(0.6, 0, 0.6);
+    sent = [];
+    held = Material.Planks;
+    tool = new EditTool(new THREE.Scene(), camera, chunks, (m) => sent.push(m as never), () => held);
+  });
+  afterEach(() => {
+    tool.dispose();
+    delete (globalThis as { window?: EventTarget }).window;
+  });
+
+  it('is a mode in creative only', () => {
+    const modes = () => Array.from({ length: 4 }, () => (window.dispatchEvent(key('keydown', 'Tab', false)), tool.mode));
+    expect(modes()).toEqual(['dig', 'place', 'hybrid', 'dig']);
+    tool.mode = 'hybrid';
+    tool.bigBoxes = true;
+    expect(modes()).toEqual(['dig', 'place', 'build', 'hybrid']);
+  });
+
+  it('clicks out a box (base, then height) and sends it to be built; U and ⌘Z undo', () => {
+    tool.bigBoxes = true;
+    tool.mode = 'build';
+    expect(tool.size).toBe(4); // (at most 1 m: no big boxes here)
+    tool.click(0, { meta: false, alt: false }); // on top of the stone block: from (8, 16, 8)
+    expect(tool.builder.active).toBe(true);
+    look(1.4, 1.125, 0.6); // across the plane through the start's middle, to x 22.4
+    tool.update();
+    tool.click(0, { meta: false, alt: false }); // the base
+    tool.click(0, { meta: false, alt: false }); // the height: none (aimed at the base)
+    expect(sent).toEqual([{ type: 'build', id: expect.any(Number), op: { shape: { kind: 'box', a: { x: 8, y: 16, z: 8 }, b: { x: 20, y: 16, z: 8 } }, size: 4, material: Material.Planks, clear: false } }]);
+    expect(tool.builder.active).toBe(false);
+    window.dispatchEvent(key('keydown', 'KeyU', false));
+    window.dispatchEvent(key('keydown', 'KeyZ', true));
+    expect(sent.slice(1).map((m) => m.type)).toEqual(['undo', 'undo']);
+    // The server's answer is said.
+    const said: string[] = [];
+    tool.onSay = (t) => said.push(t);
+    tool.onServerMessage({ type: 'editResult', id: sent[0]!.id as number, ok: true, note: 'built: 4 voxels' });
+    tool.onServerMessage({ type: 'editResult', id: sent[1]!.id as number, ok: false, error: 'nothing to undo' });
+    expect(said).toEqual(['built: 4 voxels', 'undo failed: nothing to undo']);
+  });
+
+  it('Shift as it starts clears instead, in what was aimed at; right-click drops it; G changes the shape', () => {
+    tool.bigBoxes = true;
+    tool.mode = 'build';
+    tool.click(0, { meta: false, alt: false, shift: true });
+    tool.click(2, { meta: false, alt: false });
+    expect(tool.builder.active).toBe(false);
+    window.dispatchEvent(key('keydown', 'KeyG', false));
+    expect(tool.builder.tool).toBe('circle');
+    for (let i = 0; i < 3; i++) window.dispatchEvent(key('keydown', 'KeyG', false));
+    expect(tool.builder.tool).toBe('line');
+    tool.click(0, { meta: false, alt: false, shift: true });
+    tool.click(0, { meta: false, alt: false });
+    expect(sent).toMatchObject([{ type: 'build', op: { shape: { kind: 'box', a: { x: 8, y: 12, z: 8 }, b: { x: 8, y: 12, z: 8 } }, clear: true } }]);
+  });
+
+  it("won't build with nothing, or what isn't a block, in hand (but clears)", () => {
+    tool.bigBoxes = true;
+    tool.mode = 'build';
+    const said: string[] = [];
+    tool.onSay = (t) => said.push(t);
+    held = Item.Bow;
+    tool.click(0, { meta: false, alt: false });
+    held = null;
+    tool.click(0, { meta: false, alt: false });
+    expect(tool.builder.active).toBe(false);
+    expect(said).toHaveLength(2);
+    tool.click(0, { meta: false, alt: false, shift: true });
+    expect(tool.builder.active).toBe(true);
+  });
+});
+
+describe('surfaceFaces (the build preview)', () => {
+  it('keeps only the faces not against another cell, however big the box round them', async () => {
+    const { surfaceFaces } = await import('./editTool.js');
+    const { buildCells } = await import('@super-vox/shared');
+    const box = buildCells({ shape: { kind: 'box', a: { x: 0, y: 0, z: 0 }, b: { x: 36, y: 36, z: 36 } }, size: 4, material: Material.Stone, clear: false }) as { x: number; y: number; z: number }[];
+    expect(box).toHaveLength(1000);
+    const faces = surfaceFaces(box, 4, [0, 0, 0], [36, 36, 36], 1e6)!;
+    expect(faces.length / 18).toBe(6 * 100);
+    // All on the box's outside: every corner on a side of 0..40.
+    for (let i = 0; i < faces.length; i += 3) expect([faces[i], faces[i + 1], faces[i + 2]].some((v) => v === 0 || v === 40)).toBe(true);
+    expect(surfaceFaces(box, 4, [0, 0, 0], [36, 36, 36], 599)).toBeNull(); // too many
+    // One cell: its six faces, a unit cube of `size` from lo.
+    const one = surfaceFaces([{ x: 100, y: 200, z: 300 }], 2, [100, 200, 300], [100, 200, 300], 10)!;
+    expect(one.length / 18).toBe(6);
+    expect(Math.max(...one)).toBe(2);
+    expect(Math.min(...one)).toBe(0);
+    // A shell 64 m across of 1/4 m cells (the grid'd be too big: a set instead).
+    const shell = buildCells({ shape: { kind: 'round', spec: { kind: 'sphere', centre: { x: 2, y: 2, z: 2 }, axis: 1, sign: 1, outer: 510, thickness: 4 } }, size: 4, material: Material.Stone, clear: false });
+    const cells = shell as { x: number; y: number; z: number }[];
+    const lo = [0, 1, 2].map((a) => cells.reduce((m, c) => Math.min(m, [c.x, c.y, c.z][a]!), Infinity));
+    const hi = [0, 1, 2].map((a) => cells.reduce((m, c) => Math.max(m, [c.x, c.y, c.z][a]!), -Infinity));
+    expect(surfaceFaces(cells, 4, lo, hi, 2e6)!.length).toBeGreaterThan(cells.length * 18);
+  });
+});
