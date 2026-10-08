@@ -59,8 +59,9 @@ function legacyPose(s: FigureState): Pose {
     const swing = go * (0.45 + 0.35 * run), sinS = Math.sin(s.stride), cosS = Math.cos(s.stride);
     set('legL', swing * sinS);
     set('legR', -swing * sinS);
-    set('kneeL', -go * (0.15 + 0.9 * run) * Math.max(0, -cosS) - go * 0.15);
-    set('kneeR', -go * (0.15 + 0.9 * run) * Math.max(0, cosS) - go * 0.15);
+    // (Corrected since: each knee bends as its leg swings forward, enough to lift the foot; it bent going back, a walk backwards.)
+    set('kneeL', -go * (0.7 + 0.35 * run) * Math.max(0, cosS) - go * 0.15);
+    set('kneeR', -go * (0.7 + 0.35 * run) * Math.max(0, -cosS) - go * 0.15);
     set('ankleL', go * 0.2 * Math.max(0, cosS));
     set('ankleR', go * 0.2 * Math.max(0, -cosS));
     set('shoulderL', -swing * 0.8 * sinS, 0, -0.08 - breath);
@@ -69,7 +70,8 @@ function legacyPose(s: FigureState): Pose {
     set('elbowR', go * (0.25 + 0.9 * run));
     lean = -0.22 * run;
     // A step's bob: lowest as the feet pass.
-    lift = -go * (0.02 + 0.03 * run) * Math.abs(cosS);
+    // (Corrected since: a walk's lowest with the legs apart; a run's as they pass.)
+    lift = -go * (0.02 * (1 - run) * Math.abs(sinS) + 0.05 * run * Math.abs(cosS));
     set('head', s.pitch * 0.6 - lean);
     set('chest', -breath + s.pitch * 0.15);
   }
@@ -104,7 +106,7 @@ const smooth = (a: number, b: number, x: number) => {
 
 
 describe('the default animation library', () => {
-  it('poses figures as the code did (but the swimming legs: four beats to a stroke now)', () => {
+  it('poses figures as the code did (but the swimming legs: four beats to a stroke; and the knees and bob of a stride, put right)', () => {
     const lib = defaultAnimations();
     const base: FigureState = { time: 0, stride: 0, speed: 0, airborne: false, swimming: false, flying: false, mining: false, swing: null, draw: null, pitch: 0 };
     const states: FigureState[] = [];

@@ -266,9 +266,9 @@ function around(n: number, f: (t: number) => [number, number, number]): AnimKey[
 const still = (turn: [number, number, number]): AnimKey[] => [{ at: 0, turn }];
 const TAU = 2 * Math.PI;
 
-/** A walk (0) or a run (1): legs swing (knees bending on the way back), arms the other way, a step's bob. */
+/** A walk (0) or a run (1): legs swing (knees bending as each comes forward), arms the other way, a step's bob. */
 function stride(run: number): AnimClip {
-  const swing = 0.45 + 0.35 * run, knee = 0.15 + 0.9 * run, N = 16;
+  const swing = 0.45 + 0.35 * run, knee = 0.7 + 0.35 * run, N = 16;
   const sin = (t: number) => Math.sin(t * TAU), cos = (t: number) => Math.cos(t * TAU);
   return {
     driver: 'stride',
@@ -276,8 +276,10 @@ function stride(run: number): AnimClip {
     joints: {
       legL: around(N, (t) => [swing * sin(t), 0, 0]),
       legR: around(N, (t) => [-swing * sin(t), 0, 0]),
-      kneeL: around(N, (t) => [-knee * Math.max(0, -cos(t)) - 0.15, 0, 0]),
-      kneeR: around(N, (t) => [-knee * Math.max(0, cos(t)) - 0.15, 0, 0]),
+      // (A knee bends as its leg swings forward, the foot off the ground: the left's swinging
+      // forward while cos > 0, the right's while cos < 0. Straight-ish as it pushes back.)
+      kneeL: around(N, (t) => [-knee * Math.max(0, cos(t)) - 0.15, 0, 0]),
+      kneeR: around(N, (t) => [-knee * Math.max(0, -cos(t)) - 0.15, 0, 0]),
       ankleL: around(N, (t) => [0.2 * Math.max(0, cos(t)), 0, 0]),
       ankleR: around(N, (t) => [0.2 * Math.max(0, -cos(t)), 0, 0]),
       shoulderL: around(N, (t) => [-swing * 0.8 * sin(t), 0, -0.08]),
@@ -285,7 +287,9 @@ function stride(run: number): AnimClip {
       elbowL: still([0.25 + 0.9 * run, 0, 0]),
       elbowR: still([0.25 + 0.9 * run, 0, 0]),
     },
-    body: Array.from({ length: N }, (_, i) => ({ at: i / N, lean: -0.22 * run, lift: -(0.02 + 0.03 * run) * Math.abs(cos(i / N)) })),
+    // A step's bob: walking, lowest with the legs apart (both feet down) and highest as they pass;
+    // running, highest in the air (legs apart) and lowest as they pass (a foot down).
+    body: Array.from({ length: N }, (_, i) => ({ at: i / N, lean: -0.22 * run, lift: run ? -0.05 * Math.abs(cos(i / N)) : -0.02 * Math.abs(sin(i / N)) })),
     look: { head: 0.6, chest: 0.15, level: true },
   };
 }

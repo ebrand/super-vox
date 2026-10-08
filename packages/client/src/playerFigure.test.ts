@@ -136,3 +136,24 @@ describe('the default strides', () => {
     expect(WALK_SPEED * SPRINT).toBeGreaterThan(s.runTo);
   });
 });
+
+describe('walking and running forwards', () => {
+  it("lifts the foot that's swinging forward, and plants the one going back", () => {
+    const f = new PlayerFigure(0xffffff);
+    const footY = (j: string) => {
+      f.root.updateMatrixWorld(true);
+      return new THREE.Box3().setFromObject(f.joints.get(j as never)!).min.y;
+    };
+    for (const speed of [4.3, 6.45])
+      for (const stride of [0, Math.PI]) {
+        // Stride 0: the left leg's swinging forward (its angle rising); π: the right's.
+        f.pose(poseFor({ ...still, speed, stride }));
+        const [swinging, planted] = stride === 0 ? ['ankleL', 'ankleR'] : ['ankleR', 'ankleL'];
+        expect(footY(swinging), `${speed} m/s, stride ${stride}`).toBeGreaterThan(footY(planted) + 0.03);
+        // The leg swinging forward is moving forward: a moment on, it's further forward.
+        const a = poseFor({ ...still, speed, stride }).joints[stride === 0 ? 'legL' : 'legR']![0];
+        const b = poseFor({ ...still, speed, stride: stride + 0.2 }).joints[stride === 0 ? 'legL' : 'legR']![0];
+        expect(b).toBeGreaterThan(a);
+      }
+  });
+});
