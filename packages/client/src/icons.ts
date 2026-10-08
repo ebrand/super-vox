@@ -68,10 +68,13 @@ const lump = (c: Rgb, shine = 0.4) =>
 const drumstick = (meat: Rgb) =>
   svg(`<ellipse cx="19" cy="13" rx="9" ry="7.5" transform="rotate(-35 19 13)" fill="${css(meat, 1.1)}"${OUTLINE}/><line x1="12" y1="20" x2="6" y2="26" stroke="rgb(240 232 214)" stroke-width="3.2" stroke-linecap="round"/><circle cx="5.5" cy="26.5" r="2.4" fill="rgb(240 232 214)"/>`);
 
-/** A bow (its arc and string), and an arrow across it (as it's drawn in the inventory). */
-const BOW =
-  `<path d="M8 4 Q26 6 28 24" stroke="${css(WOOD, 1.3)}" stroke-width="2.6" fill="none" stroke-linecap="round"/><path d="M8 4 Q26 6 28 24" stroke="rgb(0 0 0 / 0.35)" stroke-width="0.8" fill="none" transform="translate(0.8 0.8)"/>` +
-  `<line x1="8" y1="4" x2="28" y2="24" stroke="rgb(235 230 220)" stroke-width="0.8"/>`;
+/** A bow: its arc (the wood: tips at (8, 4) and (28, 24)), and its string; and an arrow across it (as it's drawn in the inventory). */
+const BOW_ARC =
+  `<path d="M8 4 Q26 6 28 24" stroke="${css(WOOD, 1.3)}" stroke-width="2.6" fill="none" stroke-linecap="round"/><path d="M8 4 Q26 6 28 24" stroke="rgb(0 0 0 / 0.35)" stroke-width="0.8" fill="none" transform="translate(0.8 0.8)"/>`;
+const BOW = BOW_ARC + `<line x1="8" y1="4" x2="28" y2="24" stroke="rgb(235 230 220)" stroke-width="0.8"/>`;
+
+/** A bow's wood alone (no string, no arrow), for the one in your own hand: its string's drawn apart, to be pulled (see heldItem.ts). */
+export const BOW_ARC_SVG = svg(BOW_ARC);
 const ARROW_ON_BOW = `<line x1="5" y1="27" x2="22" y2="10" stroke="${css(WOOD, 1.1)}" stroke-width="1.4"/><path d="M22 10 L24 6 L26 8 Z" fill="${css(IRON, 1.2)}"/><path d="M5 27 L4 24 M5 27 L8 28" stroke="rgb(235 230 220)" stroke-width="1.2"/>`;
 
 /** The picture an item's held model is made from (see itemModels.ts): its icon, but a bow without the arrow drawn across it. */

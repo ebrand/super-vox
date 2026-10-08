@@ -1,6 +1,78 @@
 import * as THREE from 'three';
 import { Item, type ItemId } from '@super-vox/shared';
-import { isCubeModel, itemGeometry } from './itemModels.js';
+import { bowArcGeometry, isCubeModel, itemGeometry } from './itemModels.js';
+
+/**
+ * Your bow, close up: its wood (made from its icon, without the string), stood upright with its
+ * belly to the left; its string, drawn apart (from tip to tip, through the nock); and an arrow
+ * on the string. In the bow's own frame (1 = the icon's width): its tips at x STRING_X, y ±TIP_Y;
+ * its grip (the arc's middle) at x GRIP_X (the belly toward -x); the arrow points along -x.
+ */
+const STRING_X = -0.088, TIP_Y = 0.442, GRIP_X = -0.265;
+/** How far the string's drawn back at full draw (the bow's frame). */
+const PULL = 0.24;
+
+class BowRig {
+  readonly root = new THREE.Group();
+  readonly material: THREE.MeshBasicMaterial;
+  private readonly string: THREE.Line;
+  private readonly stringMaterial = new THREE.LineBasicMaterial({ color: 0xebe6dc });
+  private readonly arrow = new THREE.Group();
+  private readonly arrowMaterials: THREE.MeshBasicMaterial[] = [];
+
+  constructor(material: THREE.MeshBasicMaterial) {
+    this.material = material;
+    // The wood: the icon's arc stood upright (its tips' chord turned vertical), then turned round
+    // (its belly to -x, its string side to +x).
+    const flip = new THREE.Group(), upright = new THREE.Group();
+    flip.rotation.y = Math.PI;
+    upright.rotation.z = -Math.PI / 4;
+    flip.add(upright);
+    const put = (g: THREE.BufferGeometry) => {
+      const mesh = new THREE.Mesh(g, material);
+      mesh.frustumCulled = false;
+      upright.add(mesh);
+    };
+    const g = bowArcGeometry();
+    if (g instanceof Promise) void g.then(put);
+    else put(g);
+    this.string = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]), this.stringMaterial);
+    this.string.frustumCulled = false;
+    // The arrow: a shaft along -x from its nock (at the origin), its head beyond the grip.
+    const part = (w: number, h: number, l: number, x: number, color: number) => {
+      const m = new THREE.MeshBasicMaterial({ color });
+      this.arrowMaterials.push(m);
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(l, h, w), m);
+      mesh.position.x = x;
+      mesh.frustumCulled = false;
+      this.arrow.add(mesh);
+    };
+    part(0.012, 0.012, 0.82, -0.41, 0x8a6a42);
+    part(0.026, 0.026, 0.06, -0.84, 0x9aa0a6);
+    part(0.04, 0.005, 0.09, -0.06, 0xe8e2d6);
+    part(0.005, 0.04, 0.09, -0.06, 0xe8e2d6);
+    this.root.add(flip, this.string, this.arrow);
+    this.pose(0, true);
+  }
+
+  /** The string drawn back `pull` (0..1), the arrow on it (or not: just shot). */
+  pose(pull: number, arrow: boolean): void {
+    const nock = STRING_X + PULL * pull;
+    const p = this.string.geometry.getAttribute('position') as THREE.BufferAttribute;
+    p.setXYZ(0, STRING_X, TIP_Y, 0);
+    p.setXYZ(1, nock, 0, 0);
+    p.setXYZ(2, STRING_X, -TIP_Y, 0);
+    p.needsUpdate = true;
+    this.arrow.visible = arrow;
+    this.arrow.position.set(nock, 0, 0);
+  }
+
+  shade(brightness: number): void {
+    this.stringMaterial.color.setHex(0xebe6dc).multiplyScalar(brightness);
+    const colors = [0x8a6a42, 0x9aa0a6, 0xe8e2d6, 0xe8e2d6];
+    this.arrowMaterials.forEach((m, i) => m.color.setHex(colors[i]!).multiplyScalar(brightness));
+  }
+}
 
 /** How long a swing takes (s). */
 export const SWING_S = 0.28;
@@ -30,6 +102,11 @@ export class HeldItem {
   private readonly holder = new THREE.Group();
   private readonly material = new THREE.MeshBasicMaterial({ vertexColors: true });
   private mesh: THREE.Mesh | null = null;
+  private bow: BowRig | null = null;
+  /** The bow's string, as drawn now (0..1: it follows the draw; let go, it snaps back); and when an arrow was last shot (s ago: another's on the string soon after). */
+  private pull = 0;
+  private sinceShot = Infinity;
+  private drawing = false;
   private item: ItemId | null = null;
   private swingT = Infinity;
   private walkPhase = 0;
@@ -48,7 +125,15 @@ export class HeldItem {
     this.raise = 0;
     if (this.mesh) this.holder.remove(this.mesh);
     this.mesh = null;
+    if (this.bow) this.holder.remove(this.bow.root);
+    this.bow = null;
     if (item === null) return;
+    if (item === Item.Bow) {
+      this.bow = new BowRig(this.material);
+      this.holder.add(this.bow.root);
+      this.pull = 0;
+      return;
+    }
     const g = itemGeometry(item);
     const put = (geometry: THREE.BufferGeometry) => {
       if (this.item !== item) return;
@@ -83,13 +168,28 @@ export class HeldItem {
     this.material.color.setScalar(s.brightness);
     const h = this.holder;
     h.scale.setScalar(size);
-    if (this.item === Item.Bow) {
-      // A bow: held upright to the right, turned side on; drawn: in toward the middle, turned to
-      // face us (looking along the arrow), a little closer.
-      const d = s.draw ?? 0;
-      h.position.set(0.26 - 0.14 * d + bobX, -0.22 + 0.02 * d + bobY - (1 - this.raise) * 0.4, -0.6 + 0.08 * d);
-      // (Its icon's tips are at the top left and bottom right: turned an eighth clockwise, it stands upright.)
-      h.rotation.set(0, 0.6 - 0.45 * d, -Math.PI / 4);
+    if (this.bow) {
+      // A bow, close up: its tips out of sight, its grip to the right of the middle, turned a
+      // little left (its belly forward and left, its string toward us on the right); the arrow on
+      // the string pointing ahead. Drawn: the string and the arrow come back, the bow in a little.
+      // Let go: the string snaps back, and the next arrow's on it a moment later.
+      if (s.draw !== null) {
+        this.drawing = true;
+        this.pull = s.draw;
+      } else {
+        if (this.drawing) this.sinceShot = 0;
+        this.drawing = false;
+        this.pull = Math.max(0, this.pull - dt * 12);
+      }
+      this.sinceShot += dt;
+      const d = this.pull;
+      h.scale.setScalar(1);
+      // (Drawn, it goes out a little as the nock comes back: the nock stays a hand's width from the eye.)
+      h.position.set(0.21 - 0.07 * d + bobX, -0.08 + bobY - (1 - this.raise) * 0.4, -0.3 - 0.08 * d);
+      // (Its belly along -x in its own frame: turned so that's ahead and a little left.)
+      h.rotation.set(0.04, -1.25 - 0.12 * d, 0.06);
+      this.bow.pose(d, this.sinceShot > 0.4);
+      this.bow.shade(s.brightness);
       return;
     }
     if (cube) {
@@ -106,7 +206,7 @@ export class HeldItem {
 
   /** Draws it over what's been drawn (the depth cleared first: it's always in front). */
   render(renderer: THREE.WebGLRenderer): void {
-    if (!this.mesh) return;
+    if (!this.mesh && !this.bow) return;
     const size = renderer.getSize(new THREE.Vector2());
     if (size.y > 0 && Math.abs(this.camera.aspect - size.x / size.y) > 1e-3) {
       this.camera.aspect = size.x / size.y;

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { designMaterial, designOfItem, isBlock, type ItemId } from '@super-vox/shared';
-import { heldSvg, iconSvg } from './icons.js';
+import { BOW_ARC_SVG, heldSvg, iconSvg } from './icons.js';
 import { materialColor } from './materials.js';
 
 /**
@@ -32,6 +32,15 @@ export function itemGeometry(item: ItemId): THREE.BufferGeometry | Promise<THREE
   return made;
 }
 
+/** The wood of a bow (no string): for the one in your own hand (see HeldItem). */
+export function bowArcGeometry(): THREE.BufferGeometry | Promise<THREE.BufferGeometry> {
+  if (bowArc) return bowArc;
+  bowArc = fromSvg(BOW_ARC_SVG);
+  if (bowArc instanceof Promise) void bowArc.then((g) => (bowArc = g));
+  return bowArc;
+}
+let bowArc: THREE.BufferGeometry | Promise<THREE.BufferGeometry> | null = null;
+
 /** Whether an item's model is a cube (a block, or a designed object): held as one, not as a flat thing. */
 export function isCubeModel(item: ItemId): boolean {
   return isBlock(item) || !iconSvg(item);
@@ -44,6 +53,11 @@ function make(item: ItemId): THREE.BufferGeometry | Promise<THREE.BufferGeometry
     const c = isBlock(item) ? materialColor(item) : design ? materialColor(designMaterial(design)) : ([0.6, 0.4, 0.3] as const);
     return cube(new THREE.Color().setRGB(c[0], c[1], c[2], THREE.LinearSRGBColorSpace));
   }
+  return fromSvg(svg);
+}
+
+/** A model from a picture (an icon's SVG): its pixels voxels (see pixelModel). */
+function fromSvg(svg: string): THREE.BufferGeometry | Promise<THREE.BufferGeometry> {
   // (No page to draw the icon on, as in tests: a plain cube.)
   if (typeof Image === 'undefined' || typeof document === 'undefined') return cube(new THREE.Color(0.5, 0.5, 0.5));
   return new Promise((resolve) => {

@@ -43,16 +43,30 @@ describe('the hand', () => {
     expect(seen.size).toBeGreaterThan(5);
   });
 
-  it('draws a bow back toward the middle as it is drawn, and bobs as you walk', () => {
+  it('holds a bow close, an arrow on its string: drawn, the arrow comes back; let go, it snaps back, and the next is nocked a moment later', () => {
     const h = new HeldItem();
     h.setItem(Item.Bow);
-    h.update({ ...STILL, draw: 0 });
-    const x0 = h.scene.children[0]!.position.x;
+    h.update({ ...STILL, draw: null });
+    const root = h.scene.children[0]!.children[0]!;
+    const arrow = root.children[2]!;
+    expect(arrow.visible).toBe(true);
+    const rest = arrow.position.x;
+    // (Its string through the nock, where the arrow sits.)
+    const string = root.children[1] as THREE.Line;
+    expect(string.geometry.getAttribute('position').getX(1)).toBeCloseTo(rest);
     h.update({ ...STILL, draw: 1 });
-    expect(h.scene.children[0]!.position.x).toBeLessThan(x0 - 0.1);
+    expect(arrow.position.x).toBeGreaterThan(rest + 0.2);
+    expect(string.geometry.getAttribute('position').getX(1)).toBeCloseTo(arrow.position.x);
+    // Let go: shot (no arrow on it), the string snapping back.
+    h.update({ ...STILL, dt: 0.05, draw: null });
+    expect(arrow.visible).toBe(false);
+    for (let i = 0; i < 10; i++) h.update({ ...STILL, dt: 0.05, draw: null });
+    expect(arrow.visible).toBe(true);
+    expect(arrow.position.x).toBeCloseTo(rest);
+    // Bobbing as you walk.
     const ys = new Set<number>();
     for (let i = 0; i < 30; i++) {
-      h.update({ ...STILL, dt: 0.05, speed: 4.3, draw: 0 });
+      h.update({ ...STILL, dt: 0.05, speed: 4.3, draw: null });
       ys.add(Math.round(h.scene.children[0]!.position.y * 1000));
     }
     expect(ys.size).toBeGreaterThan(5);
