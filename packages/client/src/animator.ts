@@ -381,16 +381,30 @@ function refresh(all = true): void {
   if (all) attachGizmo();
 }
 
-// --- The timeline ---
+// --- The timeline: the clip's frames (30 a second of its playing), its keys, the playhead ---
+const FPS = 30;
+/** How long the clip plays (s), and its frames: a loop's last frame is its first again. */
+const clipLong = () => clipSeconds(editor.draft, editor.clip, ARROW.drawMs / 1000);
+const frameCount = () => Math.max(2, Math.round(clipLong() * FPS));
 const timeline = $('timeline');
 function renderTimeline(): void {
-  const c = editor.current;
-  for (const el of [...timeline.querySelectorAll('.tick, .key')]) el.remove();
-  for (let i = 1; i < 10; i++) {
-    const tick = document.createElement('div');
-    tick.className = 'tick';
-    tick.style.left = `${i * 10}%`;
-    timeline.append(tick);
+  for (const el of [...timeline.querySelectorAll('.tick, .key, .flabel')]) el.remove();
+  if (editor.current.driver !== 'still') {
+    // A tick each frame (fewer, if there are very many), taller and numbered every few.
+    const n = frameCount(), every = n > 150 ? 5 : n > 75 ? 2 : 1, label = n > 60 ? 10 : 5;
+    for (let f = 0; f <= n; f += every) {
+      const tick = document.createElement('div');
+      tick.className = `tick frame${f % label === 0 ? ' major' : ''}`;
+      tick.style.left = `${(f / n) * 100}%`;
+      timeline.append(tick);
+      if (f % label === 0 && f < n) {
+        const l = document.createElement('div');
+        l.className = 'flabel';
+        l.style.left = `${(f / n) * 100}%`;
+        l.textContent = String(f + 1);
+        timeline.append(l);
+      }
+    }
   }
   const mine = new Set(editor.joint ? editor.keysOf(editor.joint) : []);
   for (const at of editor.allKeys()) {
@@ -408,11 +422,30 @@ function renderTimeline(): void {
     k.dataset.at = String(at);
     timeline.append(k);
   }
-  $('head').style.left = `${editor.t * 100}%`;
+  const c = editor.current;
   const [start, end] = DRIVER_LABEL[c.driver] ?? ['', ''];
   $('tl-start').textContent = start;
   $('tl-end').textContent = c.driver === 'time' ? `${Math.round((c.length ?? 1) * 100) / 100} s` : end;
-  $('tl-at').textContent = c.driver === 'still' ? 'a pose: one key' : c.driver === 'time' ? `${(editor.t * (c.length ?? 1)).toFixed(2)} s` : `${Math.round(editor.t * 100)}%`;
+  updateHead();
+}
+
+/** Which frame the playhead's on (0 the first), and how many there are. */
+function frameAt(): { f: number; n: number } {
+  const n = frameCount();
+  return { f: Math.round(editor.t * n) % n, n };
+}
+
+/** The playhead, and where it is: its frame, and the time (or how far through) there. */
+function updateHead(): void {
+  const c = editor.current;
+  $('head').style.left = `${editor.t * 100}%`;
+  if (c.driver === 'still') {
+    $('tl-at').textContent = 'a pose: one key';
+    return;
+  }
+  const { f, n } = frameAt();
+  const where = c.driver === 'time' ? `${(editor.t * (c.length ?? 1)).toFixed(2)} s` : `${Math.round(editor.t * 100)}%`;
+  $('tl-at').textContent = `frame ${f + 1} / ${n} · ${where}`;
 }
 
 /** Where along the timeline a pointer is (0..1). */
@@ -445,10 +478,23 @@ timeline.addEventListener('pointermove', (e) => {
   refresh(false);
 });
 timeline.addEventListener('pointerup', () => (dragKey = null));
-/** To the nearest 1% (a still pose: always 0). */
-const snap = (t: number) => (editor.current.driver === 'still' ? 0 : Math.round(t * 100) / 100);
+/** To the nearest frame (a still pose: always 0). */
+const snap = (t: number) => {
+  if (editor.current.driver === 'still') return 0;
+  const n = frameCount();
+  return Math.round(t * n) / n;
+};
 
 // --- Keys and buttons ---
+/** A frame on (or back), round the clip. */
+function stepFrame(dir: 1 | -1): void {
+  if (editor.current.driver === 'still') return;
+  const n = frameCount();
+  editor.t = (((Math.round(editor.t * n) + dir) % n) + n) % n / n;
+  playing = false;
+  refreshPlay();
+  refresh(false);
+}
 function stepKey(dir: 1 | -1): void {
   const keys = editor.joint ? editor.keysOf(editor.joint) : editor.allKeys();
   const next = dir > 0 ? keys.find((k) => k > editor.t + 1e-6) : [...keys].reverse().find((k) => k < editor.t - 1e-6);
@@ -466,8 +512,15 @@ $('delete-key').onclick = () => {
   if (editor.joint && editor.deleteKey(editor.joint)) refresh(false);
 };
 
+let wasPlaying = false;
 function refreshPlay(): void {
   $('play').textContent = playing ? '❚❚ Pause' : '▶ Play';
+  // Stopped: on the frame it was at, its joint shown there.
+  if (wasPlaying && !playing) {
+    editor.t = snap(editor.t);
+    refresh(false);
+  }
+  wasPlaying = playing;
 }
 $('play').onclick = () => {
   playing = !playing;
@@ -497,8 +550,8 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     playing = !playing;
     refreshPlay();
-  } else if (e.code === 'ArrowLeft') stepKey(-1);
-  else if (e.code === 'ArrowRight') stepKey(1);
+  } else if (e.code === 'ArrowLeft') (e.shiftKey ? stepKey(-1) : stepFrame(-1));
+  else if (e.code === 'ArrowRight') (e.shiftKey ? stepKey(1) : stepFrame(1));
   else if (e.code === 'KeyK') $('add-key').click();
   else if (e.code === 'Delete' || e.code === 'Backspace') $('delete-key').click();
   else if (e.code === 'KeyE') ($('modes').querySelector('[data-mode="edit"]') as HTMLButtonElement).click();
@@ -567,8 +620,8 @@ renderer.setAnimationLoop(() => {
   last = now;
   if (mode === 'edit') {
     if (playing && editor.current.driver !== 'still') {
-      editor.t = (editor.t + dt / clipSeconds(editor.draft, editor.clip, ARROW.drawMs / 1000)) % 1;
-      renderTimeline();
+      editor.t = (editor.t + dt / clipLong()) % 1;
+      updateHead();
     }
     if (!gizmo.dragging) figure.pose(editor.pose());
   } else {
@@ -589,6 +642,17 @@ renderer.setAnimationLoop(() => {
       pitch: game.pitch,
     };
     figure.pose(poseFigure(editor.draft, s));
+    // The strip follows where the clip picked is in it (a still pose, or an action not being done: its start).
+    if (playing) {
+      const c = editor.current, wrap = (v: number) => v - Math.floor(v);
+      editor.t =
+        c.driver === 'time' ? wrap(s.time / (c.length ?? 1))
+        : c.driver === 'stride' ? wrap(s.stride / (2 * Math.PI))
+        : c.driver === 'swing' ? (s.mining ? wrap(s.time / set.digSeconds) : 0)
+        : c.driver === 'draw' ? (s.draw ?? 0)
+        : 0;
+      updateHead();
+    }
   }
   heldMaterial.color.setScalar(1);
   renderer.render(scene, camera);
