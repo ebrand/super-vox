@@ -274,6 +274,19 @@ $('select-none').onclick = () => {
   placeHandle();
   refresh();
 };
+$('select-shape').onclick = () => {
+  for (const c of edit.shapeOf(piece, [...selected])) selected.add(c);
+  showCorners();
+  placeHandle();
+  refresh();
+};
+$('delete').onclick = () => {
+  if (!canEdit || !selected.size) return;
+  const gone = edit.deleteCorners(piece, [...selected], $<HTMLInputElement>('mirror').checked);
+  selected.clear();
+  redraw();
+  status(gone ? `took away ${gone} triangle${gone === 1 ? '' : 's'}` : 'nothing taken away: pick all of a shape (S), or all three corners of a triangle', gone ? '' : 'bad');
+};
 $('undo').onclick = () => edit.undo() && redraw();
 $('redo').onclick = () => edit.redo() && redraw();
 
@@ -290,6 +303,8 @@ function refresh(): void {
       : `${piece}: ${edit.corners(piece).length} corners, ${selected.size} picked`;
   $<HTMLButtonElement>('undo').disabled = !canEdit || !edit.canUndo;
   $<HTMLButtonElement>('redo').disabled = !canEdit || !edit.canRedo;
+  $<HTMLButtonElement>('delete').disabled = !canEdit || !selected.size;
+  $<HTMLButtonElement>('select-shape').disabled = !selected.size;
   const dirty = JSON.stringify(edit.mesh) !== savedJson;
   $<HTMLButtonElement>('save').disabled = !canEdit || !dirty;
   $<HTMLButtonElement>('revert').disabled = !dirty;
@@ -345,6 +360,11 @@ window.addEventListener('keydown', (e) => {
     mode = e.code === 'KeyP' ? 'piece' : 'corners';
     redraw();
   } else if (e.code === 'KeyA' && mode === 'corners') $('select-all').click();
+  else if (e.code === 'KeyS' && mode === 'corners') $('select-shape').click();
+  else if ((e.code === 'Delete' || e.code === 'Backspace') && mode === 'corners') {
+    e.preventDefault();
+    $('delete').click();
+  }
   else if (e.code === 'Escape') $('select-none').click();
   else if (e.code === 'Space') {
     e.preventDefault();

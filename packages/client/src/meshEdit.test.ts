@@ -117,6 +117,35 @@ describe('editing a figure', () => {
   });
 });
 
+describe('shapes', () => {
+  it("picks a whole shape from a corner of it, and takes it away (the other side's too, mirrored)", () => {
+    // A piece of two shapes: the man's chest, and a little pyramid stuck on its front (each side).
+    const e = man(), pyramid = (x: number) => {
+      const a = [x, 0.15, -0.14], b = [x + 0.02, 0.13, -0.12], c = [x - 0.02, 0.13, -0.12], d = [x, 0.17, -0.12];
+      return [a, b, c, a, c, d, a, d, b, b, d, c].flat();
+    };
+    const chest = e.mesh.parts.chest.length;
+    e.mesh.parts.chest = [...e.mesh.parts.chest, ...pyramid(0.07), ...pyramid(-0.07)];
+    const corners = e.corners('chest');
+    const tip = corners.findIndex((c) => Math.abs(c.at.x - 0.07) < 1e-6 && Math.abs(c.at.z + 0.14) < 1e-6);
+    const shape = e.shapeOf('chest', [tip]);
+    expect(shape.length).toBe(4);
+    expect(e.deleteCorners('chest', shape, true)).toBe(8); // (both pyramids: four triangles each)
+    expect(e.mesh.parts.chest.length).toBe(chest);
+    // Not all of a triangle's corners picked: it stays.
+    expect(e.deleteCorners('chest', [0], false)).toBe(0);
+    expect(e.undo()).toBe(true);
+    expect(e.undo()).toBe(true);
+    expect(e.mesh.parts.chest.length).toBe(chest + 2 * 36);
+  });
+
+  it("the woman's chest: her own corners (no shapes stuck on it)", () => {
+    const e = new FigureEdit(toMesh(madeModel('woman'))), all = e.corners('chest').map((_, i) => i);
+    expect(e.shapeOf('chest', [0]).length).toBe(all.length);
+    expect(all.length).toBe(new FigureEdit(toMesh(madeModel('man'))).corners('chest').length);
+  });
+});
+
 describe('the mesh library', () => {
   it('takes whole figures only, of sensible numbers', () => {
     const mesh = toMesh(madeModel('man'));

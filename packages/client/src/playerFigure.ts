@@ -167,7 +167,8 @@ const WOMAN_HEAD = 0.96;
 /**
  * The woman: the man's pieces reshaped. A little smaller all over (WOMAN_SCALE); narrower in the
  * shoulders and chest, the arms in with them and slimmer; a narrow waist; wider hips, the legs out
- * with them; a smaller head; and a bust (a slight rise each side of the upper chest, flat-shaded as the rest).
+ * with them; a smaller head; and a fuller upper chest (its own front corners forward a little, the
+ * sides more than the middle: a slight bust, nothing added on).
  */
 export function womanModel(man: FigureModel): FigureModel {
   const k = WOMAN_SCALE, SHOULDERS = 0.86, HIPS = 1.14;
@@ -182,7 +183,11 @@ export function womanModel(man: FigureModel): FigureModel {
   }
   /** How each joint's piece is reshaped (m, from the joint, already made smaller). */
   const shape: Partial<Record<Joint, (v: THREE.Vector3) => void>> = {
-    chest: (v) => void (v.x *= SHOULDERS),
+    chest: (v) => {
+      v.x *= SHOULDERS;
+      // (Its front's upper half, out at the sides up to 2 cm: the middle's forward already.)
+      if (v.z < -0.01 && v.y > 0.08 && v.y < 0.25) v.z -= 0.02 * Math.min(1, Math.abs(v.x) / 0.14);
+    },
     spine: (v) => void ((v.x *= 0.78), (v.z *= 0.9)),
     hips: (v) => void ((v.x *= HIPS), (v.z *= 1.06)),
     head: (v) => void v.multiplyScalar(WOMAN_HEAD),
@@ -198,27 +203,12 @@ export function womanModel(man: FigureModel): FigureModel {
       shape[j]?.(v);
       pos.set([v.x, v.y, v.z], i);
     }
-    let all = Array.from(pos);
-    if (j === 'chest') all = all.concat(bust(new THREE.Box3().setFromArray(pos)));
+    const all = Array.from(pos);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(all, 3));
     parts.set(j, shaded(g));
   }
   return { parts, pivots };
-}
-
-/** Two low, rounded rises on the front (-z) of a chest piece with bounds `b` (positions, flat triangles). */
-function bust(b: THREE.Box3): number[] {
-  const w = b.max.x - b.min.x, h = b.max.y - b.min.y, d = b.max.z - b.min.z;
-  const out: number[] = [];
-  for (const side of [-1, 1]) {
-    const g = new THREE.IcosahedronGeometry(0.25 * w, 1).toNonIndexed();
-    // (Round, wide and flat, sunk into the upper chest just in from each side: a slight rise, a centimetre or two proud of it.)
-    g.scale(1, 0.8, 0.4);
-    g.translate((b.min.x + b.max.x) / 2 + side * 0.23 * w, b.min.y + 0.56 * h, b.min.z + 0.2 * d);
-    out.push(...Array.from(g.getAttribute('position').array as ArrayLike<number>));
-  }
-  return out;
 }
 
 /**

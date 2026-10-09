@@ -57,6 +57,8 @@
         <div class="row" id="corner-tools" hidden>
           <button id="select-all" title="Every corner of the piece (A)">All corners</button>
           <button id="select-none" title="None (Esc)">None</button>
+          <button id="select-shape" title="Every corner of the shapes those picked are in (S)">Whole shape</button>
+          <button id="delete" class="danger" title="Take away the triangles all of whose corners are picked: a whole shape picked, it's gone (Delete)">Delete</button>
         </div>
         <label class="row"><input type="checkbox" id="mirror" checked /> Left and right alike (mirrored)</label>
         <div class="row">
@@ -72,7 +74,7 @@
         <div class="note">Saved, it's everyone's: players see it at once. The animation designer shows it too.</div>
       </aside>
       <div id="view">
-        <div class="help" id="help">Click a piece to pick it. Drag to look around, wheel to zoom. Corners: click one (⇧ to add more), then drag the handle. W/E/R move, turn, scale.</div>
+        <div class="help" id="help">Click a piece to pick it. Drag to look around, wheel to zoom. Corners: click one (⇧ to add more), then drag the handle; S picks its whole shape, Delete takes it away. W/E/R move, turn, scale.</div>
       </div>
       <aside class="right">
         <h2>See it move</h2>

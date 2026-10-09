@@ -197,6 +197,58 @@ export class FigureEdit {
     });
   }
 
+  /** Which corner each of a piece's triangles' corners is (three a triangle; see corners). */
+  private triangleCorners(p: Piece): number[][] {
+    const cs = this.corners(p), at = new Map<number, number>();
+    cs.forEach((c, i) => c.copies.forEach((n) => at.set(n, i)));
+    const out: number[][] = [];
+    for (let t = 0; t < this.numbers(p).length; t += 9) out.push([at.get(t)!, at.get(t + 3)!, at.get(t + 6)!]);
+    return out;
+  }
+
+  /** The corners of the whole shapes corners `which` of piece `p` are in (everything joined to them by triangles). */
+  shapeOf(p: Piece, which: number[]): number[] {
+    const tris = this.triangleCorners(p), next = new Map<number, number[]>();
+    for (const t of tris) for (const c of t) next.set(c, [...(next.get(c) ?? []), ...t]);
+    const seen = new Set(which), todo = [...which];
+    while (todo.length) for (const c of next.get(todo.pop()!) ?? []) if (!seen.has(c)) (seen.add(c), todo.push(c));
+    return [...seen].sort((a, b) => a - b);
+  }
+
+  /**
+   * Takes away the triangles of piece `p` whose corners are all among `which` (a whole shape picked:
+   * it's gone); `mirror`: the other side's likewise (its corners' twins, see mirrorPairs). How many
+   * triangles went.
+   */
+  deleteCorners(p: Piece, which: number[], mirror: boolean): number {
+    let gone = 0;
+    this.change(() => {
+      const cut = (piece: Piece, corners: Set<number>) => {
+        const tris = this.triangleCorners(piece), n = this.numbers(piece), keep: number[] = [];
+        tris.forEach((t, k) => {
+          if (t.every((c) => corners.has(c))) gone++;
+          else keep.push(...n.slice(k * 9, k * 9 + 9));
+        });
+        if (piece === 'hair') this.mesh.hair = keep;
+        else this.mesh.parts[piece] = keep;
+      };
+      const mine = new Set(which);
+      // (The other side's first: its pairs are this piece's as it is.)
+      const other = mirrorOf(p);
+      if (mirror) {
+        const pairs = this.mirrorPairs(p), theirs = new Set<number>();
+        for (const i of which) {
+          const m = pairs.get(i);
+          if (m) theirs.add(m.corner);
+        }
+        if (other === p) for (const c of theirs) mine.add(c);
+        else cut(other, theirs);
+      }
+      cut(p, mine);
+    });
+    return gone;
+  }
+
   /**
    * Moves, turns or scales piece `p` (its corners, about its joint) by `m`, the joints below it
    * following (their pieces with them): where each that hangs right on it goes as `m` takes it,
