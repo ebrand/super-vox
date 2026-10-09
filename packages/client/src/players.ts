@@ -1,11 +1,12 @@
 import './header.js';
 import './fullscreen.js';
 import './envBadge.js';
+import { pickSpawn, type Picked } from './spawnPicker.js';
 
 /**
  * Players (admins): inviting people (only those invited can make an account), and everyone who
- * has one: what they may do (admin, builder, visitor), and banning (signed out at once, and kept
- * out). See the server's /api/players.
+ * has one: what they may do (admin, builder, visitor), banning (signed out at once, and kept
+ * out), and their own spawn points (a world each: see spawnPicker). See the server's /api/players.
  */
 
 type Role = 'admin' | 'builder' | 'visitor';
@@ -33,6 +34,13 @@ interface Invite {
   invitedBy: string | null;
   usedBy: string | null;
   usedAt: string | null;
+}
+
+interface Spawn {
+  email: string;
+  world: string;
+  x: number;
+  z: number;
 }
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -65,6 +73,31 @@ const roleSelect = (value: Role, disabled = false) => {
 };
 
 let me = '';
+/** The worlds there are (for spawn points), and a spawn point picked for the next invitation. */
+let worlds: string[] = [];
+let inviteSpawn: Picked | null = null;
+
+/** Someone's spawn points (each: its world, where, and a ×), and Set… to add or move one. */
+function spawnCell(email: string, who: string, spawns: Spawn[]): HTMLElement {
+  const cell = el('span', '', 'spawns');
+  for (const s of spawns.filter((x) => x.email === email.toLowerCase())) {
+    const chip = el('span', `${s.world}: ${Math.round(s.x)}, ${Math.round(s.z)}`, 'badge');
+    const clear = el('button', '×', 'clear');
+    clear.title = `back to the world's own spawn point in ${s.world}`;
+    clear.onclick = () => void act(() => api('DELETE', `/api/spawns/${encodeURIComponent(s.world)}/${encodeURIComponent(email)}`), `${who} starts at the world's own spawn point in ${s.world} now`);
+    chip.append(clear);
+    cell.append(chip);
+  }
+  const set = el('button', 'Set…');
+  set.title = 'Where they start in a world (and come back to without a bed)';
+  set.onclick = async () => {
+    const mine = spawns.filter((x) => x.email === email.toLowerCase()).map((x) => ({ world: x.world, x: x.x, z: x.z }));
+    const picked = await pickSpawn(who, worlds, mine);
+    if (picked) void act(() => api('PUT', '/api/spawns', { email, ...picked }), `${who} starts in ${picked.world} at ${picked.x}, ${picked.z}`);
+  };
+  cell.append(set);
+  return cell;
+}
 
 async function api(method: string, url: string, body?: unknown): Promise<unknown> {
   const res = await fetch(url, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : null });
@@ -74,7 +107,7 @@ async function api(method: string, url: string, body?: unknown): Promise<unknown
 }
 
 async function load(): Promise<void> {
-  let data: { players: Player[]; invites: Invite[] };
+  let data: { players: Player[]; invites: Invite[]; spawns: Spawn[] };
   try {
     data = (await api('GET', '/api/players')) as typeof data;
   } catch (err) {
@@ -87,18 +120,18 @@ async function load(): Promise<void> {
   const names = new Map(data.players.map((p) => [p.id, p.name]));
   // Invitations.
   const invites = $('invites');
-  invites.replaceChildren(row(['Email', 'As', 'Invited', 'By', 'Used', ''], 'th'));
-  if (!data.invites.length) invites.append(row([el('span', 'no invitations yet', 'dim'), '', '', '', '', '']));
+  invites.replaceChildren(row(['Email', 'As', 'Invited', 'By', 'Used', 'Spawn points', ''], 'th'));
+  if (!data.invites.length) invites.append(row([el('span', 'no invitations yet', 'dim'), '', '', '', '', '', '']));
   for (const i of data.invites) {
     const take = el('button', 'Take back');
     take.disabled = !!i.usedBy;
     take.title = i.usedBy ? 'already used: manage the player below' : '';
     take.onclick = () => void act(() => api('DELETE', `/api/invites/${encodeURIComponent(i.email)}`), `took back the invitation for ${i.email}`);
-    invites.append(row([i.email, i.role, when(i.createdAt), i.invitedBy ? (names.get(i.invitedBy) ?? '?') : '', i.usedBy ? `${names.get(i.usedBy) ?? 'yes'}, ${when(i.usedAt)}` : 'not yet', take]));
+    invites.append(row([i.email, i.role, when(i.createdAt), i.invitedBy ? (names.get(i.invitedBy) ?? '?') : '', i.usedBy ? `${names.get(i.usedBy) ?? 'yes'}, ${when(i.usedAt)}` : 'not yet', i.usedBy ? el('span', 'see below', 'dim') : spawnCell(i.email, i.email, data.spawns), take]));
   }
   // Players.
   const players = $('players');
-  players.replaceChildren(row(['Player', 'Email', 'Role', 'Last signed in', 'Joined', ''], 'th'));
+  players.replaceChildren(row(['Player', 'Email', 'Role', 'Last signed in', 'Joined', 'Spawn points', ''], 'th'));
   for (const p of data.players) {
     const name = el('span', p.name);
     if (p.online) name.append(el('span', 'online', 'badge on'));
@@ -118,7 +151,7 @@ async function load(): Promise<void> {
       if (!p.banned && !confirmBan(ban, p.name)) return;
       void act(() => api('PATCH', `/api/players/${p.id}`, { banned: !p.banned }), p.banned ? `${p.name} is unbanned` : `${p.name} is banned (signed out)`);
     };
-    const tr = row([name, el('span', p.email, 'dim'), cell, when(p.lastSignedIn), when(p.createdAt), ban]);
+    const tr = row([name, el('span', p.email, 'dim'), cell, when(p.lastSignedIn), when(p.createdAt), spawnCell(p.email, p.name, data.spawns), ban]);
     if (p.banned) tr.className = 'banned';
     players.append(tr);
   }
@@ -153,9 +186,26 @@ $<HTMLFormElement>('invite').onsubmit = (e) => {
   e.preventDefault();
   const email = $<HTMLInputElement>('invite-email').value.trim();
   const role = $<HTMLSelectElement>('invite-role').value;
-  void act(() => api('POST', '/api/invites', { email, role }), `invited ${email}: they can sign in with that Google account now`).then(() => {
+  const spawn = inviteSpawn;
+  void act(async () => {
+    await api('POST', '/api/invites', { email, role });
+    if (spawn) await api('PUT', '/api/spawns', { email, ...spawn });
+  }, `invited ${email}${spawn ? `, starting in ${spawn.world} at ${spawn.x}, ${spawn.z}` : ''}: they can sign in with that Google account now`).then(() => {
     $<HTMLInputElement>('invite-email').value = '';
+    showInviteSpawn(null);
   });
+};
+/** The invitation's spawn point, to be: picked (or not) before inviting. */
+function showInviteSpawn(p: Picked | null): void {
+  inviteSpawn = p;
+  $('invite-spawn').textContent = p ? `Spawn: ${p.world} ${p.x}, ${p.z}` : "Spawn: the world's own";
+}
+$('invite-spawn').onclick = async () => {
+  const email = $<HTMLInputElement>('invite-email').value.trim() || 'them';
+  const was = inviteSpawn;
+  const picked = await pickSpawn(email, worlds, was ? [was] : []);
+  // (Not if an invitation went in the meantime: it had the one there was.)
+  if (inviteSpawn === was) showInviteSpawn(picked ?? was);
 };
 
 void (async () => {
@@ -164,6 +214,11 @@ void (async () => {
     me = who.id ?? '';
   } catch {
     // (No sign-in here: load says so.)
+  }
+  try {
+    worlds = ((await api('GET', '/api/worlds')) as { worlds: { name: string }[] }).worlds.map((w) => w.name);
+  } catch {
+    // (None to pick from: setting a spawn point says so.)
   }
   await load();
 })();

@@ -41,6 +41,20 @@ export interface Invite {
   usedAt: string | null;
 }
 
+/**
+ * Where a player starts in a world, set by an admin (by email: an invitation's, before they've an
+ * account, or an account's): where they first come into it, and come back to after dying without
+ * a bed. Metres, as the game's Info panel shows them.
+ */
+export interface PersonalSpawn {
+  email: string;
+  world: string;
+  x: number;
+  z: number;
+  setBy: string | null;
+  updatedAt: string;
+}
+
 export interface AccountStore {
   /**
    * The account for a Google identity, created on first sign-in (with `role`, default builder);
@@ -62,6 +76,14 @@ export interface AccountStore {
   uninvite(email: string): Promise<boolean>;
   /** Uses the invitation for `email`, for account `accountId`: its role, or null if there's none unused. */
   takeInvite(email: string, accountId: string): Promise<Role | null>;
+  /** Every personal spawn point (see PersonalSpawn). */
+  spawns(): Promise<PersonalSpawn[]>;
+  /** `email`'s spawn point in `world`, if one's been set. */
+  spawnFor(email: string, world: string): Promise<{ x: number; z: number } | null>;
+  /** Sets (or moves) `email`'s spawn point in `world`. */
+  setSpawn(email: string, world: string, x: number, z: number, by: string | null): Promise<PersonalSpawn>;
+  /** Takes it away (true if there was one). */
+  clearSpawn(email: string, world: string): Promise<boolean>;
 }
 
 const lower = (e: string) => e.trim().toLowerCase();
@@ -71,6 +93,7 @@ export class MemoryAccountStore implements AccountStore {
   private readonly bySub = new Map<string, Account>();
   private readonly byId = new Map<string, Account>();
   private readonly invited = new Map<string, Invite>();
+  private readonly spawnsByKey = new Map<string, PersonalSpawn>();
 
   async signIn({ sub, email, name }: GoogleIdentity, role: Role = 'builder'): Promise<Account> {
     const existing = this.bySub.get(sub);
@@ -120,6 +143,25 @@ export class MemoryAccountStore implements AccountStore {
     if (!inv || inv.usedBy) return null;
     this.invited.set(inv.email, { ...inv, usedBy: accountId, usedAt: new Date().toISOString() });
     return inv.role;
+  }
+
+  async spawns(): Promise<PersonalSpawn[]> {
+    return [...this.spawnsByKey.values()];
+  }
+
+  async spawnFor(email: string, world: string): Promise<{ x: number; z: number } | null> {
+    const s = this.spawnsByKey.get(`${lower(email)}\n${world}`);
+    return s ? { x: s.x, z: s.z } : null;
+  }
+
+  async setSpawn(email: string, world: string, x: number, z: number, by: string | null): Promise<PersonalSpawn> {
+    const s: PersonalSpawn = { email: lower(email), world, x, z, setBy: by, updatedAt: new Date().toISOString() };
+    this.spawnsByKey.set(`${s.email}\n${world}`, s);
+    return s;
+  }
+
+  async clearSpawn(email: string, world: string): Promise<boolean> {
+    return this.spawnsByKey.delete(`${lower(email)}\n${world}`);
   }
 
   private put(sub: string, account: Account): void {
@@ -213,7 +255,36 @@ export class PgAccountStore implements AccountStore {
     );
     return rows[0] && isRole(rows[0].role) ? rows[0].role : null;
   }
+
+  async spawns(): Promise<PersonalSpawn[]> {
+    const { rows } = await this.pool.query<SpawnRow>(`select ${SPAWN_COLUMNS} from ${SCHEMA}.spawns order by email, world`);
+    return rows.map(toSpawn);
+  }
+
+  async spawnFor(email: string, world: string): Promise<{ x: number; z: number } | null> {
+    const { rows } = await this.pool.query<SpawnRow>(`select ${SPAWN_COLUMNS} from ${SCHEMA}.spawns where email = $1 and world = $2`, [lower(email), world]);
+    return rows[0] ? { x: rows[0].x, z: rows[0].z } : null;
+  }
+
+  async setSpawn(email: string, world: string, x: number, z: number, by: string | null): Promise<PersonalSpawn> {
+    const { rows } = await this.pool.query<SpawnRow>(
+      `insert into ${SCHEMA}.spawns (email, world, x, z, set_by) values ($1, $2, $3, $4, $5)
+       on conflict (email, world) do update set x = excluded.x, z = excluded.z, set_by = excluded.set_by, updated_at = now()
+       returning ${SPAWN_COLUMNS}`,
+      [lower(email), world, x, z, by],
+    );
+    return toSpawn(rows[0]!);
+  }
+
+  async clearSpawn(email: string, world: string): Promise<boolean> {
+    const { rowCount } = await this.pool.query(`delete from ${SCHEMA}.spawns where email = $1 and world = $2`, [lower(email), world]);
+    return (rowCount ?? 0) > 0;
+  }
 }
+
+type SpawnRow = { email: string; world: string; x: number; z: number; set_by: string | null; updated_at: Date };
+const SPAWN_COLUMNS = 'email, world, x, z, set_by, updated_at';
+const toSpawn = (r: SpawnRow): PersonalSpawn => ({ email: r.email, world: r.world, x: r.x, z: r.z, setBy: r.set_by, updatedAt: r.updated_at.toISOString() });
 
 function toAccount(r: Row): Account {
   return {

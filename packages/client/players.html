@@ -32,6 +32,22 @@
       .badge.bad { color: var(--bad); border-color: #6e4040; }
       tr.banned td { opacity: 0.6; }
       #denied { color: var(--dim); }
+      .spawns { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+      .spawns .badge { margin-left: 0; color: var(--text); }
+      .spawns button.clear { border: 0; background: none; padding: 0 0 0 4px; color: var(--dim); }
+      .spawns button.clear:hover { color: var(--bad); }
+      dialog.spawn-picker { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; width: min(760px, 94vw); }
+      dialog.spawn-picker::backdrop { background: rgba(0, 0, 0, 0.55); }
+      dialog.spawn-picker h3 { margin: 0 0 6px; font-size: 14px; }
+      dialog.spawn-picker form { display: block; margin: 0; }
+      dialog.spawn-picker .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+      dialog.spawn-picker .row.end { justify-content: flex-end; }
+      dialog.spawn-picker input[type='number'] { width: 90px; }
+      dialog.spawn-picker .note { color: var(--warn); font-size: 12px; }
+      dialog.spawn-picker .map { position: relative; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; min-height: 120px; }
+      dialog.spawn-picker canvas { display: block; width: 100%; cursor: crosshair; image-rendering: pixelated; }
+      dialog.spawn-picker .mark { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: #ff5c5c; border: 2px solid #000; pointer-events: none; }
+      dialog.spawn-picker .loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dim); }
     </style>
   </head>
   <body>
@@ -44,6 +60,7 @@
         <form id="invite">
           <input type="email" id="invite-email" placeholder="name@gmail.com" required />
           <select id="invite-role"></select>
+          <button type="button" id="invite-spawn" title="Where they first come into a world (and come back to without a bed)">Spawn: the world's own</button>
           <button type="submit" class="primary">Invite</button>
         </form>
         <div class="scroll"><table id="invites"></table></div>

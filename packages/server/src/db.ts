@@ -81,6 +81,21 @@ const MIGRATIONS: { name: string; sql: string }[] = [
         used_at timestamptz
       );`,
   },
+  {
+    // Personal spawn points (see PersonalSpawn): by email, so an invitation's can be set before
+    // there's an account.
+    name: '006_spawns',
+    sql: `
+      create table ${SCHEMA}.spawns (
+        email text not null,
+        world text not null,
+        x double precision not null,
+        z double precision not null,
+        set_by uuid references ${SCHEMA}.accounts (id) on delete set null,
+        updated_at timestamptz not null default now(),
+        primary key (email, world)
+      );`,
+  },
 ];
 
 /** Connects to Postgres (Supabase) and brings the schema (SCHEMA) up to date. */

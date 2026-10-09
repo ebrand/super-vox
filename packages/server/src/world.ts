@@ -940,6 +940,17 @@ export class World {
   }
 
   /**
+   * A spawn point at (x, z) (units): wrapped round (round worlds) or kept inside, on the ground there
+   * as the terrain is (as the world's own spawn point is: what's been built isn't looked at).
+   */
+  spawnAt(x: number, z: number): { x: number; y: number; z: number } {
+    const W = this.config.widthUnits, D = this.config.depthUnits;
+    x = this.config.wrapX ? mod(Math.round(x), W) : Math.max(0, Math.min(W - 1, Math.round(x)));
+    z = Math.max(0, Math.min(D - 1, Math.round(z)));
+    return { x, y: this.generator.surfaceHeightAt(x, z), z };
+  }
+
+  /**
    * Where a player whose bed is at block (bx, by, bz) (1 m block coordinates) comes back after
    * dying (feet, units: on top of it, in the middle), or why they can't: it isn't a bed there any
    * more ('gone'), or there's no room above it ('blocked').

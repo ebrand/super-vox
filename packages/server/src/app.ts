@@ -181,6 +181,10 @@ interface Player {
   lastShot: number;
   /** Their bed (its block, 1 m block coordinates), if they've made one theirs: where they come back to after dying. */
   bed: { x: number; y: number; z: number } | null;
+  /** Their own spawn point here (units), if an admin set one (see PersonalSpawn): where they come back to without a bed. */
+  home: { x: number; y: number; z: number } | null;
+  /** Their email, signed in (whose spawn point is theirs). */
+  email: string | null;
   /** Poses reported before this (ms) aren't kept as where they are (they've just been sent somewhere: see PLACE_SETTLE_MS). */
   settleUntil: number;
   /** Signed in: keeps their vitals and bed (see PlayerState), once they've been loaded. */
@@ -319,12 +323,13 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   app.get('/api/players', async (req, reply) => {
     if (!opts.auth || !(await admin(req))) return reply.code(403).send(notAdmin);
     const accounts = opts.auth.accounts;
-    const [list, invites] = await Promise.all([accounts.list(), accounts.invites()]);
+    const [list, invites, spawns] = await Promise.all([accounts.list(), accounts.invites(), accounts.spawns()]);
     const online = new Set([...connections].filter(([, ss]) => [...ss].some((s) => s.readyState === s.OPEN)).map(([id]) => id));
     const adminEmails = opts.auth.config.adminEmails;
     return {
       players: list.map((a) => ({ ...a, online: online.has(a.id), adminByEmail: adminEmails.includes(a.email.toLowerCase()) })),
       invites,
+      spawns,
     };
   });
   app.post<{ Body: unknown }>('/api/invites', async (req, reply) => {
@@ -336,6 +341,31 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (!isRole(role)) return reply.code(400).send({ error: 'no such role' });
     const me = await opts.auth.signedIn(req.cookies);
     return { invite: await opts.auth.accounts.invite(email, role, me?.account.id ?? null) };
+  });
+  // A player's own spawn point in a world (see PersonalSpawn): by email (invited or playing), x
+  // and z in metres. Body: { email, world, x, z }. Anyone of theirs in that world now has it from
+  // now on (dying; their next visit starts where they left, as ever).
+  app.put<{ Body: unknown }>('/api/spawns', async (req, reply) => {
+    if (!opts.auth || !(await admin(req))) return reply.code(403).send(notAdmin);
+    const b = (req.body ?? {}) as { email?: unknown; world?: unknown; x?: unknown; z?: unknown };
+    const email = typeof b.email === 'string' ? b.email.trim().toLowerCase() : '';
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 254) return reply.code(400).send({ error: "that isn't an email address" });
+    if (typeof b.world !== 'string' || !catalog.play(b.world)) return reply.code(400).send({ error: 'no such world' });
+    if (typeof b.x !== 'number' || typeof b.z !== 'number' || !Number.isFinite(b.x) || !Number.isFinite(b.z)) return reply.code(400).send({ error: 'x and z must be numbers (metres)' });
+    const me = await opts.auth.signedIn(req.cookies);
+    const spawn = await opts.auth.accounts.setSpawn(email, b.world, b.x, b.z, me?.account.id ?? null);
+    for (const [s, p] of players) {
+      if (p.email?.toLowerCase() !== email || p.world !== spawn.world) continue;
+      const w = clients.get(s);
+      if (w) p.home = w.spawnAt(spawn.x * UNITS_PER_METER, spawn.z * UNITS_PER_METER);
+    }
+    return { spawn };
+  });
+  app.delete<{ Params: { world: string; email: string } }>('/api/spawns/:world/:email', async (req, reply) => {
+    if (!opts.auth || !(await admin(req))) return reply.code(403).send(notAdmin);
+    if (!(await opts.auth.accounts.clearSpawn(req.params.email, req.params.world))) return reply.code(404).send({ error: 'no such spawn point' });
+    for (const p of players.values()) if (p.email?.toLowerCase() === req.params.email.toLowerCase() && p.world === req.params.world) p.home = null;
+    return reply.code(204).send();
   });
   app.delete<{ Params: { email: string } }>('/api/invites/:email', async (req, reply) => {
     if (!opts.auth || !(await admin(req))) return reply.code(403).send(notAdmin);
@@ -817,7 +847,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const respawn = (client: WebSocket, p: Player, world: World, cause: DeathCause | null) => {
     const spot = p.bed ? world.bedSpot(p.bed.x, p.bed.y, p.bed.z) : null;
     if (spot === 'gone') p.bed = null;
-    const at = spot && typeof spot === 'object' ? spot : world.spawn;
+    const at = spot && typeof spot === 'object' ? spot : (p.home ?? world.spawn);
     sendTo(client, { type: 'respawn', x: at.x, y: at.y, z: at.z, ...(cause ? { cause } : {}), ...(spot ? { bed: typeof spot === 'object' ? 'here' : spot } : {}) });
     p.settleUntil = Date.now() + PLACE_SETTLE_MS;
     p.saveState?.();
@@ -1230,7 +1260,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             }
             world = w;
           }
-          void whoReady.then((signedIn) => {
+          void whoReady.then(async (signedIn) => {
+            // (Their own spawn point here, if an admin set one: where they start, without a saved place.)
+            const worldName = msg.world ?? catalog.defaultName;
+            const home = signedIn && opts.auth ? await opts.auth.accounts.spawnFor(signedIn.account.email, worldName).catch(() => null) : null;
             if (socket.readyState !== socket.OPEN) return;
             who = signedIn;
             if (who) {
@@ -1244,6 +1277,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               id: nextPlayer++, world: msg.world ?? catalog.defaultName, connectedAt: Date.now(), tolerance: world.tolerance,
               name: who?.account.name ?? null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
               vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0, lastShot: 0, held: null, swings: 0, pitch: 0, act: 0, builds: [], bed: null, settleUntil: Infinity, saveState: null,
+              home: home ? world.spawnAt(home.x * UNITS_PER_METER, home.z * UNITS_PER_METER) : null, email: who?.account.email ?? null,
               give: (item, amount) => {
                 if (!inventory) return false;
                 inventory.addItem(item, amount);
@@ -1267,7 +1301,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               type: 'welcome',
               protocolVersion: PROTOCOL_VERSION,
               world: world.config,
-              spawn: world.spawn,
+              spawn: players.get(socket)?.home ?? world.spawn,
               tolerance: world.tolerance,
               seaLevel: world.seaLevel,
               clock: catalog.clock(msg.world)!,
