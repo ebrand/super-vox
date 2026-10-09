@@ -89,6 +89,23 @@ describe('PlayerFigure', () => {
     expect(playerColor('eric').equals(playerColor('eric'))).toBe(true);
     expect(playerColor('eric').equals(playerColor('alex'))).toBe(false);
   });
+
+  it('wears its look: each part its colour (head and hands skin, shirt, trousers, shoes), red when hurt', () => {
+    const look = { skin: '#c68e6a', shirt: '#2255aa', trousers: '#333333', shoes: '#111111' };
+    const f = new PlayerFigure(look);
+    const colorOf = (joint: string) => ((f.joints.get(joint as never)!.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial).color;
+    for (const [joint, part] of [['head', 'skin'], ['wristR', 'skin'], ['chest', 'shirt'], ['elbowL', 'shirt'], ['hips', 'trousers'], ['kneeR', 'trousers'], ['ankleL', 'shoes']] as const)
+      expect(colorOf(joint).getHexString(), joint).toBe(look[part].slice(1));
+    f.tint(0.5);
+    expect(colorOf('chest').equals(new THREE.Color(look.shirt).multiplyScalar(0.5))).toBe(true);
+    f.tint(1, true);
+    expect(colorOf('head').getHexString()).toBe('ff3030');
+    f.setLook({ ...look, shirt: '#ff0000' });
+    f.tint(1);
+    expect(colorOf('spine').getHexString()).toBe('ff0000');
+    // (A colour alone: a shirt that colour, the rest anyone's.)
+    expect(((new PlayerFigure(0x00ff00).joints.get('chest')!.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial).color.getHexString()).toBe('00ff00');
+  });
 });
 
 describe('FigureMotion', () => {

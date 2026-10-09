@@ -20,7 +20,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 40;
+export const PROTOCOL_VERSION = 41;
 
 export type ClientMessage =
   | {
@@ -149,7 +149,8 @@ export type ServerMessage =
       /** The world's weather (see weather.ts: worked out from this and the server's time); absent from servers before weather. */
       weather?: { seed: number };
       /** Who this connection is signed in as (null: not signed in). */
-      player: { name: string; admin: boolean } | null;
+      /** Signed in: who as (the name they go by), and how they look (see avatarText). */
+      player: { name: string; admin: boolean; look: string } | null;
       /** Whether this connection may edit (signing in is required where the server has accounts). */
       canEdit: boolean;
       /** The world's game mode (absent from servers before modes were told here: treat as creative). */
@@ -255,8 +256,9 @@ export interface EntitySnapshot {
   max?: number;
   /** Hurt just now (for a flash). */
   hurt?: boolean;
-  /** Players: their name; what's in their hand (an item), and how many times they've swung it. */
+  /** Players: their name; how they look (see avatarText); what's in their hand (an item), and how many times they've swung it. */
   name?: string;
+  look?: string;
   held?: number;
   swings?: number;
   /** Players: where they look (radians, up +) and what they're doing (PlayerAct flags). */

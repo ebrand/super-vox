@@ -32,6 +32,29 @@ export interface Picked {
   z: number;
 }
 
+/** The dialog's look (once, on whatever page shows it). */
+const STYLE = `
+      dialog.spawn-picker { background: var(--panel, #14181d); color: var(--text, #e6e6e6); border: 1px solid var(--line, #262c34); border-radius: 8px; padding: 14px 16px; width: min(760px, 94vw); }
+      dialog.spawn-picker::backdrop { background: rgba(0, 0, 0, 0.55); }
+      dialog.spawn-picker h3 { margin: 0 0 6px; font-size: 14px; }
+      dialog.spawn-picker form { display: block; margin: 0; }
+      dialog.spawn-picker .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+      dialog.spawn-picker .row.end { justify-content: flex-end; }
+      dialog.spawn-picker input[type='number'] { width: 90px; }
+      dialog.spawn-picker .note { color: var(--warn, #e3b341); font-size: 12px; }
+      dialog.spawn-picker .map { position: relative; background: var(--bg, #0b0d10); border: 1px solid var(--line, #262c34); border-radius: 5px; min-height: 120px; }
+      dialog.spawn-picker canvas { display: block; width: 100%; cursor: crosshair; image-rendering: pixelated; }
+      dialog.spawn-picker .mark { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: #ff5c5c; border: 2px solid #000; pointer-events: none; }
+      dialog.spawn-picker .loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dim, #8b949e); }
+`;
+function addStyle(): void {
+  if (document.getElementById('spawn-picker-style')) return;
+  const el = document.createElement('style');
+  el.id = 'spawn-picker-style';
+  el.textContent = STYLE;
+  document.head.append(el);
+}
+
 const maps = new Map<string, Promise<MapData | null>>();
 function loadMap(world: string): Promise<MapData | null> {
   let p = maps.get(world);
@@ -51,6 +74,7 @@ function loadMap(world: string): Promise<MapData | null> {
  */
 export function pickSpawn(who: string, worlds: string[], known: Picked[]): Promise<Picked | null> {
   const start = known[0] ?? null;
+  addStyle();
   const dialog = document.createElement('dialog');
   dialog.className = 'spawn-picker';
   dialog.innerHTML = `

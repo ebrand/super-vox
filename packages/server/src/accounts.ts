@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
+import { parseAvatar, type Avatar } from '@super-vox/shared';
 import { SCHEMA } from './db.js';
 
 /**
@@ -20,7 +21,16 @@ export interface Account {
   role: Role;
   /** Banned: signed out, and can't sign in again (until unbanned). */
   banned: boolean;
+  /** The name they've chosen to go by (see shownName), and how they look (see Avatar), if chosen. */
+  displayName: string | null;
+  avatar: Avatar | null;
 }
+
+/** The name a player goes by: theirs, if they've chosen one, else their Google name. */
+export const shownName = (a: Pick<Account, 'name' | 'displayName'>): string => a.displayName ?? a.name;
+
+/** Someone else goes by that name already. */
+export class NameTakenError extends Error {}
 
 /** Who someone is at Google, from a verified ID token. */
 export interface GoogleIdentity {
@@ -53,6 +63,8 @@ export interface PersonalSpawn {
   z: number;
   setBy: string | null;
   updatedAt: string;
+  /** Set by an admin, not to be changed by the player. */
+  locked: boolean;
 }
 
 export interface AccountStore {
@@ -68,6 +80,10 @@ export interface AccountStore {
   list(): Promise<Account[]>;
   setRole(id: string, role: Role): Promise<Account | null>;
   setBanned(id: string, banned: boolean): Promise<Account | null>;
+  /** The name they go by (null: their Google name again). NameTakenError if anyone else goes by it (any case). */
+  setDisplayName(id: string, name: string | null): Promise<Account | null>;
+  /** How they look (null: as their name says, see defaultAvatar). */
+  setAvatar(id: string, avatar: Avatar | null): Promise<Account | null>;
   /** Invitations, newest first. */
   invites(): Promise<Invite[]>;
   /** Invites `email` (lower-cased), as `role`; again: the role changes (an unused one). */
@@ -78,10 +94,10 @@ export interface AccountStore {
   takeInvite(email: string, accountId: string): Promise<Role | null>;
   /** Every personal spawn point (see PersonalSpawn). */
   spawns(): Promise<PersonalSpawn[]>;
-  /** `email`'s spawn point in `world`, if one's been set. */
-  spawnFor(email: string, world: string): Promise<{ x: number; z: number } | null>;
-  /** Sets (or moves) `email`'s spawn point in `world`. */
-  setSpawn(email: string, world: string, x: number, z: number, by: string | null): Promise<PersonalSpawn>;
+  /** `email`'s spawn point in `world`, if one's been set (and whether an admin's locked it). */
+  spawnFor(email: string, world: string): Promise<{ x: number; z: number; locked: boolean } | null>;
+  /** Sets (or moves) `email`'s spawn point in `world`, locked (by an admin) or not. */
+  setSpawn(email: string, world: string, x: number, z: number, by: string | null, locked?: boolean): Promise<PersonalSpawn>;
   /** Takes it away (true if there was one). */
   clearSpawn(email: string, world: string): Promise<boolean>;
 }
@@ -98,7 +114,7 @@ export class MemoryAccountStore implements AccountStore {
   async signIn({ sub, email, name }: GoogleIdentity, role: Role = 'builder'): Promise<Account> {
     const existing = this.bySub.get(sub);
     const now = new Date().toISOString();
-    const account = existing ? { ...existing, email, name, lastSignedIn: now } : { id: randomUUID(), email, name, createdAt: now, lastSignedIn: now, role, banned: false };
+    const account = existing ? { ...existing, email, name, lastSignedIn: now } : { id: randomUUID(), email, name, createdAt: now, lastSignedIn: now, role, banned: false, displayName: null, avatar: null };
     this.put(sub, account);
     return account;
   }
@@ -121,6 +137,15 @@ export class MemoryAccountStore implements AccountStore {
 
   async setBanned(id: string, banned: boolean): Promise<Account | null> {
     return this.update(id, { banned });
+  }
+
+  async setDisplayName(id: string, name: string | null): Promise<Account | null> {
+    if (name !== null && [...this.byId.values()].some((a) => a.id !== id && shownName(a).toLowerCase() === name.toLowerCase())) throw new NameTakenError(`someone goes by "${name}" already`);
+    return this.update(id, { displayName: name });
+  }
+
+  async setAvatar(id: string, avatar: Avatar | null): Promise<Account | null> {
+    return this.update(id, { avatar });
   }
 
   async invites(): Promise<Invite[]> {
@@ -149,13 +174,13 @@ export class MemoryAccountStore implements AccountStore {
     return [...this.spawnsByKey.values()];
   }
 
-  async spawnFor(email: string, world: string): Promise<{ x: number; z: number } | null> {
+  async spawnFor(email: string, world: string): Promise<{ x: number; z: number; locked: boolean } | null> {
     const s = this.spawnsByKey.get(`${lower(email)}\n${world}`);
-    return s ? { x: s.x, z: s.z } : null;
+    return s ? { x: s.x, z: s.z, locked: s.locked } : null;
   }
 
-  async setSpawn(email: string, world: string, x: number, z: number, by: string | null): Promise<PersonalSpawn> {
-    const s: PersonalSpawn = { email: lower(email), world, x, z, setBy: by, updatedAt: new Date().toISOString() };
+  async setSpawn(email: string, world: string, x: number, z: number, by: string | null, locked = false): Promise<PersonalSpawn> {
+    const s: PersonalSpawn = { email: lower(email), world, x, z, setBy: by, updatedAt: new Date().toISOString(), locked };
     this.spawnsByKey.set(`${s.email}\n${world}`, s);
     return s;
   }
@@ -178,8 +203,8 @@ export class MemoryAccountStore implements AccountStore {
   }
 }
 
-type Row = { id: string; email: string; name: string; created_at: Date; last_signed_in: Date; role: string; banned_at: Date | null };
-const COLUMNS = 'id, email, name, created_at, last_signed_in, role, banned_at';
+type Row = { id: string; email: string; name: string; created_at: Date; last_signed_in: Date; role: string; banned_at: Date | null; display_name: string | null; avatar: unknown };
+const COLUMNS = 'id, email, name, created_at, last_signed_in, role, banned_at, display_name, avatar';
 type InviteRow = { email: string; role: string; created_at: Date; invited_by: string | null; used_by: string | null; used_at: Date | null };
 const INVITE_COLUMNS = 'email, role, created_at, invited_by, used_by, used_at';
 
@@ -225,6 +250,26 @@ export class PgAccountStore implements AccountStore {
     return rows[0] ? toAccount(rows[0]) : null;
   }
 
+  async setDisplayName(id: string, name: string | null): Promise<Account | null> {
+    if (name !== null) {
+      const { rows } = await this.pool.query(`select 1 from ${SCHEMA}.accounts where id <> $1 and lower(coalesce(display_name, name)) = lower($2) limit 1`, [id, name]);
+      if (rows.length) throw new NameTakenError(`someone goes by "${name}" already`);
+    }
+    try {
+      const { rows } = await this.pool.query<Row>(`update ${SCHEMA}.accounts set display_name = $2 where id = $1 returning ${COLUMNS}`, [id, name]);
+      return rows[0] ? toAccount(rows[0]) : null;
+    } catch (err) {
+      // (Two choosing it at once: the unique index says.)
+      if ((err as { code?: string }).code === '23505') throw new NameTakenError(`someone goes by "${name}" already`);
+      throw err;
+    }
+  }
+
+  async setAvatar(id: string, avatar: Avatar | null): Promise<Account | null> {
+    const { rows } = await this.pool.query<Row>(`update ${SCHEMA}.accounts set avatar = $2 where id = $1 returning ${COLUMNS}`, [id, avatar === null ? null : JSON.stringify(avatar)]);
+    return rows[0] ? toAccount(rows[0]) : null;
+  }
+
   async invites(): Promise<Invite[]> {
     const { rows } = await this.pool.query<InviteRow>(`select ${INVITE_COLUMNS} from ${SCHEMA}.invites order by created_at desc`);
     return rows.map(toInvite);
@@ -261,17 +306,17 @@ export class PgAccountStore implements AccountStore {
     return rows.map(toSpawn);
   }
 
-  async spawnFor(email: string, world: string): Promise<{ x: number; z: number } | null> {
+  async spawnFor(email: string, world: string): Promise<{ x: number; z: number; locked: boolean } | null> {
     const { rows } = await this.pool.query<SpawnRow>(`select ${SPAWN_COLUMNS} from ${SCHEMA}.spawns where email = $1 and world = $2`, [lower(email), world]);
-    return rows[0] ? { x: rows[0].x, z: rows[0].z } : null;
+    return rows[0] ? { x: rows[0].x, z: rows[0].z, locked: rows[0].locked } : null;
   }
 
-  async setSpawn(email: string, world: string, x: number, z: number, by: string | null): Promise<PersonalSpawn> {
+  async setSpawn(email: string, world: string, x: number, z: number, by: string | null, locked = false): Promise<PersonalSpawn> {
     const { rows } = await this.pool.query<SpawnRow>(
-      `insert into ${SCHEMA}.spawns (email, world, x, z, set_by) values ($1, $2, $3, $4, $5)
-       on conflict (email, world) do update set x = excluded.x, z = excluded.z, set_by = excluded.set_by, updated_at = now()
+      `insert into ${SCHEMA}.spawns (email, world, x, z, set_by, locked) values ($1, $2, $3, $4, $5, $6)
+       on conflict (email, world) do update set x = excluded.x, z = excluded.z, set_by = excluded.set_by, locked = excluded.locked, updated_at = now()
        returning ${SPAWN_COLUMNS}`,
-      [lower(email), world, x, z, by],
+      [lower(email), world, x, z, by, locked],
     );
     return toSpawn(rows[0]!);
   }
@@ -282,9 +327,9 @@ export class PgAccountStore implements AccountStore {
   }
 }
 
-type SpawnRow = { email: string; world: string; x: number; z: number; set_by: string | null; updated_at: Date };
-const SPAWN_COLUMNS = 'email, world, x, z, set_by, updated_at';
-const toSpawn = (r: SpawnRow): PersonalSpawn => ({ email: r.email, world: r.world, x: r.x, z: r.z, setBy: r.set_by, updatedAt: r.updated_at.toISOString() });
+type SpawnRow = { email: string; world: string; x: number; z: number; set_by: string | null; updated_at: Date; locked: boolean };
+const SPAWN_COLUMNS = 'email, world, x, z, set_by, updated_at, locked';
+const toSpawn = (r: SpawnRow): PersonalSpawn => ({ email: r.email, world: r.world, x: r.x, z: r.z, setBy: r.set_by, updatedAt: r.updated_at.toISOString(), locked: r.locked });
 
 function toAccount(r: Row): Account {
   return {
@@ -295,6 +340,8 @@ function toAccount(r: Row): Account {
     lastSignedIn: r.last_signed_in.toISOString(),
     role: isRole(r.role) ? r.role : 'builder',
     banned: r.banned_at !== null,
+    displayName: r.display_name,
+    avatar: parseAvatar(r.avatar),
   };
 }
 

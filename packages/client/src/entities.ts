@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { ARROW, Item, MOBS, PlayerAct, UNITS_PER_METER, deltaX, gripKind, type EntityKind, type EntitySnapshot, type Grip, type WorldConfig } from '@super-vox/shared';
+import { ARROW, Item, MOBS, PlayerAct, UNITS_PER_METER, avatarFromText, defaultAvatar, deltaX, gripKind, type Avatar, type EntityKind, type EntitySnapshot, type Grip, type WorldConfig } from '@super-vox/shared';
 import { isCubeModel, itemGeometry } from './itemModels.js';
 import { SWING_S } from './heldItem.js';
-import { FIGURE_HEIGHT, PlayerFigure, animations, playerColor, poseFor, strides, type FigureState } from './playerFigure.js';
+import { FIGURE_HEIGHT, PlayerFigure, animations, poseFor, strides, type FigureState } from './playerFigure.js';
 
 /**
  * How bright something is (0..1) with sky light `sky` and torchlight `block` (0..15) where it
@@ -43,10 +43,10 @@ interface Tracked {
   hand?: THREE.Group | undefined;
   handMaterial?: THREE.MeshBasicMaterial;
   swungAt: number;
-  /** Players: their figure (see PlayerFigure) and colour, and how it's moving (see FigureMotion). */
+  /** Players: their figure (see PlayerFigure), how it's moving (see FigureMotion), and the name over it. */
   figure?: PlayerFigure;
-  color?: THREE.Color;
   motion?: FigureMotion;
+  tag?: THREE.Sprite | undefined;
 }
 
 /** How a figure's going, from where it's drawn frame to frame: for its strides. */
@@ -157,8 +157,18 @@ export class EntityView {
         this.hold(made, e.held);
         continue;
       }
-      // A player's hand: what's in it now; swung, if they've swung since.
+      // A player's hand: what's in it now; swung, if they've swung since. Their name and look, if changed.
       if (e.kind === 'player') {
+        if (t.figure && e.look !== t.to.look) t.figure.setLook(lookOf(e));
+        if (e.name !== t.to.name) {
+          if (t.tag) {
+            t.group.remove(t.tag);
+            t.tag.material.map?.dispose();
+            t.tag.material.dispose();
+          }
+          t.tag = e.name ? nameTag(e.name, FIGURE_HEIGHT + 0.3) : undefined;
+          if (t.tag) t.group.add(t.tag);
+        }
         this.hold(t, e.held);
         if ((e.swings ?? 0) > (t.to.swings ?? 0)) t.swungAt = now;
       }
@@ -202,8 +212,7 @@ export class EntityView {
         const u = (now - t.swungAt) / 1000 / SWING_S;
         const pitch = (t.from.pitch ?? 0) + ((t.to.pitch ?? 0) - (t.from.pitch ?? 0)) * Math.min(1, (now - t.at) / INTERPOLATION_MS);
         t.figure.pose(poseFor(t.motion!.step(p, now, t.to.act ?? 0, pitch, u < 1 ? u : null)));
-        if (now < t.hurtUntil) t.body.color.setHex(0xff3030).multiplyScalar(t.brightness);
-        else t.body.color.copy(t.color!).multiplyScalar(t.brightness);
+        t.figure.tint(t.brightness, now < t.hurtUntil);
         if (t.handMaterial) t.handMaterial.color.setScalar(t.brightness);
         continue;
       }
@@ -246,19 +255,19 @@ export class EntityView {
     return this.tracked.size;
   }
 
-  private make(e: EntitySnapshot): Pick<Tracked, 'kind' | 'group' | 'body' | 'face' | 'figure' | 'color' | 'motion'> {
+  private make(e: EntitySnapshot): Pick<Tracked, 'kind' | 'group' | 'body' | 'face' | 'figure' | 'motion' | 'tag'> {
     const look = LOOK[e.kind];
     const group = new THREE.Group();
     group.name = `${e.kind} ${e.id}`;
     if (e.kind === 'player') {
-      // A player: the mannequin, in their own colour, their name over their head.
-      const color = playerColor(e.name ?? 'guest');
-      const figure = new PlayerFigure(color);
+      // A player: the mannequin, looking as they've chosen, their name over their head.
+      const figure = new PlayerFigure(lookOf(e));
       figure.root.traverse((o) => (o.userData.shared = true));
       group.add(figure.root);
-      if (e.name) group.add(nameTag(e.name, FIGURE_HEIGHT + 0.3));
+      const tag = e.name ? nameTag(e.name, FIGURE_HEIGHT + 0.3) : undefined;
+      if (tag) group.add(tag);
       this.scene.add(group);
-      return { kind: e.kind, group, body: figure.material, face: figure.material, figure, color, motion: new FigureMotion(performance.now()) };
+      return { kind: e.kind, group, body: figure.materials.shirt, face: figure.materials.shirt, figure, motion: new FigureMotion(performance.now()), ...(tag ? { tag } : {}) };
     }
     const body = new THREE.MeshBasicMaterial({ color: look.color });
     // The box (its length along -Z, the way it faces), standing on the ground.
@@ -302,6 +311,11 @@ export function heldGrip(item: number): Grip {
 }
 
 /** A name over a player's head. */
+/** How a player looks: as sent, or (sent nothing: a guest, an older server) as their name says. */
+function lookOf(e: EntitySnapshot): Avatar {
+  return (e.look ? avatarFromText(e.look) : null) ?? defaultAvatar(e.name ?? 'guest');
+}
+
 function nameTag(name: string, y: number): THREE.Sprite {
   const c = document.createElement('canvas');
   c.width = 256;

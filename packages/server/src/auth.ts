@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type { Account, AccountStore, GoogleIdentity, Role } from './accounts.js';
+import { shownName, type Account, type AccountStore, type GoogleIdentity, type Role } from './accounts.js';
 
 /** Signing in with Google (OAuth 2 authorization code flow, OpenID Connect). */
 export interface AuthConfig {
@@ -201,7 +201,7 @@ export class Auth {
 
     app.get('/api/auth/me', async (req) => {
       const who = await this.signedIn(req.cookies);
-      return { signedIn: !!who, ...(who ? { id: who.account.id, name: who.account.name, email: who.account.email, admin: who.admin, builds: who.builds } : {}) };
+      return { signedIn: !!who, ...(who ? { id: who.account.id, name: shownName(who.account), email: who.account.email, admin: who.admin, builds: who.builds } : {}) };
     });
 
     app.post('/api/auth/logout', async (_req, reply) => {

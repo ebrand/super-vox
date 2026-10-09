@@ -1,6 +1,6 @@
 import './envBadge.js';
 import * as THREE from 'three';
-import { BLOCK_SIZE, CHUNK_SIZE, blockIndex, blockVoxelContaining, isWater, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, weatherTime, lightAt, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
+import { BLOCK_SIZE, CHUNK_SIZE, avatarFromText, defaultAvatar, type Avatar, blockIndex, blockVoxelContaining, isWater, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, weatherTime, lightAt, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
 import { LeaveAsk } from './leaveAsk.js';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
@@ -31,7 +31,7 @@ import { WorldMapOverlay, decodeWorldMap } from './worldMap.js';
 import { rememberReturn, startFromParams, takeReturn } from './startAt.js';
 import { InventoryUi } from './inventory.js';
 import { EntityView, FigureMotion, entityBrightness, heldGrip, heldModel } from './entities.js';
-import { PlayerFigure, playerColor, poseFor, setAnimations, strides } from './playerFigure.js';
+import { PlayerFigure, poseFor, setAnimations, strides } from './playerFigure.js';
 import { raycastVoxels } from './picking.js';
 import { BoatView } from './boatView.js';
 import { ArrowView } from './arrowView.js';
@@ -482,8 +482,10 @@ function myAct(): number {
  * way), ourselves drawn as others see us (see PlayerFigure).
  */
 let thirdPerson = false;
-/** Our name (for our colour: others see us in it, see playerColor). */
+/** Our name (over us, as others see us). */
 let myName = 'guest';
+/** How we look (see Avatar): as others see us, and we do in third person. */
+let myLook: Avatar = defaultAvatar('guest');
 let selfFigure: { figure: PlayerFigure; motion: FigureMotion; handMaterial: THREE.MeshBasicMaterial; held: number | null; hand: THREE.Group | null } | null = null;
 /** How far behind (m) and above (m) the camera goes in third person. */
 const THIRD_BACK = 3.5, THIRD_UP = 0.6;
@@ -657,6 +659,7 @@ connection = connect({
       case 'welcome': {
         const w = msg.world;
         myName = msg.player?.name ?? 'guest';
+        myLook = (msg.player ? avatarFromText(msg.player.look) : null) ?? defaultAvatar(myName);
         worldLine =
           `world ${worldName ?? '(default)'}, ${unitsToMeters(w.widthUnits) / 1000} x ${unitsToMeters(w.depthUnits) / 1000} km` +
           (w.wrapX ? ', wraps east-west' : '') +
@@ -911,7 +914,7 @@ connection = connect({
             selfFigure.figure.root.removeFromParent();
             selfFigure.figure.dispose();
           }
-          const figure = new PlayerFigure(playerColor(myName));
+          const figure = new PlayerFigure(myLook);
           figure.root.visible = false;
           scene.add(figure.root);
           selfFigure = { figure, motion: new FigureMotion(performance.now()), handMaterial: new THREE.MeshBasicMaterial({ vertexColors: true }), held: null, hand: null };
@@ -1359,7 +1362,7 @@ function thirdPersonFrame(now: number, down: boolean): THREE.Vector3 {
   // Lit as others are where we stand.
   const l = lightAt(chunks.lightWorld(), Math.floor(feet.x / BLOCK_SIZE), Math.floor((feet.y + 8) / BLOCK_SIZE), Math.floor(feet.z / BLOCK_SIZE));
   const b = entityBrightness(l.sky, l.block, 1 - 0.85 * atmosphere.uniforms.stars.value);
-  f.figure.material.color.copy(playerColor(myName)).multiplyScalar(b);
+  f.figure.tint(b);
   f.handMaterial.color.setScalar(b);
   // What's in hand, as others see it.
   const held = inventoryUi.enabled && editTool ? editTool.shownInHand : null;

@@ -26,6 +26,8 @@ interface Player {
   online: boolean;
   /** An admin by ADMIN_EMAILS (whatever their role says). */
   adminByEmail: boolean;
+  /** The name they've chosen to go by (on their account page), if any. */
+  displayName: string | null;
 }
 interface Invite {
   email: string;
@@ -41,6 +43,8 @@ interface Spawn {
   world: string;
   x: number;
   z: number;
+  /** Not for the player to change. */
+  locked: boolean;
 }
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -82,6 +86,10 @@ function spawnCell(email: string, who: string, spawns: Spawn[]): HTMLElement {
   const cell = el('span', '', 'spawns');
   for (const s of spawns.filter((x) => x.email === email.toLowerCase())) {
     const chip = el('span', `${s.world}: ${Math.round(s.x)}, ${Math.round(s.z)}`, 'badge');
+    const lock = el('button', s.locked ? '🔒' : '🔓', 'clear');
+    lock.title = s.locked ? "locked: they can't change it (click to let them)" : 'they can change it on their account page (click to lock it)';
+    lock.onclick = () => void act(() => api('PUT', '/api/spawns', { email, world: s.world, x: s.x, z: s.z, locked: !s.locked }), s.locked ? `${who} can change where they start in ${s.world} now` : `${who}'s spawn point in ${s.world} is locked`);
+    chip.append(lock);
     const clear = el('button', '×', 'clear');
     clear.title = `back to the world's own spawn point in ${s.world}`;
     clear.onclick = () => void act(() => api('DELETE', `/api/spawns/${encodeURIComponent(s.world)}/${encodeURIComponent(email)}`), `${who} starts at the world's own spawn point in ${s.world} now`);
@@ -93,7 +101,9 @@ function spawnCell(email: string, who: string, spawns: Spawn[]): HTMLElement {
   set.onclick = async () => {
     const mine = spawns.filter((x) => x.email === email.toLowerCase()).map((x) => ({ world: x.world, x: x.x, z: x.z }));
     const picked = await pickSpawn(who, worlds, mine);
-    if (picked) void act(() => api('PUT', '/api/spawns', { email, ...picked }), `${who} starts in ${picked.world} at ${picked.x}, ${picked.z}`);
+    // (Moved: locked as it was.)
+    const locked = spawns.some((x) => x.email === email.toLowerCase() && x.world === picked?.world && x.locked);
+    if (picked) void act(() => api('PUT', '/api/spawns', { email, ...picked, locked }), `${who} starts in ${picked.world} at ${picked.x}, ${picked.z}`);
   };
   cell.append(set);
   return cell;
@@ -133,7 +143,8 @@ async function load(): Promise<void> {
   const players = $('players');
   players.replaceChildren(row(['Player', 'Email', 'Role', 'Last signed in', 'Joined', 'Spawn points', ''], 'th'));
   for (const p of data.players) {
-    const name = el('span', p.name);
+    const name = el('span', p.displayName ?? p.name);
+    if (p.displayName && p.displayName !== p.name) name.append(el('span', p.name, 'badge'));
     if (p.online) name.append(el('span', 'online', 'badge on'));
     if (p.banned) name.append(el('span', 'banned', 'badge bad'));
     if (p.id === me) name.append(el('span', 'you', 'badge'));
@@ -151,7 +162,7 @@ async function load(): Promise<void> {
       if (!p.banned && !confirmBan(ban, p.name)) return;
       void act(() => api('PATCH', `/api/players/${p.id}`, { banned: !p.banned }), p.banned ? `${p.name} is unbanned` : `${p.name} is banned (signed out)`);
     };
-    const tr = row([name, el('span', p.email, 'dim'), cell, when(p.lastSignedIn), when(p.createdAt), spawnCell(p.email, p.name, data.spawns), ban]);
+    const tr = row([name, el('span', p.email, 'dim'), cell, when(p.lastSignedIn), when(p.createdAt), spawnCell(p.email, p.displayName ?? p.name, data.spawns), ban]);
     if (p.banned) tr.className = 'banned';
     players.append(tr);
   }

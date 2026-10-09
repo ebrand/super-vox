@@ -4,7 +4,7 @@ import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import fastifyCookie from '@fastify/cookie';
 import type { Auth, SignedIn } from './auth.js';
-import { isRole, type Role } from './accounts.js';
+import { NameTakenError, isRole, shownName, type Account, type Role } from './accounts.js';
 import { starterInventory, type InventoryStore } from './inventories.js';
 import { PlayerInventory } from './playerInventory.js';
 import { MobManager } from './mobManager.js';
@@ -43,6 +43,10 @@ import {
   WALK_SPEED,
   type DeathCause,
   UNITS_PER_METER,
+  avatarText,
+  cleanDisplayName,
+  defaultAvatar,
+  parseAvatar,
   attackDamage,
   deltaX,
   BLOCK_VOLUME,
@@ -183,8 +187,9 @@ interface Player {
   bed: { x: number; y: number; z: number } | null;
   /** Their own spawn point here (units), if an admin set one (see PersonalSpawn): where they come back to without a bed. */
   home: { x: number; y: number; z: number } | null;
-  /** Their email, signed in (whose spawn point is theirs). */
+  /** Their email, signed in (whose spawn point is theirs), and how they look (see avatarText). */
   email: string | null;
+  look: string | null;
   /** Poses reported before this (ms) aren't kept as where they are (they've just been sent somewhere: see PLACE_SETTLE_MS). */
   settleUntil: number;
   /** Signed in: keeps their vitals and bed (see PlayerState), once they've been loaded. */
@@ -347,24 +352,103 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   // now on (dying; their next visit starts where they left, as ever).
   app.put<{ Body: unknown }>('/api/spawns', async (req, reply) => {
     if (!opts.auth || !(await admin(req))) return reply.code(403).send(notAdmin);
-    const b = (req.body ?? {}) as { email?: unknown; world?: unknown; x?: unknown; z?: unknown };
+    const b = (req.body ?? {}) as { email?: unknown; world?: unknown; x?: unknown; z?: unknown; locked?: unknown };
+    if (b.locked !== undefined && typeof b.locked !== 'boolean') return reply.code(400).send({ error: 'locked must be true or false' });
     const email = typeof b.email === 'string' ? b.email.trim().toLowerCase() : '';
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 254) return reply.code(400).send({ error: "that isn't an email address" });
     if (typeof b.world !== 'string' || !catalog.play(b.world)) return reply.code(400).send({ error: 'no such world' });
     if (typeof b.x !== 'number' || typeof b.z !== 'number' || !Number.isFinite(b.x) || !Number.isFinite(b.z)) return reply.code(400).send({ error: 'x and z must be numbers (metres)' });
     const me = await opts.auth.signedIn(req.cookies);
-    const spawn = await opts.auth.accounts.setSpawn(email, b.world, b.x, b.z, me?.account.id ?? null);
-    for (const [s, p] of players) {
-      if (p.email?.toLowerCase() !== email || p.world !== spawn.world) continue;
-      const w = clients.get(s);
-      if (w) p.home = w.spawnAt(spawn.x * UNITS_PER_METER, spawn.z * UNITS_PER_METER);
-    }
+    const spawn = await opts.auth.accounts.setSpawn(email, b.world, b.x, b.z, me?.account.id ?? null, b.locked === true);
+    rehome(email, spawn.world, spawn);
     return { spawn };
+  });
+  /** Anyone of `email`'s in `world` now: their spawn point there, from now on (null: the world's). */
+  const rehome = (email: string, world: string, at: { x: number; z: number } | null) => {
+    for (const [s, p] of players) {
+      if (p.email?.toLowerCase() !== email.toLowerCase() || p.world !== world) continue;
+      const w = clients.get(s);
+      if (w) p.home = at ? w.spawnAt(at.x * UNITS_PER_METER, at.z * UNITS_PER_METER) : null;
+    }
+  };
+
+  // --- A player's own account (signed in): the name they go by, how they look, their spawn points
+  // (where they like, unless an admin's locked one). Changes show at once to anyone playing.
+  const accountOf = async (req: FastifyRequest) => (opts.auth ? await opts.auth.signedIn(req.cookies) : null);
+  const notSignedIn = { error: opts.auth ? 'sign in on the front page first' : 'sign-in is off on this server: there are no accounts' };
+  const accountView = async (a: Account) => ({
+    email: a.email,
+    googleName: a.name,
+    displayName: a.displayName,
+    name: shownName(a),
+    avatar: a.avatar ?? defaultAvatar(shownName(a)),
+    chosenAvatar: a.avatar !== null,
+    spawns: (await opts.auth!.accounts.spawns()).filter((s) => s.email === a.email.toLowerCase()).map((s) => ({ world: s.world, x: s.x, z: s.z, locked: s.locked })),
+  });
+  /** How an account looks to others, sent with them. */
+  const lookOf = (a: Account) => avatarText(a.avatar ?? defaultAvatar(shownName(a)));
+  /** Anyone playing as `a` now: their name and look, from now on. */
+  const reshow = (a: Account) => {
+    for (const s of connections.get(a.id) ?? []) {
+      const p = players.get(s);
+      if (p) (p.name = shownName(a)), (p.look = lookOf(a));
+    }
+  };
+  app.get('/api/account', async (req, reply) => {
+    const who = await accountOf(req);
+    if (!who) return reply.code(401).send(notSignedIn);
+    return accountView(who.account);
+  });
+  app.patch<{ Body: unknown }>('/api/account', async (req, reply) => {
+    const who = await accountOf(req);
+    if (!who || !opts.auth) return reply.code(401).send(notSignedIn);
+    const b = (req.body ?? {}) as { displayName?: unknown; avatar?: unknown };
+    let account = who.account;
+    if (b.displayName !== undefined) {
+      const name = b.displayName === null || b.displayName === '' ? null : cleanDisplayName(b.displayName);
+      if (b.displayName !== null && b.displayName !== '' && name === null) return reply.code(400).send({ error: "a name is 2 to 24 letters, digits, spaces and _ . ' -, starting with a letter or digit" });
+      try {
+        account = (await opts.auth.accounts.setDisplayName(account.id, name)) ?? account;
+      } catch (err) {
+        if (err instanceof NameTakenError) return reply.code(409).send({ error: err.message });
+        throw err;
+      }
+    }
+    if (b.avatar !== undefined) {
+      const avatar = b.avatar === null ? null : parseAvatar(b.avatar);
+      if (b.avatar !== null && avatar === null) return reply.code(400).send({ error: 'a look is a colour (#rrggbb) for each of skin, shirt, trousers and shoes' });
+      account = (await opts.auth.accounts.setAvatar(account.id, avatar)) ?? account;
+    }
+    reshow(account);
+    return accountView(account);
+  });
+  app.put<{ Body: unknown }>('/api/account/spawns', async (req, reply) => {
+    const who = await accountOf(req);
+    if (!who || !opts.auth) return reply.code(401).send(notSignedIn);
+    const b = (req.body ?? {}) as { world?: unknown; x?: unknown; z?: unknown };
+    if (typeof b.world !== 'string' || !catalog.play(b.world)) return reply.code(400).send({ error: 'no such world' });
+    if (typeof b.x !== 'number' || typeof b.z !== 'number' || !Number.isFinite(b.x) || !Number.isFinite(b.z)) return reply.code(400).send({ error: 'x and z must be numbers (metres)' });
+    const email = who.account.email;
+    if ((await opts.auth.accounts.spawnFor(email, b.world))?.locked) return reply.code(403).send({ error: `an admin has set where you start in ${b.world}` });
+    const spawn = await opts.auth.accounts.setSpawn(email, b.world, b.x, b.z, who.account.id, false);
+    rehome(email, spawn.world, spawn);
+    return accountView(who.account);
+  });
+  app.delete<{ Params: { world: string } }>('/api/account/spawns/:world', async (req, reply) => {
+    const who = await accountOf(req);
+    if (!who || !opts.auth) return reply.code(401).send(notSignedIn);
+    const email = who.account.email, world = req.params.world;
+    const had = await opts.auth.accounts.spawnFor(email, world);
+    if (!had) return reply.code(404).send({ error: 'no such spawn point' });
+    if (had.locked) return reply.code(403).send({ error: `an admin has set where you start in ${world}` });
+    await opts.auth.accounts.clearSpawn(email, world);
+    rehome(email, world, null);
+    return accountView(who.account);
   });
   app.delete<{ Params: { world: string; email: string } }>('/api/spawns/:world/:email', async (req, reply) => {
     if (!opts.auth || !(await admin(req))) return reply.code(403).send(notAdmin);
     if (!(await opts.auth.accounts.clearSpawn(req.params.email, req.params.world))) return reply.code(404).send({ error: 'no such spawn point' });
-    for (const p of players.values()) if (p.email?.toLowerCase() === req.params.email.toLowerCase() && p.world === req.params.world) p.home = null;
+    rehome(req.params.email, req.params.world, null);
     return reply.code(204).send();
   });
   app.delete<{ Params: { email: string } }>('/api/invites/:email', async (req, reply) => {
@@ -578,7 +662,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const claimer = async (req: FastifyRequest): Promise<{ id: string | null; name: string } | null> => {
     if (!opts.auth) return catalog.dev ? { id: null, name: 'anyone' } : null;
     const s = await opts.auth.signedIn(req.cookies);
-    return s ? { id: s.account.id, name: s.account.name } : null;
+    return s ? { id: s.account.id, name: shownName(s.account) } : null;
   };
   app.get<{ Params: { name: string } }>('/api/worlds/:name/claims', async (req, reply) => {
     const claims = catalog.claims?.(req.params.name) ?? null;
@@ -998,7 +1082,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         const entities = mobs.near(p.pose!.x, p.pose!.z, VIEW, now);
         for (const o of here) {
           if (o.p === p || Math.hypot(deltaX(world.config, p.pose!.x, o.p.pose!.x), o.p.pose!.z - p.pose!.z) > VIEW) continue;
-          entities.push({ id: o.p.id, kind: 'player', x: Math.round(o.p.pose!.x), y: Math.round(o.p.pose!.y - EYE), z: Math.round(o.p.pose!.z), yaw: o.p.pose!.yaw, name: o.p.name ?? 'guest', ...(o.p.held !== null ? { held: o.p.held } : {}), ...(o.p.swings ? { swings: o.p.swings } : {}), ...(o.p.pitch ? { pitch: o.p.pitch } : {}), ...(o.p.act ? { act: o.p.act } : {}) });
+          entities.push({ id: o.p.id, kind: 'player', x: Math.round(o.p.pose!.x), y: Math.round(o.p.pose!.y - EYE), z: Math.round(o.p.pose!.z), yaw: o.p.pose!.yaw, name: o.p.name ?? 'guest', ...(o.p.look ? { look: o.p.look } : {}), ...(o.p.held !== null ? { held: o.p.held } : {}), ...(o.p.swings ? { swings: o.p.swings } : {}), ...(o.p.pitch ? { pitch: o.p.pitch } : {}), ...(o.p.act ? { act: o.p.act } : {}) });
         }
         sendTo(s, { type: 'entities', entities });
       }
@@ -1275,9 +1359,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             clientWorld.set(socket, msg.world ?? catalog.defaultName);
             players.set(socket, {
               id: nextPlayer++, world: msg.world ?? catalog.defaultName, connectedAt: Date.now(), tolerance: world.tolerance,
-              name: who?.account.name ?? null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
+              name: who ? shownName(who.account) : null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
               vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0, lastShot: 0, held: null, swings: 0, pitch: 0, act: 0, builds: [], bed: null, settleUntil: Infinity, saveState: null,
-              home: home ? world.spawnAt(home.x * UNITS_PER_METER, home.z * UNITS_PER_METER) : null, email: who?.account.email ?? null,
+              home: home ? world.spawnAt(home.x * UNITS_PER_METER, home.z * UNITS_PER_METER) : null, email: who?.account.email ?? null, look: who ? lookOf(who.account) : null,
               give: (item, amount) => {
                 if (!inventory) return false;
                 inventory.addItem(item, amount);
@@ -1306,7 +1390,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               seaLevel: world.seaLevel,
               clock: catalog.clock(msg.world)!,
               serverTime: Date.now(),
-              player: who ? { name: who.account.name, admin: who.admin } : null,
+              player: who ? { name: shownName(who.account), admin: who.admin, look: lookOf(who.account) } : null,
               canEdit: canEdit(),
               mode: catalog.play(msg.world)?.mode ?? 'creative',
               weather: { seed: weatherSeed(msg.world ?? catalog.defaultName) },

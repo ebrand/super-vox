@@ -96,6 +96,16 @@ const MIGRATIONS: { name: string; sql: string }[] = [
         primary key (email, world)
       );`,
   },
+  {
+    // A player's own: the name they go by (unique, any case) and how they look; spawn points an
+    // admin's locked (the player can't move them).
+    name: '007_player_choices',
+    sql: `
+      alter table ${SCHEMA}.accounts add column display_name text;
+      alter table ${SCHEMA}.accounts add column avatar jsonb;
+      create unique index accounts_display_name on ${SCHEMA}.accounts (lower(display_name));
+      alter table ${SCHEMA}.spawns add column locked boolean not null default false;`,
+  },
 ];
 
 /** Connects to Postgres (Supabase) and brings the schema (SCHEMA) up to date. */

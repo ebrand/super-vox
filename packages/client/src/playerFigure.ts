@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
-import { FIGURE_JOINTS, defaultAnimations, poseClip, poseFigure, type AnimationLibrary, type FigurePose as Pose, type FigureState } from '@super-vox/shared';
+import { AVATAR_PARTS, FIGURE_JOINTS, defaultAnimations, defaultAvatar, poseClip, poseFigure, type AnimationLibrary, type Avatar, type AvatarPart, type FigurePose as Pose, type FigureState } from '@super-vox/shared';
 import manObj from './models/low-poly-man.obj?raw';
 
 /**
@@ -221,18 +221,32 @@ export function poseFor(s: FigureState): Pose {
   return poseFigure(library, s);
 }
 
-/** A figure: its joints (each a group, its pieces in it), coloured `color` (shaded by the material's colour). */
+/** Which part of how a player looks (see Avatar) each joint's pieces are. */
+export const JOINT_PART: Record<Joint, AvatarPart> = {
+  hips: 'trousers', spine: 'shirt', chest: 'shirt', neck: 'skin', head: 'skin',
+  shoulderL: 'shirt', elbowL: 'shirt', wristL: 'skin', shoulderR: 'shirt', elbowR: 'shirt', wristR: 'skin',
+  legL: 'trousers', kneeL: 'trousers', ankleL: 'shoes', legR: 'trousers', kneeR: 'trousers', ankleR: 'shoes',
+};
+
+/** A figure: its joints (each a group, its pieces in it), each part its colour (see Avatar: shaded by its material's colour; see tint). */
 export class PlayerFigure {
   readonly root = new THREE.Group();
   readonly joints = new Map<Joint, THREE.Group>();
-  readonly material: THREE.MeshBasicMaterial;
+  /** A material for each part (skin, shirt...): its colour times how bright (see tint). */
+  readonly materials: Record<AvatarPart, THREE.MeshBasicMaterial>;
+  private look: Avatar;
+  private readonly colors = {} as Record<AvatarPart, THREE.Color>;
   /** The whole body, leant and lifted as the pose says (inside root, which faces where they face). */
   private readonly body = new THREE.Group();
   /** Where the hips turn (m): the body leans about them. */
   private readonly hip: THREE.Vector3;
 
-  constructor(color: THREE.ColorRepresentation, model: FigureModel = manModel()) {
-    this.material = new THREE.MeshBasicMaterial({ vertexColors: true, color });
+  /** `look`: how they look, or a colour for their shirt (the rest as anyone's: see defaultAvatar). */
+  constructor(look: Avatar | THREE.ColorRepresentation, model: FigureModel = manModel()) {
+    this.look = isAvatar(look) ? look : { ...defaultAvatar(''), shirt: `#${new THREE.Color(look).getHexString()}` };
+    this.materials = Object.fromEntries(AVATAR_PARTS.map((p) => [p, new THREE.MeshBasicMaterial({ vertexColors: true })])) as Record<AvatarPart, THREE.MeshBasicMaterial>;
+    this.setLook(this.look);
+    this.tint(1);
     this.root.add(this.body);
     for (const name of JOINTS) {
       const spec: { parent?: Joint } = SKELETON[name];
@@ -240,13 +254,33 @@ export class PlayerFigure {
       const joint = new THREE.Group();
       joint.name = name;
       joint.position.copy(at).sub(from);
-      const mesh = new THREE.Mesh(model.parts.get(name)!, this.material);
+      const mesh = new THREE.Mesh(model.parts.get(name)!, this.materials[JOINT_PART[name]]);
       mesh.name = `${name} part`;
       joint.add(mesh);
       this.joints.set(name, joint);
       (spec.parent ? this.joints.get(spec.parent)! : this.body).add(joint);
     }
     this.hip = model.pivots.get('hips')!.clone();
+  }
+
+  /** Looks as `look` says (drawn so at the next tint). */
+  setLook(look: Avatar): void {
+    this.look = look;
+    for (const p of AVATAR_PARTS) this.colors[p] = new THREE.Color(look[p]);
+  }
+
+  get currentLook(): Avatar {
+    return this.look;
+  }
+
+  /** Drawn `brightness` (0..1) as bright as its colours (see entityBrightness); `hurt`: red all over, a moment. */
+  tint(brightness: number, hurt = false): void {
+    for (const p of AVATAR_PARTS) {
+      const m = this.materials[p].color;
+      if (hurt) m.setHex(0xff3030);
+      else m.copy(this.colors[p]);
+      m.multiplyScalar(brightness);
+    }
   }
 
   /** The hand a thing is held in (its wrist: right, or left for a bow). */
@@ -267,14 +301,13 @@ export class PlayerFigure {
   }
 
   dispose(): void {
-    this.material.dispose();
+    for (const p of AVATAR_PARTS) this.materials[p].dispose();
   }
 }
 
-/** A player's colour, from their name: soft, each its own hue (the same everywhere they're seen). */
+const isAvatar = (v: unknown): v is Avatar => typeof v === 'object' && v !== null && !(v instanceof THREE.Color) && AVATAR_PARTS.every((p) => typeof (v as Record<string, unknown>)[p] === 'string');
+
+/** A player's colour, from their name: their shirt's, as anyone's who hasn't chosen (see defaultAvatar). */
 export function playerColor(name: string): THREE.Color {
-  let h = 2166136261;
-  for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 16777619);
-  const hue = ((h >>> 0) % 360) / 360;
-  return new THREE.Color().setHSL(hue, 0.32, 0.6, THREE.SRGBColorSpace);
+  return new THREE.Color(defaultAvatar(name).shirt);
 }

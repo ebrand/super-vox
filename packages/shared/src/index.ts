@@ -31,6 +31,7 @@ export * from './shapes.js';
 export * from './extrude.js';
 export * from './select.js';
 export * from './animations.js';
+export * from './avatar.js';
 export * from './objects.js';
 export * from './physics.js';
 export * from './flocking.js';
