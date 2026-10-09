@@ -3,8 +3,14 @@ import { avatarFromText, avatarText, cleanDisplayName, defaultAvatar, parseAvata
 
 describe('avatars', () => {
   it('are a colour for each part, sent as text and back', () => {
-    const a = { skin: '#c68e6a', shirt: '#2255aa', trousers: '#333333', shoes: '#111111' };
+    const a = { skin: '#c68e6a', shirt: '#2255aa', trousers: '#333333', shoes: '#111111', figure: 'man' as const };
     expect(parseAvatar({ ...a, shirt: '#2255AA', extra: 1 })).toEqual(a);
+    // (No figure said: a man, as everyone was.)
+    expect(parseAvatar({ skin: '#c68e6a', shirt: '#2255aa', trousers: '#333333', shoes: '#111111' })).toEqual(a);
+    expect(parseAvatar({ ...a, figure: 'dragon' })).toBeNull();
+    const w = { ...a, figure: 'woman' as const };
+    expect(avatarText(w)).toBe('c68e6a,2255aa,333333,111111,w');
+    expect(avatarFromText(avatarText(w))).toEqual(w);
     expect(parseAvatar({ ...a, shoes: 'red' })).toBeNull();
     expect(parseAvatar({ skin: '#ffffff' })).toBeNull();
     expect(parseAvatar('x')).toBeNull();

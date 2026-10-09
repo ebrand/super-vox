@@ -1,15 +1,18 @@
 /**
- * How a player looks: a colour for each part of their figure (skin: head, neck and hands; shirt:
- * body and arms; trousers: hips and legs; shoes: feet), "#rrggbb" each. Chosen on their account
- * page; until then (or if it's reset) one from their name (see defaultAvatar).
+ * How a player looks: their figure (a man or a woman) and a colour for each part of it (skin:
+ * head, neck and hands; shirt: body and arms; trousers: hips and legs; shoes: feet), "#rrggbb"
+ * each. Chosen on their account page; until then (or if it's reset) one from their name (see
+ * defaultAvatar).
  */
 export const AVATAR_PARTS = ['skin', 'shirt', 'trousers', 'shoes'] as const;
 export type AvatarPart = (typeof AVATAR_PARTS)[number];
-export type Avatar = Record<AvatarPart, string>;
+export const FIGURE_KINDS = ['man', 'woman'] as const;
+export type FigureKind = (typeof FIGURE_KINDS)[number];
+export type Avatar = Record<AvatarPart, string> & { figure: FigureKind };
 
 const HEX = /^#[0-9a-f]{6}$/;
 
-/** An avatar from what was sent, or null if it isn't one (every part, a lower-case #rrggbb). */
+/** An avatar from what was sent, or null if it isn't one (every part, a lower-case #rrggbb; the figure, a man unless it says). */
 export function parseAvatar(raw: unknown): Avatar | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const r = raw as Record<string, unknown>, out: Partial<Avatar> = {};
@@ -18,17 +21,20 @@ export function parseAvatar(raw: unknown): Avatar | null {
     if (!HEX.test(v)) return null;
     out[p] = v;
   }
+  if (r.figure !== undefined && !(FIGURE_KINDS as readonly unknown[]).includes(r.figure)) return null;
+  out.figure = (r.figure as FigureKind | undefined) ?? 'man';
   return out as Avatar;
 }
 
-/** As sent with each player (see EntitySnapshot.look): the parts' colours in order, without the #s, comma-separated. */
+/** As sent with each player (see EntitySnapshot.look): the parts' colours in order, without the #s, comma-separated; then ",w" for a woman. */
 export function avatarText(a: Avatar): string {
-  return AVATAR_PARTS.map((p) => a[p].slice(1)).join(',');
+  return AVATAR_PARTS.map((p) => a[p].slice(1)).join(',') + (a.figure === 'woman' ? ',w' : '');
 }
 export function avatarFromText(s: string): Avatar | null {
   const parts = s.split(',');
-  if (parts.length !== AVATAR_PARTS.length) return null;
-  return parseAvatar(Object.fromEntries(AVATAR_PARTS.map((p, i) => [p, `#${parts[i]}`])));
+  const woman = parts.length === AVATAR_PARTS.length + 1 && parts.at(-1) === 'w';
+  if (parts.length !== AVATAR_PARTS.length && !woman) return null;
+  return parseAvatar({ ...Object.fromEntries(AVATAR_PARTS.map((p, i) => [p, `#${parts[i]}`])), figure: woman ? 'woman' : 'man' });
 }
 
 /** "#rrggbb" for an HSL colour (hue 0..1, saturation and lightness 0..1). */
@@ -50,7 +56,7 @@ export function nameHue(name: string): number {
 
 /** How someone looks who hasn't chosen: a shirt of their name's colour (as everyone was), plain the rest. */
 export function defaultAvatar(name: string): Avatar {
-  return { skin: '#d9b99b', shirt: hsl(nameHue(name), 0.32, 0.6), trousers: '#4a5568', shoes: '#2d2a26' };
+  return { skin: '#d9b99b', shirt: hsl(nameHue(name), 0.32, 0.6), trousers: '#4a5568', shoes: '#2d2a26', figure: 'man' };
 }
 
 /**

@@ -157,7 +157,8 @@ const knockdown = new Knockdown();
 /** Footsteps (see footsteps.ts): a step each stride walked, of what's underfoot, wet after rain, crunching in snow. */
 const footsteps = new FootstepSound();
 // (A footstep each step the figure's legs take: half its stride, walking or running; see strides.)
-const stepCounter = new StepCounter((sprinting) => (sprinting ? strides().run : strides().walk) / 2);
+// (Our own figure's: a woman's steps are shorter, and so come quicker.)
+const stepCounter = new StepCounter((sprinting) => ((sprinting ? strides().run : strides().walk) / 2) * (selfFigure?.figure.strideScale ?? 1));
 const footWeather = new FootstepWeather();
 const lastFeet = new THREE.Vector3();
 document.addEventListener('visibilitychange', () => footsteps.pause(document.hidden));
@@ -917,7 +918,9 @@ connection = connect({
           const figure = new PlayerFigure(myLook);
           figure.root.visible = false;
           scene.add(figure.root);
-          selfFigure = { figure, motion: new FigureMotion(performance.now()), handMaterial: new THREE.MeshBasicMaterial({ vertexColors: true }), held: null, hand: null };
+          const motion = new FigureMotion(performance.now());
+          motion.strideScale = figure.strideScale;
+          selfFigure = { figure, motion, handMaterial: new THREE.MeshBasicMaterial({ vertexColors: true }), held: null, hand: null };
           localBirds = new LocalBirds({ topAt: (x, z, y) => (chunks ? columnTop(chunks, x, z, y) : null), brightness });
           // Animals about: grazing, wandering, running off (their models load the first time).
           wildAnimals = new WildAnimals(

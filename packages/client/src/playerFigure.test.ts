@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { PlayerAct, SPRINT, WALK_SPEED, defaultAnimations, poseClip } from '@super-vox/shared';
-import { FIGURE_HEIGHT, JOINTS, MAN, PlayerFigure, figureModel, playerColor, poseFor, type FigureState } from './playerFigure.js';
+import { PlayerAct, SPRINT, WALK_SPEED, defaultAnimations, defaultAvatar, poseClip } from '@super-vox/shared';
+import { FIGURE_HEIGHT, JOINTS, MAN, PlayerFigure, WOMAN_SCALE, figureModel, playerColor, poseFor, type FigureState } from './playerFigure.js';
 import { FigureMotion } from './entities.js';
 
 const still: FigureState = { time: 0, stride: 0, speed: 0, airborne: false, swimming: false, flying: false, mining: false, swing: null, draw: null, pitch: 0 };
@@ -91,7 +91,7 @@ describe('PlayerFigure', () => {
   });
 
   it('wears its look: each part its colour (head and hands skin, shirt, trousers, shoes), red when hurt', () => {
-    const look = { skin: '#c68e6a', shirt: '#2255aa', trousers: '#333333', shoes: '#111111' };
+    const look = { skin: '#c68e6a', shirt: '#2255aa', trousers: '#333333', shoes: '#111111', figure: 'man' as const };
     const f = new PlayerFigure(look);
     const colorOf = (joint: string) => ((f.joints.get(joint as never)!.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial).color;
     for (const [joint, part] of [['head', 'skin'], ['wristR', 'skin'], ['chest', 'shirt'], ['elbowL', 'shirt'], ['hips', 'trousers'], ['kneeR', 'trousers'], ['ankleL', 'shoes']] as const)
@@ -230,5 +230,49 @@ describe('walking and running speeds', () => {
     expect(walking).toBeLessThan(160);
     expect(running).toBeGreaterThan(120);
     expect(running).toBeLessThan(190);
+  });
+});
+
+describe('the woman', () => {
+  const her = { ...defaultAvatar('x'), figure: 'woman' as const };
+  const size = (f: PlayerFigure) => {
+    f.pose(poseFor(still));
+    f.root.updateMatrixWorld(true);
+    return new THREE.Box3().setFromObject(f.root);
+  };
+  it("stands on the ground, a little smaller than the man: narrower in the shoulders, wider in the hips", () => {
+    const man = new PlayerFigure(defaultAvatar('x')), woman = new PlayerFigure(her);
+    const m = size(man), w = size(woman);
+    expect(w.min.y).toBeCloseTo(0, 2);
+    // (A little smaller all over, her head a little smaller again: a centimetre.)
+    const ratio = (w.max.y - w.min.y) / (m.max.y - m.min.y);
+    expect(ratio).toBeLessThan(WOMAN_SCALE);
+    expect(ratio).toBeGreaterThan(WOMAN_SCALE - 0.01);
+    expect(woman.height).toBeCloseTo(FIGURE_HEIGHT * WOMAN_SCALE, 5);
+    const width = (f: PlayerFigure, joint: string) => new THREE.Box3().setFromObject(f.joints.get(joint as never)!.children[0]!).getSize(new THREE.Vector3()).x;
+    expect(width(woman, 'hips') / width(man, 'hips')).toBeGreaterThan(1);
+    expect(Math.abs(at(woman, 'shoulderL').x - at(woman, 'shoulderR').x)).toBeLessThan(Math.abs(at(man, 'shoulderL').x - at(man, 'shoulderR').x) * WOMAN_SCALE);
+    expect(Math.abs(at(woman, 'legL').x - at(woman, 'legR').x)).toBeGreaterThan(Math.abs(at(man, 'legL').x - at(man, 'legR').x) * WOMAN_SCALE);
+  });
+
+  it('strides as her legs are long (her feet locked to the ground as his are)', async () => {
+    const { lockedStride } = await import('./playerFigure.js');
+    const lib = defaultAnimations();
+    for (const clip of ['walk', 'run'] as const) {
+      const his = lockedStride(lib, clip, new PlayerFigure(defaultAvatar('x')))!, hers = lockedStride(lib, clip, new PlayerFigure(her))!;
+      expect(hers / his, clip).toBeCloseTo(WOMAN_SCALE, 1);
+      expect(new PlayerFigure(her).strideScale).toBe(WOMAN_SCALE);
+    }
+  });
+
+  it('a figure becomes the other as its look says, at once', () => {
+    const f = new PlayerFigure(defaultAvatar('x'));
+    const tall = size(f).max.y;
+    f.setLook(her);
+    expect(f.strideScale).toBe(WOMAN_SCALE);
+    expect(size(f).max.y / tall).toBeGreaterThan(WOMAN_SCALE - 0.01);
+    expect(size(f).max.y / tall).toBeLessThan(WOMAN_SCALE);
+    f.setLook(defaultAvatar('x'));
+    expect(size(f).max.y).toBeCloseTo(tall, 5);
   });
 });

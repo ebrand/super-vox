@@ -2,7 +2,7 @@ import './header.js';
 import './fullscreen.js';
 import './envBadge.js';
 import * as THREE from 'three';
-import { AVATAR_PARTS, defaultAvatar, type Avatar, type AvatarPart } from '@super-vox/shared';
+import { AVATAR_PARTS, defaultAvatar, type Avatar, type AvatarPart, type FigureKind } from '@super-vox/shared';
 import { PlayerFigure, poseFor, type FigureState } from './playerFigure.js';
 import { pickSpawn } from './spawnPicker.js';
 
@@ -83,7 +83,17 @@ const showLook = (l: Avatar) => {
     const input = $<HTMLInputElement>(`part-${p}`);
     if (input.value !== l[p]) input.value = l[p];
   }
+  $<HTMLSelectElement>('figure').value = l.figure;
 };
+{
+  // The figure: a man or a woman.
+  const label = el('label'), select = el('select');
+  select.id = 'figure';
+  for (const [k, name] of [['man', 'Man'], ['woman', 'Woman']] as const) select.append(new Option(name, k));
+  select.onchange = () => showLook({ ...look, figure: select.value as FigureKind });
+  label.append(el('span', 'Figure'), select);
+  $('parts').append(label);
+}
 for (const p of AVATAR_PARTS) {
   const label = el('label');
   const input = el('input');

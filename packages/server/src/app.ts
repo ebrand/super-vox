@@ -416,7 +416,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     }
     if (b.avatar !== undefined) {
       const avatar = b.avatar === null ? null : parseAvatar(b.avatar);
-      if (b.avatar !== null && avatar === null) return reply.code(400).send({ error: 'a look is a colour (#rrggbb) for each of skin, shirt, trousers and shoes' });
+      if (b.avatar !== null && avatar === null) return reply.code(400).send({ error: 'a look is a colour (#rrggbb) for each of skin, shirt, trousers and shoes, and a figure (man or woman)' });
       account = (await opts.auth.accounts.setAvatar(account.id, avatar)) ?? account;
     }
     reshow(account);

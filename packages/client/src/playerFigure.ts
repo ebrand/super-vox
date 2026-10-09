@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
-import { AVATAR_PARTS, FIGURE_JOINTS, defaultAnimations, defaultAvatar, poseClip, poseFigure, type AnimationLibrary, type Avatar, type AvatarPart, type FigurePose as Pose, type FigureState } from '@super-vox/shared';
+import { AVATAR_PARTS, FIGURE_JOINTS, defaultAnimations, defaultAvatar, poseClip, poseFigure, type AnimationLibrary, type Avatar, type AvatarPart, type FigureKind, type FigurePose as Pose, type FigureState } from '@super-vox/shared';
 import manObj from './models/low-poly-man.obj?raw';
 
 /**
@@ -136,25 +136,96 @@ export function figureModel(spec: FigureModelSpec): FigureModel {
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     const pv = pivots.get(j)!;
     g.translate(-pv.x, -pv.y, -pv.z);
-    g.computeVertexNormals();
-    const n = g.getAttribute('normal'), col = new Float32Array(n.count * 3), v = new THREE.Vector3();
-    for (let i = 0; i < n.count; i++) {
-      v.fromBufferAttribute(n, i);
-      const shade = 0.55 + 0.45 * Math.max(0, v.dot(LIGHT)) + 0.08 * Math.max(0, v.y);
-      col.set([shade, shade, shade], i * 3);
-    }
-    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    g.computeBoundingSphere();
-    parts.set(j, g);
+    parts.set(j, shaded(g));
   }
   return { parts, pivots };
 }
 
-/** The man's model, made once (every figure shares it). */
+/** Flat-shades a piece (its normals, and its colours from them: see LIGHT). */
+function shaded(g: THREE.BufferGeometry): THREE.BufferGeometry {
+  g.computeVertexNormals();
+  const n = g.getAttribute('normal'), col = new Float32Array(n.count * 3), v = new THREE.Vector3();
+  for (let i = 0; i < n.count; i++) {
+    v.fromBufferAttribute(n, i);
+    const shade = 0.55 + 0.45 * Math.max(0, v.dot(LIGHT)) + 0.08 * Math.max(0, v.y);
+    col.set([shade, shade, shade], i * 3);
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.computeBoundingSphere();
+  return g;
+}
+
+/** How much smaller the woman is than the man (and so her strides). */
+export const WOMAN_SCALE = 0.94;
+
+/**
+ * The woman: the man's pieces reshaped. A little smaller all over (WOMAN_SCALE); narrower in the
+ * shoulders and chest, the arms in with them and slimmer; a narrow waist; wider hips, the legs out
+ * with them; a smaller head; and a bust (two low-poly mounds on the chest, flat-shaded as the rest).
+ */
+export function womanModel(man: FigureModel): FigureModel {
+  const k = WOMAN_SCALE, SHOULDERS = 0.86, HIPS = 1.14;
+  const shoulderX = Math.abs(man.pivots.get('shoulderL')!.x), legX = Math.abs(man.pivots.get('legL')!.x);
+  const isArm = (j: Joint) => /^(shoulder|elbow|wrist)/.test(j), isLeg = (j: Joint) => /^(leg|knee|ankle)/.test(j);
+  const pivots = new Map<Joint, THREE.Vector3>();
+  for (const [j, p] of man.pivots) {
+    const q = p.clone().multiplyScalar(k), side = Math.sign(p.x);
+    if (isArm(j)) q.x -= side * shoulderX * k * (1 - SHOULDERS);
+    if (isLeg(j)) q.x += side * legX * k * (HIPS - 1);
+    pivots.set(j, q);
+  }
+  /** How each joint's piece is reshaped (m, from the joint, already made smaller). */
+  const shape: Partial<Record<Joint, (v: THREE.Vector3) => void>> = {
+    chest: (v) => void (v.x *= SHOULDERS),
+    spine: (v) => void ((v.x *= 0.78), (v.z *= 0.9)),
+    hips: (v) => void ((v.x *= HIPS), (v.z *= 1.06)),
+    head: (v) => void v.multiplyScalar(0.96),
+    neck: (v) => void ((v.x *= 0.85), (v.z *= 0.85)),
+  };
+  for (const j of ['shoulderL', 'shoulderR', 'elbowL', 'elbowR'] as const) shape[j] = (v) => void ((v.x *= 0.86), (v.z *= 0.86));
+  for (const j of ['legL', 'legR'] as const) shape[j] = (v) => void ((v.x *= 1.05), (v.z *= 1.04));
+  const parts = new Map<Joint, THREE.BufferGeometry>();
+  for (const [j, g0] of man.parts) {
+    const pos = (g0.getAttribute('position').array as Float32Array).slice(), v = new THREE.Vector3();
+    for (let i = 0; i < pos.length; i += 3) {
+      v.set(pos[i]!, pos[i + 1]!, pos[i + 2]!).multiplyScalar(k);
+      shape[j]?.(v);
+      pos.set([v.x, v.y, v.z], i);
+    }
+    let all = Array.from(pos);
+    if (j === 'chest') all = all.concat(bust(new THREE.Box3().setFromArray(pos)));
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(all, 3));
+    parts.set(j, shaded(g));
+  }
+  return { parts, pivots };
+}
+
+/** Two low-poly mounds on the front (-z) of a chest piece with bounds `b` (positions, flat triangles). */
+function bust(b: THREE.Box3): number[] {
+  const w = b.max.x - b.min.x, h = b.max.y - b.min.y, d = b.max.z - b.min.z;
+  const out: number[] = [];
+  for (const side of [-1, 1]) {
+    const g = new THREE.IcosahedronGeometry(0.21 * w, 0).toNonIndexed();
+    // (A little flattened front to back, set into the chest a little below its middle, just in from each side: 4 or 5 cm proud of it.)
+    g.scale(1, 0.85, 0.78);
+    g.translate((b.min.x + b.max.x) / 2 + side * 0.23 * w, b.min.y + 0.5 * h, b.min.z + 0.12 * d);
+    out.push(...Array.from(g.getAttribute('position').array as ArrayLike<number>));
+  }
+  return out;
+}
+
+/** The man's and woman's models, made once (every figure shares them). */
 let man: FigureModel | null = null;
+let woman: FigureModel | null = null;
 function manModel(): FigureModel {
   man ??= figureModel(MAN);
   return man;
+}
+export function modelOf(kind: FigureKind): FigureModel {
+  if (kind === 'man') return manModel();
+  woman ??= womanModel(manModel());
+  return woman;
 }
 
 export type { FigureState, FigurePose as Pose } from '@super-vox/shared';
@@ -239,11 +310,20 @@ export class PlayerFigure {
   /** The whole body, leant and lifted as the pose says (inside root, which faces where they face). */
   private readonly body = new THREE.Group();
   /** Where the hips turn (m): the body leans about them. */
-  private readonly hip: THREE.Vector3;
+  private hip: THREE.Vector3;
+  /** Its pieces' meshes, by joint (their shapes swapped for another figure: see setLook). */
+  private readonly meshes = new Map<Joint, THREE.Mesh>();
+  /** The figure it is (the look's, unless it was given its model). */
+  private kind: FigureKind | null;
 
-  /** `look`: how they look, or a colour for their shirt (the rest as anyone's: see defaultAvatar). */
-  constructor(look: Avatar | THREE.ColorRepresentation, model: FigureModel = manModel()) {
+  /**
+   * `look`: how they look (their figure, a man or a woman, and colours), or a colour for their shirt
+   * (the rest as anyone's: see defaultAvatar). `model`: its pieces, whatever the look says.
+   */
+  constructor(look: Avatar | THREE.ColorRepresentation, model?: FigureModel) {
     this.look = isAvatar(look) ? look : { ...defaultAvatar(''), shirt: `#${new THREE.Color(look).getHexString()}` };
+    this.kind = model ? null : this.look.figure;
+    model ??= modelOf(this.look.figure);
     this.materials = Object.fromEntries(AVATAR_PARTS.map((p) => [p, new THREE.MeshBasicMaterial({ vertexColors: true })])) as Record<AvatarPart, THREE.MeshBasicMaterial>;
     this.setLook(this.look);
     this.tint(1);
@@ -257,16 +337,34 @@ export class PlayerFigure {
       const mesh = new THREE.Mesh(model.parts.get(name)!, this.materials[JOINT_PART[name]]);
       mesh.name = `${name} part`;
       joint.add(mesh);
+      this.meshes.set(name, mesh);
       this.joints.set(name, joint);
       (spec.parent ? this.joints.get(spec.parent)! : this.body).add(joint);
     }
     this.hip = model.pivots.get('hips')!.clone();
   }
 
-  /** Looks as `look` says (drawn so at the next tint). */
+  /** Looks as `look` says (its colours drawn so at the next tint; another figure, at once). */
   setLook(look: Avatar): void {
     this.look = look;
     for (const p of AVATAR_PARTS) this.colors[p] = new THREE.Color(look[p]);
+    if (this.kind === null || this.kind === look.figure || !this.meshes.size) return;
+    this.kind = look.figure;
+    const model = modelOf(look.figure);
+    for (const name of JOINTS) {
+      const parent: Joint | undefined = (SKELETON[name] as { parent?: Joint }).parent;
+      this.joints.get(name)!.position.copy(model.pivots.get(name)!).sub(parent ? model.pivots.get(parent)! : new THREE.Vector3());
+      this.meshes.get(name)!.geometry = model.parts.get(name)!;
+    }
+    this.hip = model.pivots.get('hips')!.clone();
+  }
+
+  /** How long its strides are next to the man's (its legs: see FigureMotion), and how tall it stands (m). */
+  get strideScale(): number {
+    return this.kind === 'woman' ? WOMAN_SCALE : 1;
+  }
+  get height(): number {
+    return FIGURE_HEIGHT * this.strideScale;
   }
 
   get currentLook(): Avatar {
@@ -305,7 +403,7 @@ export class PlayerFigure {
   }
 }
 
-const isAvatar = (v: unknown): v is Avatar => typeof v === 'object' && v !== null && !(v instanceof THREE.Color) && AVATAR_PARTS.every((p) => typeof (v as Record<string, unknown>)[p] === 'string');
+const isAvatar = (v: unknown): v is Avatar => typeof v === 'object' && v !== null && !(v instanceof THREE.Color) && AVATAR_PARTS.every((p) => typeof (v as Record<string, unknown>)[p] === 'string') && typeof (v as { figure?: unknown }).figure === 'string';
 
 /** A player's colour, from their name: their shirt's, as anyone's who hasn't chosen (see defaultAvatar). */
 export function playerColor(name: string): THREE.Color {

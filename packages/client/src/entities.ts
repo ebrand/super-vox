@@ -58,6 +58,8 @@ export class FigureMotion {
   stride = 0;
   /** When it started drawing a bow (ms), if it is. */
   drawFrom: number | null = null;
+  /** Its strides next to the man's (a woman's are shorter: see PlayerFigure.strideScale). */
+  strideScale = 1;
 
   constructor(now: number) {
     this.born = now;
@@ -77,7 +79,7 @@ export class FigureMotion {
       // (see strides: the feet don't slide).
       const set = animations().settings, st = strides();
       const run = Math.max(0, Math.min(1, (this.speed - set.runFrom) / Math.max(0.01, set.runTo - set.runFrom)));
-      this.stride += (d * 2 * Math.PI) / (st.walk + (st.run - st.walk) * run);
+      this.stride += (d * 2 * Math.PI) / ((st.walk + (st.run - st.walk) * run) * this.strideScale);
     }
     this.last = { ...at };
     this.lastAt = now;
@@ -159,14 +161,18 @@ export class EntityView {
       }
       // A player's hand: what's in it now; swung, if they've swung since. Their name and look, if changed.
       if (e.kind === 'player') {
-        if (t.figure && e.look !== t.to.look) t.figure.setLook(lookOf(e));
+        if (t.figure && e.look !== t.to.look) {
+          t.figure.setLook(lookOf(e));
+          t.motion!.strideScale = t.figure.strideScale;
+          if (t.tag) t.tag.position.y = t.figure.height + 0.3;
+        }
         if (e.name !== t.to.name) {
           if (t.tag) {
             t.group.remove(t.tag);
             t.tag.material.map?.dispose();
             t.tag.material.dispose();
           }
-          t.tag = e.name ? nameTag(e.name, FIGURE_HEIGHT + 0.3) : undefined;
+          t.tag = e.name ? nameTag(e.name, (t.figure?.height ?? FIGURE_HEIGHT) + 0.3) : undefined;
           if (t.tag) t.group.add(t.tag);
         }
         this.hold(t, e.held);
@@ -264,10 +270,12 @@ export class EntityView {
       const figure = new PlayerFigure(lookOf(e));
       figure.root.traverse((o) => (o.userData.shared = true));
       group.add(figure.root);
-      const tag = e.name ? nameTag(e.name, FIGURE_HEIGHT + 0.3) : undefined;
+      const tag = e.name ? nameTag(e.name, figure.height + 0.3) : undefined;
       if (tag) group.add(tag);
       this.scene.add(group);
-      return { kind: e.kind, group, body: figure.materials.shirt, face: figure.materials.shirt, figure, motion: new FigureMotion(performance.now()), ...(tag ? { tag } : {}) };
+      const motion = new FigureMotion(performance.now());
+      motion.strideScale = figure.strideScale;
+      return { kind: e.kind, group, body: figure.materials.shirt, face: figure.materials.shirt, figure, motion, ...(tag ? { tag } : {}) };
     }
     const body = new THREE.MeshBasicMaterial({ color: look.color });
     // The box (its length along -Z, the way it faces), standing on the ground.
