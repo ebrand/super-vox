@@ -8,7 +8,8 @@
       :root { color-scheme: dark; --bg: #0b0d10; --panel: #14181d; --line: #262c34; --text: #e6e6e6; --dim: #8b949e; --accent: #58a6ff; --bad: #ff7b72; --good: #7ee787; }
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.45 system-ui, sans-serif; }
-      body { display: grid; grid-template-rows: auto 1fr; }
+      /* (The header's fixed above, the body padded for it: the editor fills the rest.) */
+      body { display: grid; grid-template-rows: minmax(0, 1fr); }
       #status { margin-left: auto; font-size: 12px; }
       #status.bad { color: var(--bad); } #status.good { color: var(--good); }
       main { display: grid; grid-template-columns: 250px 1fr 230px; min-height: 0; }
