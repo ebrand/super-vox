@@ -146,6 +146,77 @@ describe('shapes', () => {
   });
 });
 
+describe('adding corners', () => {
+  /** A piece's triangles, by corner, and its edges used by one triangle only (open: a gap, or its edge). */
+  const shape = (e: FigureEdit, p: 'chest' | 'head' | 'elbowL' | 'elbowR') => {
+    const cs = e.corners(p), at = new Map<number, number>();
+    cs.forEach((c, i) => c.copies.forEach((n) => at.set(n, i)));
+    const n = p === 'chest' || p === 'head' ? e.mesh.parts[p] : e.mesh.parts[p];
+    const tris: number[][] = [];
+    for (let t = 0; t < n.length; t += 9) tris.push([at.get(t)!, at.get(t + 3)!, at.get(t + 6)!]);
+    const count = new Map<string, number>();
+    for (const t of tris) for (let i = 0; i < 3; i++) {
+      const [a, b] = [t[i]!, t[(i + 1) % 3]!], k = a < b ? `${a},${b}` : `${b},${a}`;
+      count.set(k, (count.get(k) ?? 0) + 1);
+    }
+    return { corners: cs.length, triangles: tris.length, open: [...count.values()].filter((v) => v === 1).length, tris };
+  };
+
+  it('splits an edge halfway (both triangles on it), the other side too; not two corners with no edge between', () => {
+    const e = man(), before = shape(e, 'elbowL'), theirs = shape(e, 'elbowR');
+    const [a, b] = before.tris[0]!;
+    const mid = e.corners('elbowL')[a!]!.at.clone().add(e.corners('elbowL')[b!]!.at).multiplyScalar(0.5);
+    const made = e.splitEdge('elbowL', a!, b!, true);
+    expect(e.corners('elbowL')[made]!.at.distanceTo(mid)).toBeLessThan(1e-6);
+    const after = shape(e, 'elbowL');
+    expect(after.corners).toBe(before.corners + 1);
+    expect(after.open).toBe(before.open);
+    // (Every triangle on that edge split in two: one or two of them.)
+    expect(after.triangles - before.triangles).toBeGreaterThanOrEqual(1);
+    expect(shape(e, 'elbowR').corners).toBe(theirs.corners + 1);
+    expect(shape(e, 'elbowR').open).toBe(theirs.open);
+    // Two corners with no edge between: nothing.
+    const e2 = man(), pair = (() => {
+      const st = shape(e2, 'chest');
+      for (let x = 0; x < st.corners; x++) for (let y = x + 1; y < st.corners; y++) if (!st.tris.some((t) => t.includes(x) && t.includes(y))) return [x, y];
+      return [0, 0];
+    })();
+    expect(e2.splitEdge('chest', pair[0]!, pair[1]!, true)).toBe(-1);
+    expect(e2.canUndo).toBe(false);
+  });
+
+  it('adds a corner in a face where it was clicked (three triangles), its twin as far across the other side', () => {
+    const e = man(), before = shape(e, 'head');
+    // A triangle off the middle (its twin another triangle).
+    const cs = e.corners('head'), tri = before.tris.findIndex((t) => t.every((c) => cs[c]!.at.x > 0.01));
+    expect(tri).toBeGreaterThanOrEqual(0);
+    const t = before.tris[tri]!, at = cs[t[0]!]!.at.clone().multiplyScalar(0.5).add(cs[t[1]!]!.at.clone().multiplyScalar(0.3)).add(cs[t[2]!]!.at.clone().multiplyScalar(0.2));
+    const made = e.addPoint('head', tri, at, true);
+    expect(e.corners('head')[made]!.at.distanceTo(at)).toBeLessThan(1e-6);
+    const after = shape(e, 'head');
+    expect(after.corners).toBe(before.corners + 2);
+    expect(after.triangles).toBe(before.triangles + 4);
+    expect(after.open).toBe(before.open);
+    // Its twin: mirrored about the head's middle, near enough (the head's alike both sides).
+    const mid = cs.reduce((v, c) => v + c.at.x, 0) / cs.length;
+    expect(e.corners('head').some((c) => Math.abs(c.at.x - (2 * mid - at.x)) < 1e-4 && Math.abs(c.at.y - at.y) < 1e-4 && Math.abs(c.at.z - at.z) < 1e-4)).toBe(true);
+    expect(e.undo()).toBe(true);
+    expect(shape(e, 'head')).toMatchObject({ corners: before.corners, triangles: before.triangles });
+  });
+
+  it('subdivides picked triangles in four (their neighbours split along the edges they share: no gap)', () => {
+    const e = man(), before = shape(e, 'chest');
+    const t = before.tris[3]!;
+    expect(e.subdivide('chest', t, false)).toBe(1);
+    const after = shape(e, 'chest');
+    expect(after.corners).toBe(before.corners + 3);
+    expect(after.open).toBe(before.open);
+    expect(after.triangles).toBeGreaterThanOrEqual(before.triangles + 3);
+    // Nothing picked whole: nothing done.
+    expect(e.subdivide('chest', [t[0]!], false)).toBe(0);
+  });
+});
+
 describe('the mesh library', () => {
   it('takes whole figures only, of sensible numbers', () => {
     const mesh = toMesh(madeModel('man'));

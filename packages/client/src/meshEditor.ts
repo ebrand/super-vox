@@ -6,7 +6,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { CLIP_IDS, poseClip, type AnimationLibrary, type Avatar, type ClipId, type FigureKind, type FigureMesh, type MeshLibrary } from '@super-vox/shared';
 import { FigureEdit, PIECES, mirrorOf, type Piece } from './meshEdit.js';
-import { PlayerFigure, fromMesh, madeModel, modelOf, poseFor, setAnimations, setMeshes, toMesh, type FigureState } from './playerFigure.js';
+import { PlayerFigure, fromMesh, madeModel, modelOf, setAnimations, setMeshes, toMesh } from './playerFigure.js';
 
 /**
  * The mesh editor (admins): the player figures (the man, the woman, their hair) as everyone sees
@@ -185,6 +185,18 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   const r = renderer.domElement.getBoundingClientRect();
   const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
   ray.setFromCamera(ndc, camera);
+  if (mode === 'corners' && adding) {
+    // Adding a point: where the piece was clicked.
+    const mesh = piece === 'hair' ? figure.joints.get('head')!.children.find((o) => o.name === 'hair') : figure.joints.get(piece)!.children.find((o) => o.name.endsWith(' part'));
+    const hit = mesh ? ray.intersectObject(mesh, false)[0] : undefined;
+    if (!hit || hit.faceIndex === undefined || hit.faceIndex === null) return status(`click a face of ${piece} to add a point there`, 'bad');
+    const made = edit.addPoint(piece, hit.faceIndex, mesh!.worldToLocal(hit.point.clone()), $<HTMLInputElement>('mirror').checked);
+    adding = false;
+    selected.clear();
+    if (made >= 0) selected.add(made);
+    redraw();
+    return;
+  }
   if (mode === 'corners' && points) {
     // The nearest corner on screen within a few pixels.
     const cs = edit.corners(piece), at = pivotOf(piece);
@@ -217,13 +229,13 @@ function pick(p: Piece): void {
 // --- Seeing it move: the animation designer's clips.
 let playing = false;
 let playFrom = 0;
-const standing: FigureState = { time: 0, stride: 0, speed: 0, airborne: false, swimming: false, flying: false, mining: false, swing: null, draw: null, pitch: 0 };
 let animations: AnimationLibrary | null = null;
 function posePreview(now: number): void {
   if (!figure) return;
   const clip = $<HTMLSelectElement>('clip').value as ClipId | '';
   if (!clip || !animations || !playing) {
-    figure.pose(poseFor(standing));
+    // (Editing: every joint straight, as the corners are kept.)
+    figure.pose({ joints: {}, lean: 0, lift: 0 });
     return;
   }
   const c = animations.clips[clip], seconds = c.driver === 'time' ? (c.length ?? 1) : c.driver === 'stride' ? 1.1 : 1.2;
@@ -287,6 +299,31 @@ $('delete').onclick = () => {
   redraw();
   status(gone ? `took away ${gone} triangle${gone === 1 ? '' : 's'}` : 'nothing taken away: pick all of a shape (S), or all three corners of a triangle', gone ? '' : 'bad');
 };
+/** Adding a point: the next click on the piece puts one there. */
+let adding = false;
+$('split-edge').onclick = () => {
+  const [a, b] = [...selected];
+  if (selected.size !== 2 || a === undefined || b === undefined) return status('pick two corners with an edge between them', 'bad');
+  const made = edit.splitEdge(piece, a, b, $<HTMLInputElement>('mirror').checked);
+  if (made < 0) return status("those two have no edge between them: pick two of a triangle's corners", 'bad');
+  selected.clear();
+  selected.add(made);
+  redraw();
+};
+$('add-point').onclick = () => {
+  adding = !adding;
+  refresh();
+  if (adding) status(`click a face of ${piece}: a corner there`);
+};
+$('subdivide').onclick = () => {
+  const n = edit.subdivide(piece, [...selected], $<HTMLInputElement>('mirror').checked);
+  if (!n) return status("pick all three corners of a triangle (or a whole shape: S) to subdivide it", 'bad');
+  // (Picked: what was, and what's new among it.)
+  const cs = edit.corners(piece);
+  selected.clear();
+  redraw();
+  status(`${n} triangle${n === 1 ? '' : 's'} in four (${cs.length} corners now)`);
+};
 $('undo').onclick = () => edit.undo() && redraw();
 $('redo').onclick = () => edit.redo() && redraw();
 
@@ -296,6 +333,11 @@ function refresh(): void {
   for (const b of document.querySelectorAll<HTMLButtonElement>('#tools button')) b.classList.toggle('on', b.dataset.tool === tool);
   $('tools').hidden = mode !== 'piece';
   $('corner-tools').hidden = mode !== 'corners';
+  $('add-tools').hidden = mode !== 'corners';
+  $('add-point').classList.toggle('on', adding);
+  $<HTMLButtonElement>('split-edge').disabled = !canEdit || selected.size !== 2;
+  $<HTMLButtonElement>('add-point').disabled = !canEdit;
+  $<HTMLButtonElement>('subdivide').disabled = !canEdit || selected.size < 3;
   const other = mirrorOf(piece);
   $('piece-about').textContent =
     mode === 'piece'
@@ -361,6 +403,9 @@ window.addEventListener('keydown', (e) => {
     redraw();
   } else if (e.code === 'KeyA' && mode === 'corners') $('select-all').click();
   else if (e.code === 'KeyS' && mode === 'corners') $('select-shape').click();
+  else if (e.code === 'KeyX' && mode === 'corners') $('split-edge').click();
+  else if (e.code === 'KeyF' && mode === 'corners') $('add-point').click();
+  else if (e.code === 'KeyD' && mode === 'corners') $('subdivide').click();
   else if ((e.code === 'Delete' || e.code === 'Backspace') && mode === 'corners') {
     e.preventDefault();
     $('delete').click();

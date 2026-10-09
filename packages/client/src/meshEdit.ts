@@ -249,6 +249,136 @@ export class FigureEdit {
     return gone;
   }
 
+  // --- Adding corners: splitting an edge, a face, or many (see split).
+
+  /** Corner `i` of piece `p`'s twin across (its piece's), or null (see mirrorPairs). */
+  private twin(p: Piece, i: number): number | null {
+    return this.mirrorPairs(p).get(i)?.corner ?? null;
+  }
+
+  /** The corner of piece `p` at `at` (m, from its joint), if there's one (as near as the same: see corners). */
+  cornerAt(p: Piece, at: THREE.Vector3): number {
+    return this.corners(p).findIndex((c) => c.at.distanceTo(at) < 1e-4);
+  }
+
+  /**
+   * Rebuilds piece `p`, each of its triangles as `f` makes it (from its corners, by index, and
+   * where they are; it adds corners with `add`, giving their index): its triangles, each three
+   * corner indices, in order (the way round kept).
+   */
+  private rebuild(p: Piece, f: (tri: [number, number, number], add: (at: THREE.Vector3) => number, at: THREE.Vector3[]) => [number, number, number][]): void {
+    const at = this.corners(p).map((c) => c.at.clone()), tris = this.triangleCorners(p) as [number, number, number][];
+    const keyed = new Map<string, number>();
+    const add = (v: THREE.Vector3) => {
+      const key = v.toArray().map((x) => Math.round(x * 1e6)).join(',');
+      let i = keyed.get(key);
+      if (i === undefined) keyed.set(key, (i = at.push(v.clone()) - 1));
+      return i;
+    };
+    const out: number[] = [];
+    for (const t of tris) for (const n of f(t, add, at)) for (const c of n) out.push(at[c]!.x, at[c]!.y, at[c]!.z);
+    if (p === 'hair') this.mesh.hair = out;
+    else this.mesh.parts[p] = out;
+  }
+
+  /** Halfway between two corners (the same whichever's first: the same new corner either side of the edge). */
+  private static half(at: THREE.Vector3[], a: number, b: number): THREE.Vector3 {
+    const [x, y] = a < b ? [at[a]!, at[b]!] : [at[b]!, at[a]!];
+    return x.clone().add(y).multiplyScalar(0.5);
+  }
+
+  /**
+   * Splits piece `p`'s triangles, each along those of its edges in `edges` (corner pairs): one: in
+   * two; two: in three; all three: in four (a corner halfway along each). Every triangle on such
+   * an edge is split there, so no gap opens.
+   */
+  private splitEdges(p: Piece, edges: [number, number][]): void {
+    const key = (a: number, b: number) => (a < b ? `${a},${b}` : `${b},${a}`), on = new Set(edges.map(([a, b]) => key(a, b)));
+    this.rebuild(p, (t, add, at) => {
+      // Which of its edges (t[i] to t[i + 1]) are split, and their halfway corners.
+      const mid = [0, 1, 2].map((i) => (on.has(key(t[i]!, t[(i + 1) % 3]!)) ? add(FigureEdit.half(at, t[i]!, t[(i + 1) % 3]!)) : -1));
+      const k = mid.filter((m) => m >= 0).length;
+      if (k === 0) return [t];
+      if (k === 3) {
+        const [ab, bc, ca] = mid as [number, number, number], [A, B, C] = t;
+        return [[A, ab, ca], [ab, B, bc], [ca, bc, C], [ab, bc, ca]];
+      }
+      // Turned so the first split edge starts the triangle (A to B; then B to C, if two).
+      const r = k === 1 ? mid.findIndex((m) => m >= 0) : mid.findIndex((m, i) => m >= 0 && mid[(i + 1) % 3]! >= 0);
+      const A = t[r]!, B = t[(r + 1) % 3]!, C = t[(r + 2) % 3]!, ab = mid[r]!, bc = mid[(r + 1) % 3]!;
+      if (k === 1) return [[A, ab, C], [ab, B, C]];
+      return [[ab, B, bc], [A, ab, bc], [A, bc, C]];
+    });
+  }
+
+  /**
+   * Splits the edge between corners `a` and `b` of piece `p` (they must share a triangle) with a
+   * corner halfway; `mirror`: the other side's too. The new corner (its index), or -1 if they don't.
+   */
+  splitEdge(p: Piece, a: number, b: number, mirror: boolean): number {
+    const tris = this.triangleCorners(p);
+    if (a === b || !tris.some((t) => t.includes(a) && t.includes(b))) return -1;
+    const mid = FigureEdit.half(this.corners(p).map((c) => c.at), a, b);
+    const ta = mirror ? this.twin(p, a) : null, tb = mirror ? this.twin(p, b) : null, other = mirrorOf(p);
+    this.change(() => {
+      if (ta !== null && tb !== null && other !== p) this.splitEdges(other, [[ta, tb]]);
+      this.splitEdges(p, other === p && ta !== null && tb !== null && !(new Set([ta, tb]).has(a) && new Set([ta, tb]).has(b)) ? [[a, b], [ta, tb]] : [[a, b]]);
+    });
+    return this.cornerAt(p, mid);
+  }
+
+  /**
+   * Adds a corner to triangle `tri` of piece `p` (its index among them) at `at` (m, from its joint;
+   * on it), in three triangles; `mirror`: the other side's twin triangle too, as far across it
+   * (each corner's weight on its twin). The new corner (its index), or -1 if there's no such triangle.
+   */
+  addPoint(p: Piece, tri: number, at: THREE.Vector3, mirror: boolean): number {
+    const t = this.triangleCorners(p)[tri];
+    if (!t) return -1;
+    const cs = this.corners(p).map((c) => c.at);
+    // Where on it (how much of each corner), for its twin's to be as far across.
+    const w = new THREE.Vector3();
+    new THREE.Triangle(cs[t[0]!]!, cs[t[1]!]!, cs[t[2]!]!).getBarycoord(at, w);
+    const weights = [w.x, w.y, w.z];
+    const other = mirrorOf(p), twins = mirror ? t.map((c) => this.twin(p, c)) : null;
+    const same = (a: number[], b: number[]) => a.every((c) => b.includes(c)) && b.every((c) => a.includes(c));
+    /** Splits, in `piece`, each triangle with these corners (each corner its weight) at the point they make. */
+    const splitAt = (piece: Piece, points: number[][]) =>
+      this.rebuild(piece, (u, add, pos) => {
+        const corners = points.find((c) => same(c, u));
+        if (!corners) return [u];
+        const m = add(corners.reduce((v, c, k) => v.add(pos[c]!.clone().multiplyScalar(weights[k]!)), new THREE.Vector3()));
+        return [[u[0], u[1], m], [u[1], u[2], m], [u[2], u[0], m]];
+      });
+    const made = cs[t[0]!]!.clone().multiplyScalar(w.x).add(cs[t[1]!]!.clone().multiplyScalar(w.y)).add(cs[t[2]!]!.clone().multiplyScalar(w.z));
+    const twin = twins && twins.every((c) => c !== null) ? (twins as number[]) : null;
+    this.change(() => {
+      // (A middle piece: both in one go, its corners numbered as they are; another: each its own.)
+      if (twin && other !== p) splitAt(other, [twin]);
+      splitAt(p, twin && other === p && !same(twin, t) ? [t, twin] : [t]);
+    });
+    return this.cornerAt(p, made);
+  }
+
+  /**
+   * Splits each of piece `p`'s triangles whose corners are all among `which` in four (a corner
+   * halfway along each edge; those beside them split along the edges they share, so no gap
+   * opens); `mirror`: the other side's likewise. How many were split.
+   */
+  subdivide(p: Piece, which: number[], mirror: boolean): number {
+    const tris = this.triangleCorners(p), picked = new Set(which);
+    const chosen = tris.filter((t) => t.every((c) => picked.has(c)));
+    if (!chosen.length) return 0;
+    const edges = (ts: number[][]) => ts.flatMap((t) => [0, 1, 2].map((i) => [t[i]!, t[(i + 1) % 3]!] as [number, number]));
+    const other = mirrorOf(p);
+    const twinTris = mirror ? chosen.map((t) => t.map((c) => this.twin(p, c))).filter((t): t is number[] => t.every((c) => c !== null)) : [];
+    this.change(() => {
+      if (twinTris.length && other !== p) this.splitEdges(other, edges(twinTris));
+      this.splitEdges(p, edges(other === p ? [...chosen, ...twinTris] : chosen));
+    });
+    return chosen.length;
+  }
+
   /**
    * Moves, turns or scales piece `p` (its corners, about its joint) by `m`, the joints below it
    * following (their pieces with them): where each that hangs right on it goes as `m` takes it,
