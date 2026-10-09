@@ -33,6 +33,7 @@ export * from './select.js';
 export * from './animations.js';
 export * from './avatar.js';
 export * from './meshes.js';
+export * from './chat.js';
 export * from './objects.js';
 export * from './physics.js';
 export * from './flocking.js';

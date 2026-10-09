@@ -63,6 +63,11 @@ export class PlayerInventory {
   }
 
   /** How many of an item there are (Infinity in creative). */
+  /** Whether they have `item` with them: in survival, any of it; in creative (everything's to hand), on the hotbar. */
+  carries(item: ItemId): boolean {
+    return this.mode === 'creative' ? this.inv.hotbar.includes(item) : (this.inv.items.get(item) ?? 0) > 0;
+  }
+
   count(item: ItemId): number {
     return this.mode === 'creative' ? Infinity : (this.inv.items.get(item) ?? 0);
   }

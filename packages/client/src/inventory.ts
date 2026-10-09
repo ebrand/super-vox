@@ -75,6 +75,7 @@ const ITEM_LOOK: Record<number, { color: readonly [number, number, number]; glyp
   [Item.GeologistsHammer]: { color: [0.62, 0.5, 0.36], glyph: 'T' },
   [Item.CopperCoin]: { color: [0.72, 0.42, 0.22], glyph: '●' },
   [Item.GoldCoin]: { color: [0.9, 0.74, 0.25], glyph: '●' },
+  [Item.Radio]: { color: [0.32, 0.3, 0.28], glyph: 'R' },
 };
 
 /** How an item looks in slots: built-in ones as ITEM_LOOK has them; designed objects, the colour of what they're mostly made of, and their initial. */
@@ -175,6 +176,11 @@ export class InventoryUi {
     this.panel.append(this.tabs, this.windowBar, this.note, this.body, hint);
     parent.append(this.bar, this.panel);
     this.render();
+  }
+
+  /** Whether we've `item` with us (any in the inventory, or on the hotbar: creative keeps only that), as the server counts it. */
+  carries(item: ItemId): boolean {
+    return (this.items.get(item) ?? 0) > 0 || this.hotbar.includes(item);
   }
 
   get isOpen(): boolean {

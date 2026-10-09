@@ -28,6 +28,8 @@ interface Player {
   adminByEmail: boolean;
   /** The name they've chosen to go by (on their account page), if any. */
   displayName: string | null;
+  /** Muted: they play, but can't chat. */
+  muted: boolean;
 }
 interface Invite {
   email: string;
@@ -147,6 +149,7 @@ async function load(): Promise<void> {
     if (p.displayName && p.displayName !== p.name) name.append(el('span', p.name, 'badge'));
     if (p.online) name.append(el('span', 'online', 'badge on'));
     if (p.banned) name.append(el('span', 'banned', 'badge bad'));
+    if (p.muted) name.append(el('span', 'muted', 'badge bad'));
     if (p.id === me) name.append(el('span', 'you', 'badge'));
     const role = roleSelect(p.role, p.id === me);
     const cell = el('span');
@@ -162,7 +165,14 @@ async function load(): Promise<void> {
       if (!p.banned && !confirmBan(ban, p.name)) return;
       void act(() => api('PATCH', `/api/players/${p.id}`, { banned: !p.banned }), p.banned ? `${p.name} is unbanned` : `${p.name} is banned (signed out)`);
     };
-    const tr = row([name, el('span', p.email, 'dim'), cell, when(p.lastSignedIn), when(p.createdAt), spawnCell(p.email, p.displayName ?? p.name, data.spawns), ban]);
+    const mute = el('button', p.muted ? 'Unmute' : 'Mute');
+    mute.title = p.muted ? 'Let them chat again' : "They play, but can't chat (at once, if they're playing)";
+    mute.onclick = () => void act(() => api('PATCH', `/api/players/${p.id}`, { muted: !p.muted }), p.muted ? `${p.displayName ?? p.name} can chat again` : `${p.displayName ?? p.name} is muted`);
+    const actions = el('span');
+    actions.style.display = 'inline-flex';
+    actions.style.gap = '4px';
+    actions.append(mute, ban);
+    const tr = row([name, el('span', p.email, 'dim'), cell, when(p.lastSignedIn), when(p.createdAt), spawnCell(p.email, p.displayName ?? p.name, data.spawns), actions]);
     if (p.banned) tr.className = 'banned';
     players.append(tr);
   }

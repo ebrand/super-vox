@@ -126,6 +126,13 @@ const ITEM_ICONS: Readonly<Partial<Record<ItemId, string>>> = {
   [Item.GoldCoin]: coin(GOLD),
   [Item.CraftingTable]: craftingTable(),
   [Item.Bow]: svg(BOW + ARROW_ON_BOW),
+  // A radio: a dark case, a copper speaker grille, a dial, and its aerial up from a corner.
+  [Item.Radio]: svg(
+    `<line x1="23" y1="11" x2="27" y2="2" stroke="${css(IRON, 1.1)}" stroke-width="1.6" stroke-linecap="round"/><circle cx="27" cy="2.5" r="1.3" fill="${css(IRON, 1.3)}"/>` +
+      `<rect x="4" y="11" width="24" height="16" rx="2.5" fill="rgb(70 66 62)"${OUTLINE}/>` +
+      `<rect x="7" y="14" width="10" height="10" rx="1" fill="${css(COPPER, 0.8)}"/><path d="M8 16 H16 M8 18.5 H16 M8 21 H16" stroke="${css(COPPER, 1.35)}" stroke-width="1"/>` +
+      `<circle cx="22.5" cy="19" r="3.2" fill="${css(IRON, 1.15)}"${OUTLINE}/><line x1="22.5" y1="19" x2="24.3" y2="17" stroke="rgb(40 38 36)" stroke-width="1"/>`,
+  ),
   [Item.Boat]: svg(
     `<path d="M3 15 L29 15 L25 23 Q16 26 7 23 Z" fill="${css(WOOD, 1.2)}"${OUTLINE}/><path d="M5 18 L27 18" stroke="${css(DARK_WOOD, 1.2)}" stroke-width="1"/>` +
       `<path d="M2 25 Q6 23 10 25 T18 25 T26 25 T30 25" stroke="${css(WATER, 1.4)}" stroke-width="1.6" fill="none"/><line x1="20" y1="6" x2="13" y2="20" stroke="${css(DARK_WOOD, 1.3)}" stroke-width="1.6" stroke-linecap="round"/>`,

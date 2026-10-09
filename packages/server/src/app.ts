@@ -43,6 +43,13 @@ import {
   WALK_SPEED,
   type DeathCause,
   UNITS_PER_METER,
+  CHAT_HELP,
+  NEAR_METRES,
+  RATE_COUNT,
+  RATE_MS,
+  cleanChat,
+  readChat,
+  type ChatLine,
   avatarText,
   cleanDisplayName,
   defaultAvatar,
@@ -112,6 +119,7 @@ import { RequestQueue } from './requestQueue.js';
 import { DesignLibrary } from './designs.js';
 import { AnimationStore } from './animationStore.js';
 import { MeshStore } from './meshStore.js';
+import { ChatStore } from './chatStore.js';
 import { HISTORY, Metrics, percentile } from './metrics.js';
 import { MAX_PICTURE_BYTES, NoSuchWorldError, PICTURE_TYPES, WorldExistsError } from './worldFile.js';
 import { DefaultWorldError, StaleStrokesError, StrokesOverBuildsError, singleWorld, type WorldCatalog } from './worlds.js';
@@ -148,6 +156,8 @@ export type AppOptions = (
   animations?: AnimationStore;
   /** Players' figures as edited (see MeshStore); none: as made, in memory. */
   meshes?: MeshStore;
+  /** What's been said by radio in each world (see ChatStore); none: kept in memory. */
+  chat?: ChatStore;
   /** Which deployment this is (APP_ENV: production, staging, development), told by /api/health; default development. */
   environment?: string;
 };
@@ -193,6 +203,10 @@ interface Player {
   /** Their email, signed in (whose spawn point is theirs), and how they look (see avatarText). */
   email: string | null;
   look: string | null;
+  /** Chat (see chat.ts): muted by an admin; when they last said things (ms, the last RATE_COUNT); whether they've a radio with them. */
+  muted: boolean;
+  chatAt: number[];
+  radio: () => boolean;
   /** Poses reported before this (ms) aren't kept as where they are (they've just been sent somewhere: see PLACE_SETTLE_MS). */
   settleUntil: number;
   /** Signed in: keeps their vitals and bed (see PlayerState), once they've been loaded. */
@@ -462,8 +476,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   app.patch<{ Params: { id: string }; Body: unknown }>('/api/players/:id', async (req, reply) => {
     if (!opts.auth || !(await admin(req))) return reply.code(403).send(notAdmin);
     const me = (await opts.auth.signedIn(req.cookies))!;
-    const b = (req.body ?? {}) as { role?: unknown; banned?: unknown };
+    const b = (req.body ?? {}) as { role?: unknown; banned?: unknown; muted?: unknown };
     if (b.role !== undefined && !isRole(b.role)) return reply.code(400).send({ error: 'no such role' });
+    if (b.muted !== undefined && typeof b.muted !== 'boolean') return reply.code(400).send({ error: 'muted is true or false' });
     if (b.banned !== undefined && typeof b.banned !== 'boolean') return reply.code(400).send({ error: 'banned is true or false' });
     let account = await opts.auth.accounts.get(req.params.id);
     if (!account) return reply.code(404).send({ error: 'no such player' });
@@ -476,6 +491,16 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (b.banned !== undefined && b.banned !== account.banned) {
       account = (await opts.auth.accounts.setBanned(account.id, b.banned))!;
       if (account.banned) letGo(account.id, 'banned', "you've been banned from this server");
+    }
+    if (b.muted !== undefined && b.muted !== account.muted) {
+      account = (await opts.auth.accounts.setMuted(account.id, b.muted))!;
+      // (At once, for them playing now: and told.)
+      for (const s of connections.get(account.id) ?? []) {
+        const p = players.get(s);
+        if (!p) continue;
+        p.muted = account.muted;
+        if (s.readyState === s.OPEN) out(s, encodeMessage({ type: 'chat', lines: [{ at: Date.now(), kind: 'info', text: account.muted ? "an admin has muted you: you can't chat" : 'an admin has let you chat again' }] }));
+      }
     }
     return { player: account };
   });
@@ -1124,6 +1149,22 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const bytes = encodeMessage(msg);
     for (const [client, w] of clients) if (w === world && client.readyState === client.OPEN) out(client, bytes);
   };
+  // Chat (see chat.ts): what's said by radio kept a while for each world; heard by radio, or near.
+  const chat = opts.chat ?? new ChatStore(null);
+  const NEAR = NEAR_METRES * UNITS_PER_METER;
+  /** Whether two players in `world` are within earshot (NEAR_METRES), as they last said they were. */
+  const near = (world: World, a: Player, b: Player) =>
+    !!a.pose && !!b.pose && Math.hypot(deltaX(world.config, a.pose.x, b.pose.x), a.pose.y - b.pose.y, a.pose.z - b.pose.z) <= NEAR;
+  /** Chat lines, to those in `world` who hear them (`who`). */
+  const hear = (world: World, lines: ChatLine[], who: (q: Player) => boolean) => {
+    const bytes = encodeMessage({ type: 'chat', lines });
+    for (const [s, w] of clients) {
+      const q = players.get(s);
+      if (w === world && q && s.readyState === s.OPEN && who(q)) out(s, bytes);
+    }
+  };
+  /** Those playing in `world` now. */
+  const playersIn = (world: World) => [...clients].filter(([, w]) => w === world).map(([s]) => players.get(s)).filter((q): q is Player => !!q);
   // (Each tick 50 ms after the last one's done, not on a fixed beat: after a long one, a pause before
   // the next, for what it sent to go out. An announced blast's news would otherwise wait for its carving.)
   let blasting: ReturnType<typeof setTimeout>;
@@ -1315,6 +1356,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       const gone = players.get(socket);
       if (gone && greeted) world.riderGone(gone.id);
       players.delete(socket);
+      // (Gone, as radios hear it.)
+      if (gone && greeted && gone.name) hear(world, [{ at: Date.now(), kind: 'leave', from: gone.name, text: `${gone.name} left` }], (q) => q.radio());
     });
 
     // (Each message timed: one that holds up the server more than SLOW_MESSAGE_MS is logged, with its
@@ -1378,6 +1421,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               name: who ? shownName(who.account) : null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
               vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0, lastShot: 0, held: null, swings: 0, pitch: 0, act: 0, builds: [], bed: null, settleUntil: Infinity, saveState: null,
               home: home ? world.spawnAt(home.x * UNITS_PER_METER, home.z * UNITS_PER_METER) : null, email: who?.account.email ?? null, look: who ? lookOf(who.account) : null,
+              muted: who?.account.muted ?? false, chatAt: [], radio: () => !!inventory?.carries(Item.Radio),
               give: (item, amount) => {
                 if (!inventory) return false;
                 inventory.addItem(item, amount);
@@ -1385,6 +1429,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
                 return true;
               },
             });
+            // (Come, as radios here hear it.)
+            {
+              const me = players.get(socket)!;
+              if (me.name) hear(world, [{ at: Date.now(), kind: 'join', from: me.name, text: `${me.name} joined` }], (q) => q !== me && q.radio());
+            }
             // Designs (named: some may be in their inventory) before the inventory, and where they're placed.
             const sendWelcome = (welcome: ServerMessage) => {
               send(welcome);
@@ -1448,6 +1497,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
                   }),
                 );
                 send(inventory.message());
+                // (With a radio: what's been said by radio here lately.)
+                if (inventory.carries(Item.Radio)) send({ type: 'chat', lines: chat.history(worldName), history: true });
                 if (p && play.mode === 'survival') {
                   p.vulnerable = true;
                   sendVitals(socket, p, true);
@@ -1918,6 +1969,52 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           const why = inventory.discard(msg.item, msg.amount);
           if (why) send({ type: 'error', code: 'craft', message: why });
           else send(inventory.message());
+          break;
+        }
+
+        case 'chat': {
+          const p = players.get(socket);
+          if (!greeted || !p) break;
+          const info = (text: string) => send({ type: 'chat', lines: [{ at: Date.now(), kind: 'info', text }] });
+          if (opts.auth && !who) {
+            info('sign in on the front page to chat');
+            break;
+          }
+          if (p.muted) {
+            info("you've been muted by an admin: you can't chat");
+            break;
+          }
+          const text = cleanChat(msg.text);
+          if (!text) break;
+          const now = Date.now();
+          p.chatAt = p.chatAt.filter((t) => now - t < RATE_MS);
+          if (p.chatAt.length >= RATE_COUNT) {
+            info('slow down: a few lines every few seconds');
+            break;
+          }
+          p.chatAt.push(now);
+          const from = p.name ?? 'guest', radio = p.radio();
+          const here = playersIn(world);
+          const said = readChat(text, here.map((q) => q.name).filter((n): n is string => !!n));
+          if (said.kind === 'help') info(CHAT_HELP);
+          else if (said.kind === 'bad') info(said.why);
+          else if (said.kind === 'say') {
+            // By radio: every radio here, and those near; aloud: those near only.
+            const line: ChatLine = { at: now, kind: 'say', radio, from, text: said.text };
+            if (radio) chat.add(clientWorld.get(socket) ?? catalog.defaultName, line);
+            hear(world, [line], (q) => q === p || near(world, p, q) || (radio && q.radio()));
+            if (!radio && !here.some((q) => q !== p && near(world, p, q)))
+              info(`no one's near enough to hear you (${NEAR_METRES} m), and you've no radio: make one (2 iron ingots, 2 copper coins, 2 planks) to talk to everyone`);
+          } else {
+            // To one player: by radio, both of them.
+            const them = here.filter((q) => q.name?.toLowerCase() === said.to.toLowerCase());
+            if (!radio) info("you need a radio to reach someone who isn't near (/msg is by radio)");
+            else if (!them.some((q) => q.radio())) info(`${said.to} has no radio with them: they can't hear you`);
+            else {
+              const line: ChatLine = { at: now, kind: 'private', radio: true, from, to: said.to, text: said.text };
+              hear(world, [line], (q) => q === p || (them.includes(q) && q.radio()));
+            }
+          }
           break;
         }
 

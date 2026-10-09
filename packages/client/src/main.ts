@@ -2,6 +2,7 @@ import './envBadge.js';
 import * as THREE from 'three';
 import { BLOCK_SIZE, CHUNK_SIZE, avatarFromText, defaultAvatar, type Avatar, blockIndex, blockVoxelContaining, isWater, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, weatherTime, lightAt, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
 import { LeaveAsk } from './leaveAsk.js';
+import { ChatBox } from './chatBox.js';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool, sizeLabel } from './editTool.js';
@@ -279,6 +280,19 @@ const leaveAsk = new LeaveAsk({
 });
 /** The game freeing the mouse (E, M, L, a furnace): no asking. */
 const freeMouse = () => leaveAsk.free();
+// Chat (see ChatBox): what's said, bottom left; sent over the connection (by radio, or aloud: the server says who hears).
+const chatBox = new ChatBox(
+  (text) => connection?.send({ type: 'chat', text }),
+  () => inventoryUi.carries(Item.Radio),
+  // (Sent with Enter, a key press: straight back to playing. Esc: click to come back.)
+  (sent) => {
+    if (sent) {
+      goFullscreen();
+      controls.requestPointerLock();
+    }
+  },
+);
+document.body.append(chatBox.root);
 document.addEventListener('pointerlockchange', () => leaveAsk.lockChanged(!!document.pointerLockElement));
 document.addEventListener('fullscreenchange', () => leaveAsk.fullscreenChanged(!!document.fullscreenElement));
 function leaveWorld(): void {
@@ -798,6 +812,13 @@ connection = connect({
               return;
             }
             if (worldMap?.isOpen) return;
+            // Chat: T or Enter to talk, / for a command (the mouse let go to type; back when it's sent).
+            if (!chatBox.isOpen && !inventoryUi.isOpen && !leaveDialog.open && (e.code === 'KeyT' || e.code === 'Enter' || e.code === 'Slash')) {
+              e.preventDefault();
+              if (controls.pointerLocked) freeMouse();
+              chatBox.openToType(e.code === 'Slash' ? '/' : '');
+              return;
+            }
             // Inventory: E opens and closes it (freeing the mouse to click), Esc closes it; 1-9 and 0 pick a hotbar slot.
             if (e.code === 'KeyE' || (e.code === 'Escape' && inventoryUi.isOpen)) {
               if (e.code === 'KeyE' && !inventoryUi.isOpen && controls.pointerLocked) freeMouse();
@@ -1141,6 +1162,9 @@ connection = connect({
       case 'inventory':
         inventoryUi.update(msg);
         updateHud();
+        break;
+      case 'chat':
+        chatBox.add(msg.lines, msg.history);
         break;
       case 'meshes':
         // The figures as edited: everyone drawn so from their next pose.

@@ -106,6 +106,11 @@ const MIGRATIONS: { name: string; sql: string }[] = [
       create unique index accounts_display_name on ${SCHEMA}.accounts (lower(display_name));
       alter table ${SCHEMA}.spawns add column locked boolean not null default false;`,
   },
+  {
+    // Chat: muted by an admin (plays, can't chat).
+    name: '008_muted',
+    sql: `alter table ${SCHEMA}.accounts add column muted_at timestamptz;`,
+  },
 ];
 
 /** Connects to Postgres (Supabase) and brings the schema (SCHEMA) up to date. */

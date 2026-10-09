@@ -78,6 +78,8 @@ export const Item = {
   Boat: 1030,
   /** Drawn (hold right-click) and let go, shoots an arrow (see arrows.ts); arrows aren't used up. */
   Bow: 1031,
+  /** Carried (anywhere in the inventory), talks to and hears everyone else with one in the world (see chat.ts). */
+  Radio: 1032,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -115,6 +117,7 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.GoldCoin]: 'gold coin',
   [Item.Boat]: 'boat',
   [Item.Bow]: 'bow',
+  [Item.Radio]: 'radio',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */

@@ -21,6 +21,8 @@ export interface Account {
   role: Role;
   /** Banned: signed out, and can't sign in again (until unbanned). */
   banned: boolean;
+  /** Muted by an admin: plays, but can't chat. */
+  muted: boolean;
   /** The name they've chosen to go by (see shownName), and how they look (see Avatar), if chosen. */
   displayName: string | null;
   avatar: Avatar | null;
@@ -80,6 +82,7 @@ export interface AccountStore {
   list(): Promise<Account[]>;
   setRole(id: string, role: Role): Promise<Account | null>;
   setBanned(id: string, banned: boolean): Promise<Account | null>;
+  setMuted(id: string, muted: boolean): Promise<Account | null>;
   /** The name they go by (null: their Google name again). NameTakenError if anyone else goes by it (any case). */
   setDisplayName(id: string, name: string | null): Promise<Account | null>;
   /** How they look (null: as their name says, see defaultAvatar). */
@@ -114,7 +117,7 @@ export class MemoryAccountStore implements AccountStore {
   async signIn({ sub, email, name }: GoogleIdentity, role: Role = 'builder'): Promise<Account> {
     const existing = this.bySub.get(sub);
     const now = new Date().toISOString();
-    const account = existing ? { ...existing, email, name, lastSignedIn: now } : { id: randomUUID(), email, name, createdAt: now, lastSignedIn: now, role, banned: false, displayName: null, avatar: null };
+    const account = existing ? { ...existing, email, name, lastSignedIn: now } : { id: randomUUID(), email, name, createdAt: now, lastSignedIn: now, role, banned: false, muted: false, displayName: null, avatar: null };
     this.put(sub, account);
     return account;
   }
@@ -137,6 +140,10 @@ export class MemoryAccountStore implements AccountStore {
 
   async setBanned(id: string, banned: boolean): Promise<Account | null> {
     return this.update(id, { banned });
+  }
+
+  async setMuted(id: string, muted: boolean): Promise<Account | null> {
+    return this.update(id, { muted });
   }
 
   async setDisplayName(id: string, name: string | null): Promise<Account | null> {
@@ -203,8 +210,8 @@ export class MemoryAccountStore implements AccountStore {
   }
 }
 
-type Row = { id: string; email: string; name: string; created_at: Date; last_signed_in: Date; role: string; banned_at: Date | null; display_name: string | null; avatar: unknown };
-const COLUMNS = 'id, email, name, created_at, last_signed_in, role, banned_at, display_name, avatar';
+type Row = { id: string; email: string; name: string; created_at: Date; last_signed_in: Date; role: string; banned_at: Date | null; muted_at: Date | null; display_name: string | null; avatar: unknown };
+const COLUMNS = 'id, email, name, created_at, last_signed_in, role, banned_at, muted_at, display_name, avatar';
 type InviteRow = { email: string; role: string; created_at: Date; invited_by: string | null; used_by: string | null; used_at: Date | null };
 const INVITE_COLUMNS = 'email, role, created_at, invited_by, used_by, used_at';
 
@@ -247,6 +254,11 @@ export class PgAccountStore implements AccountStore {
       `update ${SCHEMA}.accounts set banned_at = ${banned ? 'coalesce(banned_at, now())' : 'null'} where id = $1 returning ${COLUMNS}`,
       [id],
     );
+    return rows[0] ? toAccount(rows[0]) : null;
+  }
+
+  async setMuted(id: string, muted: boolean): Promise<Account | null> {
+    const { rows } = await this.pool.query<Row>(`update ${SCHEMA}.accounts set muted_at = ${muted ? 'coalesce(muted_at, now())' : 'null'} where id = $1 returning ${COLUMNS}`, [id]);
     return rows[0] ? toAccount(rows[0]) : null;
   }
 
@@ -340,6 +352,7 @@ function toAccount(r: Row): Account {
     lastSignedIn: r.last_signed_in.toISOString(),
     role: isRole(r.role) ? r.role : 'builder',
     banned: r.banned_at !== null,
+    muted: r.muted_at !== null,
     displayName: r.display_name,
     avatar: parseAvatar(r.avatar),
   };

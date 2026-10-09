@@ -3,6 +3,7 @@ import type { Edit } from './edit.js';
 import type { TransformOp } from './select.js';
 import type { AnimationLibrary } from './animations.js';
 import type { MeshLibrary } from './meshes.js';
+import { CHAT_MAX, type ChatLine } from './chat.js';
 import { isValidTileLevel } from './tile.js';
 import type { ColumnRange } from './chunk.js';
 import { HOTBAR_SLOTS, type GameMode } from './items.js';
@@ -21,9 +22,11 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 43;
+export const PROTOCOL_VERSION = 44;
 
 export type ClientMessage =
+  /** Something said (or a command: see readChat), to be heard by the world (or one player). */
+  | { type: 'chat'; text: string }
   | {
       type: 'hello';
       protocolVersion: number;
@@ -169,6 +172,8 @@ export type ServerMessage =
   | { type: 'animations'; library: AnimationLibrary }
   /** The figures as edited (see MeshLibrary): sent on connecting if any are, and to everyone when they change. */
   | { type: 'meshes'; library: MeshLibrary }
+  /** Chat (see ChatLine): what's said, as it is; `history`: the world's last lines, on joining. */
+  | { type: 'chat'; lines: ChatLine[]; history?: boolean }
   /**
    * The designed objects placed in the world (after welcome, and whenever one is placed, taken down
    * or changes state), so clients know a click on one means it (they're built of ordinary materials).
@@ -391,6 +396,8 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
     }
     return hello;
   }
+  // (Chat: anything a string, not too long to bother with; cleaned and checked by the server, see cleanChat.)
+  if (msg.type === 'chat' && typeof msg.text === 'string' && msg.text.length <= 4 * CHAT_MAX) return { type: 'chat', text: msg.text };
   if (msg.type === 'requestChunk' && isInt32(msg.cx) && isInt32(msg.cy) && isInt32(msg.cz)) {
     return { type: 'requestChunk', cx: msg.cx, cy: msg.cy, cz: msg.cz };
   }

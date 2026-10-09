@@ -77,6 +77,8 @@ const BUILT_IN: readonly Recipe[] = [
   r('iron-axe', 'tools', [[Item.IronIngot, 3], [Item.Stick, 2]], [Item.IronAxe, 1], true),
   r('iron-shovel', 'tools', [[Item.IronIngot, 1], [Item.Stick, 2]], [Item.IronShovel, 1], true),
   r('iron-sword', 'tools', [[Item.IronIngot, 2], [Item.Stick, 1]], [Item.IronSword, 1], true),
+  // (Iron for the case, copper (coins, drawn out: wire) for its insides: once there's a furnace.)
+  r('radio', 'tools', [[Item.IronIngot, 2], [Item.CopperCoin, 2], [Material.Planks, 2]], [Item.Radio, 1], true),
   // (Early, and cheap: for finding ore before there's iron.)
   r('geologists-hammer', 'tools', [[Material.Cobblestone, 1], [Item.Stick, 1]], [Item.GeologistsHammer, 1], true),
   // (An eighth of a block of coal: a lump.)
