@@ -16,6 +16,8 @@ import { createVoxelMaterial } from './voxelMaterial.js';
 import { GrassField } from './grassField.js';
 import { Birds } from './birds.js';
 import { LocalBirds } from './localBirds.js';
+import { WildAnimals } from './wildAnimals.js';
+import { animalModels } from './animalRig.js';
 import { createAtmosphere, createSky } from './atmosphere.js';
 import { WATER_LAYER, WaterRenderer, createSeaMaterial, createVoxelWaterMaterial } from './water.js';
 import { createTint } from './tint.js';
@@ -49,7 +51,7 @@ const LEAVES = new Set<number>([Material.Leaves, Material.Needles, Material.Jung
  * The top of what's solid in the column at (x, z) (m), looking from 30 m above `y` (m) to 30 m
  * below: its height (m) and whether it's leaves; null if there's nothing (or it's water, or not loaded).
  */
-function columnTop(chunks: ChunkManager, x: number, z: number, y: number): { y: number; leaves: boolean } | null {
+function columnTop(chunks: ChunkManager, x: number, z: number, y: number): { y: number; leaves: boolean; material: number } | null {
   const ux = Math.floor(x * UNITS_PER_METER), uz = Math.floor(z * UNITS_PER_METER);
   const top = Math.floor((y + 30) * UNITS_PER_METER), bottom = Math.floor((y - 30) * UNITS_PER_METER);
   const mod = (v: number, m: number) => ((v % m) + m) % m;
@@ -65,7 +67,7 @@ function columnTop(chunks: ChunkManager, x: number, z: number, y: number): { y: 
     const v = blockVoxelContaining(block, mod(ux, BLOCK_SIZE), mod(uy, BLOCK_SIZE), mod(uz, BLOCK_SIZE));
     if (v) {
       if (isWater(v.material)) return null;
-      return { y: (Math.floor(uy / BLOCK_SIZE) * BLOCK_SIZE + v.y + v.size) / UNITS_PER_METER, leaves: LEAVES.has(v.material) };
+      return { y: (Math.floor(uy / BLOCK_SIZE) * BLOCK_SIZE + v.y + v.size) / UNITS_PER_METER, leaves: LEAVES.has(v.material), material: v.material };
     }
     uy--;
   }
@@ -492,6 +494,8 @@ let drops: DropView | null = null;
 /** Flocks crossing the sky now and then (see Birds), and small birds about you (see LocalBirds). */
 let flocks: Birds | null = null;
 let localBirds: LocalBirds | null = null;
+/** Wild animals about you (see WildAnimals). */
+let wildAnimals: WildAnimals | null = null;
 let dropList: DroppedItem[] = [];
 /** The world's boats (see BoatView), and the one we're in, if any: the keys steer it (see FlyControls.ride). */
 let boats: BoatView | null = null;
@@ -885,7 +889,7 @@ connection = connect({
           );
           drops.setDrops(dropList);
           // Birds: flocks over now and then; small birds about, sitting in the trees.
-          for (const b of [flocks, localBirds]) if (b) {
+          for (const b of [flocks, localBirds, wildAnimals]) if (b) {
             scene.remove(b.group);
             b.dispose();
           }
@@ -912,7 +916,18 @@ connection = connect({
           scene.add(figure.root);
           selfFigure = { figure, motion: new FigureMotion(performance.now()), handMaterial: new THREE.MeshBasicMaterial({ vertexColors: true }), held: null, hand: null };
           localBirds = new LocalBirds({ topAt: (x, z, y) => (chunks ? columnTop(chunks, x, z, y) : null), brightness });
-          scene.add(flocks.group, localBirds.group);
+          // Animals about: grazing, wandering, running off (their models load the first time).
+          wildAnimals = new WildAnimals(
+            {
+              groundAt: (x, z, y) => (chunks ? columnTop(chunks, x, z, y) : null),
+              brightnessAt: (x, y, z) => {
+                const l = chunks ? lightAt(chunks.lightWorld(), Math.floor((x * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((y * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((z * UNITS_PER_METER) / BLOCK_SIZE)) : null;
+                return l ? entityBrightness(l.sky, l.block, brightness()) : 1;
+              },
+            },
+            animalModels(),
+          );
+          scene.add(flocks.group, localBirds.group, wildAnimals.group);
           // A bow let go: shot from the eye, the way we look.
           editTool.onShoot = (charge) => {
             const d = camera.getWorldDirection(new THREE.Vector3());
@@ -1393,6 +1408,7 @@ renderer.setAnimationLoop(() => {
   drops?.frame();
   flocks?.update(handDt);
   localBirds?.update(handDt, camera.position);
+  wildAnimals?.update(handDt, camera.position);
   handDt = (frameStart - lastBoatFrame) / 1000;
   lastBoatFrame = frameStart;
   worldMap?.update();
