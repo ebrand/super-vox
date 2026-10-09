@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { PlayerAct, SPRINT, WALK_SPEED, defaultAnimations } from '@super-vox/shared';
+import { PlayerAct, SPRINT, WALK_SPEED, defaultAnimations, poseClip } from '@super-vox/shared';
 import { FIGURE_HEIGHT, JOINTS, MAN, PlayerFigure, figureModel, playerColor, poseFor, type FigureState } from './playerFigure.js';
 import { FigureMotion } from './entities.js';
 
@@ -179,6 +179,24 @@ describe('walking and running forwards', () => {
         f.pose(a);
         expect(footY('ankleL'), `${speed} m/s, stride ${k}/16`).toBeGreaterThan(footY('ankleR') + 0.03);
       }
+  });
+});
+
+describe('walking and running gently', () => {
+  it("bob a little (a walk's 4 or 5 cm, a run's 6) and never put a foot in the ground", () => {
+    const lib = defaultAnimations(), f = new PlayerFigure(0xffffff), box = new THREE.Box3();
+    for (const [clip, most] of [['walk', 0.05], ['run', 0.07]] as const) {
+      const hips: number[] = [];
+      for (let i = 0; i < 256; i++) {
+        f.pose(poseClip(lib, clip, i / 256));
+        hips.push(at(f, 'legL').y);
+        // (Exact on the keys; between them, blended, a few millimeters in as a running foot lands.)
+        for (const foot of ['ankleL', 'ankleR'] as const) expect(box.setFromObject(f.joints.get(foot)!).min.y, `${clip} ${foot} ${i}/256`).toBeGreaterThan(-0.01);
+      }
+      const bob = Math.max(...hips) - Math.min(...hips);
+      expect(bob, clip).toBeLessThan(most);
+      expect(bob, clip).toBeGreaterThan(0.03); // (still some: people do)
+    }
   });
 });
 

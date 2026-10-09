@@ -269,61 +269,152 @@ function around(n: number, f: (t: number) => [number, number, number]): AnimKey[
 const still = (turn: [number, number, number]): AnimKey[] => [{ at: 0, turn }];
 const TAU = 2 * Math.PI;
 
+// The man's leg (the client's MAN: see playerFigure.ts), m, standing: (down, back) from the hip to
+// the knee, the knee to the ankle; the ankle over the sole; the heel and toe behind and ahead of it.
+const THIGH: Vec2 = [-0.412, 0.018], SHIN: Vec2 = [-0.41, 0.05];
+const ANKLE_UP = 0.101, HEEL_BACK = 0.08, TOE_AHEAD = 0.192;
+/** The hips over the ground, standing (lift 0). */
+const HIP_UP = -THIGH[0] - SHIN[0] + ANKLE_UP;
+type Vec2 = [number, number];
+/** (y, z) turned about x, as a joint turns. */
+const rotX = ([y, z]: Vec2, a: number): Vec2 => [y * Math.cos(a) - z * Math.sin(a), y * Math.sin(a) + z * Math.cos(a)];
+/** How far forward of straight down (radians) a (y, z) points. */
+const forwardOf = ([y, z]: Vec2) => Math.atan2(-z, -y);
+const shank = (knee: number): Vec2 => {
+  const s = rotX(SHIN, knee);
+  return [THIGH[0] + s[0], THIGH[1] + s[1]];
+};
+/** The knee as straight as it goes (the shin in line with the thigh), and never quite straight: bent this much at least. */
+const KNEE_STRAIGHT = forwardOf(THIGH) - forwardOf(SHIN), KNEE_LEAST = KNEE_STRAIGHT - 0.12;
+const REACH = Math.hypot(...shank(KNEE_LEAST));
+
 /**
- * A walk (0) or a run (1), from a foot coming down (the left, its leg forward): each leg goes back
- * steadily while its foot is down (the walk: most of the stride, both feet down at the change; the
- * run: under two fifths, both off the ground between), then swings forward quickly, its knee bent
- * and toes up; the arms the other way. The hips drop at the ends of a step just enough to keep the
- * planted foot on the ground (the leg's a little shorter, slanted), and lift a little in the air.
+ * The thigh's turn (to the ground: forward +) and the knee's for the ankle to be `fwd` ahead of the
+ * hip and `down` below it (as near as it reaches: the knee bent a little at least).
+ */
+function legTo(fwd: number, down: number): { thigh: number; knee: number } {
+  const d = Math.hypot(fwd, down);
+  let lo = KNEE_LEAST - 2.6, hi = KNEE_LEAST;
+  if (d >= REACH) lo = hi;
+  // (Shorter the more it bends.)
+  for (let i = 0; i < 40 && lo < hi; i++) {
+    const mid = (lo + hi) / 2;
+    if (Math.hypot(...shank(mid)) > d) hi = mid;
+    else lo = mid;
+  }
+  const knee = (lo + hi) / 2;
+  return { thigh: Math.atan2(fwd, down) - forwardOf(shank(knee)), knee };
+}
+
+/**
+ * A planted foot, `g` ahead of the hip (where its ankle'd be flat) with the hips `h` over the
+ * ground: flat if the leg reaches it; else rolled just enough that it does: on its heel, toes up,
+ * ahead (coming down); on its toes, heel up, behind (pushing off). Its leg, its turn (toes up +),
+ * and where its ankle is (forward of the hip, up off the ground).
+ */
+function plant(g: number, h: number): { thigh: number; knee: number; foot: number; ankle: Vec2 } {
+  const ankleAt = (roll: number): Vec2 => {
+    // From the heel or toe it rolls on: (forward, up) of it, turned by the roll.
+    const [f, v] = roll >= 0 ? [HEEL_BACK, ANKLE_UP] : [-TOE_AHEAD, ANKLE_UP];
+    const pivot = roll >= 0 ? g - HEEL_BACK : g + TOE_AHEAD;
+    return [pivot + f * Math.cos(roll) - v * Math.sin(roll), f * Math.sin(roll) + v * Math.cos(roll)];
+  };
+  const reach = (roll: number) => {
+    const [fwd, up] = ankleAt(roll);
+    return Math.hypot(fwd, h - up);
+  };
+  let roll = 0;
+  if (reach(0) > REACH) {
+    const way = g >= 0 ? 1 : -1;
+    let lo = 0, hi = 1.2;
+    for (let i = 0; i < 40; i++) {
+      const mid = (lo + hi) / 2;
+      if (reach(way * mid) > REACH) lo = mid;
+      else hi = mid;
+    }
+    roll = way * hi;
+  }
+  const [fwd, up] = ankleAt(roll);
+  return { ...legTo(fwd, h - up), foot: roll, ankle: [fwd, up] };
+}
+
+/**
+ * A walk (0) or a run (1), from a foot coming down (the left, ahead): each foot goes back steadily
+ * while it's down (the walk: most of the stride, both feet down at the change; the run: a quarter,
+ * both off the ground between), then swings forward quickly, its knee bent and toes up; the arms the
+ * other way. The planted leg's worked out (see plant) for the hips to go up and down only a little:
+ * its knee bends to take it, the foot flat, or rolling onto the heel or the toes at the ends. A walk's
+ * hips are highest over the planted foot, a run's lowest (it lands and springs up, into the air). The
+ * swinging leg's worked out for its foot to go forward over the ground (never through it).
  * Even back-going feet: a stride locked to them doesn't slide (see the client's lockedStride).
  */
 function stride(run: number): AnimClip {
   const N = 32, lean = -0.22 * run;
-  /** How long a foot's down (of a stride), how far its leg's slanted at the ends of that (radians, to the ground), how far it reaches back and forward in its swing. */
-  const down = run ? 0.25 : 0.6, slant = run ? 0.5 : 0.45, reachBack = run ? 0.85 : slant, reachFwd = run ? 0.75 : slant;
-  const kneeSwing = 0.7 + 0.35 * run;
-  /** The leg (hip to sole, m, the man's). */
-  const LEG = 0.88;
-  const ease = (a: number, b: number, f: number) => a + (b - a) * (1 - Math.cos(Math.PI * f)) / 2;
+  /** How long a foot's down (of a stride); how far ahead and behind the hip it is then (m). */
+  const down = run ? 0.25 : 0.6, reach = run ? 0.4 : 0.38;
+  /** The hips (m): a walk's, over the planted foot, with the knee bent this much (radians), and how much lower at the change; a run's, landing, how much lower in the middle of the step, higher in the air. */
+  const midBend = 0.25, walkBob = 0.045, runLow = 0.07, runDip = 0.03, runRise = 0.03;
+  /** How high the swinging foot's lifted (m, halfway). */
+  const clear = run ? 0.3 : 0.08;
   const swingOf = (u: number) => (u - down) / (1 - down);
-  /** The leg's slant from straight down (to the ground: forward +), u of the way through its stride from coming down. */
-  const slantAt = (u: number) => {
-    if (u < down) return slant - (2 * slant * u) / down;
-    const f = swingOf(u);
-    // Walking: forward again at once. Running: on back a little (the push), right forward, down.
-    if (!run) return ease(-slant, slant, f);
-    if (f < 0.2) return ease(-slant, -reachBack, f / 0.2);
-    if (f < 0.8) return ease(-reachBack, reachFwd, (f - 0.2) / 0.6);
-    return ease(reachFwd, slant, (f - 0.8) / 0.2);
-  };
-  // (The body leans: the leg turns from it as much the other way, to be as slanted to the ground.)
-  const leg = (u: number) => slantAt(u) - lean;
-  const knee = (u: number) => (u < down ? -0.15 : -0.15 - kneeSwing * Math.sin(Math.PI * swingOf(u)));
-  const ankle = (u: number) => (u < down ? 0 : 0.2 * Math.sin(Math.PI * swingOf(u)));
+  const ease = (a: number, b: number, f: number) => a + (b - a) * (1 - Math.cos(Math.PI * f)) / 2;
   const L = (t: number) => t, R = (t: number) => (t + 0.5) % 1;
-  /** Down as far as a slanted planted leg's short of straight; in the air (running), up and down again. */
-  const lift = (t: number) => {
-    const drops = [L(t), R(t)].filter((u) => u < down).map((u) => LEG * (1 - Math.cos(slantAt(u))));
-    if (drops.length) return -Math.max(...drops);
-    const end = LEG * (1 - Math.cos(slant)), u = L(t) < 0.5 ? L(t) : R(t);
-    return -end + (end + 0.05) * Math.sin((Math.PI * (u - down)) / (0.5 - down));
+  /** The hips over the ground (m), t of the way through the stride (the same each step: every half). */
+  const hips = (t: number) => {
+    const s = (t % 0.5) / 0.5;
+    if (!run) {
+      // Lowest in the middle of both feet being down.
+      const top = Math.hypot(...shank(KNEE_STRAIGHT - midBend)) + ANKLE_UP, low = (down - 0.5) / 2 / 0.5;
+      return top - (walkBob * (1 + Math.cos(2 * Math.PI * (s - low)))) / 2;
+    }
+    const land = HIP_UP - runLow;
+    const d = down / 0.5;
+    return s < d ? land - runDip * Math.sin((Math.PI * s) / d) : land + runRise * Math.sin((Math.PI * (s - d)) / (1 - d));
+  };
+  /** A leg u of the way through its stride from coming down, the hips at hips(t): the thigh (to the ground), knee, foot (to the ground). */
+  const atDown = (u: number, t: number) => plant(reach * (1 - (2 * u) / down), hips(t));
+  const first = atDown(0, 0), last = atDown(down, down);
+  const legAt = (u: number, t: number) => {
+    if (u < down) return atDown(u, t);
+    // From where it lifted to where it comes down, up off the ground between, toes up.
+    const f = swingOf(u), [b, a] = [last.ankle, first.ankle];
+    const up = b[1] + (a[1] - b[1]) * f + clear * Math.sin(Math.PI * f);
+    return { ...legTo(ease(b[0], a[0], f), hips(t) - up), foot: ease(last.foot, first.foot, f) + 0.2 * Math.sin(Math.PI * f) };
+  };
+  // (The body leans: the leg turns from it as much the other way, to be as it is to the ground; the foot from the shin.)
+  const joints = (u: (t: number) => number) => {
+    const at = (t: number) => legAt(u(t), t);
+    return {
+      leg: around(N, (t) => [at(t).thigh - lean, 0, 0]),
+      knee: around(N, (t) => [at(t).knee, 0, 0]),
+      ankle: around(N, (t) => {
+        const l = at(t);
+        return [l.foot - l.thigh - l.knee, 0, 0];
+      }),
+    };
+  };
+  const left = joints(L), right = joints(R);
+  /** The arms swing against the legs: back as its leg goes forward, forward as it goes back. */
+  const arm = (u: number) => {
+    const slant = run ? 0.5 : 0.45;
+    return -0.8 * (u < down ? slant - (2 * slant * u) / down : ease(-slant, slant, swingOf(u)));
   };
   return {
     driver: 'stride',
     smooth: true,
     joints: {
-      legL: around(N, (t) => [leg(L(t)), 0, 0]),
-      legR: around(N, (t) => [leg(R(t)), 0, 0]),
-      kneeL: around(N, (t) => [knee(L(t)), 0, 0]),
-      kneeR: around(N, (t) => [knee(R(t)), 0, 0]),
-      ankleL: around(N, (t) => [ankle(L(t)), 0, 0]),
-      ankleR: around(N, (t) => [ankle(R(t)), 0, 0]),
-      shoulderL: around(N, (t) => [-0.8 * slantAt(L(t)), 0, -0.08]),
-      shoulderR: around(N, (t) => [-0.8 * slantAt(R(t)), 0, 0.08]),
+      legL: left.leg,
+      legR: right.leg,
+      kneeL: left.knee,
+      kneeR: right.knee,
+      ankleL: left.ankle,
+      ankleR: right.ankle,
+      shoulderL: around(N, (t) => [arm(L(t)), 0, -0.08]),
+      shoulderR: around(N, (t) => [arm(R(t)), 0, 0.08]),
       elbowL: still([0.25 + 0.9 * run, 0, 0]),
       elbowR: still([0.25 + 0.9 * run, 0, 0]),
     },
-    body: Array.from({ length: N }, (_, i) => ({ at: i / N, lean, lift: lift(i / N) })),
+    body: Array.from({ length: N }, (_, i) => ({ at: i / N, lean, lift: hips(i / N) - HIP_UP })),
     look: { head: 0.6, chest: 0.15, level: true },
   };
 }

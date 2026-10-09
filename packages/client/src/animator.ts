@@ -404,6 +404,9 @@ function refresh(all = true): void {
   ($('revert') as HTMLButtonElement).disabled = !editor.dirty;
   for (const id of ['add-key', 'delete-key']) ($(id) as HTMLButtonElement).disabled = !canEdit || !j || mode !== 'edit';
   ($('delete-key') as HTMLButtonElement).disabled ||= !(j && editor.keyHere(j));
+  // (Scaling: a joint or the body with keys to scale, in either mode: "As in game" shows it at once.)
+  ($('scale-joint-go') as HTMLButtonElement).disabled = !canEdit || !j || (c.joints[j]?.length ?? 0) < 2;
+  for (const id of ['scale-lift', 'scale-lean']) ($(id) as HTMLButtonElement).disabled = !canEdit || (c.body?.length ?? 0) < 2;
   status(problem ? `won't save: ${problem}` : editor.dirty ? 'changed (not saved)' : canEdit ? 'saved' : 'looking only', problem ? 'bad' : editor.dirty ? '' : 'good');
   placeHeld();
   if (all) attachGizmo();
@@ -541,6 +544,13 @@ $('add-key').onclick = () => {
 $('delete-key').onclick = () => {
   if (editor.joint && editor.deleteKey(editor.joint)) refresh(false);
 };
+$('scale-joint-go').onclick = () => {
+  if (editor.joint && editor.scaleKeys(editor.joint, Number(input('scale-joint').value))) refresh(false);
+};
+for (const what of ['lift', 'lean'] as const)
+  $(`scale-${what}`).onclick = () => {
+    if (editor.scaleKeys(what, Number(input('scale-body').value))) refresh(false);
+  };
 
 let wasPlaying = false;
 function refreshPlay(): void {

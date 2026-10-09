@@ -85,6 +85,29 @@ describe('AnimEditor', () => {
     expect(e.draft.settings.digSeconds).toBe(0.25);
   });
 
+  it("scales how far a joint or the body moves through a clip, about the middle of it", () => {
+    const e = new AnimEditor();
+    const lifts = () => e.current.body!.map((k) => k.lift);
+    const range = (v: number[]) => Math.max(...v) - Math.min(...v);
+    const was = lifts(), mid = (Math.max(...was) + Math.min(...was)) / 2;
+    expect(e.scaleKeys('lift', 0.5)).toBe(true);
+    expect(range(lifts())).toBeCloseTo(range(was) / 2, 9);
+    expect((Math.max(...lifts()) + Math.min(...lifts())) / 2).toBeCloseTo(mid, 9);
+    expect(e.current.body!.map((k) => k.lean)).toEqual(defaultAnimations().clips.walk.body!.map((k) => k.lean)); // lean as it was
+    // A joint: each turn, about its own middle (an arm's z, not moving, stays).
+    const arm = () => e.current.joints.shoulderL!.map((k) => k.turn);
+    const before = arm().map((t) => [...t]);
+    e.scaleKeys('shoulderL', 1.5);
+    expect(range(arm().map((t) => t[0]))).toBeCloseTo(range(before.map((t) => t[0]!)) * 1.5, 9);
+    expect(arm().map((t) => t[2])).toEqual(before.map((t) => t[2]!));
+    expect(e.dirty).toBe(true);
+    // Nothing that moves: nothing to scale.
+    expect(e.scaleKeys('head', 0.5)).toBe(false);
+    e.clip = 'jump';
+    expect(e.scaleKeys('legL', 0.5)).toBe(false);
+    expect(e.scaleKeys('lift', -1)).toBe(false);
+  });
+
   it('shows an action over the standing pose (a dig: the legs stand)', () => {
     const e = new AnimEditor();
     e.clip = 'dig';

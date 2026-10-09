@@ -179,6 +179,30 @@ export class AnimEditor {
     }
   }
 
+  /**
+   * Scales how far a joint (each of its turns) or the body (its lean or its lift) moves through the
+   * clip: every key's value `factor` times as far from the middle of its range (half: half the
+   * movement, about the same middle). False if there's nothing that moves to scale.
+   */
+  scaleKeys(what: FigureJoint | 'lean' | 'lift', factor: number): boolean {
+    if (!Number.isFinite(factor) || factor < 0) return false;
+    const c = this.current;
+    const scale = (values: number[]) => {
+      const mid = (Math.min(...values) + Math.max(...values)) / 2;
+      return values.map((v) => mid + (v - mid) * factor);
+    };
+    if (what === 'lean' || what === 'lift') {
+      const keys = c.body ?? [];
+      if (keys.length < 2) return false;
+      scale(keys.map((k) => k[what])).forEach((v, i) => (keys[i]![what] = v));
+      return true;
+    }
+    const keys = c.joints[what] ?? [];
+    if (keys.length < 2) return false;
+    for (let a = 0; a < 3; a++) scale(keys.map((k) => k.turn[a]!)).forEach((v, i) => (keys[i]!.turn[a] = v));
+    return true;
+  }
+
   setSetting<K extends keyof AnimSettings>(key: K, value: number): void {
     this.draft.settings[key] = value;
   }
