@@ -106,6 +106,17 @@ import {
   type ChunkGenerator,
   type WorldConfig,
   type Tile,
+  JOIN_M,
+  UNITS_PER_METER,
+  MAX_ROUTE_M,
+  MAX_ROUTE_POINTS,
+  MIN_RADIUS_M,
+  earthworks,
+  layRoute,
+  type EarthPiece,
+  type Track,
+  type TrackLayout,
+  type TrackPoint,
 } from '@super-vox/shared';
 import type { ChunkStore } from './chunkStore.js';
 
@@ -320,6 +331,10 @@ export class World {
       this.recordEdited(chunk);
     }
     for (const o of this.store?.loadObjects?.() ?? []) this.addObject(o);
+    for (const t of this.store?.loadTracks?.() ?? []) {
+      this.tracks.set(t.id, t);
+      this.nextTrack = Math.max(this.nextTrack, t.id + 1);
+    }
     for (const b of this.store?.loadBoats?.() ?? []) {
       this.boats.set(b.id, { id: b.id, design: b.design, x: b.x, y: b.y, z: b.z, yaw: b.yaw });
       this.nextBoat = Math.max(this.nextBoat, b.id + 1);
@@ -734,6 +749,120 @@ export class World {
 
   boatList(): Boat[] {
     return [...this.boats.values()];
+  }
+
+  // --- Railways (see rail.ts): track laid along routes drawn on the map. (A route's end this near a track's (m) joins it.)
+  private readonly tracks = new Map<number, Track>();
+  private nextTrack = 1;
+  /** Told when track's laid (to tell everyone). */
+  onTracksChanged?: () => void;
+
+  trackList(): Track[] {
+    return [...this.tracks.values()];
+  }
+
+  /**
+   * A route (`points`, units: x, z) as it would be laid: its layout over the ground as generated
+   * (see layRoute), its ends joined to track ends within JOIN_M (there, and at its height), and its
+   * earthworks; or why it can't be (too few or many points, off the world, too long, too tight a
+   * curve, or through what players have built: their columns, not track's).
+   */
+  planTrack(points: readonly { x: number; z: number }[]): { layout: TrackLayout; works: ReturnType<typeof earthworks> } | string {
+    if (points.length < 2) return 'a route needs two points at least';
+    if (points.length > MAX_ROUTE_POINTS) return `a route has ${MAX_ROUTE_POINTS} points at most`;
+    const W = this.config.widthUnits, D = this.config.depthUnits;
+    if (!points.every((p) => Number.isFinite(p.x) && Number.isFinite(p.z) && p.x >= 0 && p.x < W && p.z >= 0 && p.z < D)) return 'the route goes off the world';
+    for (let i = 1; i < points.length; i++) if (Math.abs(points[i]!.x - points[i - 1]!.x) > W / 2) return "the route can't cross the world's east-west seam (yet)";
+    // Joined to the end of a track near either end: from it, at its height.
+    const JOIN = JOIN_M * UNITS_PER_METER, pts = points.map((p) => ({ ...p })), pinned: { x: number; z: number; y: number }[] = [];
+    for (const k of [0, pts.length - 1]) {
+      let best: TrackPoint | null = null, bestD = JOIN;
+      for (const t of this.tracks.values())
+        for (const end of [t.points[0]!, t.points.at(-1)!]) {
+          const d = Math.hypot(end.x - pts[k]!.x, end.z - pts[k]!.z);
+          if (d < bestD) (bestD = d), (best = end);
+        }
+      if (best) {
+        pts[k] = { x: best.x, z: best.z };
+        pinned.push({ x: best.x, z: best.z, y: best.y });
+      }
+    }
+    const ground = (x: number, z: number) => {
+      for (const p of pinned) if (Math.hypot(p.x - x, p.z - z) < UNITS_PER_METER) return p.y;
+      return this.generator.surfaceHeightAt(x, z);
+    };
+    const layout = layRoute(pts, ground);
+    if (!layout) return 'a route needs two points at least';
+    if (layout.length > MAX_ROUTE_M) return `too long: ${Math.round(layout.length)} m (${MAX_ROUTE_M} m at most: lay it in parts)`;
+    if (layout.minRadius < MIN_RADIUS_M) return `a curve's too tight: ${Math.round(layout.minRadius)} m across at its tightest (${MIN_RADIUS_M} m at least: spread the points out)`;
+    const works = earthworks(layout.points, (x, z) => this.generator.surfaceHeightAt(x, z));
+    // Not through what players have built (track's own columns aside).
+    const ours = new Set(this.trackList().flatMap((t) => t.columns));
+    const built = new Set(this.protectedColumns().map((c) => `${c.cx},${c.cz}`).filter((k) => !ours.has(k)));
+    const hit = works.columns.find((k) => built.has(k));
+    if (hit) {
+      const [cx, cz] = hit.split(',').map(Number);
+      return `it would cut through what's been built near x ${Math.round(((cx! + 0.5) * CHUNK_SIZE) / UNITS_PER_METER)}, z ${Math.round(((cz! + 0.5) * CHUNK_SIZE) / UNITS_PER_METER)} m: go round it`;
+    }
+    return { layout, works };
+  }
+
+  /** Track being laid now (see layTrackGradually): one at a time. */
+  private laying = false;
+
+  /**
+   * Lays a route (see planTrack) without holding the server up: the chunks its earthworks touch
+   * made first (off the main thread, where there's another thread or the disk to do it), then the
+   * earthworks done a chunk column at a time (each told to `changed` as it's done: to send on),
+   * other work done between. The track, kept; or why not (another being laid, or see planTrack).
+   */
+  async layTrackGradually(points: readonly { x: number; z: number }[], changed: (r: EditResult) => void): Promise<Track | string> {
+    if (this.laying) return 'track is being laid already: a moment';
+    const plan = this.planTrack(points);
+    if (typeof plan === 'string') return plan;
+    this.laying = true;
+    try {
+      // By chunk column (the pieces each in one chunk), and the chunks they're in.
+      const C = CHUNK_SIZE, groups = new Map<string, { clear: EarthPiece[]; fill: EarthPiece[] }>(), chunks = new Map<string, ChunkCoord>();
+      for (const [list, which] of [[plan.works.clear, 'clear'], [plan.works.fill, 'fill']] as const)
+        for (const p of list) {
+          const cx = Math.floor(p.x / C), cz = Math.floor(p.z / C), key = `${cx},${cz}`;
+          const g = groups.get(key) ?? groups.set(key, { clear: [], fill: [] }).get(key)!;
+          g[which].push(p);
+          const coord = { cx, cy: Math.floor(p.y / C), cz };
+          chunks.set(chunkKey(coord), coord);
+        }
+      // (Made a few at a time: the other thread's for players too.)
+      const all = [...chunks.values()];
+      for (let i = 0; i < all.length; i += 16) await Promise.all(all.slice(i, i + 16).map((c) => Promise.resolve(this.encodedChunk(c)).catch(() => null)));
+      for (const g of groups.values()) {
+        const cleared = this.buildPieces(g.clear, true), filled = this.buildPieces(g.fill, false);
+        if (cleared.result) changed(cleared.result);
+        if (filled.result) changed(filled.result);
+        await new Promise((r) => setImmediate(r));
+      }
+      return this.keepTrack(plan.layout, plan.works.columns);
+    } finally {
+      this.laying = false;
+    }
+  }
+
+  private keepTrack(layout: TrackLayout, columns: string[]): Track {
+    const track: Track = { id: this.nextTrack++, points: layout.points.map((p) => ({ x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, z: Math.round(p.z * 10) / 10, heading: Math.round(p.heading * 1e4) / 1e4, s: Math.round(p.s * 10) / 10 })), columns };
+    this.tracks.set(track.id, track);
+    this.store?.saveTracks?.(this.trackList());
+    this.onTracksChanged?.();
+    return track;
+  }
+
+  /** Lays a route (see planTrack) at once (tests; see layTrackGradually): the earthworks done, the track kept. The track and what changed, or why not. */
+  layTrack(points: readonly { x: number; z: number }[]): { track: Track; results: EditResult[] } | string {
+    const plan = this.planTrack(points);
+    if (typeof plan === 'string') return plan;
+    // Cleared above the bed first, then filled below it (only where there's room).
+    const cleared = this.buildPieces(plan.works.clear, true), filled = this.buildPieces(plan.works.fill, false);
+    const track = this.keepTrack(plan.layout, plan.works.columns);
+    return { track, results: [cleared.result, filled.result].filter((r): r is EditResult => r !== null) };
   }
 
   boatById(id: number): Boat | undefined {

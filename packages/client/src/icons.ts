@@ -133,6 +133,11 @@ const ITEM_ICONS: Readonly<Partial<Record<ItemId, string>>> = {
       `<rect x="7" y="14" width="10" height="10" rx="1" fill="${css(COPPER, 0.8)}"/><path d="M8 16 H16 M8 18.5 H16 M8 21 H16" stroke="${css(COPPER, 1.35)}" stroke-width="1"/>` +
       `<circle cx="22.5" cy="19" r="3.2" fill="${css(IRON, 1.15)}"${OUTLINE}/><line x1="22.5" y1="19" x2="24.3" y2="17" stroke="rgb(40 38 36)" stroke-width="1"/>`,
   ),
+  // Rails: two steel rails on three sleepers, seen at a slant.
+  [Item.Rail]: svg(
+    `<g transform="translate(2.5 0.5)"><path d="M10.25 6.05 L2.75 16.55 M17.25 10.25 L9.75 20.75 M24.25 14.45 L16.75 24.95" stroke="${css(WOOD, 1.1)}" stroke-width="3.2"/>` +
+      `<path d="M6 6 L26 18 M1 13 L21 25" stroke="${css(IRON, 0.6)}" stroke-width="2.6" stroke-linecap="round"/><path d="M6 6 L26 18 M1 13 L21 25" stroke="${css(IRON, 1.35)}" stroke-width="1" stroke-linecap="round"/></g>`,
+  ),
   [Item.Boat]: svg(
     `<path d="M3 15 L29 15 L25 23 Q16 26 7 23 Z" fill="${css(WOOD, 1.2)}"${OUTLINE}/><path d="M5 18 L27 18" stroke="${css(DARK_WOOD, 1.2)}" stroke-width="1"/>` +
       `<path d="M2 25 Q6 23 10 25 T18 25 T26 25 T30 25" stroke="${css(WATER, 1.4)}" stroke-width="1.6" fill="none"/><line x1="20" y1="6" x2="13" y2="20" stroke="${css(DARK_WOOD, 1.3)}" stroke-width="1.6" stroke-linecap="round"/>`,

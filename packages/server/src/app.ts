@@ -45,6 +45,8 @@ import {
   UNITS_PER_METER,
   CHAT_HELP,
   NEAR_METRES,
+  RAIL_M,
+  type TrackPlan,
   RATE_COUNT,
   RATE_MS,
   cleanChat,
@@ -1444,8 +1446,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               send({ type: 'objects', objects: world.designObjects() });
               world.onObjectsChanged ??= () => toWorld(world, { type: 'objects', objects: world.designObjects() });
               send({ type: 'boats', boats: world.boatList() });
-              send({ type: 'drops', drops: [...(dropsOf.get(world)?.list.values() ?? [])] });
               world.onBoatsChanged ??= () => toWorld(world, { type: 'boats', boats: world.boatList() });
+              send({ type: 'tracks', tracks: world.trackList() });
+              world.onTracksChanged ??= () => toWorld(world, { type: 'tracks', tracks: world.trackList() });
+              // (What's dropped last: the last thing told unasked.)
+              send({ type: 'drops', drops: [...(dropsOf.get(world)?.list.values() ?? [])] });
             };
             sendWelcome({
               type: 'welcome',
@@ -1969,6 +1974,58 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           const why = inventory.discard(msg.item, msg.amount);
           if (why) send({ type: 'error', code: 'craft', message: why });
           else send(inventory.message());
+          break;
+        }
+
+        case 'track': {
+          // A route drawn on the map: planned (for the map to show), or laid (builders; survival: paid for in rails).
+          if (!greeted) break;
+          const reply = (r: { error?: string; laid?: boolean; plan?: TrackPlan }) => send({ type: 'trackPlan', id: msg.id, ...r });
+          const planned = world.planTrack(msg.points);
+          if (typeof planned === 'string') {
+            reply({ error: planned });
+            break;
+          }
+          const { layout } = planned, M = UNITS_PER_METER;
+          const survival = catalog.play(clientWorld.get(socket))?.mode === 'survival';
+          const rails = survival ? Math.ceil(layout.length / RAIL_M) : 0;
+          // (For the map: a point every 4 m.)
+          const every = <T,>(list: T[], n: number) => list.filter((_, i) => i % n === 0 || i === list.length - 1);
+          const plan: TrackPlan = {
+            length: layout.length, maxCut: layout.maxCut, maxFill: layout.maxFill, maxGrade: layout.maxGrade, minRadius: layout.minRadius, rails,
+            line: every(layout.points, 4).map((p) => ({ x: Math.round(p.x), z: Math.round(p.z) })),
+            profile: every(layout.points.map((p, i) => ({ s: Math.round((p.s / M) * 10) / 10, y: Math.round((p.y / M) * 100) / 100, ground: Math.round((layout.ground[i]! / M) * 100) / 100 })), 4),
+          };
+          if (!msg.lay) {
+            reply({ plan });
+            break;
+          }
+          if (!canEdit()) {
+            reply({ error: cantBuild(), plan });
+            break;
+          }
+          if (survival) {
+            const have = inventory?.count(Item.Rail) ?? 0;
+            if (have < rails) {
+              reply({ error: `${rails} rails needed (each ${RAIL_M} m of track), and you've ${have}: make more (an iron ingot and a stick, at a crafting table, make 4)`, plan });
+              break;
+            }
+          }
+          // (Rails taken now, given back if it's not laid: not paid for twice meanwhile.)
+          if (survival && inventory) inventory.addItem(Item.Rail, -rails);
+          const id = msg.id, here = world, inv = inventory;
+          void here
+            .layTrackGradually(msg.points, (r) => broadcast(here, r))
+            .then((laid) => {
+              if (typeof laid === 'string' && survival && inv) inv.addItem(Item.Rail, rails);
+              if (inv && survival) send(inv.message());
+              send({ type: 'trackPlan', id, plan, ...(typeof laid === 'string' ? { error: laid } : { laid: true }) });
+            })
+            .catch((err: unknown) => {
+              if (survival && inv) inv.addItem(Item.Rail, rails);
+              app.log.error(err, 'laying track failed');
+              send({ type: 'trackPlan', id, plan, error: 'laying it went wrong: try again' });
+            });
           break;
         }
 

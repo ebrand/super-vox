@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Boat, ChunkCoord, PlacedObject, StationState } from '@super-vox/shared';
+import type { Boat, ChunkCoord, PlacedObject, StationState, Track } from '@super-vox/shared';
 
 /** Persists edited chunks, and the world's placed objects (fences, gates, doors). */
 export interface ChunkStore {
@@ -14,12 +14,16 @@ export interface ChunkStore {
   /** The world's boats (see Boat), as they were left. */
   loadBoats?(): Boat[];
   saveBoats?(boats: Boat[]): void;
+  /** The world's laid track (see Track). */
+  loadTracks?(): Track[];
+  saveTracks?(tracks: Track[]): void;
 }
 
 const FILE = /^(-?\d+)_(-?\d+)_(-?\d+)\.chunk$/;
 const OBJECTS = 'objects.json';
 const STATIONS = 'stations.json';
 const BOATS = 'boats.json';
+const TRACKS = 'tracks.json';
 
 /** One file per edited chunk, `<cx>_<cy>_<cz>.chunk`, in a directory. */
 export class FileChunkStore implements ChunkStore {
@@ -75,6 +79,23 @@ export class FileChunkStore implements ChunkStore {
 
   saveBoats(boats: Boat[]): void {
     this.write(BOATS, JSON.stringify(boats));
+  }
+
+  /** Laid track, in tracks.json beside the chunks (any that don't look like track: left out). */
+  loadTracks(): Track[] {
+    const path = join(this.dir, TRACKS);
+    if (!existsSync(path)) return [];
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(
+      (t): t is Track =>
+        typeof t === 'object' && t !== null && Number.isInteger(t.id) && Array.isArray(t.points) && Array.isArray(t.columns) &&
+        t.points.every((p: Record<string, unknown>) => [p.x, p.y, p.z, p.heading, p.s].every((v) => typeof v === 'number' && Number.isFinite(v))),
+    );
+  }
+
+  saveTracks(tracks: Track[]): void {
+    this.write(TRACKS, JSON.stringify(tracks));
   }
 
   private write(name: string, data: string | Uint8Array): void {

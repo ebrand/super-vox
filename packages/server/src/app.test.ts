@@ -54,8 +54,8 @@ function connect(opts: WebSocket.ClientOptions = {}): Promise<WebSocket> {
 
 type Frame = { text: ServerMessage } | { binary: Uint8Array };
 
-/** Told after every welcome (the design library, designs placed, boats, and what's dropped), and not what these tests look at: passed over. */
-const AFTER_WELCOME = new Set(['designs', 'objects', 'boats', 'drops']);
+/** Told after every welcome (the design library, designs placed, boats, what's dropped, and laid track), and not what these tests look at: passed over. */
+const AFTER_WELCOME = new Set(['designs', 'objects', 'boats', 'drops', 'tracks']);
 
 function nextFrame(ws: WebSocket): Promise<Frame> {
   return new Promise((resolve, reject) => {
@@ -87,7 +87,7 @@ async function until(done: () => boolean, ms = 5000): Promise<void> {
 
 async function greeted(opts: WebSocket.ClientOptions = {}): Promise<WebSocket> {
   const ws = await connect(opts);
-  // (Welcome, then the designs, where they're placed, the boats, and what's dropped: the last thing sent unasked.)
+  // (Welcome, then the designs, where they're placed, the boats, laid track, and what's dropped: the last thing sent unasked.)
   const placed = new Promise<void>((resolve) => {
     const on = (data: WebSocket.RawData, isBinary: boolean) => {
       if (isBinary || (JSON.parse(String(data)) as ServerMessage).type !== 'drops') return;

@@ -78,6 +78,8 @@ const BUILT_IN: readonly Recipe[] = [
   r('iron-shovel', 'tools', [[Item.IronIngot, 1], [Item.Stick, 2]], [Item.IronShovel, 1], true),
   r('iron-sword', 'tools', [[Item.IronIngot, 2], [Item.Stick, 1]], [Item.IronSword, 1], true),
   // (Iron for the case, copper (coins, drawn out: wire) for its insides: once there's a furnace.)
+  // (Track: steel on timber; four rails, 8 m of track, an ingot.)
+  r('rails', 'building', [[Item.IronIngot, 1], [Item.Stick, 1]], [Item.Rail, 4], true),
   r('radio', 'tools', [[Item.IronIngot, 2], [Item.CopperCoin, 2], [Material.Planks, 2]], [Item.Radio, 1], true),
   // (Early, and cheap: for finding ore before there's iron.)
   r('geologists-hammer', 'tools', [[Material.Cobblestone, 1], [Item.Stick, 1]], [Item.GeologistsHammer, 1], true),

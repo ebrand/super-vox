@@ -130,6 +130,21 @@ export class WorldMapOverlay {
   isOpen = false;
   /** Whether ⌘-clicking goes there (not in survival, where you walk). */
   canTravel = true;
+  /**
+   * More drawn over the map (each frame it's drawn): `g` in device pixels, `toX`/`toZ` world units
+   * to them (`near`: a world x at its copy nearest the view's middle), `dpr` the pixel ratio.
+   */
+  drawMore: ((g: CanvasRenderingContext2D, toX: (x: number) => number, toZ: (z: number) => number, near: (x: number) => number, dpr: number) => void) | null = null;
+  /** A plain click on the map (not a drag, not ⌘): where (world units); true if it was taken (nothing else done). */
+  clicked: ((at: { x: number; z: number }, e: MouseEvent) => boolean) | null = null;
+  /** Where more controls go (the bar over the map). */
+  get bar(): HTMLDivElement {
+    return this.root.querySelector('div.bar')!;
+  }
+  /** The map's own element (for panels over it). */
+  get element(): HTMLDivElement {
+    return this.root;
+  }
 
   constructor(
     worldSize: { width: number; depth: number; wrapX?: boolean },
@@ -179,6 +194,10 @@ export class WorldMapOverlay {
     window.addEventListener('mouseup', (e) => {
       const d = this.drag;
       this.drag = null;
+      if (d && !d.moved && e.button === 0 && this.isOpen && !travelClick(e) && this.clicked && !this.in3d) {
+        const at = this.at(e) ?? this.pointAt(e);
+        if (at && this.clicked({ x: at.x, z: at.z }, e)) return this.update();
+      }
       if (!d || d.moved || e.button !== 0 || !this.isOpen || !this.canTravel || !travelClick(e)) return;
       const p = this.at(e);
       if (p) {
@@ -451,6 +470,15 @@ export class WorldMapOverlay {
     g.closePath();
     g.fill();
     g.stroke();
+    this.drawMore?.(g, toX, toZ, near, dpr);
+  }
+
+  /** Where on the world (units) a mouse event is, whether there's map there yet or not. */
+  private pointAt(e: MouseEvent): { x: number; z: number } | null {
+    const r = this.canvas.getBoundingClientRect();
+    const [x, z] = screenToWorld(this.currentView(), r.width, r.height, e.clientX - r.left, e.clientY - r.top);
+    const W = this.world.width;
+    return z < 0 || z >= this.world.depth ? null : { x: this.world.wrapX ? ((x % W) + W) % W : x, z };
   }
 
   /** Blends biome colours on the map as in the game (see climateTintColors). */

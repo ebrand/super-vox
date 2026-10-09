@@ -3,6 +3,8 @@ import * as THREE from 'three';
 import { BLOCK_SIZE, CHUNK_SIZE, avatarFromText, defaultAvatar, type Avatar, blockIndex, blockVoxelContaining, isWater, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, weatherTime, lightAt, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
 import { LeaveAsk } from './leaveAsk.js';
 import { ChatBox } from './chatBox.js';
+import { TrackDrawer } from './trackDraw.js';
+import { TrackView } from './trackView.js';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool, sizeLabel } from './editTool.js';
@@ -460,6 +462,9 @@ let editTool: EditTool | null = null;
 /** Designed objects placed in the world (see the `objects` message), for the edit tool. */
 let placedObjects: PlacedObject[] = [];
 let worldMap: WorldMapOverlay | null = null;
+/** Railways (see rail.ts): drawing routes on the map, and the track laid. */
+let trackDrawer: TrackDrawer | null = null;
+let trackView: TrackView | null = null;
 /**
  * Playing survival (signed in, or anyone where the server has no accounts): no flying, no-clip
  * or travel by map or link; you walk. Visitors who can't build look around as they like.
@@ -783,6 +788,14 @@ connection = connect({
             `/api/world/map?width=1024${worldParam}`,
             (a) => `/api/world/map/area?x0=${a.x0}&z0=${a.z0}&step=${a.step}&cols=${a.cols}&rows=${a.rows}${worldParam}`,
           );
+          // Railways: routes drawn on the map (builders lay them), and track in the world.
+          {
+            const canBuild = msg.canEdit;
+            trackDrawer = new TrackDrawer(worldMap, (m) => connection?.send(m), () => canBuild);
+            trackView?.group.removeFromParent();
+            trackView = new TrackView(() => 1 - 0.85 * atmosphere.uniforms.stars.value);
+            scene.add(trackView.group);
+          }
           // Survival: you walk (see survivalMovement); the map can't take you anywhere.
           survivalMovement = msg.mode === 'survival' && msg.canEdit;
           worldMap.canTravel = !survivalMovement;
@@ -1182,6 +1195,13 @@ connection = connect({
         // (Boats whose designs weren't known yet: now they can be drawn.)
         boats?.setBoats(boatList);
         break;
+      case 'tracks':
+        trackView?.setTracks(msg.tracks);
+        trackDrawer?.setTracks(msg.tracks);
+        break;
+      case 'trackPlan':
+        trackDrawer?.planned(msg);
+        break;
       case 'boats':
         boatList = msg.boats;
         boats?.setBoats(msg.boats);
@@ -1438,6 +1458,7 @@ renderer.setAnimationLoop(() => {
   grass?.update(camera.position);
   entities?.frame();
   boats?.frame(Math.min(0.25, (frameStart - lastBoatFrame) / 1000));
+  trackView?.frame();
   arrows?.frame();
   drops?.frame();
   flocks?.update(handDt);

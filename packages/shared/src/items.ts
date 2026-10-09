@@ -80,6 +80,8 @@ export const Item = {
   Bow: 1031,
   /** Carried (anywhere in the inventory), talks to and hears everyone else with one in the world (see chat.ts). */
   Radio: 1032,
+  /** Laid as track along a route drawn on the map (see rail.ts): each RAIL_M of it. */
+  Rail: 1033,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -118,6 +120,7 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.Boat]: 'boat',
   [Item.Bow]: 'bow',
   [Item.Radio]: 'radio',
+  [Item.Rail]: 'rail',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */
