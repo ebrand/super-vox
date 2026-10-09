@@ -27,6 +27,7 @@ export default defineConfig({
         settings: fileURLToPath(new URL('./settings.html', import.meta.url)),
         players: fileURLToPath(new URL('./players.html', import.meta.url)),
         account: fileURLToPath(new URL('./account.html', import.meta.url)),
+        meshes: fileURLToPath(new URL('./meshes.html', import.meta.url)),
       },
     },
   },

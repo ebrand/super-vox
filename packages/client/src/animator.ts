@@ -18,6 +18,8 @@ import {
   poseFigure,
   type AnimationLibrary,
   type AnimSettings,
+  type FigureKind,
+  type MeshLibrary,
   type ClipId,
   type FigureJoint,
   type FigureState,
@@ -25,7 +27,7 @@ import {
   type GripKind,
 } from '@super-vox/shared';
 import { AnimEditor, nearestTurn } from './animEditor.js';
-import { PlayerFigure, measureStrides } from './playerFigure.js';
+import { PlayerFigure, measureStrides, setMeshes } from './playerFigure.js';
 import { heldModel } from './entities.js';
 import { isCubeModel } from './itemModels.js';
 
@@ -93,8 +95,15 @@ orbit.target.set(0, 0.95, 0);
 orbit.update();
 const grid = new THREE.GridHelper(6, 24, 0x3a414b, 0x262c34);
 scene.add(grid);
-const figure = new PlayerFigure(0xc9b3b3);
+// (The mannequin: one colour all over, hair a little darker; the man or the woman, as edited: see the mesh editor.)
+const MANNEQUIN = { skin: '#c9b3b3', shirt: '#c9b3b3', trousers: '#c9b3b3', shoes: '#c9b3b3', hair: '#9c8584' };
+const figure = new PlayerFigure({ ...MANNEQUIN, figure: 'man' });
 scene.add(figure.root);
+($('figure-kind') as HTMLSelectElement).onchange = () => {
+  figure.setLook({ ...MANNEQUIN, figure: ($('figure-kind') as HTMLSelectElement).value as FigureKind });
+  figure.tint(1);
+  refresh(false);
+};
 const heldMaterial = new THREE.MeshBasicMaterial({ vertexColors: true });
 let held: THREE.Group | null = null;
 let heldKey = '';
@@ -709,6 +718,13 @@ renderer.setAnimationLoop(() => {
 
 // --- Opening ---
 (async () => {
+  try {
+    // The figures as edited (the mesh editor's), if any are.
+    const meshRes = await fetch('/api/meshes');
+    if (meshRes.ok) setMeshes(((await meshRes.json()) as { library: MeshLibrary }).library);
+  } catch {
+    // (As made, then.)
+  }
   try {
     const res = await fetch('/api/animations');
     const body = (await res.json()) as { library: AnimationLibrary; canEdit: boolean };

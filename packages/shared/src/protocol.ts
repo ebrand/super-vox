@@ -2,6 +2,7 @@ import type { DayClock } from './clock.js';
 import type { Edit } from './edit.js';
 import type { TransformOp } from './select.js';
 import type { AnimationLibrary } from './animations.js';
+import type { MeshLibrary } from './meshes.js';
 import { isValidTileLevel } from './tile.js';
 import type { ColumnRange } from './chunk.js';
 import { HOTBAR_SLOTS, type GameMode } from './items.js';
@@ -20,7 +21,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 42;
+export const PROTOCOL_VERSION = 43;
 
 export type ClientMessage =
   | {
@@ -166,6 +167,8 @@ export type ServerMessage =
   | { type: 'designs'; designs: ObjectDesign[] }
   /** How players' figures move (see animations.ts): sent when it isn't the defaults, and whenever it changes. */
   | { type: 'animations'; library: AnimationLibrary }
+  /** The figures as edited (see MeshLibrary): sent on connecting if any are, and to everyone when they change. */
+  | { type: 'meshes'; library: MeshLibrary }
   /**
    * The designed objects placed in the world (after welcome, and whenever one is placed, taken down
    * or changes state), so clients know a click on one means it (they're built of ordinary materials).

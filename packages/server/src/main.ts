@@ -9,6 +9,7 @@ import { MemoryInventoryStore, PgInventoryStore, type InventoryStore } from './i
 import { buildApp } from './app.js';
 import { DesignLibrary } from './designs.js';
 import { AnimationStore } from './animationStore.js';
+import { MeshStore } from './meshStore.js';
 import { Auth } from './auth.js';
 import { authConfigFromEnv, loadDevSecrets } from './authConfig.js';
 import { openWorld, type WorldSpec } from './worldFile.js';
@@ -160,12 +161,14 @@ const auth = authConfig && accounts ? new Auth(authConfig, accounts) : undefined
 const designs = new DesignLibrary(join(dataRoot, 'designs.json'));
 // How players' figures move (see AnimationStore): one library beside them too.
 const animations = new AnimationStore(join(dataRoot, 'animations.json'));
+// Players' figures as edited (see MeshStore): one library beside them too.
+const meshes = new MeshStore(join(dataRoot, 'meshes.json'));
 // Which deployment this is: APP_ENV (staging sets it), else production or development by NODE_ENV.
 const environment = process.env.APP_ENV || (production ? 'production' : 'development');
 // How long a world nobody's in or asked for stays open (IDLE_WORLD_MINUTES; default 10).
 const idleMinutes = process.env.IDLE_WORLD_MINUTES === undefined || process.env.IDLE_WORLD_MINUTES === '' ? null : Number(process.env.IDLE_WORLD_MINUTES);
 if (idleMinutes !== null && !(idleMinutes > 0 && idleMinutes <= 24 * 60)) throw new RangeError(`IDLE_WORLD_MINUTES must be more than 0 and at most ${24 * 60}; got "${process.env.IDLE_WORLD_MINUTES}"`);
-const app = await buildApp({ catalog, designs, animations, environment, logger: true, ...(clientDir ? { clientDir } : {}), ...(auth ? { auth } : {}), ...(inventories ? { inventories } : {}), ...(idleMinutes !== null ? { idleWorldMs: idleMinutes * 60_000 } : {}) });
+const app = await buildApp({ catalog, designs, animations, meshes, environment, logger: true, ...(clientDir ? { clientDir } : {}), ...(auth ? { auth } : {}), ...(inventories ? { inventories } : {}), ...(idleMinutes !== null ? { idleWorldMs: idleMinutes * 60_000 } : {}) });
 app.addHook('onClose', async () => pool?.end());
 app.log.info(
   { signIn: !!auth, accounts: accounts ? (pool ? 'postgres' : 'memory') : null, fromAuthDir },

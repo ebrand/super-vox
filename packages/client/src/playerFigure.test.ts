@@ -248,7 +248,9 @@ describe('the woman', () => {
     const ratio = (w.max.y - w.min.y) / (m.max.y - m.min.y);
     expect(ratio).toBeLessThan(WOMAN_SCALE + 0.006);
     expect(ratio).toBeGreaterThan(WOMAN_SCALE - 0.01);
-    expect(woman.height).toBeCloseTo(FIGURE_HEIGHT * WOMAN_SCALE, 5);
+    // (How tall she stands: to the top of her hair, as measured.)
+    expect(woman.height).toBeCloseTo(w.max.y, 3);
+    expect(woman.height).toBeLessThan(FIGURE_HEIGHT);
     const width = (f: PlayerFigure, joint: string) => new THREE.Box3().setFromObject(f.joints.get(joint as never)!.children[0]!).getSize(new THREE.Vector3()).x;
     expect(width(woman, 'hips') / width(man, 'hips')).toBeGreaterThan(1);
     expect(Math.abs(at(woman, 'shoulderL').x - at(woman, 'shoulderR').x)).toBeLessThan(Math.abs(at(man, 'shoulderL').x - at(man, 'shoulderR').x) * WOMAN_SCALE);
@@ -261,7 +263,7 @@ describe('the woman', () => {
     for (const clip of ['walk', 'run'] as const) {
       const his = lockedStride(lib, clip, new PlayerFigure(defaultAvatar('x')))!, hers = lockedStride(lib, clip, new PlayerFigure(her))!;
       expect(hers / his, clip).toBeCloseTo(WOMAN_SCALE, 1);
-      expect(new PlayerFigure(her).strideScale).toBe(WOMAN_SCALE);
+      expect(new PlayerFigure(her).strideScale).toBeCloseTo(WOMAN_SCALE, 3);
     }
   });
 
@@ -269,7 +271,7 @@ describe('the woman', () => {
     const f = new PlayerFigure(defaultAvatar('x'));
     const tall = size(f).max.y;
     f.setLook(her);
-    expect(f.strideScale).toBe(WOMAN_SCALE);
+    expect(f.strideScale).toBeCloseTo(WOMAN_SCALE, 3);
     expect(size(f).max.y / tall).toBeGreaterThan(WOMAN_SCALE - 0.01);
     expect(size(f).max.y / tall).toBeLessThan(WOMAN_SCALE + 0.006);
     f.setLook(defaultAvatar('x'));

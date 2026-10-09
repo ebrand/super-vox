@@ -31,7 +31,7 @@ import { WorldMapOverlay, decodeWorldMap } from './worldMap.js';
 import { rememberReturn, startFromParams, takeReturn } from './startAt.js';
 import { InventoryUi } from './inventory.js';
 import { EntityView, FigureMotion, entityBrightness, heldGrip, heldModel } from './entities.js';
-import { PlayerFigure, poseFor, setAnimations, strides } from './playerFigure.js';
+import { PlayerFigure, poseFor, setAnimations, setMeshes, strides } from './playerFigure.js';
 import { raycastVoxels } from './picking.js';
 import { BoatView } from './boatView.js';
 import { ArrowView } from './arrowView.js';
@@ -1141,6 +1141,10 @@ connection = connect({
       case 'inventory':
         inventoryUi.update(msg);
         updateHud();
+        break;
+      case 'meshes':
+        // The figures as edited: everyone drawn so from their next pose.
+        setMeshes(msg.library);
         break;
       case 'animations':
         // How figures move (an admin's changed it, or it isn't the defaults).

@@ -111,6 +111,7 @@ import { Explosives } from './explosives.js';
 import { RequestQueue } from './requestQueue.js';
 import { DesignLibrary } from './designs.js';
 import { AnimationStore } from './animationStore.js';
+import { MeshStore } from './meshStore.js';
 import { HISTORY, Metrics, percentile } from './metrics.js';
 import { MAX_PICTURE_BYTES, NoSuchWorldError, PICTURE_TYPES, WorldExistsError } from './worldFile.js';
 import { DefaultWorldError, StaleStrokesError, StrokesOverBuildsError, singleWorld, type WorldCatalog } from './worlds.js';
@@ -145,6 +146,8 @@ export type AppOptions = (
   designs?: DesignLibrary;
   /** How players' figures move (see AnimationStore); none: the defaults, in memory. */
   animations?: AnimationStore;
+  /** Players' figures as edited (see MeshStore); none: as made, in memory. */
+  meshes?: MeshStore;
   /** Which deployment this is (APP_ENV: production, staging, development), told by /api/health; default development. */
   environment?: string;
 };
@@ -557,6 +560,19 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     animations.reset();
     animationsChanged();
     return { library: animations.get() };
+  });
+
+  // Players' figures as edited (see MeshStore): for everyone; operators change them (the mesh
+  // editor), and everyone connected gets them at once.
+  const meshes = opts.meshes ?? new MeshStore(null);
+  app.get('/api/meshes', async (req) => ({ library: meshes.get(), canEdit: await operator(req) }));
+  app.put<{ Body: unknown }>('/api/meshes', { bodyLimit: 8 * 1024 * 1024 }, async (req, reply) => {
+    if (!(await operator(req))) return reply.code(403).send(notOperator('editing figures'));
+    const lib = meshes.put(req.body);
+    if (typeof lib === 'string') return reply.code(400).send({ error: lib });
+    const bytes = encodeMessage({ type: 'meshes', library: lib });
+    for (const [client] of clients) if (client.readyState === client.OPEN) out(client, bytes);
+    return { library: lib };
   });
 
   // Operators only: adds or replaces a design (body: the design, its id as in the URL; its item
@@ -1375,6 +1391,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               send({ type: 'designs', designs: designs.list() });
               // (How figures move, if it's not the defaults every client has.)
               if (animations.custom) send({ type: 'animations', library: animations.get() });
+              if (meshes.custom) send({ type: 'meshes', library: meshes.get() });
               send({ type: 'objects', objects: world.designObjects() });
               world.onObjectsChanged ??= () => toWorld(world, { type: 'objects', objects: world.designObjects() });
               send({ type: 'boats', boats: world.boatList() });

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js';
-import { AVATAR_PARTS, FIGURE_JOINTS, defaultAnimations, defaultAvatar, poseClip, poseFigure, type AnimationLibrary, type Avatar, type AvatarPart, type FigureKind, type FigurePose as Pose, type FigureState } from '@super-vox/shared';
+import { AVATAR_PARTS, FIGURE_JOINTS, defaultAnimations, defaultAvatar, emptyMeshLibrary, poseClip, poseFigure, type AnimationLibrary, type Avatar, type AvatarPart, type FigureKind, type FigureMesh, type FigurePose as Pose, type FigureState, type MeshLibrary } from '@super-vox/shared';
 import manObj from './models/low-poly-man.obj?raw';
 
 /**
@@ -38,6 +38,8 @@ const SKELETON = {
 
 export type Joint = keyof typeof SKELETON;
 export const JOINTS = FIGURE_JOINTS as readonly Joint[];
+/** The joint `j` hangs on (none: the hips). */
+export const parentOf = (j: Joint): Joint | undefined => (SKELETON[j] as { parent?: Joint }).parent;
 
 /**
  * A model of a figure: its OBJ, which of its pieces (by name) each joint carries (null: not drawn,
@@ -249,18 +251,88 @@ export function hairOf(kind: FigureKind, scale = 1): THREE.BufferGeometry {
   return shaded(g);
 }
 
-/** The man's and woman's models (with their hair), made once (every figure shares them). */
+/** A model from a saved figure (see MeshLibrary). */
+export function fromMesh(m: FigureMesh): FigureModel {
+  const geometry = (pos: number[]) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    return shaded(g);
+  };
+  const parts = new Map<Joint, THREE.BufferGeometry>(), pivots = new Map<Joint, THREE.Vector3>();
+  for (const j of JOINTS) {
+    parts.set(j, geometry(m.parts[j]));
+    pivots.set(j, new THREE.Vector3(...m.pivots[j]));
+  }
+  return { parts, pivots, hair: geometry(m.hair) };
+}
+
+/** A model, to save (see MeshLibrary): its pieces' corners and where its joints are. */
+export function toMesh(model: FigureModel): FigureMesh {
+  const corners = (g: THREE.BufferGeometry | undefined) => (g ? Array.from(g.getAttribute('position').array as ArrayLike<number>, (v) => Math.round(v * 1e5) / 1e5) : []);
+  const parts = {} as FigureMesh['parts'], pivots = {} as FigureMesh['pivots'];
+  for (const j of JOINTS) {
+    parts[j] = corners(model.parts.get(j));
+    const p = model.pivots.get(j)!;
+    pivots[j] = [p.x, p.y, p.z];
+  }
+  return { parts, pivots, hair: corners(model.hair) };
+}
+
+/**
+ * The figures in play: as edited (the server's mesh library: see setMeshes), else as made (the
+ * man from his file, with his hair; the woman reshaped from him, as he is, with hers). Each made
+ * once (every figure shares it); `meshVersion` goes up when they change (figures follow: see pose).
+ */
+let meshLibrary: MeshLibrary = emptyMeshLibrary();
+let meshVersion = 0;
+let baseMan: FigureModel | null = null;
 let man: FigureModel | null = null;
 let woman: FigureModel | null = null;
+/** The man as made, before any edits (his file's pieces, his hair). */
+export function madeModel(kind: FigureKind): FigureModel {
+  baseMan ??= { ...figureModel(MAN), hair: hairOf('man') };
+  // (Her head: the man's, smaller all over, and smaller again.)
+  return kind === 'man' ? baseMan : { ...womanModel(baseMan), hair: hairOf('woman', WOMAN_SCALE * WOMAN_HEAD) };
+}
 function manModel(): FigureModel {
-  man ??= { ...figureModel(MAN), hair: hairOf('man') };
+  const edited = meshLibrary.figures.man;
+  man ??= edited ? fromMesh(edited) : madeModel('man');
   return man;
 }
 export function modelOf(kind: FigureKind): FigureModel {
   if (kind === 'man') return manModel();
-  // (Her head: the man's, smaller all over, and smaller again.)
-  woman ??= { ...womanModel(manModel()), hair: hairOf('woman', WOMAN_SCALE * WOMAN_HEAD) };
+  const edited = meshLibrary.figures.woman;
+  woman ??= edited ? fromMesh(edited) : { ...womanModel(manModel()), hair: hairOf('woman', WOMAN_SCALE * WOMAN_HEAD) };
   return woman;
+}
+/** Takes the server's mesh library: the figures in play from now on (those drawn already, at their next pose). */
+export function setMeshes(lib: MeshLibrary): void {
+  meshLibrary = lib;
+  man = woman = null;
+  scratch = null;
+  meshVersion++;
+}
+export function meshes(): MeshLibrary {
+  return meshLibrary;
+}
+
+/** How tall a model stands (m: the top of its head, or its hair). */
+const heights = new WeakMap<FigureModel, number>();
+function heightOf(model: FigureModel): number {
+  let h = heights.get(model);
+  if (h === undefined) {
+    h = 0;
+    for (const [j, g] of model.parts) {
+      g.computeBoundingBox();
+      h = Math.max(h, model.pivots.get(j)!.y + g.boundingBox!.max.y);
+    }
+    if (model.hair) {
+      model.hair.computeBoundingBox();
+      h = Math.max(h, model.pivots.get('head')!.y + model.hair.boundingBox!.max.y);
+    }
+    heights.set(model, h);
+  }
+  return h;
 }
 
 export type { FigureState, FigurePose as Pose } from '@super-vox/shared';
@@ -308,18 +380,31 @@ export function lockedStride(lib: AnimationLibrary, clip: 'walk' | 'run', figure
 }
 let scratch: PlayerFigure | null = null;
 const scratchFigure = () => (scratch ??= new PlayerFigure(0xffffff));
+/** A figure's walking stride next to the man's (its legs: theirs locked to the ground as his are), by what's in play. */
+const strideRatios = new Map<string, number>();
+function strideRatio(kind: FigureKind): number {
+  if (kind === 'man') return 1;
+  const key = `${meshVersion}:${kind}`;
+  let r = strideRatios.get(key);
+  if (r === undefined) {
+    const his = lockedStride(library, 'walk', scratchFigure()), hers = lockedStride(library, 'walk', new PlayerFigure({ ...defaultAvatar(''), figure: kind }));
+    r = his && hers ? hers / his : 1;
+    strideRatios.set(key, r);
+  }
+  return r;
+}
 
 /** The strides (m) a library's figures walk and run at: its settings', or (0) locked to their feet (see lockedStride). */
 export function measureStrides(lib: AnimationLibrary): { walk: number; run: number } {
   const s = lib.settings;
   return { walk: s.walkStride || lockedStride(lib, 'walk') || 1.6, run: s.runStride || lockedStride(lib, 'run') || 2.6 };
 }
-const strideCache = new WeakMap<AnimationLibrary, { walk: number; run: number }>();
-/** The strides the animations in play walk and run at (worked out once for each library). */
+const strideCache = new WeakMap<AnimationLibrary, { version: number; strides: { walk: number; run: number } }>();
+/** The strides the animations in play walk and run at, the man in play (worked out once for each library, and each change of the figures). */
 export function strides(): { walk: number; run: number } {
   let st = strideCache.get(library);
-  if (!st) strideCache.set(library, (st = measureStrides(library)));
-  return st;
+  if (!st || st.version !== meshVersion) strideCache.set(library, (st = { version: meshVersion, strides: measureStrides(library) }));
+  return st.strides;
 }
 
 /** The pose for what a figure's doing, by the animations in play (see poseFigure). */
@@ -349,8 +434,10 @@ export class PlayerFigure {
   /** Its pieces' meshes, by joint, and its hair's (their shapes swapped for another figure: see setLook). */
   private readonly meshes = new Map<Joint, THREE.Mesh>();
   private hairMesh: THREE.Mesh | null = null;
-  /** The figure it is (the look's, unless it was given its model). */
+  /** The figure it is (the look's, unless it was given its model: then that, always), and which of the figures in play it has (see setMeshes). */
   private kind: FigureKind | null;
+  private readonly fixedModel: FigureModel | null;
+  private version = meshVersion;
 
   /**
    * `look`: how they look (their figure, a man or a woman, and colours), or a colour for their shirt
@@ -359,6 +446,7 @@ export class PlayerFigure {
   constructor(look: Avatar | THREE.ColorRepresentation, model?: FigureModel) {
     this.look = isAvatar(look) ? look : { ...defaultAvatar(''), shirt: `#${new THREE.Color(look).getHexString()}` };
     this.kind = model ? null : this.look.figure;
+    this.fixedModel = model ?? null;
     model ??= modelOf(this.look.figure);
     this.materials = Object.fromEntries(AVATAR_PARTS.map((p) => [p, new THREE.MeshBasicMaterial({ vertexColors: true })])) as Record<AvatarPart, THREE.MeshBasicMaterial>;
     this.setLook(this.look);
@@ -391,22 +479,34 @@ export class PlayerFigure {
     for (const p of AVATAR_PARTS) this.colors[p] = new THREE.Color(look[p]);
     if (this.kind === null || this.kind === look.figure || !this.meshes.size) return;
     this.kind = look.figure;
-    const model = modelOf(look.figure);
+    this.useModel(modelOf(look.figure));
+  }
+
+  /** Its pieces, joints and hair as `model` has them (the materials, pose and look kept). */
+  useModel(model: FigureModel): void {
     for (const name of JOINTS) {
       const parent: Joint | undefined = (SKELETON[name] as { parent?: Joint }).parent;
       this.joints.get(name)!.position.copy(model.pivots.get(name)!).sub(parent ? model.pivots.get(parent)! : new THREE.Vector3());
       this.meshes.get(name)!.geometry = model.parts.get(name)!;
     }
     this.hip = model.pivots.get('hips')!.clone();
-    if (this.hairMesh && model.hair) this.hairMesh.geometry = model.hair;
+    if (model.hair) {
+      if (!this.hairMesh) {
+        this.hairMesh = new THREE.Mesh(model.hair, this.materials.hair);
+        this.hairMesh.name = 'hair';
+        this.joints.get('head')!.add(this.hairMesh);
+      }
+      this.hairMesh.geometry = model.hair;
+    }
+    this.version = meshVersion;
   }
 
   /** How long its strides are next to the man's (its legs: see FigureMotion), and how tall it stands (m). */
   get strideScale(): number {
-    return this.kind === 'woman' ? WOMAN_SCALE : 1;
+    return this.kind ? strideRatio(this.kind) : 1;
   }
   get height(): number {
-    return FIGURE_HEIGHT * this.strideScale;
+    return heightOf(this.kind ? modelOf(this.kind) : this.fixedModel!);
   }
 
   get currentLook(): Avatar {
@@ -430,6 +530,8 @@ export class PlayerFigure {
 
   /** Puts it in the pose (see poseFor). */
   pose(p: Pose): void {
+    // (The figures in play changed since: this one too.)
+    if (this.version !== meshVersion && this.kind) this.useModel(modelOf(this.kind));
     for (const [name, joint] of this.joints) {
       const r = p.joints[name];
       joint.rotation.set(r?.[0] ?? 0, r?.[1] ?? 0, r?.[2] ?? 0, 'YXZ');

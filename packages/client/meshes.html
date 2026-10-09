@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SuperVoxel mesh editor</title>
+    <style>
+      :root { color-scheme: dark; --bg: #0b0d10; --panel: #14181d; --line: #262c34; --text: #e6e6e6; --dim: #8b949e; --accent: #58a6ff; --bad: #ff7b72; --good: #7ee787; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.45 system-ui, sans-serif; }
+      body { display: grid; grid-template-rows: auto 1fr; }
+      #status { margin-left: auto; font-size: 12px; }
+      #status.bad { color: var(--bad); } #status.good { color: var(--good); }
+      main { display: grid; grid-template-columns: 250px 1fr 230px; min-height: 0; }
+      aside { background: var(--panel); border-right: 1px solid var(--line); padding: 10px 12px; overflow-y: auto; }
+      aside.right { border-right: 0; border-left: 1px solid var(--line); }
+      h2 { margin: 14px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); font-weight: 600; }
+      h2:first-child { margin-top: 0; }
+      .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 5px 0; }
+      .note { color: var(--dim); font-size: 12px; margin: 4px 0; }
+      select, input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; font: inherit; }
+      button { background: #21262d; color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 3px 9px; font: inherit; font-size: 12px; cursor: pointer; }
+      button:hover:not(:disabled) { border-color: var(--dim); }
+      button.on { border-color: var(--accent); color: var(--accent); }
+      button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+      button.danger { color: var(--bad); }
+      button:disabled { opacity: 0.45; cursor: default; }
+      #pieces { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
+      #pieces button { padding: 2px 4px; font-size: 11px; }
+      #view { position: relative; min-width: 0; min-height: 0; }
+      #view canvas { display: block; width: 100%; height: 100%; }
+      .help { position: absolute; left: 10px; bottom: 8px; right: 10px; color: var(--dim); font-size: 11px; pointer-events: none; }
+      .readonly { color: var(--dim); font-size: 12px; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+    </style>
+  </head>
+  <body>
+    <header id="sv-header" data-title="Mesh editor"><span id="status">loading…</span></header>
+    <main>
+      <aside>
+        <h2>Figure</h2>
+        <div class="row"><select id="kind"><option value="man">Man</option><option value="woman">Woman</option></select></div>
+        <div class="readonly" id="readonly" hidden>Looking only: editing the figures is for admins (sign in on the menu page).</div>
+        <h2>Piece</h2>
+        <div id="pieces"></div>
+        <div class="note" id="piece-about"></div>
+        <h2>Edit</h2>
+        <div class="row" id="modes">
+          <button data-mode="piece" class="on" title="Move, turn or scale the whole piece about its joint; the joints below follow (P)">Whole piece</button>
+          <button data-mode="corners" title="Pick corners and move them (C)">Corners</button>
+        </div>
+        <div class="row" id="tools">
+          <button data-tool="translate" class="on" title="Move (W)">Move</button>
+          <button data-tool="rotate" title="Turn (E)">Turn</button>
+          <button data-tool="scale" title="Scale (R)">Scale</button>
+        </div>
+        <div class="row" id="corner-tools" hidden>
+          <button id="select-all" title="Every corner of the piece (A)">All corners</button>
+          <button id="select-none" title="None (Esc)">None</button>
+        </div>
+        <label class="row"><input type="checkbox" id="mirror" checked /> Left and right alike (mirrored)</label>
+        <div class="row">
+          <button id="undo" title="Undo (⌘Z)">Undo</button>
+          <button id="redo" title="Redo (⇧⌘Z)">Redo</button>
+        </div>
+        <h2>Keep</h2>
+        <div class="row">
+          <button id="save" class="primary" title="Everyone's figure, from now on">Save</button>
+          <button id="revert" title="Back to what was saved">Revert</button>
+        </div>
+        <div class="row"><button id="made" class="danger" title="This figure as the game makes it (the man from his file, the woman from him)">Back to as made</button></div>
+        <div class="note">Saved, it's everyone's: players see it at once. The animation designer shows it too.</div>
+      </aside>
+      <div id="view">
+        <div class="help" id="help">Click a piece to pick it. Drag to look around, wheel to zoom. Corners: click one (⇧ to add more), then drag the handle. W/E/R move, turn, scale.</div>
+      </div>
+      <aside class="right">
+        <h2>See it move</h2>
+        <div class="row"><select id="clip"><option value="">standing (editing)</option></select></div>
+        <div class="row"><button id="play" title="Play the clip on the figure as it is (space)">▶ Play</button></div>
+        <div class="note">The animation designer's clips, on this figure as you edit it (editing is in the standing pose: pick standing to go on).</div>
+        <div class="row"><a href="/animator.html" style="color: var(--accent)">Open the animation designer</a></div>
+        <h2>Colours</h2>
+        <label class="row"><input type="checkbox" id="parts-coloured" checked /> Parts in colour (skin, shirt, trousers, shoes, hair)</label>
+      </aside>
+    </main>
+    <script type="module" src="/src/meshEditor.ts"></script>
+  </body>
+</html>
