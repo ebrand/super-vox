@@ -22,7 +22,7 @@ interface AccountView {
   spawns: { world: string; x: number; z: number; locked: boolean }[];
 }
 
-const PART_NAMES: Record<AvatarPart, string> = { skin: 'Skin', shirt: 'Shirt', trousers: 'Trousers', shoes: 'Shoes' };
+const PART_NAMES: Record<AvatarPart, string> = { skin: 'Skin', hair: 'Hair', shirt: 'Shirt', trousers: 'Trousers', shoes: 'Shoes' };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const statusEl = $('status');

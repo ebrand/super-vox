@@ -91,7 +91,7 @@ describe('PlayerFigure', () => {
   });
 
   it('wears its look: each part its colour (head and hands skin, shirt, trousers, shoes), red when hurt', () => {
-    const look = { skin: '#c68e6a', shirt: '#2255aa', trousers: '#333333', shoes: '#111111', figure: 'man' as const };
+    const look = { skin: '#c68e6a', shirt: '#2255aa', trousers: '#333333', shoes: '#111111', hair: '#a87d4f', figure: 'man' as const };
     const f = new PlayerFigure(look);
     const colorOf = (joint: string) => ((f.joints.get(joint as never)!.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial).color;
     for (const [joint, part] of [['head', 'skin'], ['wristR', 'skin'], ['chest', 'shirt'], ['elbowL', 'shirt'], ['hips', 'trousers'], ['kneeR', 'trousers'], ['ankleL', 'shoes']] as const)
@@ -244,9 +244,9 @@ describe('the woman', () => {
     const man = new PlayerFigure(defaultAvatar('x')), woman = new PlayerFigure(her);
     const m = size(man), w = size(woman);
     expect(w.min.y).toBeCloseTo(0, 2);
-    // (A little smaller all over, her head a little smaller again: a centimetre.)
+    // (A little smaller all over, her head a little smaller again, her hair a little fuller than his on top: a centimetre either way.)
     const ratio = (w.max.y - w.min.y) / (m.max.y - m.min.y);
-    expect(ratio).toBeLessThan(WOMAN_SCALE);
+    expect(ratio).toBeLessThan(WOMAN_SCALE + 0.006);
     expect(ratio).toBeGreaterThan(WOMAN_SCALE - 0.01);
     expect(woman.height).toBeCloseTo(FIGURE_HEIGHT * WOMAN_SCALE, 5);
     const width = (f: PlayerFigure, joint: string) => new THREE.Box3().setFromObject(f.joints.get(joint as never)!.children[0]!).getSize(new THREE.Vector3()).x;
@@ -271,8 +271,43 @@ describe('the woman', () => {
     f.setLook(her);
     expect(f.strideScale).toBe(WOMAN_SCALE);
     expect(size(f).max.y / tall).toBeGreaterThan(WOMAN_SCALE - 0.01);
-    expect(size(f).max.y / tall).toBeLessThan(WOMAN_SCALE);
+    expect(size(f).max.y / tall).toBeLessThan(WOMAN_SCALE + 0.006);
     f.setLook(defaultAvatar('x'));
     expect(size(f).max.y).toBeCloseTo(tall, 5);
+  });
+});
+
+describe('hair', () => {
+  const hairOn = (f: PlayerFigure) => f.joints.get('head')!.children.find((o) => o.name === 'hair') as THREE.Mesh;
+  const points = (g: THREE.BufferGeometry) => {
+    const p = g.getAttribute('position'), out: THREE.Vector3[] = [];
+    for (let i = 0; i < p.count; i++) out.push(new THREE.Vector3().fromBufferAttribute(p, i));
+    return out;
+  };
+  it("is on the head, in the hair's colour", () => {
+    const f = new PlayerFigure({ ...defaultAvatar('x'), hair: '#a87d4f' });
+    const hair = hairOn(f);
+    expect(hair).toBeDefined();
+    expect((hair.material as THREE.MeshBasicMaterial).color.getHexString()).toBe('a87d4f');
+  });
+
+  it("the man's: high and tight (nothing below his temples); the woman's: a bob, the face open below her bangs", async () => {
+    const { hairOf } = await import('./playerFigure.js');
+    // (From the head joint: his chin at 0, his crown at 27 cm, facing -z.)
+    expect(Math.min(...points(hairOf('man')).map((v) => v.y))).toBeGreaterThan(0.19);
+    const hers = points(hairOf('woman'));
+    // Down to below the chin, at the back and sides...
+    expect(Math.min(...hers.map((v) => v.y))).toBeLessThan(0);
+    // ...but in front of the face (ahead of her cheeks, between them), only the bangs, above the brows.
+    for (const v of hers) if (v.z < -0.05 && Math.abs(v.x) < 0.07) expect(v.y, `${v.x.toFixed(3)} ${v.y.toFixed(3)} ${v.z.toFixed(3)}`).toBeGreaterThan(0.165);
+  });
+
+  it("changes with the figure", () => {
+    const f = new PlayerFigure(defaultAvatar('x'));
+    const his = hairOn(f).geometry;
+    f.setLook({ ...defaultAvatar('x'), figure: 'woman' });
+    expect(hairOn(f).geometry).not.toBe(his);
+    f.setLook(defaultAvatar('x'));
+    expect(hairOn(f).geometry).toBe(his);
   });
 });

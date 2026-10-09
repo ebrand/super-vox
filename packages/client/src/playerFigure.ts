@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js';
 import { AVATAR_PARTS, FIGURE_JOINTS, defaultAnimations, defaultAvatar, poseClip, poseFigure, type AnimationLibrary, type Avatar, type AvatarPart, type FigureKind, type FigurePose as Pose, type FigureState } from '@super-vox/shared';
 import manObj from './models/low-poly-man.obj?raw';
 
@@ -69,6 +70,8 @@ export const MAN: FigureModelSpec = {
 export interface FigureModel {
   parts: Map<Joint, THREE.BufferGeometry>;
   pivots: Map<Joint, THREE.Vector3>;
+  /** Its hair (m, from the head joint), if it has any (see hairOf). */
+  hair?: THREE.BufferGeometry;
 }
 
 /** Shading per face (lit from above, a little in front and to one side), as the held items are shaded. */
@@ -155,8 +158,9 @@ function shaded(g: THREE.BufferGeometry): THREE.BufferGeometry {
   return g;
 }
 
-/** How much smaller the woman is than the man (and so her strides). */
+/** How much smaller the woman is than the man (and so her strides), and her head again. */
 export const WOMAN_SCALE = 0.94;
+const WOMAN_HEAD = 0.96;
 
 /**
  * The woman: the man's pieces reshaped. A little smaller all over (WOMAN_SCALE); narrower in the
@@ -179,7 +183,7 @@ export function womanModel(man: FigureModel): FigureModel {
     chest: (v) => void (v.x *= SHOULDERS),
     spine: (v) => void ((v.x *= 0.78), (v.z *= 0.9)),
     hips: (v) => void ((v.x *= HIPS), (v.z *= 1.06)),
-    head: (v) => void v.multiplyScalar(0.96),
+    head: (v) => void v.multiplyScalar(WOMAN_HEAD),
     neck: (v) => void ((v.x *= 0.85), (v.z *= 0.85)),
   };
   for (const j of ['shoulderL', 'shoulderR', 'elbowL', 'elbowR'] as const) shape[j] = (v) => void ((v.x *= 0.86), (v.z *= 0.86));
@@ -215,16 +219,47 @@ function bust(b: THREE.Box3): number[] {
   return out;
 }
 
-/** The man's and woman's models, made once (every figure shares them). */
+/**
+ * Hair, from the man's head (its corners: chin at y 0, widest, ±8.6 cm, at 12.6 cm; the forehead
+ * sloping back from 23 cm up to the crown at 27; facing -z): low-poly shells (convex hulls of a few
+ * points each, either side of the middle alike) a little proud of it, `scale` times its size.
+ * The man's high and tight: short on top, down the sides and back only to the temples. The woman's
+ * bob: a cap with bangs to the brows, and the back and sides (behind the face) to below the chin,
+ * flaring a little at the ends.
+ */
+export function hairOf(kind: FigureKind, scale = 1): THREE.BufferGeometry {
+  const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+  const both = (pts: THREE.Vector3[]) => pts.flatMap((p) => (p.x === 0 ? [p] : [p, V(-p.x, p.y, p.z)]));
+  const shells =
+    kind === 'man'
+      ? [
+          // Top, the hairline at the top of the forehead, the sides and back to the temples.
+          [V(0.081, 0.277, -0.004), V(0.054, 0.278, 0.112), V(0, 0.28, 0.112), V(0, 0.279, -0.004), V(0.066, 0.237, -0.088), V(0, 0.239, -0.09), V(0.085, 0.196, -0.05), V(0.085, 0.196, 0.06), V(0.07, 0.196, 0.113), V(0, 0.196, 0.114)],
+        ]
+      : [
+          // The cap and bangs (to the brows)...
+          [V(0.088, 0.286, -0.004), V(0.06, 0.286, 0.12), V(0, 0.292, 0.12), V(0, 0.292, 0), V(0.075, 0.25, -0.1), V(0, 0.253, -0.103), V(0.078, 0.176, -0.109), V(0, 0.173, -0.111), V(0.095, 0.2, -0.05), V(0.095, 0.2, 0.07)],
+          // ...and the back and sides, behind the face, to below the chin, out a little at the ends.
+          [V(0.098, 0.22, -0.035), V(0.098, 0.22, 0.08), V(0.06, 0.272, 0.122), V(0, 0.277, 0.124), V(0.1, 0.12, -0.035), V(0.1, 0.12, 0.12), V(0, 0.12, 0.125), V(0.113, -0.045, -0.03), V(0.113, -0.045, 0.112), V(0.07, -0.045, 0.13), V(0, -0.045, 0.132)],
+        ];
+  const pos: number[] = [];
+  for (const pts of shells) pos.push(...Array.from(new ConvexGeometry(both(pts).map((p) => p.multiplyScalar(scale))).getAttribute('position').array as ArrayLike<number>));
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  return shaded(g);
+}
+
+/** The man's and woman's models (with their hair), made once (every figure shares them). */
 let man: FigureModel | null = null;
 let woman: FigureModel | null = null;
 function manModel(): FigureModel {
-  man ??= figureModel(MAN);
+  man ??= { ...figureModel(MAN), hair: hairOf('man') };
   return man;
 }
 export function modelOf(kind: FigureKind): FigureModel {
   if (kind === 'man') return manModel();
-  woman ??= womanModel(manModel());
+  // (Her head: the man's, smaller all over, and smaller again.)
+  woman ??= { ...womanModel(manModel()), hair: hairOf('woman', WOMAN_SCALE * WOMAN_HEAD) };
   return woman;
 }
 
@@ -311,8 +346,9 @@ export class PlayerFigure {
   private readonly body = new THREE.Group();
   /** Where the hips turn (m): the body leans about them. */
   private hip: THREE.Vector3;
-  /** Its pieces' meshes, by joint (their shapes swapped for another figure: see setLook). */
+  /** Its pieces' meshes, by joint, and its hair's (their shapes swapped for another figure: see setLook). */
   private readonly meshes = new Map<Joint, THREE.Mesh>();
+  private hairMesh: THREE.Mesh | null = null;
   /** The figure it is (the look's, unless it was given its model). */
   private kind: FigureKind | null;
 
@@ -342,6 +378,11 @@ export class PlayerFigure {
       (spec.parent ? this.joints.get(spec.parent)! : this.body).add(joint);
     }
     this.hip = model.pivots.get('hips')!.clone();
+    if (model.hair) {
+      this.hairMesh = new THREE.Mesh(model.hair, this.materials.hair);
+      this.hairMesh.name = 'hair';
+      this.joints.get('head')!.add(this.hairMesh);
+    }
   }
 
   /** Looks as `look` says (its colours drawn so at the next tint; another figure, at once). */
@@ -357,6 +398,7 @@ export class PlayerFigure {
       this.meshes.get(name)!.geometry = model.parts.get(name)!;
     }
     this.hip = model.pivots.get('hips')!.clone();
+    if (this.hairMesh && model.hair) this.hairMesh.geometry = model.hair;
   }
 
   /** How long its strides are next to the man's (its legs: see FigureMotion), and how tall it stands (m). */

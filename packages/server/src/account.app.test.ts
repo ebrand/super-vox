@@ -10,7 +10,7 @@ import { World } from './world.js';
 import { singleWorld } from './worlds.js';
 
 const SECRET = 'k'.repeat(40);
-const LOOK = { skin: '#c68e6a', shirt: '#2255aa', trousers: '#333333', shoes: '#111111', figure: 'woman' as const };
+const LOOK = { skin: '#c68e6a', shirt: '#2255aa', trousers: '#333333', shoes: '#111111', hair: '#a87d4f', figure: 'woman' as const };
 
 let app: FastifyInstance;
 afterEach(async () => {

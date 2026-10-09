@@ -1,10 +1,10 @@
 /**
  * How a player looks: their figure (a man or a woman) and a colour for each part of it (skin:
- * head, neck and hands; shirt: body and arms; trousers: hips and legs; shoes: feet), "#rrggbb"
- * each. Chosen on their account page; until then (or if it's reset) one from their name (see
- * defaultAvatar).
+ * head, neck and hands; shirt: body and arms; trousers: hips and legs; shoes: feet; hair: the
+ * man's high and tight, the woman's bob), "#rrggbb" each. Chosen on their account page; until
+ * then (or if it's reset) one from their name (see defaultAvatar).
  */
-export const AVATAR_PARTS = ['skin', 'shirt', 'trousers', 'shoes'] as const;
+export const AVATAR_PARTS = ['skin', 'shirt', 'trousers', 'shoes', 'hair'] as const;
 export type AvatarPart = (typeof AVATAR_PARTS)[number];
 export const FIGURE_KINDS = ['man', 'woman'] as const;
 export type FigureKind = (typeof FIGURE_KINDS)[number];
@@ -12,12 +12,18 @@ export type Avatar = Record<AvatarPart, string> & { figure: FigureKind };
 
 const HEX = /^#[0-9a-f]{6}$/;
 
-/** An avatar from what was sent, or null if it isn't one (every part, a lower-case #rrggbb; the figure, a man unless it says). */
+/** Hair before there was hair (looks saved before: see parseAvatar). */
+const HAIR_BEFORE = '#3b2a1e';
+
+/**
+ * An avatar from what was sent, or null if it isn't one (every part, a lower-case #rrggbb; the
+ * figure, a man unless it says; hair, as it was before there was any, unless it says).
+ */
 export function parseAvatar(raw: unknown): Avatar | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const r = raw as Record<string, unknown>, out: Partial<Avatar> = {};
   for (const p of AVATAR_PARTS) {
-    const v = typeof r[p] === 'string' ? (r[p] as string).toLowerCase() : '';
+    const v = typeof r[p] === 'string' ? (r[p] as string).toLowerCase() : p === 'hair' && r[p] === undefined ? HAIR_BEFORE : '';
     if (!HEX.test(v)) return null;
     out[p] = v;
   }
@@ -32,9 +38,11 @@ export function avatarText(a: Avatar): string {
 }
 export function avatarFromText(s: string): Avatar | null {
   const parts = s.split(',');
-  const woman = parts.length === AVATAR_PARTS.length + 1 && parts.at(-1) === 'w';
-  if (parts.length !== AVATAR_PARTS.length && !woman) return null;
-  return parseAvatar({ ...Object.fromEntries(AVATAR_PARTS.map((p, i) => [p, `#${parts[i]}`])), figure: woman ? 'woman' : 'man' });
+  const woman = parts.at(-1) === 'w';
+  if (woman) parts.pop();
+  // (Four colours: from before there was hair.)
+  if (parts.length !== AVATAR_PARTS.length && parts.length !== AVATAR_PARTS.length - 1) return null;
+  return parseAvatar({ ...Object.fromEntries(parts.map((c, i) => [AVATAR_PARTS[i], `#${c}`])), figure: woman ? 'woman' : 'man' });
 }
 
 /** "#rrggbb" for an HSL colour (hue 0..1, saturation and lightness 0..1). */
@@ -54,9 +62,13 @@ export function nameHue(name: string): number {
   return ((h >>> 0) % 360) / 360;
 }
 
-/** How someone looks who hasn't chosen: a shirt of their name's colour (as everyone was), plain the rest. */
+/** Hair colours people have (for those who haven't chosen: one from their name). */
+const HAIR = ['#1f1a17', '#3b2a1e', '#5a3d27', '#7a5534', '#a87d4f', '#d2b67e', '#8c3b22', '#8f8a85'];
+
+/** How someone looks who hasn't chosen: a shirt of their name's colour (as everyone was), hair one of people's, plain the rest. */
 export function defaultAvatar(name: string): Avatar {
-  return { skin: '#d9b99b', shirt: hsl(nameHue(name), 0.32, 0.6), trousers: '#4a5568', shoes: '#2d2a26', figure: 'man' };
+  const hair = HAIR[Math.floor(nameHue(`${name}#hair`) * HAIR.length)]!;
+  return { skin: '#d9b99b', shirt: hsl(nameHue(name), 0.32, 0.6), trousers: '#4a5568', shoes: '#2d2a26', hair, figure: 'man' };
 }
 
 /**
