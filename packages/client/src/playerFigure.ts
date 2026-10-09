@@ -161,7 +161,7 @@ export const WOMAN_SCALE = 0.94;
 /**
  * The woman: the man's pieces reshaped. A little smaller all over (WOMAN_SCALE); narrower in the
  * shoulders and chest, the arms in with them and slimmer; a narrow waist; wider hips, the legs out
- * with them; a smaller head; and a bust (two low-poly mounds on the chest, flat-shaded as the rest).
+ * with them; a smaller head; and a bust (a slight rise each side of the upper chest, flat-shaded as the rest).
  */
 export function womanModel(man: FigureModel): FigureModel {
   const k = WOMAN_SCALE, SHOULDERS = 0.86, HIPS = 1.14;
@@ -201,15 +201,15 @@ export function womanModel(man: FigureModel): FigureModel {
   return { parts, pivots };
 }
 
-/** Two low-poly mounds on the front (-z) of a chest piece with bounds `b` (positions, flat triangles). */
+/** Two low, rounded rises on the front (-z) of a chest piece with bounds `b` (positions, flat triangles). */
 function bust(b: THREE.Box3): number[] {
   const w = b.max.x - b.min.x, h = b.max.y - b.min.y, d = b.max.z - b.min.z;
   const out: number[] = [];
   for (const side of [-1, 1]) {
-    const g = new THREE.IcosahedronGeometry(0.21 * w, 0).toNonIndexed();
-    // (A little flattened front to back, set into the chest a little below its middle, just in from each side: 4 or 5 cm proud of it.)
-    g.scale(1, 0.85, 0.78);
-    g.translate((b.min.x + b.max.x) / 2 + side * 0.23 * w, b.min.y + 0.5 * h, b.min.z + 0.12 * d);
+    const g = new THREE.IcosahedronGeometry(0.25 * w, 1).toNonIndexed();
+    // (Round, wide and flat, sunk into the upper chest just in from each side: a slight rise, a centimetre or two proud of it.)
+    g.scale(1, 0.8, 0.4);
+    g.translate((b.min.x + b.max.x) / 2 + side * 0.23 * w, b.min.y + 0.56 * h, b.min.z + 0.2 * d);
     out.push(...Array.from(g.getAttribute('position').array as ArrayLike<number>));
   }
   return out;
