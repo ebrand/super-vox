@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { CAR_SPECS, FLATBED_CRATES, PLATFORM_M, UNITS_PER_METER, type Station, alongLine, cratesFor, carPose, moveTrain, pointAt, route, speedLimit, trackNet, type CarKind, type Track, type TrackNet, type Train } from '@super-vox/shared';
+import { BLOCK_SIZE, CAR_SPECS, FLATBED_CRATES, Item, PLATFORM_M, STATION_BED, STATION_X, UNITS_PER_METER, designOfItem, type Station, alongLine, cratesFor, carPose, moveTrain, pointAt, route, speedLimit, trackNet, type CarKind, type Track, type TrackNet, type Train } from '@super-vox/shared';
 import { AMBER_DISC, CAR_SIZE, GREEN_DISC, carGeometry, crateGeometry, stationGeometry, switchStandGeometry } from './trainModels.js';
 import { nameTag } from './entities.js';
+import { materialColor } from './materials.js';
 
 const M = UNITS_PER_METER;
 /** The top of the rails over a track point's height (its rails' foot: see trackModel), m. */
@@ -162,7 +163,7 @@ export class TrainView {
       const group = new THREE.Group();
       group.position.set(p.x / M, p.y / M, p.z / M);
       group.rotation.y = p.heading;
-      group.add(new THREE.Mesh(this.stationGeometries[st.side], this.material));
+      group.add(this.stationLook(st.side));
       const tag = nameTag(st.name, 4.6);
       tag.position.x = st.side * 2.7;
       group.add(tag);
@@ -175,6 +176,49 @@ export class TrainView {
   stationPoints(): { id: number; name: string; x: number; z: number }[] {
     return [...this.stationMeshes.values()].map(({ group, station }) => ({ id: station.id, name: station.name, x: group.position.x * M, z: group.position.z * M }));
   }
+
+  /** Stations drawn again (their look's design changed: see the designs message). */
+  designsChanged(): void {
+    const stations = [...this.stationMeshes.values()].map((m) => m.station);
+    for (const m of this.stationMeshes.values()) m.group.removeFromParent();
+    this.stationMeshes.clear();
+    this.setStations(stations);
+  }
+
+  /**
+   * How a station looks, on `side` of the track: the design standing in for stations, if there is
+   * one (a cube a voxel: see stationDesign for its frame), else the built-in model.
+   */
+  private stationLook(side: 1 | -1): THREE.Object3D {
+    const design = designOfItem(Item.Station);
+    if (!design) return new THREE.Mesh(this.stationGeometries[side], this.material);
+    const voxels = design.states[0]?.voxels ?? [];
+    const mesh = new THREE.InstancedMesh(this.cube, this.material, Math.max(1, voxels.length));
+    const m = new THREE.Matrix4(), c = new THREE.Color(), L = (design.size[2] * BLOCK_SIZE) / M;
+    voxels.forEach((v, i) => {
+      const s = v.size / M, x = (v.x + v.size / 2) / M, y = (v.y + v.size / 2) / M, z = (v.z + v.size / 2) / M;
+      m.makeScale(s, s, s).setPosition(side * (STATION_X + x), y - STATION_BED, z - L / 2);
+      mesh.setMatrixAt(i, m);
+      const [r, g, b] = materialColor(v.material);
+      mesh.setColorAt(i, c.setRGB(r, g, b, THREE.LinearSRGBColorSpace));
+    });
+    mesh.count = voxels.length;
+    mesh.frustumCulled = false;
+    return mesh;
+  }
+
+  /** A unit cube, its faces shaded as blocks are (lit from above), for voxels. */
+  private readonly cube = (() => {
+    const g = new THREE.BoxGeometry(1, 1, 1).toNonIndexed(), n = g.getAttribute('normal'), col: number[] = [];
+    const light = new THREE.Vector3(0.35, 1, -0.5).normalize(), v = new THREE.Vector3();
+    for (let i = 0; i < n.count; i++) {
+      v.fromBufferAttribute(n, i);
+      const k = 0.55 + 0.45 * Math.max(0, v.dot(light)) + 0.08 * Math.max(0, v.y);
+      col.push(k, k, k);
+    }
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    return g;
+  })();
 
   /** The station whose platform a ray (units) meets within `maxDist` units: its id, name, and how far. */
   pickStation(origin: readonly number[], dir: readonly number[], maxDist: number): { id: number; name: string; dist: number } | null {

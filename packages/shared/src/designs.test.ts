@@ -65,7 +65,7 @@ describe('parseDesign', () => {
     };
     expect(bad((d) => (d.id = 'Bad Id'))).toMatch(/id/);
     expect(bad((d) => (d.name = ' '))).toMatch(/name/);
-    expect(bad((d) => (d.size = [17, 1, 1]))).toMatch(/size/);
+    expect(bad((d) => (d.size = [49, 1, 1]))).toMatch(/size/);
     expect(bad((d) => (d.size = [0, 1, 1]))).toMatch(/size/);
     expect(bad((d) => (d.states = []))).toMatch(/states/);
     expect(bad((d) => (d.states[1].voxels = []))).toMatch(/empty/);
@@ -262,7 +262,7 @@ describe('VoxelOccupancy', () => {
 describe('big designs and pieces of a keep', () => {
   it('can be up to 16 m a side, checked quickly; and a piece of a keep, not also a station', async () => {
     const { DESIGN_MAX_BLOCKS } = await import('./index.js');
-    expect(DESIGN_MAX_BLOCKS).toBe(16);
+    expect(DESIGN_MAX_BLOCKS).toBe(48);
     // A wall section 16 m wide, 8 high, 2 deep, of 1/4 m stone blocks: 16384 voxels.
     const voxels = [];
     for (let y = 0; y < 128; y += 4) for (let z = 0; z < 32; z += 4) for (let x = 0; x < 256; x += 4) voxels.push({ x, y, z, size: 4, material: Material.Cobblestone });

@@ -1399,6 +1399,8 @@ connection = connect({
         updateHud();
         // (Boats whose designs weren't known yet: now they can be drawn.)
         boats?.setBoats(boatList);
+        // (Stations: drawn as the design standing in for them, if there's one now.)
+        trainView?.designsChanged();
         break;
       case 'tracks':
         trackView?.setTracks(msg.tracks);

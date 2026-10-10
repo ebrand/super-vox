@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { FIRST_DESIGN_ITEM, parseDesign, setDesigns, type ObjectDesign } from '@super-vox/shared';
+import { FIRST_DESIGN_ITEM, parseDesign, setDesigns, stationDesign, type ObjectDesign } from '@super-vox/shared';
 
 /** The library as kept on disk: the designs, and the next item number (never reused, so old items don't become new things). */
 interface LibraryFile {
@@ -22,7 +22,11 @@ export class DesignLibrary {
   private designs: ObjectDesign[] = [];
   private nextItem = FIRST_DESIGN_ITEM;
 
-  constructor(private readonly file: string | null) {
+  constructor(
+    private readonly file: string | null,
+    /** Designs that come with the game (the station's), put in when the library has none in their place. */
+    builtIn = false,
+  ) {
     if (file && existsSync(file)) {
       const raw = JSON.parse(readFileSync(file, 'utf8')) as LibraryFile;
       for (const d of raw.designs ?? []) {
@@ -33,6 +37,11 @@ export class DesignLibrary {
       this.nextItem = Math.max(raw.nextItem ?? FIRST_DESIGN_ITEM, ...this.designs.map((d) => d.item + 1));
     }
     setDesigns(this.designs);
+    // (A kept library with no station design: the one that comes, to change in the designer.)
+    if (builtIn && !this.designs.some((d) => d.role === 'railway-station')) {
+      const made = this.put(stationDesign());
+      if (typeof made === 'string') console.warn(`design library: the station design wouldn't go in: ${made}`);
+    }
   }
 
   list(): ObjectDesign[] {

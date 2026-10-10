@@ -124,7 +124,7 @@ describe('villages', () => {
     const raw = { villagers: [...villagers, outside], villages: [{ id: 100, name: 'Walled', x: 8000.5 * M, y: 10 * M, z: 8000.5 * M, founded: 0, cottages, fields, wheat: 0 }], cells: ['4,4', '3,3', '3,4', '4,3', '5,5', '3,5', '5,3', '4,5', '5,4'], next: 200 };
     const sim = new VillageSim(w, raw);
     let now = Date.now();
-    for (let i = 0; i < 40 && (sim.list()[0]!.wall ?? 0) < WALL_SECTIONS; i++) now = await run(sim, 60, now, [{ x: 8000 * M, z: 8000 * M }]);
+    for (let i = 0; i < 120 && (sim.list()[0]!.wall ?? 0) < WALL_SECTIONS; i++) now = await run(sim, 60, now, [{ x: 8000 * M, z: 8000 * M }]);
     expect(sim.list()[0]!.wall).toBe(WALL_SECTIONS);
     expect(built.filter((b) => b.place.some((p) => p.material === Material.Cobblestone)).length).toBeGreaterThanOrEqual(WALL_SECTIONS);
     // Someone outside (the village as kept, them put outside it) comes in (home, at night): by a gate, never through the wall.

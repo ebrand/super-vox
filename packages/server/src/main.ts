@@ -159,7 +159,7 @@ if (authConfig) {
 }
 const auth = authConfig && accounts ? new Auth(authConfig, accounts) : undefined;
 // Designed objects (see DesignLibrary): one library for every world, beside them.
-const designs = new DesignLibrary(join(dataRoot, 'designs.json'));
+const designs = new DesignLibrary(join(dataRoot, 'designs.json'), true);
 // How players' figures move (see AnimationStore): one library beside them too.
 const animations = new AnimationStore(join(dataRoot, 'animations.json'));
 // Players' figures as edited (see MeshStore): one library beside them too.
