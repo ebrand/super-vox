@@ -43,7 +43,28 @@ export interface Villager {
   yaw: number;
   /** The hamlet they live in, if they've found one. */
   home: number | null;
+  /** Health (of VILLAGER_HEALTH; none kept: whole). */
+  health?: number;
 }
+
+/**
+ * Villagers can be hurt: VILLAGER_HEALTH, healing VILLAGER_HEAL a second once unhurt VILLAGER_HEAL_AFTER_MS.
+ * The first VILLAGE_FIGHTERS of a village (while they've more than VILLAGER_FLEE_AT) fight what
+ * comes at it (outlaws; players it has a grudge against), VILLAGER_DAMAGE a hit; the rest run home.
+ */
+export const VILLAGER_HEALTH = 16;
+export const VILLAGER_HEAL = 0.1;
+export const VILLAGER_HEAL_AFTER_MS = 10_000;
+export const VILLAGE_FIGHTERS = 4;
+export const VILLAGER_FLEE_AT = 5;
+export const VILLAGER_DAMAGE = 2;
+/** A village's grudge against a player (ms more of it): for hurting one of its people; killing one; the most; and what killing an outlaw near it takes off. */
+export const HURT_GRUDGE_MS = 10 * 60_000;
+export const KILL_GRUDGE_MS = 60 * 60_000;
+export const GRUDGE_MAX_MS = 3 * 3600_000;
+export const FORGIVE_MS = 10 * 60_000;
+/** What entities show villagers as: this and their id (players are under 1 000 000, mobs from there: counting up, so far from this). */
+export const VILLAGER_ENTITY = 2_000_000_000;
 
 /** A cottage: its footprint's least corner (blocks), how wide (x) and deep (z), its floor's top (block y), the side its door's on (0 -z, 1 +x, 2 +z, 3 -x), how far it's built (0..3: footing, walls, roof) and the work done on the next stage (s). */
 export interface Cottage {
@@ -91,6 +112,8 @@ export interface Village {
   /** What it builds with (blocks: see VillageStock), and the tools it's bought (each gathers faster). */
   stock?: VillageStock;
   tools?: { axes: number; picks: number };
+  /** Grudges against players (by account): till when (ms). */
+  grudges?: Record<string, number>;
 }
 
 /** A village's building materials, in blocks (fractions: gathered a little at a time). */

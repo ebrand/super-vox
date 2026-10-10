@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLOCK_VOLUME, CROP_STAGE_MS, FOUNDERS, Item, START_COINS, villageOffers, GATES, Material, RIPE, UNITS_PER_METER, WALL_AT, WALL_M, WALL_SECTIONS, cottageStage, cropStage, inGate, villagePlot, wallStage, VILLAGER_SEAT, type Station, type VillagePiece } from '@super-vox/shared';
+import { BLOCK_VOLUME, CROP_STAGE_MS, FORGIVE_MS, FOUNDERS, HURT_GRUDGE_MS, Item, KILL_GRUDGE_MS, START_COINS, VILLAGER_DAMAGE, VILLAGER_ENTITY, VILLAGER_HEALTH, villageOffers, GATES, Material, RIPE, UNITS_PER_METER, WALL_AT, WALL_M, WALL_SECTIONS, cottageStage, cropStage, inGate, villagePlot, wallStage, VILLAGER_SEAT, type Station, type VillagePiece } from '@super-vox/shared';
 import { VillageSim, type VillageWorld } from './villageSim.js';
 import { TrainYard } from './trainYard.js';
 
@@ -304,7 +304,88 @@ describe('villages watched and not', () => {
     v.coins = 8;
     sim.bought(v, Item.IronAxe, 1, 8, BLOCK_VOLUME);
     expect(v.tools).toEqual({ axes: 1, picks: 0 });
-    expect(sim.villagerOf(1_000_000 + 1)?.village.id).toBe(100);
-    expect(sim.villagerOf(1_000_000 + 99)).toBeNull();
+    expect(sim.villagerOf(VILLAGER_ENTITY + 1)?.village.id).toBe(100);
+    expect(sim.villagerOf(VILLAGER_ENTITY + 99)).toBeNull();
+  });
+});
+
+/** A hamlet of `n` by (8000, 8000) m, its cottages built, fields tilled and growing (nothing ripe). */
+function settled(n: number) {
+  const villagers = Array.from({ length: n }, (_, i) => ({ id: i + 1, name: `v${i}`, look: '', x: (8000 + (i % 3)) * M, y: 10 * M, z: (8000 + Math.floor(i / 3)) * M, yaw: 0, home: 100 }));
+  const k = Math.ceil(n / 2);
+  const cottages = Array.from({ length: k }, (_, j) => ({ ...villagePlot(8000, 8000, j).cottage, floor: 11, stage: 3, work: 0 }));
+  const fields = Array.from({ length: k }, (_, j) => ({ ...villagePlot(8000, 8000, j).field, tops: Array(30).fill(10), sown: Array(30).fill(T0), tilled: true }));
+  return { villagers, villages: [{ id: 100, name: 'Holdfast', x: 8000.5 * M, y: 10 * M, z: 8000.5 * M, founded: 0, cottages, fields, wheat: 0, coins: 30, stock: { wood: 0, planks: 0, cobble: 0 } }], cells: ['4,4', '3,3', '3,4', '4,3', '5,5', '3,5', '5,3', '4,5', '5,4'], next: 200 };
+}
+
+describe('villagers hurt, and fighting', () => {
+  it('hurt by a player: their village holds it against them (killed, far longer); killing outlaws near it, a little less', () => {
+    const { w } = world();
+    const sim = new VillageSim(w, settled(3));
+    const v = sim.list()[0]!, from = { x: 7990 * M, z: 8000 * M };
+    expect(sim.hurtVillager(VILLAGER_ENTITY + 1, 4, from, 'ann', T0)).toMatchObject({ killed: false, name: 'v0' });
+    expect(sim.grudge(v, 'ann', T0)).toBe(HURT_GRUDGE_MS);
+    expect(sim.grudge(v, 'bob', T0)).toBe(0);
+    expect(sim.near(8000 * M, 8000 * M, 50 * M).find((e) => e.name === 'v0')).toMatchObject({ health: VILLAGER_HEALTH - 4, max: VILLAGER_HEALTH });
+    // Killed (hit enough): gone, and the grudge far longer.
+    expect(sim.hurtVillager(VILLAGER_ENTITY + 2, VILLAGER_HEALTH, from, 'ann', T0)).toMatchObject({ killed: true, name: 'v1' });
+    expect(sim.population).toBe(2);
+    expect(sim.villagerOf(VILLAGER_ENTITY + 2)).toBeNull();
+    expect(sim.grudge(v, 'ann', T0)).toBe(HURT_GRUDGE_MS + KILL_GRUDGE_MS);
+    // An outlaw killed by them near the village: less; far off: no different.
+    sim.forgive('ann', 8010 * M, 8000 * M, T0);
+    expect(sim.grudge(v, 'ann', T0)).toBe(HURT_GRUDGE_MS + KILL_GRUDGE_MS - FORGIVE_MS);
+    sim.forgive('ann', 9000 * M, 8000 * M, T0);
+    expect(sim.grudge(v, 'ann', T0)).toBe(HURT_GRUDGE_MS + KILL_GRUDGE_MS - FORGIVE_MS);
+    // (Not hurt by anyone in particular: no grudge.)
+    sim.hurtVillager(VILLAGER_ENTITY + 3, 1, from, null, T0);
+    expect(Object.keys(v.grudges!)).toEqual(['ann']);
+  });
+
+  it('an outlaw at the village: the first four fight it (hitting it once in reach), the rest run home; a player it holds a grudge against too', async () => {
+    const { w } = world();
+    const sim = new VillageSim(w, settled(6));
+    const here = [{ x: 8000 * M, z: 8000 * M }];
+    const outlaw = { id: 1_000_123, x: 8005 * M, z: 8003 * M, outlaw: true, vulnerable: true };
+    const hits: { target: number; damage: number }[] = [];
+    let now = T0;
+    for (let i = 0; i < 100; i++) {
+      now += 100;
+      sim.step(0.1, now, here, false, [outlaw]);
+      hits.push(...sim.hits);
+    }
+    const fighters = sim.near(8000 * M, 8000 * M, 100 * M).filter((e) => Math.hypot(e.x - outlaw.x, e.z - outlaw.z) < 2 * M);
+    expect(fighters.map((e) => e.name).sort()).toEqual(['v0', 'v1', 'v2', 'v3']);
+    expect(hits.length).toBeGreaterThan(8);
+    expect(hits.every((h) => h.target === outlaw.id && h.damage === VILLAGER_DAMAGE)).toBe(true);
+    // (The other two: off home, away from it.)
+    const rest = sim.near(8000 * M, 8000 * M, 100 * M).filter((e) => e.name === 'v4' || e.name === 'v5');
+    expect(rest.every((e) => Math.hypot(e.x - outlaw.x, e.z - outlaw.z) > 3 * M)).toBe(true);
+    // Creatures see them all (to go for).
+    expect(sim.targets().map((t) => t.id).sort()).toEqual([1, 2, 3, 4, 5, 6].map((i) => VILLAGER_ENTITY + i));
+    // A player they hold a grudge against, near: fought too; one who can't be hurt (creative), not.
+    sim.hurtVillager(VILLAGER_ENTITY + 6, 1, { x: 8000 * M, z: 8000 * M }, 'ann', now);
+    const ann = { id: 7, x: 8001 * M, z: 8004 * M, outlaw: false, account: 'ann', vulnerable: true };
+    const onAnn: number[] = [];
+    for (let i = 0; i < 60; i++) {
+      now += 100;
+      sim.step(0.1, now, here, false, [ann]);
+      onAnn.push(...sim.hits.filter((h) => h.target === 7).map((h) => h.damage));
+    }
+    expect(onAnn.length).toBeGreaterThan(3);
+    const spared: number[] = [];
+    for (let i = 0; i < 60; i++) {
+      now += 100;
+      sim.step(0.1, now, here, false, [{ ...ann, vulnerable: false }]);
+      spared.push(...sim.hits.map((h) => h.damage));
+    }
+    expect(spared).toHaveLength(0);
+    // Nor a player they hold nothing against.
+    for (let i = 0; i < 60; i++) {
+      now += 100;
+      sim.step(0.1, now, here, false, [{ ...ann, id: 8, account: 'bob' }]);
+      spared.push(...sim.hits.map((h) => h.damage));
+    }
+    expect(spared).toHaveLength(0);
   });
 });

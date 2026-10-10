@@ -26,6 +26,8 @@ export interface ChunkStore {
   /** The world's villages and villagers (see VillageSim), as kept: unchecked. */
   loadVillages?(): unknown;
   saveVillages?(villages: unknown): void;
+  loadOutlaws?(): unknown;
+  saveOutlaws?(outlaws: unknown): void;
 }
 
 const FILE = /^(-?\d+)_(-?\d+)_(-?\d+)\.chunk$/;
@@ -35,6 +37,7 @@ const BOATS = 'boats.json';
 const TRACKS = 'tracks.json';
 const TRAINS = 'trains.json';
 const VILLAGES = 'villages.json';
+const OUTLAWS = 'outlaws.json';
 const CROPS = 'crops.json';
 
 /** One file per edited chunk, `<cx>_<cy>_<cz>.chunk`, in a directory. */
@@ -141,6 +144,16 @@ export class FileChunkStore implements ChunkStore {
 
   saveVillages(villages: unknown): void {
     this.write(VILLAGES, JSON.stringify(villages));
+  }
+
+  /** The outlaws and their camps, in outlaws.json beside the chunks. */
+  loadOutlaws(): unknown {
+    const path = join(this.dir, OUTLAWS);
+    return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as unknown) : null;
+  }
+
+  saveOutlaws(outlaws: unknown): void {
+    this.write(OUTLAWS, JSON.stringify(outlaws));
   }
 
   private write(name: string, data: string | Uint8Array): void {

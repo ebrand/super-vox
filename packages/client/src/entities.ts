@@ -15,8 +15,8 @@ export function entityBrightness(sky: number, block: number, daylight: number): 
   return Math.max(0.004, Math.min(1, Math.max(0.7 ** (15 - sky) * daylight, torch)));
 }
 
-/** Drawn as people (the figure, their name over them; not hit, not picked to attack): players and villagers. */
-const person = (k: EntityKind) => k === 'player' || k === 'villager';
+/** Drawn as people (the figure, their name over them): players, villagers and outlaws. */
+const person = (k: EntityKind) => k === 'player' || k === 'villager' || k === 'outlaw';
 
 /** Placeholder looks: a box per kind (metres) and its colour; players 0.6 x 1.8 m, blue. */
 const LOOK: Record<EntityKind, { w: number; h: number; long: number; color: number }> = {
@@ -24,6 +24,7 @@ const LOOK: Record<EntityKind, { w: number; h: number; long: number; color: numb
   villager: { w: 0.6, h: 1.8, long: 0.6, color: 0x8a6d3b },
   pig: { w: MOBS.pig.width, h: MOBS.pig.height, long: 1.3, color: 0xf2a0b1 },
   zombie: { w: MOBS.zombie.width, h: MOBS.zombie.height, long: 0.6, color: 0x4d8a3a },
+  outlaw: { w: MOBS.outlaw.width, h: MOBS.outlaw.height, long: 0.6, color: 0x4a3030 },
 };
 
 /** Snapshots arrive about every 100 ms; things are drawn this far behind, between the last two. */
@@ -247,16 +248,17 @@ export class EntityView {
   }
 
   /** The nearest mob (not player) a ray (units) hits within `maxDist` units, and how far along. */
-  pick(origin: readonly number[], dir: readonly number[], maxDist: number, now = performance.now()): { id: number; dist: number } | null {
+  pick(origin: readonly number[], dir: readonly number[], maxDist: number, now = performance.now()): { id: number; dist: number; kind: EntityKind; name?: string } | null {
     const camX = this.cameraX();
-    let best: { id: number; dist: number } | null = null;
+    let best: { id: number; dist: number; kind: EntityKind; name?: string } | null = null;
     for (const [id, t] of this.tracked) {
-      if (person(t.kind)) continue;
+      // (Not other players: no fighting each other.)
+      if (t.kind === 'player') continue;
       const p = interpolate(t.from, t.to, (now - t.at) / INTERPOLATION_MS);
       const x = camX + deltaX(this.world, camX, p.x);
       const look = LOOK[t.kind], half = (Math.max(look.w, look.long) * UNITS_PER_METER) / 2;
       const d = rayBox(origin, dir, [x - half, p.y, p.z - half], [x + half, p.y + look.h * UNITS_PER_METER, p.z + half]);
-      if (d !== null && d <= maxDist && (!best || d < best.dist)) best = { id, dist: d };
+      if (d !== null && d <= maxDist && (!best || d < best.dist)) best = { id, dist: d, kind: t.kind, ...(t.to.name ? { name: t.to.name } : {}) };
     }
     return best;
   }

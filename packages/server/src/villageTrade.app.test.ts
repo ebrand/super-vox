@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import WebSocket from 'ws';
-import { BLOCK_VOLUME, FLAT_WORLD_16KM, FlatGenerator, Item, Material, PROTOCOL_VERSION, defaultFlatGen, villagePlot, type ServerMessage } from '@super-vox/shared';
+import { BLOCK_VOLUME, FLAT_WORLD_16KM, FlatGenerator, Item, Material, PROTOCOL_VERSION, VILLAGER_ENTITY, defaultFlatGen, villagePlot, type ServerMessage } from '@super-vox/shared';
 import { MemoryAccountStore } from './accounts.js';
 import { buildApp } from './app.js';
 import { Auth, SESSION_COOKIE, sessionToken } from './auth.js';
@@ -59,11 +59,11 @@ describe('trading with villagers over the connection (survival)', () => {
       ws.send(JSON.stringify({ type: 'pose', x, y: 32, z, yaw: 0 }));
       await new Promise((r) => setTimeout(r, 50));
     };
-    const villager = 1_000_000 + 1;
+    const villager = VILLAGER_ENTITY + 1;
     await stand(1200 * M, 1000 * M);
     expect(await ask({ type: 'trade', post: 0, villager, item: Item.Wheat, lots: 1, act: 'buy' })).toMatchObject({ ok: false, error: expect.stringMatching(/too far from v1/) });
     await stand(1002 * M, 1000 * M);
-    expect(await ask({ type: 'trade', post: 0, villager: 1_000_000 + 77, item: Item.Wheat, lots: 1, act: 'buy' })).toMatchObject({ ok: false, error: expect.stringMatching(/no village/) });
+    expect(await ask({ type: 'trade', post: 0, villager: VILLAGER_ENTITY + 77, item: Item.Wheat, lots: 1, act: 'buy' })).toMatchObject({ ok: false, error: expect.stringMatching(/no village/) });
     // Wheat over the 12 they keep: 8, two lots of four (two copper a lot, as they've little).
     expect(await ask({ type: 'trade', post: 0, villager, item: Item.Wheat, lots: 5, act: 'buy' })).toMatchObject({ ok: true });
     await until(() => count(Item.Wheat) === 8 && count(Item.CopperCoin) === 6);

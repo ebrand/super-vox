@@ -187,7 +187,7 @@ export class EditTool {
   private targetMaterial: MaterialId | null = null;
   private hit: { cell: [number, number, number]; normal: [number, number, number]; point: [number, number, number]; distance: number } | null = null;
   /** Finds a mob along a ray (units), for hitting it (set by the game; see EntityView.pick). */
-  pickEntity: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { id: number; dist: number } | null) | null = null;
+  pickEntity: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { id: number; dist: number; kind?: string; name?: string } | null) | null = null;
   /** Finds a boat along a ray (units), to get into or take (set by the game; see BoatView.pick). */
   pickBoat: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { id: number; dist: number } | null) | null = null;
   /** We're in boat `id` now (the server said so). */
@@ -854,6 +854,14 @@ export class EditTool {
     return hit && (!this.hit || hit.dist < this.hit.distance + UNITS_PER_METER) ? hit.post : null;
   }
 
+  /** The outlaw aimed at (their name), if they're in reach (to hit) and nearer than the voxel aimed at. */
+  private aimedOutlaw(): string | null {
+    const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const hit = this.pickEntity?.([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], ATTACK_REACH * UNITS_PER_METER);
+    return hit && hit.kind === 'outlaw' && (!this.hit || hit.dist < this.hit.distance) ? (hit.name ?? 'someone') : null;
+  }
+
   /** The villager aimed at, if they're in reach and nearer than the voxel aimed at. */
   private aimedVillager(): { id: number; name: string; home: number | null; village: string | null } | null {
     const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
@@ -945,14 +953,17 @@ export class EditTool {
     const next = design && states && usable(design) ? states[((design.state ?? 0) + 1) % states.length]!.name : null;
     const car = this.mode === 'hybrid' ? this.aimedCar() : null;
     const villager = this.mode === 'hybrid' && !car ? this.aimedVillager() : null;
+    const outlaw = this.mode === 'hybrid' && !car && !villager ? this.aimedOutlaw() : null;
     const post = this.mode === 'hybrid' && !car && !villager ? this.aimedPost() : null;
     const lever = this.mode === 'hybrid' && !car && !villager && !post ? this.aimedSwitch() : null;
     const platform = this.mode === 'hybrid' && !car && !villager && !post && !lever ? this.aimedStation() : null;
     const farm = this.mode === 'hybrid' && !car && !villager && !post && !lever && !platform ? this.farmTarget() : null;
     const sownStage = farm ? (this.cropAt?.(farm.block[0], farm.block[1], farm.block[2]) ?? null) : null;
-    const target = villager
+    const target = outlaw
+      ? `aiming at ${outlaw}, an outlaw (left-click: hit)`
+      : villager
       ? villager.village
-        ? `aiming at ${villager.name} of ${villager.village} (right-click: trade with ${villager.village})`
+        ? `aiming at ${villager.name} of ${villager.village} (right-click: trade with ${villager.village}; left-click: hit, and ${villager.village} remembers)`
         : `aiming at ${villager.name}, a wanderer`
       : farm && farm.material === Material.Farmland
       ? sownStage === null

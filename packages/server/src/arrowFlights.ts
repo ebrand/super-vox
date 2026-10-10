@@ -4,14 +4,14 @@ import type { World } from './world.js';
 /** Something an arrow can hit: a mob or a player (by id), and its box (units). */
 export interface Target {
   id: number;
-  kind: 'mob' | 'player';
+  kind: 'mob' | 'player' | 'villager';
   box: Aabb;
 }
 
 /** An arrow that's stopped: what it hit (null: nothing, it flew its time). */
 export interface Stopped {
   shot: ArrowShot;
-  hit: (ArrowHit & { kind?: 'mob' | 'player'; water?: boolean }) | null;
+  hit: (ArrowHit & { kind?: 'mob' | 'player' | 'villager'; water?: boolean }) | null;
   /** Where it stopped (units). */
   at: [number, number, number];
 }
@@ -29,7 +29,7 @@ export class ArrowFlights {
     return this.flying.size;
   }
 
-  /** Shoots one: by player `by`, from (x, y, z) along `dir` (units; any length), drawn `charge`. */
+  /** Shoots one: by player (or creature) `by`, from (x, y, z) along `dir` (units; any length), drawn `charge`. */
   shoot(by: number, x: number, y: number, z: number, dir: readonly [number, number, number], charge: number, now: number): ArrowShot {
     const len = Math.hypot(...dir) || 1, v = arrowSpeed(charge);
     const shot: ArrowShot = { id: this.nextId++, by, x, y, z, vx: (dir[0] / len) * v, vy: (dir[1] / len) * v, vz: (dir[2] / len) * v };
@@ -47,7 +47,8 @@ export class ArrowFlights {
     const stops = (x: number, y: number, z: number) => this.world.solidAt(x, y, z) || this.world.waterAt(x, y, z) === true;
     for (const [id, f] of this.flying) {
       const t1 = Math.min((now - f.born) / 1000, ARROW.lifeMs / 1000);
-      const things = targets.filter((g) => !(g.kind === 'player' && g.id === f.shot.by));
+      // (Never the one who shot it: players' and creatures' ids don't overlap.)
+      const things = targets.filter((g) => g.id !== f.shot.by);
       const hit = arrowStep(f.shot, f.t, t1, stops, things);
       f.t = t1;
       if (hit) {

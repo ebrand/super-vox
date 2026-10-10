@@ -920,6 +920,15 @@ export class World {
     return true;
   }
 
+  /** The world's outlaws and camps, as they were left (see OutlawSim: unchecked, it checks). */
+  loadOutlaws(): unknown {
+    return this.store?.loadOutlaws?.() ?? null;
+  }
+
+  saveOutlaws(state: unknown): void {
+    this.store?.saveOutlaws?.(state);
+  }
+
   /** The world's villages, as they were left (see VillageSim: unchecked, it checks). */
   loadVillages(): unknown {
     return this.store?.loadVillages?.() ?? null;

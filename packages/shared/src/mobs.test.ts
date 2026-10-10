@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MOBS, hurtMob, newMob, stepMob, type MobTarget } from './mobs.js';
+import { ARCHER_FAR, ARCHER_MS, ARCHER_NEAR, HOME_M, MOBS, hurtMob, newMob, stepMob, type MobTarget } from './mobs.js';
 import type { SolidAt } from './physics.js';
 
 const M = 16;
@@ -71,5 +71,43 @@ describe('mobs', () => {
     expect(pig.y).toBeCloseTo(0, 5);
     expect(pig.walk.grounded).toBe(true);
   });
-});
 
+  it('outlaws go for villagers as well as players (zombies only players); swords close in and hit', () => {
+    const villager: MobTarget = { id: 2_000_000_001, x: 6 * M, y: 0, z: 0, vulnerable: true, villager: true };
+    const z = newMob(3, 'zombie', 0, 0, 0, 0);
+    expect(run(z, 6, ground(), [villager])).toHaveLength(0);
+    const o = Object.assign(newMob(4, 'outlaw', 0, 0, 0, 0), { home: null });
+    const hits = run(o, 6, ground(), [villager]);
+    expect(hits.length).toBeGreaterThan(2);
+    expect(hits.every((h) => h.player === villager.id && h.damage === MOBS.outlaw.damage)).toBe(true);
+    expect(o.swings).toBe(hits.length);
+  });
+
+  it("outlaws with bows keep their distance, shooting every ARCHER_MS; and outlaws keep about their home", () => {
+    const player: MobTarget = { id: 9, x: 0, y: 0, z: 0, vulnerable: true };
+    const a = Object.assign(newMob(5, 'outlaw', 3 * M, 0, 0, 0), { archer: true, home: null });
+    const shots: number[] = [];
+    let r = 0.5;
+    const random = () => (r = (r * 9301 + 49297) % 233280 / 233280);
+    for (let i = 0; i < 100; i++) {
+      const res = stepMob(a, 0.1, i * 100, ground(), [player], random);
+      if (res.shoot) shots.push(i * 100);
+      expect(res.hit).toBeNull();
+    }
+    // Backed off from 3 m, to between near and far; shooting at the player.
+    const d = Math.hypot(a.x, a.z) / M;
+    expect(d).toBeGreaterThan(ARCHER_NEAR - 0.5);
+    expect(d).toBeLessThan(ARCHER_FAR + 1);
+    expect(shots.length).toBeGreaterThanOrEqual(3);
+    for (let i = 1; i < shots.length; i++) expect(shots[i]! - shots[i - 1]!).toBeGreaterThanOrEqual(ARCHER_MS);
+    // With nobody about, wandering: never far from home.
+    const w = Object.assign(newMob(6, 'outlaw', 0, 0, 0, 0), { home: { x: 0, z: 0 } });
+    let far = 0;
+    for (let i = 0; i < 1200; i++) {
+      stepMob(w, 0.1, i * 100, ground(), [], random);
+      far = Math.max(far, Math.hypot(w.x, w.z) / M);
+    }
+    expect(far).toBeLessThan(HOME_M * 1.6);
+    expect(far).toBeGreaterThan(1);
+  });
+});

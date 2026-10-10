@@ -635,7 +635,7 @@ document.body.append(healthEl, hurtEl);
 let health: number | null = null;
 /** What to say when we died, by how. */
 const RESPAWNED = { here: 'back at your bed', gone: 'your bed is gone, so back at the spawn point', blocked: 'your bed is built over, so back at the spawn point', none: 'back at the spawn point' } as const;
-const DEATHS: Record<DeathCause, string> = { fell: 'you fell to your death', drowned: 'you drowned', starved: 'you starved', mob: 'you were killed', blast: 'you were blown up', shot: 'you were shot' };
+const DEATHS: Record<DeathCause, string> = { fell: 'you fell to your death', drowned: 'you drowned', starved: 'you starved', mob: 'you were killed', blast: 'you were blown up', shot: 'you were shot', outlaw: 'an outlaw killed you', villager: 'villagers killed you' };
 function showHealth(h: number, max: number, food: number, air: number): void {
   if (health !== null && h < health) {
     hurtEl.classList.remove('flash');

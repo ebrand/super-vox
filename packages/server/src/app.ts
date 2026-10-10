@@ -34,6 +34,7 @@ import {
   EditError,
   columnSpans,
   ATTACK_REACH,
+  VILLAGER_ENTITY,
   PLAYER_HEALTH,
   EXHAUSTION,
   Vitals,
@@ -127,6 +128,7 @@ import {
 } from '@super-vox/shared';
 import type { WebSocket } from 'ws';
 import { VillageSim } from './villageSim.js';
+import { OutlawSim } from './outlawSim.js';
 import type { EditResult, World } from './world.js';
 import { Explosives } from './explosives.js';
 import { RequestQueue } from './requestQueue.js';
@@ -193,8 +195,9 @@ interface Player {
   world: string;
   connectedAt: number;
   tolerance: number | null;
-  /** Account name, if signed in. */
+  /** Account name, if signed in; and their account's id (what villages hold grudges by). */
   name: string | null;
+  account: string | null;
   /** Last reported position (units) and heading, and when. */
   pose: { x: number; y: number; z: number; yaw: number; at: number } | null;
   /** Their builds (creative: see World.build), the latest last: to undo. */
@@ -919,6 +922,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         if (n === name) {
           villageSims.delete(w);
           villageNames.delete(w);
+          outlawSims.delete(w);
         }
     } catch (err) {
       if (err instanceof NoSuchWorldError) return reply.code(404).send({ error: err.message });
@@ -1117,7 +1121,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       if (!flights.count) continue;
       const mobs = mobManagers.get(world);
       const shooters = new Map<number, [WebSocket, Player]>();
-      const targets: Target[] = [...(mobs?.boxes() ?? []).map((m) => ({ ...m, kind: 'mob' as const }))];
+      const villagers = villageSims.get(world);
+      const targets: Target[] = [...(mobs?.boxes() ?? []).map((m) => ({ ...m, kind: 'mob' as const })), ...(villagers?.boxes() ?? []).map((v) => ({ ...v, kind: 'villager' as const }))];
       for (const [client, p] of players) {
         if (clients.get(client) !== world) continue;
         shooters.set(p.id, [client, p]);
@@ -1129,13 +1134,17 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         if (hit?.what === 'thing' && hit.kind === 'mob') {
           what = 'mob';
           const r = mobs?.hurt(hit.id, damage, shot.x, shot.z, now);
-          // A pig killed: its pork dropped where it fell (as for a sword).
+          // A pig killed: its pork dropped where it fell (as for a sword); an outlaw, villages near forgive a little.
           const shooter = shooters.get(shot.by)?.[1];
           if (shooter) porkFrom(world, shooter, r);
+          killedOutlaw(world, shooter, r);
+        } else if (hit?.what === 'thing' && hit.kind === 'villager') {
+          what = 'mob';
+          villagers?.hurtVillager(hit.id, damage, { x: shot.x, z: shot.z }, shooters.get(shot.by)?.[1].account ?? null, now);
         } else if (hit?.what === 'thing' && hit.kind === 'player') {
           what = 'player';
           const target = shooters.get(hit.id);
-          if (target) harm(target[0], target[1], world, damage, 'shot', now);
+          if (target) harm(target[0], target[1], world, damage, shooters.has(shot.by) ? 'shot' : 'outlaw', now);
         } else if (hit?.what === 'world') {
           what = hit.water ? 'water' : 'world';
           const result = hit.water ? null : world.chip(...hit.cell, ARROW.chip);
@@ -1224,6 +1233,42 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     villageNames.set(world, seed);
     return sim;
   };
+  /** Each world's outlaws (see OutlawSim), made when someone's first there. */
+  const outlawSims = new Map<World, OutlawSim>();
+  const outlawsOf = (world: World, name: string | undefined): OutlawSim => {
+    let sim = outlawSims.get(world);
+    if (sim) return sim;
+    const seed = name ?? catalog.defaultName;
+    sim = new OutlawSim(
+      {
+        config: world.config,
+        terrainAt: (x, z) => world.terrainAt(x, z),
+        buildWorks: (c, p) => world.buildWorks(c, p),
+        editedNear: (x, z, r) => world.editedNear(x, z, r),
+        settlements: () => [...(villageSims.get(world)?.list() ?? []).map((v) => ({ x: v.x, z: v.z, village: true })), ...world.tradingPosts(seed).map((t) => ({ x: t.x, z: t.z, village: false }))],
+        saveOutlaws: (s) => world.saveOutlaws(s),
+      },
+      world.loadOutlaws(),
+    );
+    sim.onError = (err) => app.log.warn(err, "an outlaw camp couldn't be written");
+    sim.onEdits = (results) => {
+      for (const r of results) {
+        metrics.totals.edits++;
+        broadcast(world, r);
+      }
+    };
+    // Killed: what they had, dropped where they fell (coins; now and then their weapon).
+    sim.onDeath = (o, at) => {
+      drop(world, Item.CopperCoin, 2 + Math.floor(Math.random() * 5), at.x, at.y, at.z);
+      if (Math.random() < 0.25) drop(world, o.archer ? Item.Bow : Item.IronSword, 1, at.x, at.y, at.z);
+    };
+    outlawSims.set(world, sim);
+    return sim;
+  };
+  /** A player killed a creature: an outlaw, and villages near hold less against them. */
+  const killedOutlaw = (world: World, killer: Player | undefined, r: { killed: boolean; kind?: string; at?: { x: number; z: number } } | undefined) => {
+    if (r?.killed && r.kind === 'outlaw' && r.at && killer?.account) villageSims.get(world)?.forgive(killer.account, r.at.x, r.at.z, Date.now());
+  };
   /** Why (x, z) (units) isn't to be built on or dug by players: a village's land. */
   const villageLand = (world: World, x: number, z: number): string | null => {
     const v = villageSims.get(world)?.villageAt(x, z);
@@ -1241,14 +1286,42 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       const hours = clockHours(catalog.clock(here[0]?.p.world) ?? catalog.clock(undefined)!, now);
       const night = hours < 6 || hours >= 19.5;
       const targets = here.map(({ p }) => ({ id: p.id, x: p.pose!.x, y: p.pose!.y - EYE, z: p.pose!.z, vulnerable: p.vulnerable }));
-      sim.step(0.1, now, here.map(({ p }) => ({ x: p.pose!.x, z: p.pose!.z })), night);
+      const at = here.map(({ p }) => ({ x: p.pose!.x, z: p.pose!.z }));
+      // Outlaws: creatures near players, records further off (see OutlawSim).
+      outlawsOf(world, sockets[0] ? clientWorld.get(sockets[0]) : undefined).step(0.1, now, at, mobs);
+      // Villagers: what's after their village (outlaws; players it's a grudge against), and their hits back.
+      const threats = [
+        ...mobs.ofKind('outlaw').map((m) => ({ id: m.id, x: m.x, z: m.z, outlaw: true, vulnerable: true })),
+        ...here.map(({ p }) => ({ id: p.id, x: p.pose!.x, z: p.pose!.z, outlaw: false, vulnerable: p.vulnerable, ...(p.account ? { account: p.account } : {}) })),
+      ];
+      sim.step(0.1, now, at, night, threats);
+      for (const h of sim.hits) {
+        if (h.outlaw) mobs.hurt(h.target, h.damage, h.from.x, h.from.z, now);
+        else {
+          const e = here.find(({ p }) => p.id === h.target);
+          if (e) harm(e.s, e.p, world, h.damage, 'villager', now);
+        }
+      }
+      for (const hit of mobs.step(0.1, now, [...targets, ...sim.targets()], night)) {
+        if (hit.player >= VILLAGER_ENTITY) {
+          const by = mobs.get(hit.by);
+          sim.hurtVillager(hit.player, hit.damage, by ? { x: by.x, z: by.z } : { x: 0, z: 0 }, null, now);
+          continue;
+        }
+        const e = here.find(({ p }) => p.id === hit.player);
+        if (e) harm(e.s, e.p, world, hit.damage, hit.kind === 'outlaw' ? 'outlaw' : 'mob', now);
+      }
+      // Outlaws' bows: an arrow at whom they're after (aimed a little high, for the drop).
+      for (const { by, at: t } of mobs.shots) {
+        let flights = arrowsOf.get(world);
+        if (!flights) arrowsOf.set(world, (flights = new ArrowFlights(world)));
+        const from: [number, number, number] = [by.x, by.y + 1.5 * UNITS_PER_METER, by.z], d = Math.hypot(t.x - by.x, t.z - by.z);
+        const aim: [number, number, number] = [t.x - by.x, t.y + 1.2 * UNITS_PER_METER - from[1] + d * 0.08, t.z - by.z];
+        toWorld(world, { type: 'arrow', arrow: flights.shoot(by.id, ...from, aim, 0.85, now) });
+      }
       if (sim.changed) {
         sim.changed = false;
         toWorld(world, { type: 'villages', villages: sim.list() });
-      }
-      for (const hit of mobs.step(0.1, now, targets, night)) {
-        const e = here.find(({ p }) => p.id === hit.player);
-        if (e) harm(e.s, e.p, world, hit.damage, 'mob', now);
       }
       for (const { s, p } of here) {
         // Breath, food, healing (see Vitals): the eye under water or not.
@@ -1356,6 +1429,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             villageSims.get(world)?.persist();
             villageSims.delete(world);
             villageNames.delete(world);
+            // (Its outlaws as records again: their creatures go with the mobs.)
+            outlawSims.get(world)?.persist();
+            outlawSims.delete(world);
             mobManagers.delete(world);
             stationViewers.delete(world);
             explosivesOf.delete(world);
@@ -1398,6 +1474,12 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         sim.persist();
       } catch (err) {
         app.log.warn(err, "couldn't keep a world's villages");
+      }
+    for (const sim of outlawSims.values())
+      try {
+        sim.persist();
+      } catch (err) {
+        app.log.warn(err, "couldn't keep a world's outlaws");
       }
     clearInterval(pickingUp);
     clearInterval(stationTicking);
@@ -1599,7 +1681,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               id: nextPlayer++, world: msg.world ?? catalog.defaultName, connectedAt: Date.now(), tolerance: world.tolerance,
               name: who ? shownName(who.account) : null, pose: null, chunks: 0, tiles: 0, edits: 0, bytesOut: 0,
               vitals: new Vitals(), vulnerable: false, vitalsSent: '', lastAttack: 0, lastShot: 0, held: null, swings: 0, pitch: 0, act: 0, builds: [], bed: null, settleUntil: Infinity, saveState: null,
-              home: home ? world.spawnAt(home.x * UNITS_PER_METER, home.z * UNITS_PER_METER) : null, email: who?.account.email ?? null, look: who ? lookOf(who.account) : null,
+              home: home ? world.spawnAt(home.x * UNITS_PER_METER, home.z * UNITS_PER_METER) : null, email: who?.account.email ?? null, account: who?.account.id ?? null, look: who ? lookOf(who.account) : null,
               muted: who?.account.muted ?? false, chatAt: [], radio: () => !!inventory?.carries(Item.Radio),
               give: (item, amount) => {
                 if (!inventory) return false;
@@ -2112,6 +2194,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             if (!sim || !who) return fail("they've no village to trade for");
             const p = players.get(socket)!, v = who.village, name = itemName(msg.item);
             if (!p.pose || Math.hypot(p.pose.x - who.x, p.pose.z - who.z) > (TRADE_REACH_M + 4) * UNITS_PER_METER) return fail(`too far from ${who.name}`);
+            const sore = p.account ? sim.grudge(v, p.account, Date.now()) : 0;
+            if (sore > 0) return fail(`${v.name} won't trade with you: you've hurt their people (another ${Math.ceil(sore / 60_000)} min)`);
             const offers = sim.offers(v);
             let note: string;
             if (msg.act === 'sell') {
@@ -2382,9 +2466,17 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           p.lastAttack = now;
           if (p.vulnerable) p.vitals.exert(EXHAUSTION.attack);
           // (A little reach to spare: the pose is up to a tenth of a second old.)
+          // A villager: hurt (if in reach), and their village remembers.
+          if (msg.target >= VILLAGER_ENTITY) {
+            const sim = villageSims.get(world), v = sim?.villagerOf(msg.target);
+            if (sim && v && Math.hypot(v.x - p.pose.x, v.y + 0.9 * UNITS_PER_METER - p.pose.y, v.z - p.pose.z) <= (ATTACK_REACH + 1.5) * UNITS_PER_METER)
+              sim.hurtVillager(msg.target, attackDamage(weapon), { x: p.pose.x, z: p.pose.z }, p.account, now);
+            break;
+          }
           const r = mobManagers.get(world)?.attack(msg.target, p.pose.x, p.pose.y, p.pose.z, attackDamage(weapon), ATTACK_REACH + 1, now);
-          // A pig killed: its pork (1 to 3) dropped where it fell, to be picked up.
+          // A pig killed: its pork (1 to 3) dropped where it fell, to be picked up; an outlaw, villages near forgive a little.
           porkFrom(world, p, r);
+          killedOutlaw(world, p, r);
           break;
         }
 

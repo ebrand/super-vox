@@ -16,6 +16,8 @@ import {
   type Mob,
   type MobKind,
   type MobTarget,
+  Item,
+  type Outlaw,
 } from '@super-vox/shared';
 import type { World } from './world.js';
 
@@ -25,7 +27,7 @@ const M = UNITS_PER_METER;
  * Mobs kept around each player (within KEEP), by kind, and where new ones appear (SPAWN_MIN..SPAWN_MAX
  * from them). Zombies by day: only in the dark (caves), so only where there's some near.
  */
-const AROUND_PLAYER: Record<MobKind, { day: number; night: number }> = { pig: { day: 4, night: 2 }, zombie: { day: 3, night: 5 } };
+const AROUND_PLAYER: Record<MobKind, { day: number; night: number }> = { pig: { day: 4, night: 2 }, zombie: { day: 3, night: 5 }, outlaw: { day: 0, night: 0 } };
 const SPAWN_MIN = 24 * M, SPAWN_MAX = 48 * M;
 /** How far (blocks) a daytime check for dark looks for the sky: light from further off is under ZOMBIE_DARK. */
 const SKY_REACH = 15 - ZOMBIE_DARK;
@@ -65,6 +67,23 @@ export class MobManager {
     return this.mobs.get(id);
   }
 
+  /** An outlaw (as kept: see OutlawSim) made a creature here, keeping about `home` (units; none, wandering). */
+  addOutlaw(o: Outlaw, home: { x: number; z: number } | null, now: number): Mob {
+    const m = this.add('outlaw', o.x, o.y, o.z, now);
+    Object.assign(m, { health: o.health, name: o.name, look: o.look, archer: o.archer, held: o.archer ? Item.Bow : Item.IronSword, home });
+    return m;
+  }
+
+  /** The mobs of a kind. */
+  ofKind(kind: MobKind): Mob[] {
+    return [...this.mobs.values()].filter((m) => m.kind === kind);
+  }
+
+  /** A mob taken away (not killed: an outlaw back to being a record). */
+  remove(id: number): void {
+    this.mobs.delete(id);
+  }
+
   /** Adds a mob (spawning normally does this; tests use it too). */
   add(kind: MobKind, x: number, y: number, z: number, now: number): Mob {
     const m = newMob(this.nextId++, kind, normalizeX(this.world.config, x), y, z, now);
@@ -76,23 +95,29 @@ export class MobManager {
    * Advances every mob by `dt` seconds at `now` (ms). `night`: zombies come out (and don't
    * burn). Returns the hits mobs made on players.
    */
+  /** Arrows outlaws with bows loosed in the last step: who, and at whom (see stepMob). */
+  readonly shots: { by: Mob; at: MobTarget }[] = [];
+
   /** Time spent (ms, all told) moving mobs, burning zombies, and spawning: for finding what's slow (see the 'slow task' log). */
   readonly spent = { moving: 0, burning: 0, spawning: 0 };
 
-  step(dt: number, now: number, players: readonly MobPlayer[], night: boolean): { player: number; damage: number }[] {
-    const hits: { player: number; damage: number }[] = [];
+  step(dt: number, now: number, players: readonly MobPlayer[], night: boolean): { player: number; damage: number; by: number; kind: MobKind }[] {
+    const hits: { player: number; damage: number; by: number; kind: MobKind }[] = [];
+    this.shots.length = 0;
     let t0 = performance.now();
     const cfg = this.world.config;
     for (const m of this.mobs.values()) {
       // Players as this mob sees them: at their copy nearest it (round worlds wrap).
       const near = players.map((p) => ({ ...p, x: m.x + deltaX(cfg, m.x, p.x) }));
-      if (!near.some((p) => Math.hypot(p.x - m.x, p.z - m.z) < KEEP)) {
+      // (Outlaws stay: OutlawSim takes them away when nobody's near.)
+      if (m.kind !== 'outlaw' && !near.some((p) => !p.villager && Math.hypot(p.x - m.x, p.z - m.z) < KEEP)) {
         this.mobs.delete(m.id);
         continue;
       }
-      const { hit } = stepMob(m, dt, now, this.world.solidAt, near, this.random);
+      const { hit, shoot } = stepMob(m, dt, now, this.world.solidAt, near, this.random);
       m.x = normalizeX(cfg, m.x);
-      if (hit) hits.push(hit);
+      if (hit) hits.push({ ...hit, by: m.id, kind: m.kind });
+      if (shoot) this.shots.push({ by: m, at: shoot });
       // Fell out of the world.
       if (m.y < cfg.minYUnits) this.mobs.delete(m.id);
     }
@@ -112,7 +137,7 @@ export class MobManager {
     t0 = performance.now();
     if (now >= this.nextSpawn) {
       this.nextSpawn = now + 1000;
-      for (const p of players) this.spawnNear(p, night, now);
+      for (const p of players) if (!p.villager) this.spawnNear(p, night, now);
     }
     this.spent.spawning += performance.now() - t0;
     return hits;
@@ -214,6 +239,10 @@ export class MobManager {
         id: m.id, kind: m.kind, x: Math.round(m.x), y: Math.round(m.y), z: Math.round(m.z),
         yaw: Math.round(m.yaw * 100) / 100, health: m.health, max: MOBS[m.kind].health,
         ...(now - m.hurtAt < 300 ? { hurt: true } : {}),
+        ...(m.name !== undefined ? { name: m.name } : {}),
+        ...(m.look !== undefined ? { look: m.look } : {}),
+        ...(m.held !== undefined ? { held: m.held } : {}),
+        ...(m.swings ? { swings: m.swings } : {}),
       });
     }
     return out;

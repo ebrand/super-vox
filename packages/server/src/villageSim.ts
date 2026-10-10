@@ -11,6 +11,17 @@ import {
   WHEAT_KEPT,
   MAX_TOOLS,
   Item,
+  FORGIVE_MS,
+  GRUDGE_MAX_MS,
+  HURT_GRUDGE_MS,
+  KILL_GRUDGE_MS,
+  VILLAGE_FIGHTERS,
+  VILLAGER_ENTITY,
+  VILLAGER_FLEE_AT,
+  VILLAGER_DAMAGE,
+  VILLAGER_HEAL,
+  VILLAGER_HEAL_AFTER_MS,
+  VILLAGER_HEALTH,
   stagePieces,
   stockOf,
   villageOffers,
@@ -115,8 +126,32 @@ const CREW = 2;
 const GAP_MS = 5000;
 const CATCH_UP_S = 60;
 const CATCH_UP_MS = 4 * 3600_000;
-/** What entities show villagers as: this and their id. */
-const VILLAGER_ENTITY = 1_000_000;
+/** Fighting (or running from it), villagers go this fast (m/s); a fighter hits from this near (m), once in VILLAGER_HIT_MS. */
+const VILLAGER_HURRY = 2.6;
+const VILLAGER_REACH = 1.8;
+const VILLAGER_HIT_MS = 1000;
+/** An outlaw is a threat to a village within this far of its middle (m), or this near a villager; a player it's a grudge against, this near. */
+const THREAT_VILLAGE_M = 45;
+const THREAT_NEAR_M = 14;
+const GRUDGE_SIGHT_M = 16;
+
+/** What might be after a village (see step): an outlaw (a creature: its id), or a player (their id, account, whether they can be hurt). */
+export interface Threat {
+  id: number;
+  x: number;
+  z: number;
+  outlaw: boolean;
+  account?: string;
+  vulnerable: boolean;
+}
+
+/** A villager's hit: on whom (a creature's id, or a player's), how hard, from where (units). */
+export interface VillagerHit {
+  target: number;
+  outlaw: boolean;
+  damage: number;
+  from: { x: number; z: number };
+}
 
 /** A building job: a stage's pieces (in order), what's cleared first, how many are in so far (undefined: not cleared yet), where to stand to put one in; done, the next. */
 interface Job {
@@ -137,7 +172,7 @@ interface Trip {
   until: number;
 }
 
-type Mode = 'wander' | 'join' | 'work' | 'field' | 'idle' | 'home';
+type Mode = 'wander' | 'join' | 'work' | 'field' | 'idle' | 'home' | 'fight';
 
 /** A villager as the simulation has them: where they're going, and what they're doing. */
 interface Walker extends Villager {
@@ -146,6 +181,10 @@ interface Walker extends Villager {
   mode: Mode;
   /** Time spent at what they're doing (s). */
   busy: number;
+  /** When last hurt, and when they may hit next (ms); fighting or running from it (faster). */
+  hurtAt?: number;
+  nextHit?: number;
+  hurry?: boolean;
   /** Where to go first, in order, before where they're going (units): round a building's corner, or round a wall and through its gate. */
   path?: { x: number; z: number }[];
   /** Blocked just now (water, steep ground): somewhere off to the side first. */
@@ -198,6 +237,9 @@ export class VillageSim {
   private readonly watched = new Set<number>();
   /** When last stepped (ms; null: not yet). */
   private at: number | null = null;
+  /** What might be after villages, as of this step; villagers' hits made in it (see step). */
+  private threats: readonly Threat[] = [];
+  readonly hits: VillagerHit[] = [];
   /** Unwatched villages' building, pieces' worth owed (see coarse). */
   private readonly owed = new Map<number, number>();
   /** Stages' pieces, worked out (by village, cottage or wall section, and stage). */
@@ -241,13 +283,18 @@ export class VillageSim {
   near(x: number, z: number, r: number): EntitySnapshot[] {
     const out: EntitySnapshot[] = [];
     for (const p of this.walkers.values())
-      if (Math.abs(p.x - x) < r && Math.abs(p.z - z) < r) out.push({ id: VILLAGER_ENTITY + p.id, kind: 'villager', x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z), yaw: p.yaw, name: p.name, look: p.look, ...(p.home !== null ? { home: p.home } : {}) });
+      if (Math.abs(p.x - x) < r && Math.abs(p.z - z) < r) out.push({
+          id: VILLAGER_ENTITY + p.id, kind: 'villager', x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z), yaw: p.yaw, name: p.name, look: p.look,
+          ...(p.home !== null ? { home: p.home } : {}),
+          health: Math.ceil(p.health ?? VILLAGER_HEALTH), max: VILLAGER_HEALTH,
+          ...(p.hurtAt !== undefined && Date.now() - p.hurtAt < 300 ? { hurt: true } : {}),
+        });
     return out;
   }
 
   /** What's kept. */
   save(): SimSave {
-    return { villagers: [...this.walkers.values()].map(({ tx: _x, tz: _z, mode: _m, busy: _b, path: _p, stuck: _s, trip: _t, ...v }) => v), villages: this.list(), cells: [...this.cells], next: this.next, ...(this.at !== null ? { at: this.at } : {}) };
+    return { villagers: [...this.walkers.values()].map(({ tx: _x, tz: _z, mode: _m, busy: _b, path: _p, stuck: _s, trip: _t, hurtAt: _h, nextHit: _n, hurry: _y, ...v }) => v), villages: this.list(), cells: [...this.cells], next: this.next, ...(this.at !== null ? { at: this.at } : {}) };
   }
 
   /** Done once what's been asked to be written into the world has been. */
@@ -276,7 +323,9 @@ export class VillageSim {
    * On `dt` s (now `now`, ms): wanderers brought near `players` (units), everyone walked on toward
    * where they're going; once a second, their choices; at `night`, home.
    */
-  step(dt: number, now: number, players: readonly { x: number; z: number }[], night: boolean): void {
+  step(dt: number, now: number, players: readonly { x: number; z: number }[], night: boolean, threats: readonly Threat[] = []): void {
+    this.threats = threats;
+    this.hits.length = 0;
     // (Back after a while with nobody here: what would have happened meanwhile, roughly.)
     if (this.at !== null && now - this.at > GAP_MS) this.catchUp(this.at, now);
     this.at = now;
@@ -328,7 +377,7 @@ export class VillageSim {
       p.path?.shift();
       return;
     }
-    const step = Math.min(d, VILLAGER_SPEED * M * dt), nx = p.x + (dx / d) * step, nz = p.z + (dz / d) * step;
+    const step = Math.min(d, (p.hurry ? VILLAGER_HURRY : VILLAGER_SPEED) * M * dt), nx = p.x + (dx / d) * step, nz = p.z + (dz / d) * step;
     const here = this.groundAt(p.x, p.z), there = this.groundAt(nx, nz);
     // A wall in the way: round by a gate (on this side of it), then through.
     const wall = this.wallBetween(p, { x: nx, z: nz });
@@ -472,6 +521,30 @@ export class VillageSim {
       return;
     }
     if (p.trip) return this.travel(p, p.trip, now);
+    // Healing, once a while unhurt.
+    if ((p.health ?? VILLAGER_HEALTH) < VILLAGER_HEALTH && now - (p.hurtAt ?? 0) > VILLAGER_HEAL_AFTER_MS) p.health = Math.min(VILLAGER_HEALTH, (p.health ?? VILLAGER_HEALTH) + VILLAGER_HEAL * THINK_S);
+    // Something after the village: the first few fight it (while they're not badly hurt); the rest, home.
+    const enemy = this.enemyOf(p, v, now);
+    p.hurry = !!enemy;
+    if (enemy) {
+      p.path = [];
+      if (this.rankIn(p, v) < VILLAGE_FIGHTERS && (p.health ?? VILLAGER_HEALTH) > VILLAGER_FLEE_AT) {
+        p.mode = 'fight';
+        p.tx = enemy.x;
+        p.tz = enemy.z;
+        if (Math.hypot(enemy.x - p.x, enemy.z - p.z) <= VILLAGER_REACH * M && now >= (p.nextHit ?? 0)) {
+          p.nextHit = now + VILLAGER_HIT_MS;
+          this.hits.push({ target: enemy.id, outlaw: enemy.outlaw, damage: VILLAGER_DAMAGE, from: { x: p.x, z: p.z } });
+        }
+      } else {
+        const c = v.cottages.filter((c) => c.stage >= 3)[this.homeOf(p, v)];
+        const at = c ? this.doorstep(c) : { x: v.x, z: v.z };
+        p.mode = 'home';
+        p.tx = at.x;
+        p.tz = at.z;
+      }
+      return;
+    }
     // At night: home (by their cottage's door, or the middle).
     if (night) {
       const c = v.cottages.filter((c) => c.stage >= 3)[this.homeOf(p, v)];
@@ -981,6 +1054,80 @@ export class VillageSim {
     this.changed = true;
   }
 
+  // ---- Fighting: villagers hurt (by outlaws, players), and fighting back.
+
+  /** What's after `p`'s village nearest them: an outlaw near it (or them), or a player it's a grudge against near them. */
+  private enemyOf(p: Walker, v: Village, now: number): Threat | null {
+    let best: Threat | null = null, bd = Infinity;
+    for (const t of this.threats) {
+      const d = Math.hypot(t.x - p.x, t.z - p.z);
+      const after = t.outlaw
+        ? Math.hypot(t.x - v.x, t.z - v.z) < THREAT_VILLAGE_M * M || d < THREAT_NEAR_M * M
+        : t.vulnerable && t.account !== undefined && this.grudge(v, t.account, now) > 0 && d < GRUDGE_SIGHT_M * M;
+      if (after && d < bd) (bd = d), (best = t);
+    }
+    return best;
+  }
+
+  /** Villagers as creatures see them (to go for: see MobTarget): those walking about (not those far off, standing still, nor aboard trains). */
+  targets(): { id: number; x: number; y: number; z: number; vulnerable: boolean; villager: true }[] {
+    const out: { id: number; x: number; y: number; z: number; vulnerable: boolean; villager: true }[] = [];
+    for (const p of this.walkers.values()) {
+      if (!this.detailed(p) || (p.trip && (p.trip.stage === 'ride' || p.trip.stage === 'rideBack'))) continue;
+      out.push({ id: VILLAGER_ENTITY + p.id, x: p.x, y: p.y, z: p.z, vulnerable: true, villager: true });
+    }
+    return out;
+  }
+
+  /** Villagers' boxes (units), by entity id: what an arrow can hit. */
+  boxes(): { id: number; box: { min: [number, number, number]; max: [number, number, number] } }[] {
+    const h = 0.3 * M;
+    return this.targets().map((t) => ({ id: t.id, box: { min: [t.x - h, t.y, t.z - h], max: [t.x + h, t.y + 1.8 * M, t.z + h] } }));
+  }
+
+  /** How long (ms) a village's grudge against a player (by account) has to go: 0, none. */
+  grudge(v: Village, account: string, now: number): number {
+    return Math.max(0, (v.grudges?.[account] ?? 0) - now);
+  }
+
+  /**
+   * Villager `entity` hurt for `damage` from (x, z) (units: knocked away from it), by a player (their
+   * account) or not: their village's grudge against that player longer (killed, much longer). Null:
+   * no such villager.
+   */
+  hurtVillager(entity: number, damage: number, from: { x: number; z: number }, account: string | null, now: number): { killed: boolean; name: string; village: Village | null } | null {
+    const p = this.walkers.get(entity - VILLAGER_ENTITY);
+    if (!p) return null;
+    p.health = (p.health ?? VILLAGER_HEALTH) - damage;
+    p.hurtAt = now;
+    const v = p.home !== null ? (this.villages.get(p.home) ?? null) : null;
+    const killed = p.health <= 0;
+    if (v && account) {
+      const g = (v.grudges ??= {});
+      g[account] = Math.min(now + GRUDGE_MAX_MS, Math.max(now, g[account] ?? 0) + (killed ? KILL_GRUDGE_MS : HURT_GRUDGE_MS));
+    }
+    if (killed) {
+      this.world.rail?.unseat(VILLAGER_SEAT + p.id);
+      this.walkers.delete(p.id);
+    } else {
+      // (Knocked back a little, if there's ground there.)
+      const dx = p.x - from.x, dz = p.z - from.z, d = Math.hypot(dx, dz) || 1, nx = p.x + (dx / d) * 0.8 * M, nz = p.z + (dz / d) * 0.8 * M;
+      if (this.groundAt(nx, nz).ok && !this.buildingAt(nx, nz)) (p.x = nx), (p.z = nz);
+    }
+    this.changed = true;
+    this.dirty = true;
+    return { killed, name: p.name, village: v };
+  }
+
+  /** A player killed an outlaw at (x, z) (units): villages near it (within THREAT_VILLAGE_M twice over) hold less against them. */
+  forgive(account: string, x: number, z: number, now: number): void {
+    for (const v of this.villages.values()) {
+      if (Math.hypot(v.x - x, v.z - z) > THREAT_VILLAGE_M * 2 * M || !v.grudges?.[account]) continue;
+      v.grudges[account] = Math.max(now, v.grudges[account]! - FORGIVE_MS);
+      this.changed = true;
+    }
+  }
+
   // ---- Trading (see villageOffers): with any villager, for their village.
 
   /** A villager (by their entity id) and the village they live in, if they have one. */
@@ -1016,6 +1163,7 @@ export class VillageSim {
 
   /** A village growing: another cottage when it's full and none's going up; a newcomer when it's prospered. */
   private grow(v: Village, now: number): void {
+    if (v.grudges) for (const [k, until] of Object.entries(v.grudges)) if (until <= now) delete v.grudges[k];
     const members = [...this.walkers.values()].filter((p) => p.home === v.id);
     const going = v.cottages.some((c) => c.stage < 3);
     if (!going && v.cottages.length < MAX_COTTAGES && members.length > v.cottages.length * PER_COTTAGE - 1) this.plan(v);
