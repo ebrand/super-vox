@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { CAR_SPECS, FLATBED_CRATES, UNITS_PER_METER, cratesFor, carPose, moveTrain, speedLimit, trackNet, type CarKind, type Track, type TrackNet, type Train } from '@super-vox/shared';
-import { CAR_SIZE, carGeometry, crateGeometry } from './trainModels.js';
+import { CAR_SPECS, FLATBED_CRATES, UNITS_PER_METER, alongLine, cratesFor, carPose, moveTrain, pointAt, route, speedLimit, trackNet, type CarKind, type Track, type TrackNet, type Train } from '@super-vox/shared';
+import { AMBER_DISC, CAR_SIZE, GREEN_DISC, carGeometry, crateGeometry, switchStandGeometry } from './trainModels.js';
 
 const M = UNITS_PER_METER;
 /** The top of the rails over a track point's height (its rails' foot: see trackModel), m. */
@@ -31,12 +31,20 @@ export class TrainView {
   ) {}
 
   setTracks(tracks: readonly Track[]): void {
-    this.net = trackNet(tracks);
+    this.net = trackNet(tracks, Object.fromEntries(this.net.set));
+    this.showSwitches();
   }
 
-  setTrains(trains: Train[], at: number): void {
+  setTrains(trains: Train[], at: number, switches: Readonly<Record<string, 0 | 1>> = {}): void {
     this.trains = trains;
     this.at = at;
+    let thrown = false;
+    for (const [k, v] of Object.entries(switches))
+      if (this.net.set.has(k) && this.net.set.get(k) !== v) {
+        this.net.set.set(k, v);
+        thrown = true;
+      }
+    if (thrown) this.showSwitches();
     const keep = new Set(trains.flatMap((t) => t.cars.map((c) => c.id)));
     for (const [id, m] of this.meshes)
       if (!keep.has(id)) {
@@ -66,6 +74,66 @@ export class TrainView {
         }
       }
     this.frame();
+  }
+
+  /** Each switch's lever stand: beside its trunk, a little back from it. */
+  private readonly stands = new Map<string, { group: THREE.Group; x: number; y: number; z: number; heading: number }>();
+
+  /** The switches' stands, as they're set: a green disc set straight, amber set for the turnout; an arrow the way it's set. */
+  private showSwitches(): void {
+    for (const s of this.stands.values()) s.group.removeFromParent();
+    this.stands.clear();
+    for (const node of this.net.nodes) {
+      if (!node.legs || !node.trunk) continue;
+      const t = this.net.tracks.get(node.trunk.track)!, L = t.points.at(-1)!.s;
+      const p = pointAt(this.net, { track: t.id, s: node.trunk.end === 'end' ? Math.max(0, L - 4 * M) : Math.min(L, 4 * M), dir: node.trunk.end === 'end' ? 1 : -1 });
+      if (!p) continue;
+      const set = this.net.set.get(node.key) ?? 0, straight = set === node.straight;
+      // (Its right, going into the switch: across from the heading.)
+      const rx = Math.cos(p.heading), rz = -Math.sin(p.heading);
+      const group = new THREE.Group();
+      group.position.set(p.x / M + rx * 2.4, p.y / M, p.z / M + rz * 2.4);
+      group.rotation.y = p.heading;
+      const geometry = switchStandGeometry(straight ? GREEN_DISC : AMBER_DISC, set === 0 ? 1 : -1);
+      group.add(new THREE.Mesh(geometry, this.material));
+      this.group.add(group);
+      this.stands.set(node.key, { group, x: group.position.x * M, y: p.y, z: group.position.z * M, heading: p.heading });
+    }
+  }
+
+  /** The switch whose stand a ray (units) meets within `maxDist` units: its key, which way it's set, and how far. */
+  pickSwitch(origin: readonly number[], dir: readonly number[], maxDist: number): { key: string; left: boolean; dist: number } | null {
+    let best: { key: string; left: boolean; dist: number } | null = null;
+    for (const [key, s] of this.stands) {
+      const half = 0.6 * M, lo = [s.x - half, s.y, s.z - half], hi = [s.x + half, s.y + 1.8 * M, s.z + half];
+      let near = 0, far = maxDist;
+      for (let a = 0; a < 3 && near <= far; a++) {
+        const o = origin[a]!, d = dir[a]!;
+        if (Math.abs(d) < 1e-9) {
+          if (o < lo[a]! || o > hi[a]!) far = -1;
+          continue;
+        }
+        const t1 = (lo[a]! - o) / d, t2 = (hi[a]! - o) / d;
+        near = Math.max(near, Math.min(t1, t2));
+        far = Math.min(far, Math.max(t1, t2));
+      }
+      if (near <= far && (!best || near < best.dist)) best = { key, left: this.net.set.get(key) === 0, dist: near };
+    }
+    return best;
+  }
+
+  /** How far (m, as the crow flies) the next switch a train comes to from its trunk is, the way it's going, if one's within `reach` m along the line. */
+  nextSwitch(car: number, reach = 300): number | null {
+    const t = this.trainOf(car);
+    if (!t) return null;
+    const lead = t.v >= 0 ? t.cars[0]! : t.cars.at(-1)!, at = carPose(this.net, lead);
+    let found: { x: number; z: number } | null = null;
+    alongLine(this.net, lead.pos, (t.v >= 0 ? 1 : -1) * reach * M, (node, from) => {
+      if (!found && node.trunk && node.trunk.track === from.track && node.trunk.end === from.end) found = node;
+      return route(this.net, node, from);
+    });
+    const f = found as { x: number; z: number } | null;
+    return f && at ? Math.hypot(f.x - at.x, f.z - at.z) / M : null;
   }
 
   /** The train a car is in (as last told). */

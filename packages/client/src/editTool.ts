@@ -264,6 +264,8 @@ export class EditTool {
   private readonly cargoOpening = new Map<number, number>();
   /** Finds a trading post's stall along a ray (units), to trade at (set by the game; see PostView.pick). */
   pickPost: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { post: TradingPost; dist: number } | null) | null = null;
+  /** Finds a switch's lever stand along a ray (units), to throw it (set by the game; see TrainView.pickSwitch). */
+  pickSwitch: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { key: string; left: boolean; dist: number } | null) | null = null;
   /** Trading at a post (right-click its stall). */
   onTrade: ((post: TradingPost) => void) | null = null;
   /** A flatbed's load opened, to see and change (the server said it could be). */
@@ -707,6 +709,9 @@ export class EditTool {
         return;
       }
       if (button === 2 && carOfItem(held) !== null) return this.placeCar(held!);
+      // A switch's lever in reach: right-click throws it.
+      const lever = this.aimedSwitch();
+      if (lever && button === 2) return this.request({ type: 'switchThrow', node: lever.key }, 'throwing the switch');
       // A trading post's stall in reach: right-click trades.
       const post = this.aimedPost();
       if (post && button === 2) return this.onTrade?.(post);
@@ -779,6 +784,14 @@ export class EditTool {
       this.wheelTravel += dir * WHEEL_STEP;
       this.stepSize(dir, true);
     }
+  }
+
+  /** The switch stand aimed at, if one's in reach and nearer than the voxel aimed at. */
+  private aimedSwitch(): { key: string; left: boolean } | null {
+    const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const hit = this.pickSwitch?.([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], CAR_REACH_M * UNITS_PER_METER);
+    return hit && (!this.hit || hit.dist < this.hit.distance + UNITS_PER_METER) ? hit : null;
   }
 
   /** The trading post aimed at, if its stall's in reach and nearer than the voxel aimed at. */
@@ -868,7 +881,10 @@ export class EditTool {
     const next = design && states && usable(design) ? states[((design.state ?? 0) + 1) % states.length]!.name : null;
     const car = this.mode === 'hybrid' ? this.aimedCar() : null;
     const post = this.mode === 'hybrid' && !car ? this.aimedPost() : null;
-    const target = post
+    const lever = this.mode === 'hybrid' && !car && !post ? this.aimedSwitch() : null;
+    const target = lever
+      ? `aiming at a switch, set ${lever.left ? 'left' : 'right'} (right-click: throw it)`
+      : post
       ? `aiming at ${post.trader.name}'s stall, ${post.name} (right-click: trade)`
       : car
       ? `aiming at a ${itemName(CAR_ITEM[car.kind])} (right-click: ${car.kind === 'engine' ? (this.survival && this.materialOf() === Material.Coal ? 'put coal in' : 'drive it') : car.kind === 'flatbed' ? 'its load' : 'sit down'}; shift-right-click: uncouple it from the car ahead) (left-click: take it off)`

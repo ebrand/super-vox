@@ -62,7 +62,7 @@ const GOOD = new THREE.Color(0x3fb950), SLOWER = new THREE.Color(0xf0b429), BAD 
 const LAID = new THREE.Color(0x79c0ff);
 const END_COLOUR = 0xffd23f, START_COLOUR = 0x3fb950;
 const HELP =
-  "Click a track's end (a yellow post) to go on from it, or anywhere to start a straight; click again to lay it. " +
+  "Click a track's end (a yellow post) to go on from it, a point along a track to branch from it (curve: 2), or anywhere to start a straight; click again to lay it. " +
   'Right-click or Esc: stop. 1 straight, 2 curve, [ ] design speed. Drag: move · right-drag: turn · wheel: nearer, further · WASD: move · Tab: on.';
 
 /**

@@ -1119,7 +1119,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const trainsSaved = new Map<World, { at: number; busy: boolean }>();
   const showTrains = (world: World) => {
     world.trains.changed = false;
-    toWorld(world, { type: 'trains', trains: world.trains.list(), at: Date.now() });
+    toWorld(world, { type: 'trains', trains: world.trains.list(), at: Date.now(), switches: world.trains.switches() });
   };
   const railing = setInterval(timed('trains', () => {
     trainTicks++;
@@ -1491,7 +1491,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               world.onBoatsChanged ??= () => toWorld(world, { type: 'boats', boats: world.boatList() });
               send({ type: 'tracks', tracks: world.trackList() });
               world.onTracksChanged ??= () => toWorld(world, { type: 'tracks', tracks: world.trackList() });
-              send({ type: 'trains', trains: world.trains.list(), at: Date.now() });
+              send({ type: 'trains', trains: world.trains.list(), at: Date.now(), switches: world.trains.switches() });
               send({ type: 'posts', posts: world.tradingPosts(clientWorld.get(socket) ?? catalog.defaultName) });
               // (What's dropped last: the last thing told unasked.)
               send({ type: 'drops', drops: [...(dropsOf.get(world)?.list.values() ?? [])] });
@@ -1957,10 +1957,26 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           break;
         }
 
+        case 'switchThrow': {
+          // A switch's lever: thrown, if no train's on it (within reach of it).
+          if (!greeted) return;
+          const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
+          if (!canEdit()) return fail(cantBuild());
+          const node = world.trains.switchAt(msg.node), p = players.get(socket)!;
+          if (!node) return fail("there's no switch there");
+          if (p.pose && Math.hypot(p.pose.x - node.x, p.pose.z - node.z) > CAR_REACH_M * UNITS_PER_METER) return fail('too far from the switch');
+          const leg = world.trains.throwSwitch(msg.node);
+          if (typeof leg === 'string') return fail(leg);
+          send({ type: 'editResult', id: msg.id, ok: true, note: `switch set ${leg === 0 ? 'left' : 'right'}` });
+          showTrains(world);
+          world.saveTrains();
+          break;
+        }
+
         case 'drive': {
           if (!greeted) return;
           const p = players.get(socket);
-          if (p) world.trains.drive(p.id, msg.throttle, msg.brake, msg.leave ?? false);
+          if (p) world.trains.drive(p.id, msg.throttle, msg.brake, msg.leave ?? false, msg.prefer);
           if (msg.leave) {
             showTrains(world);
             world.saveTrains();

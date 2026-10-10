@@ -209,5 +209,20 @@ export function carGeometry(kind: CarKind): THREE.BufferGeometry {
   return g;
 }
 
+/** A switch stand's target, set straight and set for the turnout. */
+export const GREEN_DISC: Rgb = [0.15, 0.6, 0.25];
+export const AMBER_DISC: Rgb = [0.95, 0.62, 0.1];
+
+/** A switch's lever stand (m: its foot at the origin, facing -z as the trunk runs into the switch): a post, its lever, a target disc in `colour`, and an arrow to the side it's set for (`side`: 1 left, -1 right). */
+export function switchStandGeometry(colour: Rgb, side: 1 | -1): THREE.BufferGeometry {
+  const b = new Builder();
+  b.box(0, 0.1, 0, 0.6, 0.2, 0.6, [0.3, 0.3, 0.32]).box(0, 0.75, 0, 0.12, 1.1, 0.12, BLACK);
+  b.box(0.18, 0.45, 0, 0.5, 0.06, 0.06, RED);
+  b.cylinder('z', 0, 1.42, 0, 0.26, 0.05, colour, 14);
+  // (An arrow over the disc: its head the way the switch sends trains.)
+  b.box(-side * 0.08, 1.78, 0, 0.36, 0.08, 0.05, colour).box(-side * 0.3, 1.78, 0, 0.12, 0.2, 0.05, colour);
+  return b.geometry();
+}
+
 /** Where the driver stands in an engine (m, its frame): in the cab. */
 export const CAB_EYE = new THREE.Vector3(0.6, 3.25, 2.9);

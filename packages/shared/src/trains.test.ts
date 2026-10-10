@@ -77,4 +77,32 @@ describe('along the line', () => {
     expect(fast.v).toBeLessThanOrEqual(speedLimit(net, fast) + 1e-9);
     expect(speedLimit(net, fast)).toBeCloseTo(40 / 3.6, 9);
   });
+
+  it('switches: three ends meeting, the trunk and its legs (left, right; the straighter); through as set, back from either leg onto the trunk', () => {
+    // A trunk east to x 100; on east, straight (B), and a leg bearing left, north-east (C: -z is north).
+    const net = trackNet([straight(1, 0, 0, 100, 0), straight(2, 100, 0, 200, 0), straight(3, 100, 0, 190, -40)]);
+    const node = net.nodes.find((n) => n.legs)!;
+    expect(node.trunk).toEqual({ track: 1, end: 'end' });
+    expect(node.legs).toEqual([{ track: 3, end: 'start' }, { track: 2, end: 'start' }]);
+    expect(node.straight).toBe(1);
+    expect(net.set.get(node.key)).toBe(1); // (set straight, to start)
+    const from = { track: 1, s: 95 * M, dir: 1 as const };
+    expect(alongLine(net, from, 10 * M).pos.track).toBe(2);
+    net.set.set(node.key, 0);
+    expect(alongLine(net, from, 10 * M).pos.track).toBe(3);
+    // Back from either leg: onto the trunk, however it's set.
+    expect(alongLine(net, { track: 2, s: 5 * M, dir: 1 }, -10 * M).pos).toEqual({ track: 1, s: 95 * M, dir: 1 });
+    expect(alongLine(net, { track: 3, s: 5 * M, dir: 1 }, -10 * M).pos.track).toBe(1);
+    // As kept: set left, it's left.
+    expect(trackNet([straight(1, 0, 0, 100, 0), straight(2, 100, 0, 200, 0), straight(3, 100, 0, 190, -40)], { [node.key]: 0 }).set.get(node.key)).toBe(0);
+    // A train through it: its leading car the way the chooser says (setting it), the rest after it.
+    net.set.set(node.key, 1);
+    const engine: Car = { id: 1, kind: 'engine', pos: { track: 1, s: 90 * M, dir: 1 }, flip: false };
+    const flat: Car = { id: 2, kind: 'flatbed', pos: behind(net, engine, 'flatbed'), flip: false };
+    const t = train([engine, flat]);
+    const left = (n: typeof node) => (n.legs ? (net.set.set(n.key, 0), n.legs[0]) : null);
+    moveTrain(net, t, 40 * M, left);
+    expect([engine.pos.track, flat.pos.track]).toEqual([3, 3]);
+    expect(net.set.get(node.key)).toBe(0);
+  });
 });

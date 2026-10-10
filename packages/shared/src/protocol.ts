@@ -25,7 +25,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 49;
+export const PROTOCOL_VERSION = 50;
 
 export type ClientMessage =
   /** Something said (or a command: see readChat), to be heard by the world (or one player). */
@@ -43,7 +43,9 @@ export type ClientMessage =
   /** Trading (see market.ts): `lots` lots of `item` bought from, or sold to, trading post `post`'s trader. Answered with an editResult. */
   | { type: 'trade'; id: number; post: number; item: number; lots: number; act: 'buy' | 'sell' }
   /** Driving: the throttle (-1..1, the way the engine faces) and the brake; `leave`: getting out. */
-  | { type: 'drive'; throttle: number; brake: boolean; leave?: boolean }
+  | { type: 'drive'; throttle: number; brake: boolean; leave?: boolean; prefer?: 'left' | 'right' | null }
+  /** A switch thrown (see TrackNode: by its key), at its lever. Answered with an editResult. */
+  | { type: 'switchThrow'; id: number; node: string }
   /** A segment of track (see SegmentAsk: units) for a design speed (km/h): planned (see trackPlan), or (`lay`) laid. */
   | { type: 'track'; id: number; from: { x: number; z: number }; heading: number | null; to: { x: number; z: number }; curve: boolean; speed: number; lay: boolean }
   | {
@@ -197,8 +199,8 @@ export type ServerMessage =
   | { type: 'posts'; posts: TradingPost[] }
   /** You're sitting in seat `seat` of passenger car `car` (Shift: out, see the drive message). */
   | { type: 'seated'; car: number; seat: number }
-  /** The world's trains (see Train), on joining, whenever they change, and while they move (ten times a second); `at`: when, by the server's clock (ms). */
-  | { type: 'trains'; trains: Train[]; at: number }
+  /** The world's trains (see Train), on joining, whenever they change, and while they move (ten times a second); `at`: when, by the server's clock (ms); how its switches are set (by node key: their left leg 0, right 1). */
+  | { type: 'trains'; trains: Train[]; at: number; switches: Record<string, 0 | 1> }
   /** The world's laid track (see Track), on joining and whenever more's laid. */
   | { type: 'tracks'; tracks: Track[] }
   /** Chat (see ChatLine): what's said, as it is; `history`: the world's last lines, on joining. */
@@ -458,7 +460,8 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
     return { type: 'cargo', id: msg.id as number, car: msg.car as number, item: msg.item as number, amount: msg.amount as number, to: msg.to };
   if (msg.type === 'carTake' && isId(msg.id) && isId(msg.car)) return { type: 'carTake', id: msg.id as number, car: msg.car as number };
   if (msg.type === 'drive' && Number.isFinite(msg.throttle) && Math.abs(msg.throttle as number) <= 1 && typeof msg.brake === 'boolean' && (msg.leave === undefined || typeof msg.leave === 'boolean'))
-    return { type: 'drive', throttle: msg.throttle as number, brake: msg.brake, ...(msg.leave ? { leave: true } : {}) };
+    return { type: 'drive', throttle: msg.throttle as number, brake: msg.brake, ...(msg.leave ? { leave: true } : {}), ...(msg.prefer === 'left' || msg.prefer === 'right' || msg.prefer === null ? { prefer: msg.prefer } : {}) };
+  if (msg.type === 'switchThrow' && isId(msg.id) && typeof msg.node === 'string' && /^-?\d+,-?\d+$/.test(msg.node)) return { type: 'switchThrow', id: msg.id as number, node: msg.node };
   // (Track: a segment's ends; checked by the server too, see planSegment.)
   const isXZ = (v: unknown): v is { x: number; z: number } => typeof v === 'object' && v !== null && Number.isFinite((v as { x: unknown }).x) && Number.isFinite((v as { z: unknown }).z);
   if (msg.type === 'track' && isId(msg.id) && typeof msg.lay === 'boolean' && typeof msg.curve === 'boolean' && isXZ(msg.from) && isXZ(msg.to) && (msg.heading === null || Number.isFinite(msg.heading)) && Number.isFinite(msg.speed))

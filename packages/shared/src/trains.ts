@@ -80,35 +80,106 @@ export interface Train {
   /** -1..1, the way its engine faces (+: ahead). */
   throttle: number;
   brake: boolean;
+  /** Which way its driver means to go at the next switch it comes to from its trunk (as seen going that way): set as it gets there. */
+  prefer?: 'left' | 'right' | null;
 }
 
-/** Track as a network: each track, and what each of its ends joins (another's start or end), if anything. */
+/** A track's end: which track, and which end of it. */
+export interface EndRef {
+  track: number;
+  end: 'start' | 'end';
+}
+
+/**
+ * Where track ends meet (within a metre): two, a join; three, a switch: its trunk (the end the other
+ * two leave, in line with it) and its legs, left then right (as seen going from the trunk into
+ * them), and which of them is the straighter. Its key: where it is (m, rounded).
+ */
+export interface TrackNode {
+  key: string;
+  x: number;
+  y: number;
+  z: number;
+  ends: EndRef[];
+  trunk?: EndRef;
+  legs?: [EndRef, EndRef];
+  straight?: 0 | 1;
+}
+
+/** Track as a network: each track, where its ends meet others (see TrackNode), and which way each switch is set (its leg: 0 left, 1 right). */
 export interface TrackNet {
   tracks: Map<number, Track>;
-  links: Map<string, { track: number; end: 'start' | 'end' }>;
+  nodes: TrackNode[];
+  nodeOf: Map<string, TrackNode>;
+  set: Map<string, 0 | 1>;
 }
 
-/** The network of `tracks`: ends within a metre of each other joined. */
-export function trackNet(tracks: readonly Track[]): TrackNet {
-  const map = new Map(tracks.map((t) => [t.id, t]));
-  const links = new Map<string, { track: number; end: 'start' | 'end' }>();
-  const ends = tracks.flatMap((t) => [
-    { track: t.id, end: 'start' as const, p: t.points[0]! },
-    { track: t.id, end: 'end' as const, p: t.points.at(-1)! },
-  ]);
-  for (const a of ends)
-    for (const b of ends)
-      if (a !== b && a.track !== b.track && Math.hypot(a.p.x - b.p.x, a.p.z - b.p.z) < UNITS_PER_METER) links.set(`${a.track}:${a.end}`, { track: b.track, end: b.end });
-  return { tracks: map, links };
+const endKey = (e: EndRef) => `${e.track}:${e.end}`;
+const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+
+/** The way out of a track at its end (a heading: along it at its end, back along it at its start). */
+function outward(t: Track, end: 'start' | 'end'): number {
+  return end === 'end' ? t.points.at(-1)!.heading : t.points[0]!.heading + Math.PI;
 }
+
+/** The network of `tracks`: ends within a metre of each other meeting; switches set as `set` says (their straighter legs, else). */
+export function trackNet(tracks: readonly Track[], set: Readonly<Record<string, 0 | 1>> = {}): TrackNet {
+  const map = new Map(tracks.map((t) => [t.id, t]));
+  const ends = tracks.flatMap((t) => [
+    { ref: { track: t.id, end: 'start' as const }, p: t.points[0]! },
+    { ref: { track: t.id, end: 'end' as const }, p: t.points.at(-1)! },
+  ]);
+  const nodes: TrackNode[] = [], nodeOf = new Map<string, TrackNode>();
+  for (const e of ends) {
+    if (nodeOf.has(endKey(e.ref))) continue;
+    const here = ends.filter((o) => Math.hypot(o.p.x - e.p.x, o.p.z - e.p.z) < UNITS_PER_METER);
+    if (here.length < 2) continue;
+    const node: TrackNode = { key: `${Math.round(e.p.x / UNITS_PER_METER)},${Math.round(e.p.z / UNITS_PER_METER)}`, x: e.p.x, y: e.p.y, z: e.p.z, ends: here.map((o) => o.ref) };
+    if (here.length === 3) {
+      // The trunk: the end the other two leave (each of theirs the other way to its).
+      const out = here.map((o) => outward(map.get(o.ref.track)!, o.ref.end));
+      const k = out.findIndex((h, i) => out.every((o, j) => j === i || Math.cos(o - h) < -0.3));
+      if (k >= 0) {
+        const into = out[k]! + Math.PI, legs = here.filter((_, i) => i !== k).map((o, j) => ({ ref: o.ref, turn: wrap(out.filter((_, i) => i !== k)[j]! - into) }));
+        // (Left: turning the more counter-clockwise, as headings go.)
+        legs.sort((a, b) => b.turn - a.turn);
+        node.trunk = here[k]!.ref;
+        node.legs = [legs[0]!.ref, legs[1]!.ref];
+        node.straight = Math.abs(legs[0]!.turn) <= Math.abs(legs[1]!.turn) ? 0 : 1;
+      }
+    }
+    nodes.push(node);
+    for (const r of node.ends) nodeOf.set(endKey(r), node);
+  }
+  const states = new Map<string, 0 | 1>();
+  for (const n of nodes) if (n.legs) states.set(n.key, set[n.key] ?? n.straight!);
+  return { tracks: map, nodes, nodeOf, set: states };
+}
+
+/** Which end a train goes on into, leaving a track at `from` into `node`: through a join; from a switch's trunk, the leg it's set for; from a leg, the trunk; else, the end most in line. */
+export function route(net: TrackNet, node: TrackNode, from: EndRef): EndRef | null {
+  const others = node.ends.filter((e) => e.track !== from.track || e.end !== from.end);
+  if (!others.length) return null;
+  if (others.length === 1) return others[0]!;
+  if (node.trunk && node.legs) {
+    if (node.trunk.track === from.track && node.trunk.end === from.end) return node.legs[net.set.get(node.key) ?? node.straight ?? 0];
+    return node.trunk;
+  }
+  const h = outward(net.tracks.get(from.track)!, from.end);
+  return others.reduce((best, e) => (Math.cos(outward(net.tracks.get(e.track)!, e.end) - h) < Math.cos(outward(net.tracks.get(best.track)!, best.end) - h) ? e : best));
+}
+
+/** Chooses the way on at a node (see route): for a train's leading car, which may set the switch as it goes. */
+export type Chooser = (node: TrackNode, from: EndRef) => EndRef | null;
 
 const lengthOf = (t: Track) => t.points.at(-1)!.s;
 
 /**
- * `pos` moved `d` units along the line (+: its forward), over joins; stopped at the end of the
- * line if it gets there. Where it got to, and how far it went (units, ≥ 0).
+ * `pos` moved `d` units along the line (+: its forward), over joins and switches (the way `choose`
+ * says, else see route); stopped at the end of the line if it gets there. Where it got to, and how
+ * far it went (units, ≥ 0).
  */
-export function alongLine(net: TrackNet, pos: CarPos, d: number): { pos: CarPos; moved: number } {
+export function alongLine(net: TrackNet, pos: CarPos, d: number, choose?: Chooser): { pos: CarPos; moved: number } {
   let { track, s, dir } = pos;
   let left = Math.abs(d), moved = 0;
   // (The way along this track it goes: its forward, or back.)
@@ -126,7 +197,9 @@ export function alongLine(net: TrackNet, pos: CarPos, d: number): { pos: CarPos;
     s = way > 0 ? L : 0;
     moved += room;
     left -= room;
-    const link = net.links.get(`${track}:${way > 0 ? 'end' : 'start'}`);
+    const from: EndRef = { track, end: way > 0 ? 'end' : 'start' };
+    const node = net.nodeOf.get(endKey(from));
+    const link = node && (choose ? choose(node, from) : route(net, node, from));
     if (!link) break;
     const next = net.tracks.get(link.track)!;
     // On along the next: from its start (increasing) or its end (decreasing). Forward turns with it.
@@ -209,17 +282,18 @@ export function accelerate(net: TrackNet, t: Train, dt: number, burn: boolean): 
 }
 
 /**
- * Moves a train `d` units (+: forward), as far as the line goes: all its cars alike. How far it
+ * Moves a train `d` units (+: forward), as far as the line goes: all its cars alike, its leading car
+ * first (the way `choose` says at switches: it may set them, and the rest follow it). How far it
  * went (units, ≥ 0: less than asked at the end of the line, its front or back car's buffers there).
  */
-export function moveTrain(net: TrackNet, t: Train, d: number): number {
+export function moveTrain(net: TrackNet, t: Train, d: number, choose?: Chooser): number {
   if (!d || !t.cars.length) return 0;
   const lead = d > 0 ? t.cars[0]! : t.cars.at(-1)!, half = (CAR_SPECS[lead.kind].length * UNITS_PER_METER) / 2;
   const sign = Math.sign(d);
   // (How far its leading buffers can go.)
-  const room = Math.max(0, alongLine(net, lead.pos, sign * (half + Math.abs(d))).moved - half);
+  const room = Math.max(0, alongLine(net, lead.pos, sign * (half + Math.abs(d)), choose).moved - half);
   const go = Math.min(Math.abs(d), room);
-  if (go > 0) for (const c of t.cars) c.pos = alongLine(net, c.pos, sign * go).pos;
+  if (go > 0) for (const c of d > 0 ? t.cars : [...t.cars].reverse()) c.pos = alongLine(net, c.pos, sign * go, c === lead ? choose : undefined).pos;
   return go;
 }
 

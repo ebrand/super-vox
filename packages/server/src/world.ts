@@ -113,6 +113,11 @@ import {
   BED_WIDTH_M,
   MAX_FILL_M,
   MAX_GRADE,
+  BRANCH_M,
+  CROSSING_ANGLE,
+  SWITCH_CLEAR_M,
+  headingDir,
+  segmentsCross,
   SHOULDER_M,
   MIN_RADIUS_M,
   SAMPLE_M,
@@ -827,7 +832,7 @@ export class World {
    * deeper or fill higher than MAX_CUT_M / MAX_FILL_M, or through what players have built: their
    * columns, not track's).
    */
-  planSegment(ask: SegmentAsk & { speed: number }): { layout: TrackLayout; works: ReturnType<typeof earthworks>; radius: number; speed: number; endHeading: number } | string {
+  planSegment(ask: SegmentAsk & { speed: number }): { layout: TrackLayout; works: ReturnType<typeof earthworks>; radius: number; speed: number; endHeading: number; branch: { track: number; index: number } | null } | string {
     if (!(DESIGN_SPEEDS as readonly number[]).includes(ask.speed)) return `laid for ${DESIGN_SPEEDS.join(', ')} km/h`;
     const W = this.config.widthUnits, D = this.config.depthUnits, M = UNITS_PER_METER;
     const inside = (p: { x: number; z: number }) => Number.isFinite(p.x) && Number.isFinite(p.z) && p.x >= 0 && p.x < W && p.z >= 0 && p.z < D;
@@ -840,27 +845,39 @@ export class World {
       const d = Math.hypot(e.x - from.x, e.z - from.z);
       if (d < best) (best = d), (from = { x: e.x, z: e.z }), (heading = e.heading), (pin = e.y);
     }
+    // Or a branch, from a point along a track near where it starts (a switch there: not too near its ends, where others may be).
+    let branch: { track: number; index: number } | null = null;
+    if (pin === undefined) {
+      let near = BRANCH_M * M;
+      for (const t of this.tracks.values())
+        for (let i = 0; i < t.points.length; i++) {
+          const q = t.points[i]!, d = Math.hypot(q.x - from.x, q.z - from.z);
+          if (d < near) (near = d), (branch = { track: t.id, index: i });
+        }
+      if (branch) {
+        const t = this.tracks.get(branch.track)!, q = t.points[branch.index]!;
+        if (q.s < SWITCH_CLEAR_M * M || t.points.at(-1)!.s - q.s < SWITCH_CLEAR_M * M) return `too near the end of the track (or a switch): branch ${SWITCH_CLEAR_M} m from it at least`;
+        if (!ask.curve) return 'a branch curves away from the track: use the curve (2)';
+        from = { x: q.x, z: q.z };
+        pin = q.y;
+        // (Along it the way that's aimed.)
+        const d = headingDir(q.heading);
+        heading = d.x * (ask.to.x - q.x) + d.z * (ask.to.z - q.z) >= 0 ? q.heading : q.heading + Math.PI;
+      }
+    }
     const seg = segmentLine({ from, heading, to: ask.to, curve: ask.curve }, SAMPLE_M * M);
     if (typeof seg === 'string') return seg;
     if (seg.radius < MIN_RADIUS_M) return `too tight a curve: ${Math.round(seg.radius)} m radius (${MIN_RADIUS_M} m at least)`;
-    const layout = layLine(seg.line, (x, z) => this.generator.surfaceHeightAt(x, z), pin === undefined ? {} : { start: pin });
-    if (!layout) return 'too steep';
+    // Where it meets other track: crossing it (level, and not too sharply or near its ends), or not at all.
+    const crossings = this.crossings(seg.line, branch, pin !== undefined && !branch ? from : null);
+    if (typeof crossings === 'string') return crossings;
+    const layout = layLine(seg.line, (x, z) => this.generator.surfaceHeightAt(x, z), { ...(pin === undefined ? {} : { start: pin }), at: crossings });
+    if (!layout) return crossings.length ? "it can't cross level there and keep to the grade: cross further from the start, or elsewhere" : 'too steep';
     // (Not up or down ground steeper than track may be: along the slope instead.)
     if (layout.groundGrade > MAX_GRADE + 1e-4)
       return `the ground's ${(layout.groundGrade * 100).toFixed(1)}% steep ${Math.round(layout.groundGradeAt)} m along (${(MAX_GRADE * 100).toFixed(0)}% at most): go along the slope, not up it`;
     if (layout.maxCut > MAX_CUT_M) return `a cut ${layout.maxCut.toFixed(0)} m deep ${Math.round(layout.cutAt)} m along (${MAX_CUT_M} m at most; tunnels come later): go round the hill, or along its side`;
     if (layout.maxFill > MAX_FILL_M) return `built up ${layout.maxFill.toFixed(0)} m high ${Math.round(layout.fillAt)} m along (${MAX_FILL_M} m at most; bridges come later): go round the dip`;
-    // Not across other track (junctions come later): its bed and this one's don't meet, but where it starts from a track's end.
-    {
-      const apart = (BED_WIDTH_M + 2 * SHOULDER_M) * M, startFree = (JOIN_M + BED_WIDTH_M) * M;
-      for (const t of this.tracks.values())
-        for (let i = 0; i < t.points.length; i += 2) {
-          const q = t.points[i]!;
-          if (pin !== undefined && Math.hypot(q.x - from.x, q.z - from.z) < startFree) continue;
-          const hit = layout.points.find((p) => Math.abs(p.x - q.x) < apart && Math.abs(p.z - q.z) < apart && Math.hypot(p.x - q.x, p.z - q.z) < apart);
-          if (hit) return `it would cross track ${Math.round(hit.s / M)} m along (junctions come later): go round it`;
-        }
-    }
     const works = earthworks(layout.points, (x, z) => this.generator.surfaceHeightAt(x, z));
     // Not through what players have built (track's own columns aside).
     const ours = new Set(this.trackList().flatMap((t) => t.columns));
@@ -872,7 +889,87 @@ export class World {
     }
     // (Its speed: in steps of 5 km/h.)
     const speed = Math.min(ask.speed, Math.floor(curveSpeed(seg.radius) / 5) * 5);
-    return { layout, works, radius: seg.radius, speed, endHeading: seg.endHeading };
+    return { layout, works, radius: seg.radius, speed, endHeading: seg.endHeading, branch };
+  }
+
+  /**
+   * Where a segment's line (units, a point a metre) crosses laid track: the heights it must have
+   * there (its point, and the other track's height), or why it can't. Where it comes within a bed's
+   * width of other track it must cross it (not run alongside), at CROSSING_ANGLE at least, at least
+   * SWITCH_CLEAR_M from that track's ends. (Where it starts on from a track's end, `from`, or
+   * branches off one: that track there isn't counted.)
+   */
+  private crossings(line: readonly { x: number; z: number }[], branch: { track: number; index: number } | null, from: { x: number; z: number } | null): { i: number; y: number }[] | string {
+    const M = UNITS_PER_METER, apart = (BED_WIDTH_M + 2 * SHOULDER_M) * M, startFree = (JOIN_M + BED_WIDTH_M) * M;
+    const out: { i: number; y: number }[] = [];
+    const box = (ps: readonly { x: number; z: number }[]) => ps.reduce((b, p) => ({ x0: Math.min(b.x0, p.x), x1: Math.max(b.x1, p.x), z0: Math.min(b.z0, p.z), z1: Math.max(b.z1, p.z) }), { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity });
+    const lb = box(line);
+    for (const t of this.tracks.values()) {
+      const pts = t.points, tb = box(pts);
+      // (Nowhere near it: not looked at point by point.)
+      if (tb.x0 > lb.x1 + apart || tb.x1 < lb.x0 - apart || tb.z0 > lb.z1 + apart || tb.z1 < lb.z0 - apart) continue;
+      // Each of the line's points: the nearest of this track's, if within a bed's width.
+      const near = line.map((p) => {
+        let best = -1, bd = apart;
+        for (let j = 0; j < pts.length; j++) {
+          const q = pts[j]!;
+          if (Math.abs(q.x - p.x) >= bd || Math.abs(q.z - p.z) >= bd) continue;
+          const d = Math.hypot(q.x - p.x, q.z - p.z);
+          if (d < bd) (bd = d), (best = j);
+        }
+        return best;
+      });
+      // (Leaving the track it branches from, or goes on from: alongside it till it's clear.)
+      let i0 = 0;
+      if ((branch && branch.track === t.id) || (from && Math.hypot(pts[0]!.x - from.x, pts[0]!.z - from.z) < M) || (from && Math.hypot(pts.at(-1)!.x - from.x, pts.at(-1)!.z - from.z) < M))
+        while (i0 < line.length && near[i0]! >= 0) i0++;
+      if (from) for (let i = 0; i < line.length; i++) if (Math.hypot(line[i]!.x - from.x, line[i]!.z - from.z) < startFree) near[i] = -1;
+      for (let i = i0; i < line.length; ) {
+        if (near[i]! < 0) {
+          i++;
+          continue;
+        }
+        // A run of the line near it: where (if anywhere) the two lines cross in it.
+        let j = i;
+        while (j < line.length && near[j]! >= 0) j++;
+        let cross: { i: number; k: number; angle: number } | null = null;
+        for (let a = Math.max(0, i - 1); a < Math.min(line.length - 1, j) && !cross; a++) {
+          const p1 = line[a]!, p2 = line[a + 1]!, c = near[Math.min(a, j - 1)]!;
+          for (let b = Math.max(0, c - 3); b < Math.min(pts.length - 1, c + 3) && !cross; b++) {
+            const q1 = pts[b]!, q2 = pts[b + 1]!;
+            const hit = segmentsCross(p1, p2, q1, q2);
+            if (hit) {
+              const da = Math.atan2(p2.z - p1.z, p2.x - p1.x), db = Math.atan2(q2.z - q1.z, q2.x - q1.x);
+              cross = { i: a + hit.t, k: b + hit.u, angle: Math.abs(Math.asin(Math.sin(da - db))) };
+            }
+          }
+        }
+        const at = Math.round(i);
+        if (!cross) return `it would run too near track ${at} m along: cross it, or keep ${BED_WIDTH_M + 2 * SHOULDER_M} m from it`;
+        if (cross.angle < (CROSSING_ANGLE * Math.PI) / 180) return `it would cross track ${Math.round(cross.i)} m along at ${Math.round((cross.angle * 180) / Math.PI)}° (${CROSSING_ANGLE}° at least)`;
+        const ks = pts[Math.floor(cross.k)]!.s;
+        if (ks < SWITCH_CLEAR_M * M || pts.at(-1)!.s - ks < SWITCH_CLEAR_M * M) return `it would cross track too near its end (or a switch), ${Math.round(cross.i)} m along: ${SWITCH_CLEAR_M} m from it at least`;
+        const k0 = Math.floor(cross.k), f = cross.k - k0;
+        out.push({ i: cross.i, y: pts[k0]!.y + ((pts[k0 + 1] ?? pts[k0]!).y - pts[k0]!.y) * f });
+        i = j;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Track `id` split in two at its point `index` (where a branch leaves it: a switch there): the
+   * first part keeps its id, the rest's a new track; trains on it, on the part they're on.
+   */
+  private splitTrack(id: number, index: number): void {
+    const t = this.tracks.get(id);
+    if (!t || index <= 0 || index >= t.points.length - 1) return;
+    const at = t.points[index]!.s;
+    const rest: Track = { ...t, id: this.nextTrack++, points: t.points.slice(index).map((p) => ({ ...p, s: Math.round((p.s - at) * 10) / 10 })) };
+    this.tracks.set(id, { ...t, points: t.points.slice(0, index + 1) });
+    this.tracks.set(rest.id, rest);
+    this.trains.splitTrack(id, rest.id, at);
+    this.saveTrains();
   }
 
   /** Track being laid now (see layTrackGradually): one at a time. */
@@ -909,6 +1006,7 @@ export class World {
         if (filled.result) changed(filled.result);
         await new Promise((r) => setImmediate(r));
       }
+      if (plan.branch) this.splitTrack(plan.branch.track, plan.branch.index);
       return this.keepTrack(plan);
     } finally {
       this.laying = false;
@@ -937,6 +1035,7 @@ export class World {
     if (typeof plan === 'string') return plan;
     // Cleared above the bed first, then filled below it (only where there's room).
     const cleared = this.buildPieces(plan.works.clear, true), filled = this.buildPieces(plan.works.fill, false);
+    if (plan.branch) this.splitTrack(plan.branch.track, plan.branch.index);
     const track = this.keepTrack(plan);
     return { track, results: [cleared.result, filled.result].filter((r): r is EditResult => r !== null) };
   }

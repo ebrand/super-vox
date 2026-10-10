@@ -23,6 +23,9 @@ import {
   type Track,
   type TrackNet,
   type Train,
+  type Chooser,
+  type TrackNode,
+  route,
 } from '@super-vox/shared';
 
 const M = UNITS_PER_METER;
@@ -31,10 +34,11 @@ const PLACE_REACH_M = 4;
 /** Trains whose buffers are this near (m, past the gap between coupled cars) are touching. */
 const TOUCH_M = 0.25;
 
-/** Kept (see the store): the trains, and the next id for a train or car. */
+/** Kept (see the store): the trains, the next id for a train or car, and how the switches are set (by node key). */
 export interface YardSave {
   trains: Train[];
   next: number;
+  switches?: Record<string, 0 | 1>;
 }
 
 /**
@@ -48,14 +52,83 @@ export class TrainYard {
   /** Something about the trains changed besides where they are (a car put on or taken off, coupled, a driver in or out): tell everyone. */
   changed = false;
 
+  /** How the switches were set when kept (till there's track to set them on). */
+  private readonly keptSwitches: Record<string, 0 | 1>;
+
   constructor(raw?: unknown) {
     const saved = kept(raw);
+    this.keptSwitches = saved?.switches ?? {};
     for (const t of saved?.trains ?? []) this.trains.set(t.id, { ...t, cab: (t as { cab?: number | null }).cab ?? null, driver: null, throttle: 0, brake: false });
     this.next = Math.max(saved?.next ?? 1, ...[...this.trains.values()].flatMap((t) => [t.id + 1, ...t.cars.map((c) => c.id + 1)]));
   }
 
   setTracks(tracks: readonly Track[]): void {
-    this.net = trackNet(tracks);
+    this.net = trackNet(tracks, { ...this.keptSwitches, ...Object.fromEntries(this.net.set) });
+  }
+
+  /** How the switches are set (by node key: 0 its left leg, 1 its right). */
+  switches(): Record<string, 0 | 1> {
+    return Object.fromEntries(this.net.set);
+  }
+
+  /** Cars on track `id` past `at` (units along it): onto track `rest`, as far along it (it's been split there: see World). */
+  splitTrack(id: number, rest: number, at: number): void {
+    for (const t of this.trains.values())
+      for (const c of t.cars) if (c.pos.track === id && c.pos.s > at) c.pos = { track: rest, s: c.pos.s - at, dir: c.pos.dir };
+  }
+
+  /** The switch at node `key`, if there's one. */
+  switchAt(key: string): TrackNode | null {
+    return this.net.nodes.find((n) => n.key === key && n.legs) ?? null;
+  }
+
+  /** The switch at node `key` thrown (the other leg); or why not (no switch there, or a train on it). Which leg it's set for now. */
+  throwSwitch(key: string): 0 | 1 | string {
+    const node = this.net.nodes.find((n) => n.key === key && n.legs);
+    if (!node) return "there's no switch there";
+    if (this.overSwitch(node, null)) return 'a train is on it';
+    const leg = (1 - (this.net.set.get(key) ?? 0)) as 0 | 1;
+    this.net.set.set(key, leg);
+    this.changed = true;
+    return leg;
+  }
+
+  /** Whether a train (but `except`) has a car over the switch at `node`. */
+  private overSwitch(node: TrackNode, except: Train | null): boolean {
+    for (const t of this.trains.values()) {
+      if (t === except) continue;
+      for (const c of t.cars) {
+        const p = carPose(this.net, c);
+        if (p && Math.hypot(p.x - node.x, p.z - node.z) < (CAR_SPECS[c.kind].length / 2 + 3) * M) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The way train `t`'s leading car goes at a node (see route): from a switch's trunk, the side its
+   * driver means to go (the switch set so, if no other train's on it), else as it's set; from a leg,
+   * the trunk (the switch set for that leg, as a train trailing through it throws it).
+   */
+  private chooser(t: Train): Chooser {
+    return (node, from) => {
+      if (!node.legs || !node.trunk) return route(this.net, node, from);
+      const set = (leg: 0 | 1) => {
+        if (this.net.set.get(node.key) === leg || this.overSwitch(node, t)) return;
+        this.net.set.set(node.key, leg);
+        this.changed = true;
+      };
+      if (node.trunk.track === from.track && node.trunk.end === from.end) {
+        if (t.prefer) {
+          set(t.prefer === 'left' ? 0 : 1);
+          t.prefer = null;
+          this.changed = true;
+        }
+        return node.legs[this.net.set.get(node.key) ?? 0];
+      }
+      set(node.legs[0].track === from.track && node.legs[0].end === from.end ? 0 : 1);
+      return node.trunk;
+    };
   }
 
   list(): Train[] {
@@ -64,7 +137,7 @@ export class TrainYard {
 
   /** What's kept (drivers and passengers aren't: they're out when the world's opened again). */
   save(): YardSave {
-    return { trains: this.list().map((t) => ({ ...t, driver: null, throttle: 0, brake: false, v: 0, cars: t.cars.map((c) => (c.seats ? { ...c, seats: c.seats.map(() => null) } : c)) })), next: this.next };
+    return { trains: this.list().map((t) => ({ ...t, driver: null, throttle: 0, brake: false, v: 0, prefer: null, cars: t.cars.map((c) => (c.seats ? { ...c, seats: c.seats.map(() => null) } : c)) })), next: this.next, switches: this.switches() };
   }
 
   /** `player` in a free seat of passenger car `car` (out of anything else they were in): which; or why not. */
@@ -227,12 +300,16 @@ export class TrainYard {
   }
 
   /** What the driver `player` does: the throttle (-1..1, the way their engine faces) and brake; or out. False if they're not driving. */
-  drive(player: number, throttle: number, brake: boolean, leave: boolean): boolean {
+  drive(player: number, throttle: number, brake: boolean, leave: boolean, prefer?: 'left' | 'right' | null): boolean {
     if (leave) return this.leave(player), true;
     const t = this.driven(player);
     if (!t) return false;
     t.throttle = Math.max(-1, Math.min(1, throttle));
     t.brake = brake;
+    if (prefer !== undefined && prefer !== (t.prefer ?? null)) {
+      t.prefer = prefer;
+      this.changed = true;
+    }
     return true;
   }
 
@@ -285,7 +362,7 @@ export class TrainYard {
       const lead = t.v > 0 ? 1 : -1, end = lead > 0 ? t.cars[0]! : t.cars.at(-1)!;
       const others = [...this.trains.values()].filter((o) => o !== t);
       const before = others.map((o) => this.touch(end, lead, o));
-      const want = t.v * dt * M, went = moveTrain(this.net, t, want);
+      const want = t.v * dt * M, went = moveTrain(this.net, t, want, this.chooser(t));
       if (went > 0) moved = true;
       // (At the end of the line: stopped against its buffers.)
       if (went < Math.abs(want) - 1e-6) (t.v = 0), (this.changed = true);
@@ -357,5 +434,7 @@ function kept(raw: unknown): YardSave | null {
     return typeof o === 'object' && o !== null && Number.isInteger(o.id) && Array.isArray(o.cars) && o.cars.length > 0 && o.cars.every(car);
   });
   const cars = (t: Train) => t.cars.map((c) => (c.kind === 'passenger' ? { ...c, seats: Array<number | null>(PASSENGER_SEATS).fill(null) } : c.kind === 'flatbed' ? { ...c, cargo: c.cargo ?? [] } : c));
-  return { trains: trains.map((t) => ({ id: t.id, cars: cars(t), v: 0, driver: null, throttle: 0, brake: false })), next: Number.isInteger(r.next) ? (r.next as number) : 1 };
+  const sw = (r as { switches?: unknown }).switches, switches: Record<string, 0 | 1> = {};
+  if (typeof sw === 'object' && sw !== null) for (const [k, v] of Object.entries(sw)) if (v === 0 || v === 1) switches[k] = v;
+  return { trains: trains.map((t) => ({ id: t.id, cars: cars(t), v: 0, driver: null, throttle: 0, brake: false })), next: Number.isInteger(r.next) ? (r.next as number) : 1, switches };
 }

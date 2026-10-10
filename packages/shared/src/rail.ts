@@ -21,6 +21,19 @@ export const SHOULDER_M = 1;
 export const CLEARANCE_M = 12;
 /** In survival: how much track a rail item lays (m). */
 export const RAIL_M = 2;
+/** A segment's start this near a point along a track (m), not at its end, branches from it there (a switch); switches and crossings this far from a track's ends at least (m); crossings this sharp at least (degrees). */
+export const BRANCH_M = 3;
+export const SWITCH_CLEAR_M = 12;
+export const CROSSING_ANGLE = 25;
+
+/** Where two segments (x, z) cross: how far along each (0..1); null if they don't. */
+export function segmentsCross(p1: { x: number; z: number }, p2: { x: number; z: number }, q1: { x: number; z: number }, q2: { x: number; z: number }): { t: number; u: number } | null {
+  const rx = p2.x - p1.x, rz = p2.z - p1.z, sx = q2.x - q1.x, sz = q2.z - q1.z, den = rx * sz - rz * sx;
+  if (Math.abs(den) < 1e-9) return null;
+  const qx = q1.x - p1.x, qz = q1.z - p1.z, t = (qx * sz - qz * sx) / den, u = (qx * rz - qz * rx) / den;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? { t, u } : null;
+}
+
 /** A segment's start or end this near a track's end (m) joins it (there, at its height). */
 export const JOIN_M = 6;
 /** In survival: how far from where you stand (m) you may lay track (both its ends). */
@@ -147,13 +160,14 @@ export function segmentLine(ask: SegmentAsk, step: number): SegmentLine | string
  * clamped from both ends, then the two met halfway). `pins`: heights it must have at its start or
  * end (a track's end it goes on from); null if they can't both be kept to at that grade.
  */
-export function profile(ground: readonly number[], step: number, grade = MAX_GRADE, pins: { start?: number; end?: number } = {}): number[] | null {
+export function profile(ground: readonly number[], step: number, grade = MAX_GRADE, pins: { start?: number; end?: number; at?: readonly { i: number; y: number }[] } = {}): number[] | null {
   const n = ground.length, rise = grade * step;
   if (!n) return [];
-  if (pins.start !== undefined && pins.end !== undefined && Math.abs(pins.end - pins.start) > rise * (n - 1) * 0.98) return null;
+  // Every height it must have (its ends, and points along it: level crossings), in order; none too far from the next for the grade.
+  const fixed = [...(pins.start !== undefined ? [{ i: 0, y: pins.start }] : []), ...(pins.at ?? []).map((p) => ({ i: Math.max(0, Math.min(n - 1, Math.round(p.i))), y: p.y })), ...(pins.end !== undefined ? [{ i: n - 1, y: pins.end }] : [])].sort((a, b) => a.i - b.i);
+  for (let k = 1; k < fixed.length; k++) if (Math.abs(fixed[k]!.y - fixed[k - 1]!.y) > rise * (fixed[k]!.i - fixed[k - 1]!.i) * 0.98 + 1e-9) return null;
   const g = [...ground];
-  if (pins.start !== undefined) g[0] = pins.start;
-  if (pins.end !== undefined) g[n - 1] = pins.end;
+  for (const f of fixed) g[f.i] = f.y;
   const clampFwd = (h: number[]) => {
     for (let i = 1; i < n; i++) h[i] = Math.min(Math.max(h[i]!, h[i - 1]! - rise), h[i - 1]! + rise);
   };
@@ -181,8 +195,7 @@ export function profile(ground: readonly number[], step: number, grade = MAX_GRA
   });
   // Pinned ends where they're pinned: the rest kept to the grade from them (and never steeper for the rounding).
   const fix = () => {
-    if (pins.start !== undefined) h[0] = pins.start;
-    if (pins.end !== undefined) h[n - 1] = pins.end;
+    for (const f of fixed) h[f.i] = f.y;
   };
   for (let pass = 0; pass < 100; pass++) {
     const before = h.join();
@@ -202,7 +215,7 @@ export function profile(ground: readonly number[], step: number, grade = MAX_GRA
  * (pinned where it starts or ends at a track's end), headings along it, and what it'd take. Null
  * if its pinned ends are too far apart in height for the grade.
  */
-export function layLine(line: readonly XZ[], groundAt: (x: number, z: number) => number, pins: { start?: number; end?: number } = {}): TrackLayout | null {
+export function layLine(line: readonly XZ[], groundAt: (x: number, z: number) => number, pins: { start?: number; end?: number; at?: readonly { i: number; y: number }[] } = {}): TrackLayout | null {
   const M = UNITS_PER_METER, step = line.length > 1 ? Math.hypot(line[1]!.x - line[0]!.x, line[1]!.z - line[0]!.z) : SAMPLE_M * M;
   const ground = line.map((p) => groundAt(p.x, p.z));
   const ys = profile(ground, step, MAX_GRADE, pins);

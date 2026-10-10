@@ -489,7 +489,7 @@ let trackMap: TrackMap | null = null;
 let trainView: TrainView | null = null;
 /** The world's trading posts (see PostView): their stalls and traders. */
 let postView: PostView | null = null;
-let driving: { car: number; throttle: number; brake: boolean; sentAt: number; sent: string; shiftWasDown: boolean; heading: number | null } | null = null;
+let driving: { car: number; throttle: number; brake: boolean; sentAt: number; sent: string; shiftWasDown: boolean; heading: number | null; turnWas: number } | null = null;
 let stopDriving: (gone?: boolean) => void = () => {};
 /** The seat we're in, if any (see the seated message): Shift gets up. */
 let seated: { car: number; seat: number; heading: number | null; shiftWasDown: boolean } | null = null;
@@ -545,6 +545,11 @@ function seatFrame(): void {
   const eye = (SEAT_EYES[s.seat] ?? SEAT_EYES[0]!).clone().applyEuler(new THREE.Euler(p.pitch, p.heading, 0, 'YXZ'));
   camera.position.set(p.x / UNITS_PER_METER + eye.x, p.y / UNITS_PER_METER + 0.28 + eye.y, p.z / UNITS_PER_METER + eye.z);
 }
+/** The next switch ahead, for the driver: how far, and which way they'll go (A/D: left or right). */
+function switchLine(metres: number | null, prefer: 'left' | 'right' | null): string {
+  if (metres === null) return prefer ? ` · next switch: ${prefer}` : '';
+  return ` · switch in ${Math.round(metres)} m${prefer ? `: ${prefer}` : ' (A/D: left, right)'}`;
+}
 /** The engine we're driving: us in its cab (turning with it), and how it's going. */
 const driveHud = document.getElementById('drive')!;
 function driveFrame(): void {
@@ -564,7 +569,8 @@ function driveFrame(): void {
   const coal = survivalMovement ? ` · coal ${Math.ceil((engine?.fuel ?? 0) / COAL_SECONDS)}` : '';
   driveHud.textContent =
     `${Math.round(Math.abs(t.v) * 3.6)} km/h ${ahead > 0.05 ? 'ahead' : ahead < -0.05 ? 'astern' : ''} · limit ${Math.round(limit * 3.6)} · ` +
-    `throttle ${Math.round(Math.abs(d.throttle) * 100)}% ${d.throttle > 0 ? 'ahead' : d.throttle < 0 ? 'astern' : ''}${d.brake ? ' · BRAKE' : ''}${coal}${t.cars.length > 1 ? ` · ${t.cars.length} cars` : ''}`;
+    `throttle ${Math.round(Math.abs(d.throttle) * 100)}% ${d.throttle > 0 ? 'ahead' : d.throttle < 0 ? 'astern' : ''}${d.brake ? ' · BRAKE' : ''}${coal}${t.cars.length > 1 ? ` · ${t.cars.length} cars` : ''}` +
+    switchLine(trainView!.nextSwitch(d.car), t.prefer ?? null);
 }
 /** Our name (over us, as others see us). */
 let myName = 'guest';
@@ -1064,9 +1070,10 @@ connection = connect({
           editTool.onBoarded = (id) => startRide(id);
           // Trains: aimed at, got into; driven (W/S: the throttle up and down, its notch kept; Space: the brake; Shift: out).
           editTool.pickCar = (o, d, max) => trainView?.pick(o, d, max) ?? null;
+          editTool.pickSwitch = (o, d, max) => trainView?.pickSwitch(o, d, max) ?? null;
           editTool.onDriving = (car) => {
             if (riding) endRide();
-            driving = { car, throttle: 0, brake: false, sentAt: 0, sent: '', shiftWasDown: true, heading: null };
+            driving = { car, throttle: 0, brake: false, sentAt: 0, sent: '', shiftWasDown: true, heading: null, turnWas: 0 };
             controls.walking = false;
             controls.ride = (input, dt) => {
               const d = driving;
@@ -1077,15 +1084,22 @@ connection = connect({
               // (Close to nothing: nothing, so it can be shut off.)
               if (!input.forward && Math.abs(d.throttle) < 0.04) d.throttle = 0;
               d.brake = input.brake;
+              // A or D pressed: the way to go at the next switch (again: never mind).
+              let prefer: 'left' | 'right' | null | undefined;
+              if (input.turn !== 0 && d.turnWas === 0) {
+                const want = input.turn > 0 ? 'left' : 'right', now = trainView?.trainOf(d.car)?.prefer ?? null;
+                prefer = now === want ? null : want;
+              }
+              d.turnWas = input.turn;
               const key = `${d.throttle.toFixed(2)},${d.brake}`;
-              if (key !== d.sent || performance.now() - d.sentAt > 1000) {
+              if (key !== d.sent || prefer !== undefined || performance.now() - d.sentAt > 1000) {
                 d.sent = key;
                 d.sentAt = performance.now();
-                send({ type: 'drive', throttle: Math.round(d.throttle * 100) / 100, brake: d.brake });
+                send({ type: 'drive', throttle: Math.round(d.throttle * 100) / 100, brake: d.brake, ...(prefer !== undefined ? { prefer } : {}) });
               }
             };
             driveHud.hidden = false;
-            editTool?.say('driving: W/S throttle up and down, Space brakes, Shift gets out');
+            editTool?.say('driving: W/S throttle up and down, Space brakes, A/D left or right at the next switch, Shift gets out');
           };
           // A flatbed's load: in the inventory window (its own tab), the mouse free to click.
           editTool.onCargo = (car) => {
@@ -1381,7 +1395,7 @@ connection = connect({
         trackMode?.setTracks(msg.tracks);
         break;
       case 'trains': {
-        trainView?.setTrains(msg.trains, msg.at);
+        trainView?.setTrains(msg.trains, msg.at, msg.switches);
         // (Our engine taken off, or someone else in it: out. Our seat's car gone: up.)
         if (driving && trainView?.trainOf(driving.car)?.driver == null) stopDriving(true);
         if (seated && !trainView?.trainOf(seated.car)) standUp(true);

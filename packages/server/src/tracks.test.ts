@@ -101,15 +101,72 @@ describe('laying track, a segment at a time', () => {
     // A block someone's placed, 40 m along.
     w.applyEdit({ op: 'place', x: 2040 * M, y: 0, z: 2000 * M, size: 16, material: Material.Planks });
     expect(w.planSegment(east(2000, 2000, 80))).toMatch(/cut through what's been built/);
-    // Track elsewhere, and more alongside it (through its earthworks): fine; across it, not.
+    // Track elsewhere, and more alongside it (clear of its bed): fine; across it too.
     expect(typeof w.layTrack(east(3000, 3000, 80))).not.toBe('string');
     expect(typeof w.planSegment(east(3000, 3010, 80))).not.toBe('string');
-    expect(w.planSegment({ from: { x: 3040 * M, z: 2960 * M }, heading: null, to: { x: 3040 * M, z: 3040 * M }, curve: false, speed: 60 })).toMatch(/cross track 3\d m along/);
+    // (Square across it, mid-way: a level crossing, fine.)
+    expect(typeof w.planSegment({ from: { x: 3040 * M, z: 2960 * M }, heading: null, to: { x: 3040 * M, z: 3040 * M }, curve: false, speed: 60 })).not.toBe('string');
   });
 
   it('drops track kept before segments (no speed): its earthworks stay', () => {
     const { again, dir } = flat();
     writeFileSync(join(dir, 'tracks.json'), JSON.stringify([{ id: 1, points: [{ x: 0, y: 0, z: 0, heading: 0, s: 0 }], columns: [] }]));
     expect(again().trackList()).toEqual([]);
+  });
+
+  it('branches from a point along a track (curving away: a switch there, the track split in two); not too near its ends', () => {
+    const { world } = flat();
+    const main = world.layTrack(east(1000, 1000, 200));
+    if (typeof main === 'string') throw new Error(main);
+    // From 100 m along it, curving off north-east (-z).
+    const ask = { from: { x: 1100 * M, z: 1001 * M }, heading: null, to: { x: 1160 * M, z: 980 * M }, curve: true, speed: 60 };
+    expect(world.planSegment({ ...ask, curve: false })).toMatch(/curves away/);
+    expect(world.planSegment({ ...ask, from: { x: 1190 * M, z: 1000 * M } })).toMatch(/too near the end/);
+    const branch = world.layTrack(ask);
+    if (typeof branch === 'string') throw new Error(branch);
+    expect(branch.track.points[0]!.x).toBeCloseTo(1100 * M, 0);
+    expect(world.trackList()).toHaveLength(3);
+    // (The main line in two, end to start at the branch.)
+    const [a, b] = world.trackList().filter((t) => t.id !== branch.track.id);
+    expect(a!.points.at(-1)!.x).toBeCloseTo(b!.points[0]!.x, 3);
+    const node = world.trains.switchAt('1100,1000');
+    expect(node?.legs).toHaveLength(2);
+    expect(world.trains.switches()['1100,1000']).toBe(node!.straight);
+    // A train through it: the driver meaning left, it goes left (onto the branch); thrown while it's on it: not.
+    const engine = world.trains.place('engine', 1060 * M, 0, 1000 * M, EAST);
+    if (typeof engine === 'string') throw new Error(engine);
+    world.trains.board(engine.id, 7);
+    world.trains.drive(7, 0.6, false, false, 'left');
+    let threw: string | number = 0;
+    for (let i = 0; i < 20 * 40; i++) {
+      world.trains.step(0.05, false);
+      const at = world.trains.list()[0]!.cars[0]!.pos;
+      if (at.track === branch.track.id && threw === 0) threw = world.trains.throwSwitch('1100,1000');
+      if (at.track === branch.track.id && at.s > 30 * M) break;
+    }
+    expect(world.trains.list()[0]!.cars[0]!.pos.track).toBe(branch.track.id);
+    expect(threw).toMatch(/train is on it/);
+    expect(world.trains.switches()['1100,1000']).toBe(0);
+  });
+
+  it('crosses other track level (square enough, not near its ends); not alongside it, too sharply, or by its end', () => {
+    const { world } = flat();
+    expect(typeof world.layTrack(east(2000, 2000, 200))).not.toBe('string');
+    // North across it at x 2100 m: fine, level with it there.
+    const across = world.planSegment({ from: { x: 2100 * M, z: 2050 * M }, heading: null, to: { x: 2100 * M, z: 1950 * M }, curve: false, speed: 60 });
+    if (typeof across === 'string') throw new Error(across);
+    const mid = across.layout.points[50]!;
+    expect(Math.abs(mid.z - 2000 * M)).toBeLessThan(M);
+    // Alongside it, 3 m off: too near.
+    expect(world.planSegment(east(2020, 2003, 150))).toMatch(/too near track/);
+    // At 10 degrees: too sharp.
+    const t = Math.tan((10 * Math.PI) / 180);
+    expect(world.planSegment({ from: { x: 2050 * M, z: (2000 - 50 * t) * M }, heading: null, to: { x: 2150 * M, z: (2000 + 50 * t) * M }, curve: false, speed: 60 })).toMatch(/at 1\d° \(25° at least\)/);
+    // By its end: not.
+    expect(world.planSegment({ from: { x: 2195 * M, z: 2050 * M }, heading: null, to: { x: 2195 * M, z: 1950 * M }, curve: false, speed: 60 })).toMatch(/too near its end/);
+    // Laid across: two tracks, no switch (nothing meets).
+    expect(typeof world.layTrack({ from: { x: 2100 * M, z: 2050 * M }, heading: null, to: { x: 2100 * M, z: 1950 * M }, curve: false, speed: 60 })).not.toBe('string');
+    expect(world.trackList()).toHaveLength(2);
+    expect(Object.keys(world.trains.switches())).toHaveLength(0);
   });
 });
