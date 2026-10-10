@@ -116,6 +116,9 @@ import {
   SHOULDER_M,
   MIN_RADIUS_M,
   SAMPLE_M,
+  NO_WATER,
+  tradingPosts,
+  type TradingPost,
   curveSpeed,
   earthworks,
   freeEnds,
@@ -772,6 +775,34 @@ export class World {
   onTracksChanged?: () => void;
   /** The trains on its track (see TrainYard). */
   readonly trains: TrainYard;
+
+  private posts: { seed: string; list: TradingPost[] } | null = null;
+
+  /**
+   * The world's trading posts (see tradingPosts; `seed`: the world's name), worked out the first
+   * time they're asked for: each on open, flat, dry land (no trees, no water, over the sea), the
+   * stall's 16 m square level to within a metre and a half.
+   */
+  tradingPosts(seed: string): TradingPost[] {
+    if (this.posts?.seed === seed) return this.posts.list;
+    const M = UNITS_PER_METER, sea = this.generator.seaLevel;
+    const site = (x: number, z: number): number | null => {
+      const n = 5, step = 4 * M, s = this.generator.surfaceSamples(Math.round(x - 8 * M), Math.round(z - 8 * M), step, n);
+      let lo = Infinity, hi = -Infinity;
+      for (let k = 0; k < n * n; k++) {
+        const h = s.heights[k]!;
+        if (sea !== null && sea !== undefined && h < sea + M) return null;
+        if (s.water && s.water[k] !== NO_WATER && s.water[k]! > h) return null;
+        if (s.canopy && s.canopy.top[k] !== NO_CANOPY) return null;
+        lo = Math.min(lo, h);
+        hi = Math.max(hi, h);
+      }
+      return hi - lo <= 1.5 * M ? hi : null;
+    };
+    const list = tradingPosts(seed, this.config.widthUnits / M, this.config.depthUnits / M, { x: this.spawn.x / M, z: this.spawn.z / M }, site);
+    this.posts = { seed, list };
+    return list;
+  }
 
   /** The trains kept as they are now. */
   saveTrains(): void {

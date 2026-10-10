@@ -36,6 +36,7 @@ export * from './meshes.js';
 export * from './chat.js';
 export * from './rail.js';
 export * from './trains.js';
+export * from './market.js';
 export * from './objects.js';
 export * from './physics.js';
 export * from './flocking.js';

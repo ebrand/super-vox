@@ -9,7 +9,7 @@ import { GAUGE_M } from './trackModel.js';
  * middle between its bogies at the origin.
  */
 
-type Rgb = [number, number, number];
+export type Rgb = [number, number, number];
 const LIGHT = new THREE.Vector3(0.35, 1, -0.5).normalize();
 const BLACK: Rgb = [0.06, 0.06, 0.07];
 const IRON: Rgb = [0.2, 0.2, 0.22];
@@ -31,7 +31,7 @@ export const CAR_SIZE: Record<CarKind, { width: number; height: number }> = {
   passenger: { width: 2.9, height: 4.3 },
 };
 
-class Builder {
+export class Builder {
   readonly pos: number[] = [];
   readonly col: number[] = [];
 

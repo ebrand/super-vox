@@ -7,6 +7,10 @@ import {
   cannotCraft,
   creativeHotbar,
   formatAmount,
+  GOLD_COPPER,
+  lotLabel,
+  worth,
+  type TradingPost,
   CRATE_BLOCKS,
   CRATE_ITEMS,
   FLATBED_CRATES,
@@ -97,7 +101,7 @@ function colorOf(id: ItemId): string {
 }
 
 /** The window's tabs: those that work, and the stations still to come (shown, greyed, with why). */
-type Tab = 'inventory' | 'crafting' | 'recipes' | 'station' | 'cargo';
+type Tab = 'inventory' | 'crafting' | 'recipes' | 'station' | 'cargo' | 'trade';
 const COMING: readonly { name: string; why: string }[] = [
   { name: 'Smelting', why: 'right-click a furnace to smelt' },
   { name: 'Cooking', why: 'right-click a stove to cook' },
@@ -137,6 +141,10 @@ export class InventoryUi {
   private station: { msg: StationMessage & { state: NonNullable<StationMessage['state']> }; at: number } | null = null;
   /** The flatbed whose load is open (see showCargo), and what's on it. */
   private cargo: { car: number; load: [ItemId, number][] } | null = null;
+  /** The trading post being traded at (see showTrade). */
+  private trading: TradingPost | null = null;
+  /** Buy or sell `lots` lots of `item` at trading post `post`. */
+  onTrade: (post: number, item: ItemId, lots: number, act: 'buy' | 'sell') => void = () => {};
   /** Put `amount` of `item` on the open flatbed (`to` 'car') or take it off ('me'). */
   onCargo: (car: number, item: ItemId, amount: number, to: 'car' | 'me') => void = () => {};
   /** While a station's open: its gauges move between the server's updates. */
@@ -285,6 +293,24 @@ export class InventoryUi {
       this.cargo = null;
       if (this.tab === 'cargo') this.tab = 'inventory';
     }
+    if (this.trading) {
+      this.trading = null;
+      if (this.tab === 'trade') this.tab = 'inventory';
+    }
+  }
+
+  /** Trading at a post: the window opens on its tab. */
+  showTrade(post: TradingPost): void {
+    this.trading = post;
+    this.note.textContent = '';
+    this.tab = 'trade';
+    this.panel.hidden = false;
+    this.render();
+  }
+
+  /** The trading post being traded at, if the window's showing it. */
+  get tradeOpen(): TradingPost | null {
+    return !this.panel.hidden && this.tab === 'trade' ? this.trading : null;
   }
 
   /** A flatbed's load opened: the window opens on its tab. */
@@ -522,9 +548,10 @@ export class InventoryUi {
       else if (this.mode === 'survival') tab(c.name, false, null, c.why);
     }
     if (this.cargo) tab('Flatbed', this.tab === 'cargo', () => this.show('cargo'));
+    if (this.trading) tab('Trade', this.tab === 'trade', () => this.show('trade'));
     this.tabs.replaceChildren(...tabs);
     this.windowBar.replaceChildren(...this.hotbar.map((m, i) => this.slot(m, i)));
-    const body = this.tab === 'cargo' && this.cargo ? this.cargoTab() : this.tab === 'station' && this.station ? this.stationTab() : this.tab === 'crafting' ? this.craftingTab() : this.tab === 'recipes' ? this.recipesTab() : this.inventoryTab();
+    const body = this.tab === 'trade' && this.trading ? this.tradeTab() : this.tab === 'cargo' && this.cargo ? this.cargoTab() : this.tab === 'station' && this.station ? this.stationTab() : this.tab === 'crafting' ? this.craftingTab() : this.tab === 'recipes' ? this.recipesTab() : this.inventoryTab();
     this.body.replaceChildren(...body);
   }
 
@@ -532,6 +559,65 @@ export class InventoryUi {
     this.tab = tab;
     this.discarding = null;
     this.render();
+  }
+
+  // ---- Trading at a post (see market.ts): their wares for coins, coins for your goods.
+
+  private tradeTab(): HTMLElement[] {
+    const post = this.trading!;
+    const have = (id: ItemId) => (this.mode === 'creative' ? Infinity : (this.items.get(id) ?? 0));
+    const purse = this.mode === 'creative' ? Infinity : worth(have(Item.CopperCoin), have(Item.GoldCoin));
+    const card = (id: ItemId, count: string, title: string, can: boolean, click: (shift: boolean) => void) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'item' + (can ? '' : ' used');
+      const label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = itemName(id);
+      const n = document.createElement('div');
+      n.className = 'count';
+      n.textContent = count;
+      b.append(this.swatch(id, ''), label, n);
+      b.title = title;
+      b.addEventListener('click', (e) => click(e.shiftKey));
+      return b;
+    };
+    const section = (heading: string, cards: HTMLElement[], empty: string) => {
+      const box = document.createElement('div');
+      const h = document.createElement('h3');
+      h.textContent = heading;
+      const grid = document.createElement('div');
+      grid.className = 'grid small';
+      grid.append(...cards);
+      box.append(h, grid);
+      if (!cards.length) {
+        const none = document.createElement('p');
+        none.className = 'hint';
+        none.textContent = empty;
+        box.append(none);
+      }
+      return box;
+    };
+    const coinsText = (n: number) => `${n} copper`;
+    const about = document.createElement('p');
+    about.className = 'could';
+    about.textContent =
+      `${post.trader.name}, ${post.name}. ` +
+      (this.mode === 'creative'
+        ? "In creative everything's to hand: trading is for survival."
+        : `You have ${have(Item.CopperCoin)} copper and ${have(Item.GoldCoin)} gold coins (${purse} copper's worth; a gold coin is ${GOLD_COPPER}).`);
+    const sells = post.sells.map((o) =>
+      card(o.item, `${lotLabel(o.item, o.lot)} · ${coinsText(o.price)}`, `click: buy ${lotLabel(o.item, o.lot)} for ${o.price} copper · shift-click: five times that`, purse >= o.price, (shift) =>
+        this.onTrade(post.id, o.item, shift ? 5 : 1, 'buy'),
+      ),
+    );
+    const buys = post.buys.map((o) => {
+      const lots = Math.floor(have(o.item) / o.lot + 1e-9);
+      return card(o.item, `${lotLabel(o.item, o.lot)} · ${coinsText(o.price)}${this.mode === 'survival' ? ` · you have ${this.amountText(o.item)}` : ''}`, `click: sell ${lotLabel(o.item, o.lot)} for ${o.price} copper · shift-click: all you have`, lots > 0, (shift) =>
+        this.onTrade(post.id, o.item, shift ? Math.max(1, Math.min(1000, lots)) : 1, 'sell'),
+      );
+    });
+    return [about, section('They sell', sells, 'Nothing for sale.'), section('They buy', buys, 'They buy nothing.')];
   }
 
   // ---- A flatbed's load (see trains.ts): in crates, a kind of thing to each.

@@ -324,20 +324,24 @@ function lookOf(e: EntitySnapshot): Avatar {
   return (e.look ? avatarFromText(e.look) : null) ?? defaultAvatar(e.name ?? 'guest');
 }
 
-function nameTag(name: string, y: number): THREE.Sprite {
+export function nameTag(name: string, y: number): THREE.Sprite {
+  const text = name.slice(0, 40), font = '28px system-ui, sans-serif';
   const c = document.createElement('canvas');
-  c.width = 256;
+  const measure = c.getContext('2d')!;
+  measure.font = font;
+  // (As wide as the name needs, 256 pixels at least: the tag as much wider.)
+  c.width = Math.max(256, Math.ceil(measure.measureText(text).width) + 24);
   c.height = 48;
   const g = c.getContext('2d')!;
   g.fillStyle = 'rgba(0,0,0,0.5)';
   g.fillRect(0, 0, c.width, c.height);
   g.fillStyle = 'white';
-  g.font = '28px system-ui, sans-serif';
+  g.font = font;
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  g.fillText(name.slice(0, 18), c.width / 2, c.height / 2);
+  g.fillText(text, c.width / 2, c.height / 2);
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: true }));
-  sprite.scale.set(1.6, 0.3, 1);
+  sprite.scale.set((1.6 * c.width) / 256, 0.3, 1);
   sprite.position.y = y;
   return sprite;
 }

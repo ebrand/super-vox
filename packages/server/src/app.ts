@@ -47,6 +47,11 @@ import {
   NEAR_METRES,
   RAIL_M,
   CAR_ITEM,
+  GOLD_COPPER,
+  TRADE_REACH_M,
+  coins,
+  lotLabel,
+  pay,
   CAR_KINDS,
   COAL_LUMP,
   carOfItem,
@@ -1487,6 +1492,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               send({ type: 'tracks', tracks: world.trackList() });
               world.onTracksChanged ??= () => toWorld(world, { type: 'tracks', tracks: world.trackList() });
               send({ type: 'trains', trains: world.trains.list(), at: Date.now() });
+              send({ type: 'posts', posts: world.tradingPosts(clientWorld.get(socket) ?? catalog.defaultName) });
               // (What's dropped last: the last thing told unasked.)
               send({ type: 'drops', drops: [...(dropsOf.get(world)?.list.values() ?? [])] });
             };
@@ -1884,6 +1890,46 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (msg.type !== 'carUse' || msg.act === 'fuel') if (inventory?.mode === 'survival') send(inventory.message());
           showTrains(world);
           world.saveTrains();
+          break;
+        }
+
+        case 'trade': {
+          // At a trading post: bought or sold, for coins (survival; in creative everything's to hand).
+          if (!greeted) return;
+          const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
+          if (!canEdit()) return fail(cantBuild());
+          if (opts.inventories && who && !inventory) return fail(inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded");
+          const inv = inventory;
+          if (inv?.mode !== 'survival') return fail("in creative everything's to hand: trading is for survival");
+          const post = world.tradingPosts(clientWorld.get(socket) ?? catalog.defaultName).find((t) => t.id === msg.post);
+          if (!post) return fail("there's no trading post there");
+          const p = players.get(socket)!;
+          if (!p.pose || Math.hypot(p.pose.x - post.x, p.pose.z - post.z) > (TRADE_REACH_M + 4) * UNITS_PER_METER) return fail('too far from the trader');
+          const name = itemName(msg.item);
+          let note: string;
+          if (msg.act === 'sell') {
+            const offer = post.buys.find((o) => o.item === msg.item);
+            if (!offer) return fail(`${post.trader.name} doesn't buy ${name}`);
+            const lots = Math.min(msg.lots, Math.floor(inv.count(msg.item) / offer.lot + 1e-9));
+            if (lots < 1) return fail(`not enough ${name} (they buy ${lotLabel(msg.item, offer.lot)} at a time)`);
+            inv.discard(msg.item, lots * offer.lot);
+            const paid = coins(lots * offer.price);
+            if (paid.gold) inv.addItem(Item.GoldCoin, paid.gold);
+            if (paid.copper) inv.addItem(Item.CopperCoin, paid.copper);
+            note = `sold ${lotLabel(msg.item, lots * offer.lot)} ${name} for ${lots * offer.price} copper's worth`;
+          } else {
+            const offer = post.sells.find((o) => o.item === msg.item);
+            if (!offer) return fail(`${post.trader.name} doesn't sell ${name}`);
+            const price = msg.lots * offer.price, purse = pay(price, inv.count(Item.CopperCoin), inv.count(Item.GoldCoin));
+            if (!purse) return fail(`not enough coins: ${price} copper's worth (a gold coin is ${GOLD_COPPER})`);
+            if (purse.copper) inv.addItem(Item.CopperCoin, -purse.copper);
+            if (purse.gold) inv.addItem(Item.GoldCoin, -purse.gold);
+            if (purse.change) inv.addItem(Item.CopperCoin, purse.change);
+            inv.addItem(msg.item, msg.lots * offer.lot);
+            note = `bought ${lotLabel(msg.item, msg.lots * offer.lot)} ${name} for ${price} copper's worth`;
+          }
+          send(inv.message());
+          send({ type: 'editResult', id: msg.id, ok: true, note });
           break;
         }
 

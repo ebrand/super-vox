@@ -1,9 +1,10 @@
-import type { Track } from '@super-vox/shared';
+import type { Track, TradingPost } from '@super-vox/shared';
 import type { WorldMapOverlay } from './worldMap.js';
 
-/** Laid track on the world map (M): dark rails on a pale bed. */
+/** Laid track on the world map (M), dark rails on a pale bed; and the trading posts, gold, named. */
 export class TrackMap {
   private tracks: readonly Track[] = [];
+  private posts: readonly TradingPost[] = [];
 
   constructor(private readonly map: WorldMapOverlay) {
     map.drawMore = (g, toX, toZ, near, dpr) => {
@@ -19,7 +20,33 @@ export class TrackMap {
           g.stroke();
         }
       }
+      g.font = `${11 * dpr}px system-ui, sans-serif`;
+      g.textAlign = 'left';
+      g.textBaseline = 'middle';
+      for (const p of this.posts) {
+        const x = toX(near(p.x)), z = toZ(p.z), r = 5 * dpr;
+        g.fillStyle = '#ffd23f';
+        g.strokeStyle = '#000';
+        g.lineWidth = 1.5 * dpr;
+        g.beginPath();
+        g.moveTo(x, z - r);
+        g.lineTo(x + r, z);
+        g.lineTo(x, z + r);
+        g.lineTo(x - r, z);
+        g.closePath();
+        g.fill();
+        g.stroke();
+        g.lineWidth = 3 * dpr;
+        g.strokeText(p.name, x + r + 3 * dpr, z);
+        g.fillStyle = '#fff';
+        g.fillText(p.name, x + r + 3 * dpr, z);
+      }
     };
+  }
+
+  setPosts(posts: readonly TradingPost[]): void {
+    this.posts = posts;
+    if (this.map.isOpen) this.map.update();
   }
 
   setTracks(tracks: readonly Track[]): void {

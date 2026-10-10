@@ -7,6 +7,7 @@ import { TrackMap } from './trackMap.js';
 import { TrackMode } from './trackMode.js';
 import { TrackView } from './trackView.js';
 import { TrainView } from './trainView.js';
+import { PostView } from './postView.js';
 import { CAB_EYE, SEAT_EYES } from './trainModels.js';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
@@ -486,6 +487,8 @@ let trackView: TrackView | null = null;
 let trackMap: TrackMap | null = null;
 /** The world's trains (see TrainView), and the engine we're driving, if any: the keys drive it (see FlyControls.ride). */
 let trainView: TrainView | null = null;
+/** The world's trading posts (see PostView): their stalls and traders. */
+let postView: PostView | null = null;
 let driving: { car: number; throttle: number; brake: boolean; sentAt: number; sent: string; shiftWasDown: boolean; heading: number | null } | null = null;
 let stopDriving: (gone?: boolean) => void = () => {};
 /** The seat we're in, if any (see the seated message): Shift gets up. */
@@ -870,6 +873,9 @@ connection = connect({
                 editTool.onModeChange?.('hybrid');
               },
             });
+            postView?.group.removeFromParent();
+            postView = new PostView(() => 1 - 0.85 * atmosphere.uniforms.stars.value);
+            scene.add(postView.group);
             trainView?.group.removeFromParent();
             trainView = new TrainView(() => 1 - 0.85 * atmosphere.uniforms.stars.value, () => Date.now() + serverOffset);
             scene.add(trainView.group);
@@ -1088,6 +1094,13 @@ connection = connect({
             if (controls.pointerLocked) freeMouse();
             inventoryUi.showCargo(car, c.cargo ?? []);
           };
+          // Trading posts: right-click a stall, the window's Trade tab (the mouse free to click).
+          editTool.pickPost = (o, d, max) => postView?.pick(o, d, max) ?? null;
+          editTool.onTrade = (post) => {
+            if (controls.pointerLocked) freeMouse();
+            inventoryUi.showTrade(post);
+          };
+          inventoryUi.onTrade = (post, item, lots, act) => editTool?.request({ type: 'trade', post, item, lots, act }, act === 'buy' ? 'buying' : 'selling');
           inventoryUi.onCargo = (car, item, amount, to) => editTool?.request({ type: 'cargo', car, item, amount, to }, to === 'car' ? 'loading it' : 'unloading it');
           sitIn = (car, seat) => {
             if (riding) endRide();
@@ -1377,6 +1390,10 @@ connection = connect({
         if (open !== null) inventoryUi.updateCargo(msg.trains.flatMap((t) => t.cars).find((c) => c.id === open)?.cargo ?? null);
         break;
       }
+      case 'posts':
+        postView?.setPosts(msg.posts);
+        trackMap?.setPosts(msg.posts);
+        break;
       case 'seated':
         sitIn(msg.car, msg.seat);
         break;
@@ -1647,6 +1664,7 @@ renderer.setAnimationLoop(() => {
   boats?.frame(Math.min(0.25, (frameStart - lastBoatFrame) / 1000));
   trackView?.frame();
   trainView?.frame();
+  postView?.frame(camera.position);
   if (driving) driveFrame();
   if (seated) seatFrame();
   arrows?.frame();

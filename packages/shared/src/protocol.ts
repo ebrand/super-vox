@@ -6,6 +6,7 @@ import type { MeshLibrary } from './meshes.js';
 import { CHAT_MAX, type ChatLine } from './chat.js';
 import type { Track, TrackPlan } from './rail.js';
 import type { Train } from './trains.js';
+import type { TradingPost } from './market.js';
 import { isValidTileLevel } from './tile.js';
 import type { ColumnRange } from './chunk.js';
 import { HOTBAR_SLOTS, type GameMode } from './items.js';
@@ -24,7 +25,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 48;
+export const PROTOCOL_VERSION = 49;
 
 export type ClientMessage =
   /** Something said (or a command: see readChat), to be heard by the world (or one player). */
@@ -39,6 +40,8 @@ export type ClientMessage =
   /** A flatbed's load: `amount` of `item` put on it (`to` 'car') or taken off it ('me'). Answered with an editResult. */
   | { type: 'cargo'; id: number; car: number; item: number; amount: number; to: 'car' | 'me' }
   | { type: 'carTake'; id: number; car: number }
+  /** Trading (see market.ts): `lots` lots of `item` bought from, or sold to, trading post `post`'s trader. Answered with an editResult. */
+  | { type: 'trade'; id: number; post: number; item: number; lots: number; act: 'buy' | 'sell' }
   /** Driving: the throttle (-1..1, the way the engine faces) and the brake; `leave`: getting out. */
   | { type: 'drive'; throttle: number; brake: boolean; leave?: boolean }
   /** A segment of track (see SegmentAsk: units) for a design speed (km/h): planned (see trackPlan), or (`lay`) laid. */
@@ -190,6 +193,8 @@ export type ServerMessage =
   | { type: 'meshes'; library: MeshLibrary }
   /** A segment as it'd be laid (see the track message): what it'd take, its line and profile; or why not; `laid`: it has been. */
   | { type: 'trackPlan'; id: number; error?: string; laid?: boolean; plan?: TrackPlan }
+  /** The world's trading posts (see TradingPost), on joining. */
+  | { type: 'posts'; posts: TradingPost[] }
   /** You're sitting in seat `seat` of passenger car `car` (Shift: out, see the drive message). */
   | { type: 'seated'; car: number; seat: number }
   /** The world's trains (see Train), on joining, whenever they change, and while they move (ten times a second); `at`: when, by the server's clock (ms). */
@@ -447,6 +452,8 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   if (msg.type === 'carPlace' && isId(msg.id) && Number.isInteger(msg.item) && [msg.x, msg.y, msg.z, msg.heading].every(Number.isFinite))
     return { type: 'carPlace', id: msg.id as number, item: msg.item as number, x: msg.x as number, y: msg.y as number, z: msg.z as number, heading: msg.heading as number };
   if (msg.type === 'carUse' && isId(msg.id) && isId(msg.car) && (msg.act === 'board' || msg.act === 'fuel' || msg.act === 'uncouple' || msg.act === 'sit' || msg.act === 'cargo')) return { type: 'carUse', id: msg.id as number, car: msg.car as number, act: msg.act };
+  if (msg.type === 'trade' && isId(msg.id) && isId(msg.post) && Number.isInteger(msg.item) && Number.isInteger(msg.lots) && (msg.lots as number) >= 1 && (msg.lots as number) <= 1000 && (msg.act === 'buy' || msg.act === 'sell'))
+    return { type: 'trade', id: msg.id as number, post: msg.post as number, item: msg.item as number, lots: msg.lots as number, act: msg.act };
   if (msg.type === 'cargo' && isId(msg.id) && isId(msg.car) && Number.isInteger(msg.item) && Number.isFinite(msg.amount) && (msg.amount as number) > 0 && (msg.to === 'car' || msg.to === 'me'))
     return { type: 'cargo', id: msg.id as number, car: msg.car as number, item: msg.item as number, amount: msg.amount as number, to: msg.to };
   if (msg.type === 'carTake' && isId(msg.id) && isId(msg.car)) return { type: 'carTake', id: msg.id as number, car: msg.car as number };
