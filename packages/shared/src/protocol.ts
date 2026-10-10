@@ -5,6 +5,7 @@ import type { AnimationLibrary } from './animations.js';
 import type { MeshLibrary } from './meshes.js';
 import { CHAT_MAX, type ChatLine } from './chat.js';
 import type { Track, TrackPlan } from './rail.js';
+import type { Train } from './trains.js';
 import { isValidTileLevel } from './tile.js';
 import type { ColumnRange } from './chunk.js';
 import { HOTBAR_SLOTS, type GameMode } from './items.js';
@@ -23,11 +24,21 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 46;
+export const PROTOCOL_VERSION = 47;
 
 export type ClientMessage =
   /** Something said (or a command: see readChat), to be heard by the world (or one player). */
   | { type: 'chat'; text: string }
+  /**
+   * Trains (see trains.ts): a car (its item in hand) put on the track aimed at (units), facing the
+   * way looked; one got into (an engine), given coal (an engine), or uncoupled from the car ahead;
+   * one taken off. Answered with an editResult.
+   */
+  | { type: 'carPlace'; id: number; item: number; x: number; y: number; z: number; heading: number }
+  | { type: 'carUse'; id: number; car: number; act: 'board' | 'fuel' | 'uncouple' }
+  | { type: 'carTake'; id: number; car: number }
+  /** Driving: the throttle (-1..1, the way the engine faces) and the brake; `leave`: getting out. */
+  | { type: 'drive'; throttle: number; brake: boolean; leave?: boolean }
   /** A segment of track (see SegmentAsk: units) for a design speed (km/h): planned (see trackPlan), or (`lay`) laid. */
   | { type: 'track'; id: number; from: { x: number; z: number }; heading: number | null; to: { x: number; z: number }; curve: boolean; speed: number; lay: boolean }
   | {
@@ -177,6 +188,8 @@ export type ServerMessage =
   | { type: 'meshes'; library: MeshLibrary }
   /** A segment as it'd be laid (see the track message): what it'd take, its line and profile; or why not; `laid`: it has been. */
   | { type: 'trackPlan'; id: number; error?: string; laid?: boolean; plan?: TrackPlan }
+  /** The world's trains (see Train), on joining, whenever they change, and while they move (ten times a second); `at`: when, by the server's clock (ms). */
+  | { type: 'trains'; trains: Train[]; at: number }
   /** The world's laid track (see Track), on joining and whenever more's laid. */
   | { type: 'tracks'; tracks: Track[] }
   /** Chat (see ChatLine): what's said, as it is; `history`: the world's last lines, on joining. */
@@ -427,6 +440,12 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
     };
   }
   const isId = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 2 ** 32;
+  if (msg.type === 'carPlace' && isId(msg.id) && Number.isInteger(msg.item) && [msg.x, msg.y, msg.z, msg.heading].every(Number.isFinite))
+    return { type: 'carPlace', id: msg.id as number, item: msg.item as number, x: msg.x as number, y: msg.y as number, z: msg.z as number, heading: msg.heading as number };
+  if (msg.type === 'carUse' && isId(msg.id) && isId(msg.car) && (msg.act === 'board' || msg.act === 'fuel' || msg.act === 'uncouple')) return { type: 'carUse', id: msg.id as number, car: msg.car as number, act: msg.act };
+  if (msg.type === 'carTake' && isId(msg.id) && isId(msg.car)) return { type: 'carTake', id: msg.id as number, car: msg.car as number };
+  if (msg.type === 'drive' && Number.isFinite(msg.throttle) && Math.abs(msg.throttle as number) <= 1 && typeof msg.brake === 'boolean' && (msg.leave === undefined || typeof msg.leave === 'boolean'))
+    return { type: 'drive', throttle: msg.throttle as number, brake: msg.brake, ...(msg.leave ? { leave: true } : {}) };
   // (Track: a segment's ends; checked by the server too, see planSegment.)
   const isXZ = (v: unknown): v is { x: number; z: number } => typeof v === 'object' && v !== null && Number.isFinite((v as { x: unknown }).x) && Number.isFinite((v as { z: unknown }).z);
   if (msg.type === 'track' && isId(msg.id) && typeof msg.lay === 'boolean' && typeof msg.curve === 'boolean' && isXZ(msg.from) && isXZ(msg.to) && (msg.heading === null || Number.isFinite(msg.heading)) && Number.isFinite(msg.speed))

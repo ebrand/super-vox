@@ -138,6 +138,21 @@ const ITEM_ICONS: Readonly<Partial<Record<ItemId, string>>> = {
     `<g transform="translate(2.5 0.5)"><path d="M10.25 6.05 L2.75 16.55 M17.25 10.25 L9.75 20.75 M24.25 14.45 L16.75 24.95" stroke="${css(WOOD, 1.1)}" stroke-width="3.2"/>` +
       `<path d="M6 6 L26 18 M1 13 L21 25" stroke="${css(IRON, 0.6)}" stroke-width="2.6" stroke-linecap="round"/><path d="M6 6 L26 18 M1 13 L21 25" stroke="${css(IRON, 1.35)}" stroke-width="1" stroke-linecap="round"/></g>`,
   ),
+  // Rolling stock, side on: a steam engine (boiler, chimney, cab), a flatbed, a passenger car.
+  [Item.Engine]: svg(
+    `<rect x="3" y="13" width="17" height="8" rx="3" fill="rgb(40 44 48)"${OUTLINE}/><rect x="19" y="8" width="10" height="13" fill="rgb(52 70 58)"${OUTLINE}/><rect x="21" y="10" width="6" height="4" fill="rgb(230 200 120)"/>` +
+      `<rect x="6" y="7" width="3.5" height="7" fill="rgb(40 44 48)"${OUTLINE}/><rect x="2" y="21" width="28" height="2.5" fill="rgb(150 40 36)"/>` +
+      `<circle cx="8" cy="25.5" r="3" fill="rgb(30 30 32)"${OUTLINE}/><circle cx="15.5" cy="25.5" r="3" fill="rgb(30 30 32)"${OUTLINE}/><circle cx="24" cy="25.5" r="3" fill="rgb(30 30 32)"${OUTLINE}/>`,
+  ),
+  [Item.FlatbedCar]: svg(
+    `<rect x="2" y="17" width="28" height="4" fill="${css(WOOD, 1.25)}"${OUTLINE}/><path d="M5 17 V12 M27 17 V12" stroke="${css(DARK_WOOD, 1.3)}" stroke-width="1.6"/><rect x="3" y="21" width="26" height="2" fill="rgb(40 40 44)"/>` +
+      `<circle cx="8" cy="25" r="2.6" fill="rgb(30 30 32)"${OUTLINE}/><circle cx="24" cy="25" r="2.6" fill="rgb(30 30 32)"${OUTLINE}/>`,
+  ),
+  [Item.PassengerCar]: svg(
+    `<rect x="2" y="9" width="28" height="13" rx="2" fill="rgb(120 30 34)"${OUTLINE}/><rect x="2" y="7" width="28" height="3" rx="1.5" fill="rgb(60 60 64)"/>` +
+      `<rect x="5" y="12" width="4" height="4" fill="rgb(230 210 150)"/><rect x="11" y="12" width="4" height="4" fill="rgb(230 210 150)"/><rect x="17" y="12" width="4" height="4" fill="rgb(230 210 150)"/><rect x="23" y="12" width="4" height="4" fill="rgb(230 210 150)"/>` +
+      `<circle cx="8" cy="25" r="2.6" fill="rgb(30 30 32)"${OUTLINE}/><circle cx="24" cy="25" r="2.6" fill="rgb(30 30 32)"${OUTLINE}/>`,
+  ),
   [Item.Boat]: svg(
     `<path d="M3 15 L29 15 L25 23 Q16 26 7 23 Z" fill="${css(WOOD, 1.2)}"${OUTLINE}/><path d="M5 18 L27 18" stroke="${css(DARK_WOOD, 1.2)}" stroke-width="1"/>` +
       `<path d="M2 25 Q6 23 10 25 T18 25 T26 25 T30 25" stroke="${css(WATER, 1.4)}" stroke-width="1.6" fill="none"/><line x1="20" y1="6" x2="13" y2="20" stroke="${css(DARK_WOOD, 1.3)}" stroke-width="1.6" stroke-linecap="round"/>`,

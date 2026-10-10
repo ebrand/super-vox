@@ -80,6 +80,10 @@ const BUILT_IN: readonly Recipe[] = [
   // (Iron for the case, copper (coins, drawn out: wire) for its insides: once there's a furnace.)
   // (Track: steel on timber; four rails, 8 m of track, an ingot.)
   r('rails', 'building', [[Item.IronIngot, 1], [Item.Stick, 1]], [Item.Rail, 4], true),
+  // (Rolling stock: iron and timber; an engine's boiler and wheels, mostly iron.)
+  r('steam-engine', 'building', [[Item.IronIngot, 12], [Material.Planks, 4]], [Item.Engine, 1], true),
+  r('flatbed-car', 'building', [[Item.IronIngot, 4], [Material.Planks, 8]], [Item.FlatbedCar, 1], true),
+  r('passenger-car', 'building', [[Item.IronIngot, 4], [Material.Planks, 12]], [Item.PassengerCar, 1], true),
   r('radio', 'tools', [[Item.IronIngot, 2], [Item.CopperCoin, 2], [Material.Planks, 2]], [Item.Radio, 1], true),
   // (Early, and cheap: for finding ore before there's iron.)
   r('geologists-hammer', 'tools', [[Material.Cobblestone, 1], [Item.Stick, 1]], [Item.GeologistsHammer, 1], true),

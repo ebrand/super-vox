@@ -59,6 +59,9 @@
       #worldmap canvas.marks:active { cursor: grabbing; }
       /* Drawing track on the map (see trackDraw.ts). */
       #worldmap .bar button.on { border-color: #ffd23f; color: #ffd23f; }
+      /* Driving an engine: how it's going, over the hotbar. */
+      #drive { position: fixed; left: 50%; bottom: 112px; transform: translateX(-50%); z-index: 5; pointer-events: none; font: 600 13px ui-monospace, monospace; color: #f0f0f0; background: rgba(0,0,0,0.55); padding: 4px 10px; border-radius: 6px; white-space: nowrap; }
+      #drive[hidden] { display: none; }
       /* Track mode (see TrackMode): the whole view's for pointing at the ground; the panel top right. */
       .track-mode { position: fixed; inset: 0; z-index: 3; cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none; }
       .track-mode[hidden] { display: none; }
@@ -238,6 +241,7 @@
     <div id="note"></div>
     <div id="mining" hidden></div>
     <div id="mode"></div>
+    <div id="drive" hidden></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

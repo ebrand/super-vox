@@ -6,6 +6,8 @@ import { ChatBox } from './chatBox.js';
 import { TrackMap } from './trackMap.js';
 import { TrackMode } from './trackMode.js';
 import { TrackView } from './trackView.js';
+import { TrainView } from './trainView.js';
+import { CAB_EYE } from './trainModels.js';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool, sizeLabel } from './editTool.js';
@@ -41,7 +43,7 @@ import { BoatView } from './boatView.js';
 import { ArrowView } from './arrowView.js';
 import { DropView } from './dropView.js';
 import { HeldItem, SWING_S } from './heldItem.js';
-import { Item, PlayerAct, getOutAt, stepBoat, waterSurface, type Boat, type BoatMotion, type DroppedItem, type Hull } from '@super-vox/shared';
+import { COAL_SECONDS, Item, PlayerAct, getOutAt, stepBoat, waterSurface, type Boat, type BoatMotion, type DroppedItem, type Hull } from '@super-vox/shared';
 import type { Footprint } from './coverage.js';
 import { createCompassRose } from './compassRose.js';
 import { coveredAboveFor, materialAtFor, solidAtFor, waterAtFor } from './worldQuery.js';
@@ -482,6 +484,10 @@ let worldMap: WorldMapOverlay | null = null;
 let trackMode: TrackMode | null = null;
 let trackView: TrackView | null = null;
 let trackMap: TrackMap | null = null;
+/** The world's trains (see TrainView), and the engine we're driving, if any: the keys drive it (see FlyControls.ride). */
+let trainView: TrainView | null = null;
+let driving: { car: number; throttle: number; brake: boolean; sentAt: number; sent: string; shiftWasDown: boolean; heading: number | null } | null = null;
+let stopDriving: (gone?: boolean) => void = () => {};
 /**
  * Playing survival (signed in, or anyone where the server has no accounts): no flying, no-clip
  * or travel by map or link; you walk. Visitors who can't build look around as they like.
@@ -519,6 +525,27 @@ function myAct(): number {
  * way), ourselves drawn as others see us (see PlayerFigure).
  */
 let thirdPerson = false;
+/** The engine we're driving: us in its cab (turning with it), and how it's going. */
+const driveHud = document.getElementById('drive')!;
+function driveFrame(): void {
+  const d = driving, p = d && trainView?.pose(d.car), t = d && trainView?.trainOf(d.car);
+  if (!d || !p || !t) return stopDriving(true);
+  // (Looking round turns with it; getting in, facing ahead.)
+  if (d.heading !== null) controls.yaw += p.heading - d.heading;
+  else {
+    controls.yaw = p.heading;
+    controls.pitch = 0;
+  }
+  d.heading = p.heading;
+  const eye = CAB_EYE.clone().applyEuler(new THREE.Euler(p.pitch, p.heading, 0, 'YXZ'));
+  camera.position.set(p.x / UNITS_PER_METER + eye.x, p.y / UNITS_PER_METER + 0.28 + eye.y, p.z / UNITS_PER_METER + eye.z);
+  const engine = t.cars.find((c) => c.id === d.car), way = engine?.flip ? -1 : 1;
+  const ahead = t.v * way, limit = trainView!.limitOf(d.car);
+  const coal = survivalMovement ? ` · coal ${Math.ceil((engine?.fuel ?? 0) / COAL_SECONDS)}` : '';
+  driveHud.textContent =
+    `${Math.round(Math.abs(t.v) * 3.6)} km/h ${ahead > 0.05 ? 'ahead' : ahead < -0.05 ? 'astern' : ''} · limit ${Math.round(limit * 3.6)} · ` +
+    `throttle ${Math.round(Math.abs(d.throttle) * 100)}% ${d.throttle > 0 ? 'ahead' : d.throttle < 0 ? 'astern' : ''}${d.brake ? ' · BRAKE' : ''}${coal}${t.cars.length > 1 ? ` · ${t.cars.length} cars` : ''}`;
+}
 /** Our name (over us, as others see us). */
 let myName = 'guest';
 /** How we look (see Avatar): as others see us, and we do in third person. */
@@ -826,6 +853,9 @@ connection = connect({
                 editTool.onModeChange?.('hybrid');
               },
             });
+            trainView?.group.removeFromParent();
+            trainView = new TrainView(() => 1 - 0.85 * atmosphere.uniforms.stars.value, () => Date.now() + serverOffset);
+            scene.add(trainView.group);
             trackView?.group.removeFromParent();
             trackView = new TrackView(() => 1 - 0.85 * atmosphere.uniforms.stars.value);
             scene.add(trackView.group);
@@ -1009,6 +1039,47 @@ connection = connect({
             send({ type: 'shoot', x, y, z, dx: d.x, dy: d.y, dz: d.z, charge });
           };
           editTool.onBoarded = (id) => startRide(id);
+          // Trains: aimed at, got into; driven (W/S: the throttle up and down, its notch kept; Space: the brake; Shift: out).
+          editTool.pickCar = (o, d, max) => trainView?.pick(o, d, max) ?? null;
+          editTool.onDriving = (car) => {
+            if (riding) endRide();
+            driving = { car, throttle: 0, brake: false, sentAt: 0, sent: '', shiftWasDown: true, heading: null };
+            controls.walking = false;
+            controls.ride = (input, dt) => {
+              const d = driving;
+              if (!d) return;
+              if (input.leave && !d.shiftWasDown) return stopDriving();
+              d.shiftWasDown = input.leave;
+              d.throttle = Math.max(-1, Math.min(1, d.throttle + input.forward * dt * 0.6));
+              // (Close to nothing: nothing, so it can be shut off.)
+              if (!input.forward && Math.abs(d.throttle) < 0.04) d.throttle = 0;
+              d.brake = input.brake;
+              const key = `${d.throttle.toFixed(2)},${d.brake}`;
+              if (key !== d.sent || performance.now() - d.sentAt > 1000) {
+                d.sent = key;
+                d.sentAt = performance.now();
+                send({ type: 'drive', throttle: Math.round(d.throttle * 100) / 100, brake: d.brake });
+              }
+            };
+            driveHud.hidden = false;
+            editTool?.say('driving: W/S throttle up and down, Space brakes, Shift gets out');
+          };
+          stopDriving = (gone = false) => {
+            const d = driving;
+            if (!d) return;
+            driving = null;
+            controls.ride = null;
+            driveHud.hidden = true;
+            if (!gone) send({ type: 'drive', throttle: 0, brake: false, leave: true });
+            // Out beside the cab (on foot again in survival: down to the ground).
+            const p = trainView?.pose(d.car);
+            if (p) {
+              const across = { x: Math.cos(p.heading), z: -Math.sin(p.heading) };
+              camera.position.set(p.x / UNITS_PER_METER + across.x * 2.6, p.y / UNITS_PER_METER + 1.2 + PLAYER.eye / UNITS_PER_METER, p.z / UNITS_PER_METER + across.z * 2.6);
+            }
+            if (survivalMovement) controls.walking = true;
+            controls.stopFalling();
+          };
           {
             const surface = (x: number, y: number, z: number) => waterSurface(waterAt, x, y, z);
             const placeRider = (r: NonNullable<typeof riding>) =>
@@ -1239,8 +1310,14 @@ connection = connect({
         break;
       case 'tracks':
         trackView?.setTracks(msg.tracks);
+        trainView?.setTracks(msg.tracks);
         trackMap?.setTracks(msg.tracks);
         trackMode?.setTracks(msg.tracks);
+        break;
+      case 'trains':
+        trainView?.setTrains(msg.trains, msg.at);
+        // (Our engine taken off, or someone else in it: out.)
+        if (driving && trainView?.trainOf(driving.car)?.driver == null) stopDriving(true);
         break;
       case 'trackPlan':
         trackMode?.planned(msg);
@@ -1508,6 +1585,8 @@ renderer.setAnimationLoop(() => {
   entities?.frame();
   boats?.frame(Math.min(0.25, (frameStart - lastBoatFrame) / 1000));
   trackView?.frame();
+  trainView?.frame();
+  if (driving) driveFrame();
   arrows?.frame();
   drops?.frame();
   flocks?.update(handDt);

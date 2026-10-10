@@ -55,7 +55,7 @@ function connect(opts: WebSocket.ClientOptions = {}): Promise<WebSocket> {
 type Frame = { text: ServerMessage } | { binary: Uint8Array };
 
 /** Told after every welcome (the design library, designs placed, boats, what's dropped, and laid track), and not what these tests look at: passed over. */
-const AFTER_WELCOME = new Set(['designs', 'objects', 'boats', 'drops', 'tracks']);
+const AFTER_WELCOME = new Set(['designs', 'objects', 'boats', 'drops', 'tracks', 'trains']);
 
 function nextFrame(ws: WebSocket): Promise<Frame> {
   return new Promise((resolve, reject) => {

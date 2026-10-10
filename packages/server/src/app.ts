@@ -46,6 +46,11 @@ import {
   CHAT_HELP,
   NEAR_METRES,
   RAIL_M,
+  CAR_ITEM,
+  CAR_KINDS,
+  COAL_LUMP,
+  carOfItem,
+  type CarKind,
   TRACK_REACH_M,
   type TrackPlan,
   RATE_COUNT,
@@ -171,6 +176,9 @@ function then<T>(v: T | Promise<T>, f: (v: T) => void): void | Promise<void> {
 }
 
 /** A connection, as the dashboard shows it. */
+/** How near a car (m, its middle) a player may be to put it on, get in, or take it off. */
+const CAR_REACH_M = 12;
+
 interface Player {
   id: number;
   world: string;
@@ -1099,6 +1107,31 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       }
     }
   }), 50);
+  // Trains (see TrainYard), moved twenty times a second in every world with players; everyone in
+  // it told where they are ten times a second while any moves, and whenever they change; kept
+  // whenever they change, every ten seconds while moving, and when they stop.
+  let trainTicks = 0;
+  const trainsSaved = new Map<World, { at: number; busy: boolean }>();
+  const showTrains = (world: World) => {
+    world.trains.changed = false;
+    toWorld(world, { type: 'trains', trains: world.trains.list(), at: Date.now() });
+  };
+  const railing = setInterval(timed('trains', () => {
+    trainTicks++;
+    const now = Date.now(), worlds = new Map<World, string | undefined>();
+    for (const [client, w] of clients) if (!worlds.has(w)) worlds.set(w, players.get(client)?.world);
+    for (const [world, name] of worlds) {
+      const yard = world.trains, busy = yard.busy;
+      const moved = busy && yard.step(0.05, catalog.play(name)?.mode === 'survival');
+      const changed = yard.changed;
+      if (changed || (moved && trainTicks % 2 === 0)) showTrains(world);
+      const saved = trainsSaved.get(world) ?? { at: 0, busy: false };
+      if (changed || (busy && now - saved.at > 10_000) || (saved.busy && !busy)) {
+        world.saveTrains();
+        trainsSaved.set(world, { at: now, busy });
+      } else trainsSaved.set(world, { ...saved, busy });
+    }
+  }), 50);
   const mobbing = setInterval(timed('mobs', () => {
     const now = Date.now();
     const byWorld = new Map<World, WebSocket[]>();
@@ -1252,6 +1285,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     clearInterval(flowing);
     clearInterval(mobbing);
     clearInterval(flying);
+    clearInterval(railing);
     clearInterval(pickingUp);
     clearInterval(stationTicking);
     clearInterval(sampling);
@@ -1358,6 +1392,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       // (Out of any boat they were in: it stays where it was.)
       const gone = players.get(socket);
       if (gone && greeted) world.riderGone(gone.id);
+      // (Out of any engine they were driving: its brakes on.)
+      if (gone && greeted) world.trains.leave(gone.id);
       players.delete(socket);
       // (Gone, as radios hear it.)
       if (gone && greeted && gone.name) hear(world, [{ at: Date.now(), kind: 'leave', from: gone.name, text: `${gone.name} left` }], (q) => q.radio());
@@ -1450,6 +1486,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               world.onBoatsChanged ??= () => toWorld(world, { type: 'boats', boats: world.boatList() });
               send({ type: 'tracks', tracks: world.trackList() });
               world.onTracksChanged ??= () => toWorld(world, { type: 'tracks', tracks: world.trackList() });
+              send({ type: 'trains', trains: world.trains.list(), at: Date.now() });
               // (What's dropped last: the last thing told unasked.)
               send({ type: 'drops', drops: [...(dropsOf.get(world)?.list.values() ?? [])] });
             };
@@ -1789,6 +1826,67 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           }
           send({ type: 'editResult', id: msg.id, ok: true });
           if (msg.type !== 'boatBoard' && inventory?.mode === 'survival') send(inventory.message());
+          break;
+        }
+
+        case 'carPlace':
+        case 'carUse':
+        case 'carTake': {
+          if (!greeted) return;
+          const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
+          if (!canEdit()) return fail(cantBuild());
+          if (opts.inventories && who && !inventory) return fail(inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded");
+          const p = players.get(socket)!, yard = world.trains;
+          // (Within reach of where they last said they were: a car's length or so.)
+          const near = (at: { x: number; y: number; z: number } | null) => !p.pose || (!!at && Math.hypot(p.pose.x - at.x, p.pose.y - at.y, p.pose.z - at.z) <= CAR_REACH_M * UNITS_PER_METER);
+          let note = '';
+          if (msg.type === 'carPlace') {
+            const kind = carOfItem(msg.item);
+            if (!kind) return fail("that isn't a car");
+            const why = inventory?.refuseItem(msg.item);
+            if (why) return fail(why);
+            if (!near(msg)) return fail('too far away');
+            const car = yard.place(kind, msg.x, msg.y, msg.z, msg.heading);
+            if (typeof car === 'string') return fail(car);
+            inventory?.addItem(msg.item, -1);
+          } else {
+            if (!near(yard.carAt(msg.car))) return fail('too far from it');
+            if (msg.type === 'carTake') {
+              const kind = yard.take(msg.car);
+              if (!CAR_KINDS.includes(kind as CarKind)) return fail(kind);
+              inventory?.addItem(CAR_ITEM[kind as CarKind], 1);
+            } else if (msg.act === 'board') {
+              const r = yard.board(msg.car, p.id);
+              if (r !== true) return fail(r);
+            } else if (msg.act === 'uncouple') {
+              const r = yard.uncouple(msg.car);
+              if (r !== true) return fail(r);
+            } else {
+              // Coal: survival only (creative's engines need none); a block of it at most a time, by the lump.
+              if (inventory?.mode !== 'survival') return fail("in creative, engines need no coal");
+              const lump = BLOCK_VOLUME * COAL_LUMP, lumps = Math.min(8, Math.floor(inventory.count(Material.Coal) / lump));
+              if (!lumps) return fail('no coal');
+              const took = yard.fuel(msg.car, lumps);
+              if (typeof took === 'string') return fail(took);
+              inventory.discard(Material.Coal, took * lump);
+              note = `${took} lump${took === 1 ? '' : 's'} of coal in`;
+            }
+          }
+          send({ type: 'editResult', id: msg.id, ok: true, ...(note ? { note } : {}) });
+          if (msg.type !== 'carUse' || msg.act === 'fuel') if (inventory?.mode === 'survival') send(inventory.message());
+          showTrains(world);
+          world.saveTrains();
+          break;
+        }
+
+        case 'drive': {
+          if (!greeted) return;
+          const p = players.get(socket);
+          if (p) world.trains.drive(p.id, msg.throttle, msg.brake, msg.leave ?? false);
+          if (msg.leave) {
+            showTrains(world);
+            world.saveTrains();
+          }
           break;
         }
 

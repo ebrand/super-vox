@@ -127,6 +127,7 @@ import {
   type TrackLayout,
   type TrackPoint,
 } from '@super-vox/shared';
+import { TrainYard } from './trainYard.js';
 import type { ChunkStore } from './chunkStore.js';
 
 /** An explosive voxel (TNT, C4): its corner and size (units), and material. */
@@ -346,6 +347,8 @@ export class World {
       this.tracks.set(t.id, t);
       this.nextTrack = Math.max(this.nextTrack, t.id + 1);
     }
+    this.trains = new TrainYard(this.store?.loadTrains?.());
+    this.trains.setTracks(this.trackList());
     for (const b of this.store?.loadBoats?.() ?? []) {
       this.boats.set(b.id, { id: b.id, design: b.design, x: b.x, y: b.y, z: b.z, yaw: b.yaw });
       this.nextBoat = Math.max(this.nextBoat, b.id + 1);
@@ -767,6 +770,13 @@ export class World {
   private nextTrack = 1;
   /** Told when track's laid (to tell everyone). */
   onTracksChanged?: () => void;
+  /** The trains on its track (see TrainYard). */
+  readonly trains: TrainYard;
+
+  /** The trains kept as they are now. */
+  saveTrains(): void {
+    this.store?.saveTrains?.(this.trains.save());
+  }
 
   trackList(): Track[] {
     return [...this.tracks.values()];
@@ -885,6 +895,7 @@ export class World {
     };
     this.tracks.set(track.id, track);
     this.store?.saveTracks?.(this.trackList());
+    this.trains.setTracks(this.trackList());
     this.onTracksChanged?.();
     return track;
   }

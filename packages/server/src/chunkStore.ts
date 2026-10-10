@@ -17,6 +17,9 @@ export interface ChunkStore {
   /** The world's laid track (see Track). */
   loadTracks?(): Track[];
   saveTracks?(tracks: Track[]): void;
+  /** The world's trains (see TrainYard), as they were left: as kept, unchecked (the yard checks). */
+  loadTrains?(): unknown;
+  saveTrains?(trains: unknown): void;
 }
 
 const FILE = /^(-?\d+)_(-?\d+)_(-?\d+)\.chunk$/;
@@ -24,6 +27,7 @@ const OBJECTS = 'objects.json';
 const STATIONS = 'stations.json';
 const BOATS = 'boats.json';
 const TRACKS = 'tracks.json';
+const TRAINS = 'trains.json';
 
 /** One file per edited chunk, `<cx>_<cy>_<cz>.chunk`, in a directory. */
 export class FileChunkStore implements ChunkStore {
@@ -96,6 +100,16 @@ export class FileChunkStore implements ChunkStore {
 
   saveTracks(tracks: Track[]): void {
     this.write(TRACKS, JSON.stringify(tracks));
+  }
+
+  /** The trains, in trains.json beside the chunks. */
+  loadTrains(): unknown {
+    const path = join(this.dir, TRAINS);
+    return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as unknown) : null;
+  }
+
+  saveTrains(trains: unknown): void {
+    this.write(TRAINS, JSON.stringify(trains));
   }
 
   private write(name: string, data: string | Uint8Array): void {

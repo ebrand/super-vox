@@ -20,6 +20,9 @@ import {
   isBlock,
   isWater,
   BOAT,
+  CAR_ITEM,
+  carOfItem,
+  type CarKind,
   drawCharge,
   isObjectMaterial,
   isUsableMaterial,
@@ -74,6 +77,8 @@ const WHEEL_GESTURE_GAP = 200;
 
 /** How far away voxels can be edited (units): 32 m. */
 const REACH = 32 * UNITS_PER_METER;
+/** How near a car (m) it's got into, fuelled, uncoupled or taken off from. */
+const CAR_REACH_M = 10;
 
 
 
@@ -179,6 +184,10 @@ export class EditTool {
   pickBoat: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { id: number; dist: number } | null) | null = null;
   /** We're in boat `id` now (the server said so). */
   onBoarded: ((id: number) => void) | null = null;
+  /** Finds a train's car along a ray (units), to get into, fuel, uncouple or take off (set by the game; see TrainView.pick). */
+  pickCar: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { id: number; kind: CarKind; dist: number } | null) | null = null;
+  /** We're driving the engine `car` now (the server said so). */
+  onDriving: ((car: number) => void) | null = null;
   /** A bow let go, drawn `charge` (0..1): shoot (the game sends it, from the eye, the way we look). */
   onShoot: ((charge: number) => void) | null = null;
   /** When the bow in hand started being drawn (right button held; ms), if it is. */
@@ -224,7 +233,7 @@ export class EditTool {
     if (this.mode !== 'hybrid' || this.breaks) return true;
     const held = this.materialOf()!;
     const m = this.targetMaterial;
-    if (held === Item.Bucket || held === Item.Boat || held === Item.GeologistsHammer) return true;
+    if (held === Item.Bucket || held === Item.Boat || held === Item.GeologistsHammer || carOfItem(held) !== null) return true;
     if (isBlock(held) ? canPlace(held, this.survival ? 'survival' : 'creative') : objectKindOf(held) !== null || !!designOfItem(held)) return true;
     if (m !== null && (isExplosive(m) || isUsableMaterial(m) || (isSword(held) && LEAVES.has(m)))) return true;
     const design = this.aimedDesign();
@@ -245,8 +254,9 @@ export class EditTool {
   get miningNow(): boolean {
     return this.mining !== null;
   }
-  /** Requests to get into a boat, by message id: the boat's. */
+  /** Requests to get into a boat, by message id: the boat's; and into an engine: the car's. */
   private readonly boarding = new Map<number, number>();
+  private readonly driving = new Map<number, number>();
   private placement: (Box & { valid: boolean; reason: string }) | null = null;
   private dig: Box | null = null;
   /** Outward normal of the face the dig box starts at (the surface aimed at). */
@@ -667,6 +677,23 @@ export class EditTool {
         return;
       }
       if (button === 2 && held === Item.Boat) return this.launchBoat();
+      // A train's car in reach: right-click gets into an engine (or, coal in hand in survival, fuels
+      // it), or uncouples a car from the one ahead; left-click takes it off. A car in hand: on the track aimed at.
+      const car = this.aimedCar();
+      if (car && (button === 2 || (button === 0 && this.breaks))) {
+        const id = this.nextId++;
+        if (button === 0) {
+          this.pending.set(id, 'taking it off');
+          this.send({ type: 'carTake', id, car: car.id });
+        } else {
+          const act = car.kind !== 'engine' ? 'uncouple' : held === Material.Coal && this.survival ? 'fuel' : 'board';
+          this.pending.set(id, act === 'board' ? 'getting in' : act === 'fuel' ? 'putting coal in' : 'uncoupling');
+          if (act === 'board') this.driving.set(id, car.id);
+          this.send({ type: 'carUse', id, car: car.id, act });
+        }
+        return;
+      }
+      if (button === 2 && carOfItem(held) !== null) return this.placeCar(held!);
       if (button === 0) {
         // A mob in reach, nearer than the voxel aimed at: hit it (with the sword in hand, if any).
         const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
@@ -738,6 +765,24 @@ export class EditTool {
     }
   }
 
+  /** The car aimed at, if one's in reach and nearer than the voxel aimed at. */
+  private aimedCar(): { id: number; kind: CarKind } | null {
+    const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const car = this.pickCar?.([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], CAR_REACH_M * UNITS_PER_METER);
+    return car && (!this.hit || car.dist < this.hit.distance) ? car : null;
+  }
+
+  /** Puts the car in hand on the track aimed at, facing the way we look. */
+  private placeCar(item: ItemId): void {
+    if (!this.hit) return this.say('a car goes on track: aim at it');
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const [x, y, z] = this.hit.point;
+    const id = this.nextId++;
+    this.pending.set(id, 'putting it on the track');
+    this.send({ type: 'carPlace', id, item, x: x!, y: y!, z: z!, heading: Math.atan2(-dir.x, -dir.z) });
+  }
+
   /** The boat aimed at, if one's in reach and nearer than the voxel aimed at. */
   private aimedBoat(): number | null {
     const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
@@ -764,6 +809,9 @@ export class EditTool {
     const boat = this.boarding.get(msg.id);
     this.boarding.delete(msg.id);
     if (msg.ok && boat !== undefined) this.onBoarded?.(boat);
+    const engine = this.driving.get(msg.id);
+    this.driving.delete(msg.id);
+    if (msg.ok && engine !== undefined) this.onDriving?.(engine);
     const was = this.unselect.get(msg.id);
     this.unselect.delete(msg.id);
     if (!msg.ok && was) this.builder.select(was);
@@ -784,7 +832,10 @@ export class EditTool {
     const design = this.aimedDesign();
     const states = design && designById(design.design ?? '')?.states;
     const next = design && states && usable(design) ? states[((design.state ?? 0) + 1) % states.length]!.name : null;
-    const target = !this.target
+    const car = this.mode === 'hybrid' ? this.aimedCar() : null;
+    const target = car
+      ? `aiming at a ${itemName(CAR_ITEM[car.kind])} (right-click: ${car.kind === 'engine' ? (this.survival && this.materialOf() === Material.Coal ? 'put coal in' : 'drive it') : 'uncouple it from the car ahead'}) (left-click: take it off)`
+      : !this.target
       ? 'nothing in reach'
       : design
         ? `aiming at a ${objectName(design)}${isBed(design) ? ' (right-click: make it your bed)' : isStationKind(objectStation(design)) ? ' (right-click: open it)' : next ? ` (right-click: ${next})` : ''} (left-click: take it down)`

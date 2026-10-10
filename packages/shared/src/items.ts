@@ -82,6 +82,10 @@ export const Item = {
   Radio: 1032,
   /** Laid as track along a route drawn on the map (see rail.ts): each RAIL_M of it. */
   Rail: 1033,
+  /** Put on track (right-click), and driven (see trains.ts); the others it pulls. */
+  Engine: 1034,
+  FlatbedCar: 1035,
+  PassengerCar: 1036,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -121,6 +125,9 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.Bow]: 'bow',
   [Item.Radio]: 'radio',
   [Item.Rail]: 'rail',
+  [Item.Engine]: 'steam engine',
+  [Item.FlatbedCar]: 'flatbed car',
+  [Item.PassengerCar]: 'passenger car',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */

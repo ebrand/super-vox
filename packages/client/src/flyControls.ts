@@ -75,7 +75,7 @@ export class FlyControls {
    * In a boat: the keys steer it instead (W/S ahead and astern, A/D left and right; `leave`:
    * Shift, getting out), and it moves the camera; looking round still.
    */
-  ride: ((input: { forward: number; turn: number; leave: boolean }, dt: number) => void) | null = null;
+  ride: ((input: { forward: number; turn: number; leave: boolean; brake: boolean }, dt: number) => void) | null = null;
   private walk: WalkState = { vy: 0, grounded: false };
   private readonly keys = new Set<string>();
   private dragging = false;
@@ -193,7 +193,7 @@ export class FlyControls {
       const on = (...codes: string[]) => codes.some((c) => k.has(c));
       this.walk = { vy: 0, grounded: false };
       this.swimming = false;
-      this.ride({ forward: (on('KeyW', 'ArrowUp') ? 1 : 0) - (on('KeyS', 'ArrowDown') ? 1 : 0), turn: (on('KeyA', 'ArrowLeft') ? 1 : 0) - (on('KeyD', 'ArrowRight') ? 1 : 0), leave: on('ShiftLeft', 'ShiftRight') }, dt);
+      this.ride({ forward: (on('KeyW', 'ArrowUp') ? 1 : 0) - (on('KeyS', 'ArrowDown') ? 1 : 0), turn: (on('KeyA', 'ArrowLeft') ? 1 : 0) - (on('KeyD', 'ArrowRight') ? 1 : 0), leave: on('ShiftLeft', 'ShiftRight'), brake: on('Space') }, dt);
       this.apply();
       return;
     }
