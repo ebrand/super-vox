@@ -1518,6 +1518,9 @@ connection = connect({
           setTimeout(() => location.reload(), 1500);
         } else if (msg.code === 'banned') {
           joinError = msg.message;
+        } else if (msg.code === 'replaced') {
+          // (Playing here in another window now: this one stays out, or the two would knock each other off.)
+          joinError = `${msg.message}: reload to play here instead`;
         } else if (msg.code === 'world_deleted') {
           joinError = `${msg.message}: back to the Menu to pick another`;
         }

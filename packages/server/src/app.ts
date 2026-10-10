@@ -264,6 +264,31 @@ const STALL_MS = 300;
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
   await app.register(fastifyCookie);
+  /**
+   * Players kept (inventory, place, the rest: see PlayerState): each connection's keeping of its
+   * player, and each player's saves still going (by account and world: one coming back waits for
+   * them before loading). Shutting down (a deploy), everyone's kept before their connections are
+   * closed (this hook ahead of the websocket plugin's), so that the server they reconnect to loads
+   * them as they were.
+   */
+  const keepers = new Set<() => Promise<void>>();
+  const saving = new Map<string, Promise<void>>();
+  let shuttingDown = false;
+  /** Each player's connection (by account and world), and each connection's keeping (see `keep`). */
+  const playing = new Map<string, WebSocket>();
+  const keeperOf = new WeakMap<WebSocket, () => Promise<void>>();
+  const track = (key: string, save: Promise<unknown>) => {
+    const next = Promise.allSettled([saving.get(key), save]).then(() => {
+      if (saving.get(key) === next) saving.delete(key);
+    });
+    saving.set(key, next);
+    return next;
+  };
+  app.addHook('preClose', async () => {
+    shuttingDown = true;
+    await Promise.allSettled([...keepers].map((keep) => keep()));
+    await Promise.allSettled([...saving.values()]);
+  });
   // Messages compressed on the way (browsers ask for it): chunks shrink about 40x. Fast deflate
   // (in zlib's background threads), each connection keeping its window; small messages as they are.
   await app.register(websocket, {
@@ -1413,6 +1438,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
      * (Player.settleUntil), so a quick visit doesn't save the spawn point over it.
      */
     let placeKey: { accountId: string; world: string } | null = null;
+    /** Which player this is (account and world: see `playing`), once known. */
+    let keepKey: string | null = null;
     let placeSaved = 0;
     /** The rest of them (see PlayerState), kept likewise once loaded; their vitals as loaded (kept as they were outside survival). */
     let stateKey: { accountId: string; world: string } | null = null;
@@ -1420,22 +1447,45 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     let loadedVitals: SavedVitals | null = null;
     const saveState = () => {
       const p = players.get(socket), store = opts.inventories;
-      if (!stateKey || !store || !p) return;
+      if (!stateKey || !store || !p || letGo) return;
       stateSaved = Date.now();
-      store.saveState(stateKey.accountId, stateKey.world, { vitals: p.vulnerable ? p.vitals.saved() : loadedVitals, bed: p.bed }).catch((err: unknown) => {
+      const saved = store.saveState(stateKey.accountId, stateKey.world, { vitals: p.vulnerable ? p.vitals.saved() : loadedVitals, bed: p.bed }).catch((err: unknown) => {
         metrics.error('player_state', err instanceof Error ? err.message : String(err), clientWorld.get(socket));
       });
+      if (keepKey) track(keepKey, saved);
     };
     const savePlace = (now: boolean) => {
       const p = players.get(socket), pose = p?.pose, store = opts.inventories;
+      if (letGo) return;
       if (stateKey && (now || Date.now() - stateSaved >= PLACE_SAVE_MS)) saveState();
       if (!placeKey || !store || !pose || pose.at < p.settleUntil) return;
       if (!now && Date.now() - placeSaved < PLACE_SAVE_MS) return;
       placeSaved = Date.now();
-      store.savePlace(placeKey.accountId, placeKey.world, { x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw }).catch((err: unknown) => {
+      const saved = store.savePlace(placeKey.accountId, placeKey.world, { x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw }).catch((err: unknown) => {
         metrics.error('place', err instanceof Error ? err.message : String(err), clientWorld.get(socket));
       });
+      if (keepKey) track(keepKey, saved);
     };
+    /**
+     * Kept now, as they are (leaving, replaced, or the server shutting down): everything saved, and
+     * waited for. From then on, what this connection sends is ignored (nothing more to keep).
+     */
+    let kept = false;
+    /** (Kept: nothing of theirs saved again, over whatever's kept after: their inventory let go too.) */
+    let letGo = false;
+    const keep = async () => {
+      if (kept) return;
+      kept = true;
+      keepers.delete(keep);
+      savePlace(true);
+      letGo = true;
+      const inv = inventory;
+      inventory = null;
+      await inv?.flush();
+      if (keepKey) await saving.get(keepKey);
+    };
+    keepers.add(keep);
+    keeperOf.set(socket, keep);
     const send = (msg: ServerMessage) => out(socket, encodeMessage(msg));
     const sendBinary = (tag: number, bytes: Uint8Array) => out(socket, frame(tag, bytes));
     let greeted = false;
@@ -1471,8 +1521,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       answered.delete(socket);
       stopViewing();
       queue.close();
-      void inventory?.flush();
-      savePlace(true);
+      void keep();
+      if (keepKey && playing.get(keepKey) === socket) playing.delete(keepKey);
       clients.delete(socket);
       clientWorld.delete(socket);
       if (who) connections.get(who.account.id)?.delete(socket);
@@ -1499,6 +1549,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     });
     socket.on('message', (data, isBinary) => {
       if (answered.has(socket)) answered.set(socket, true);
+      // (Kept already: leaving, replaced, or the server's shutting down.)
+      if (kept || shuttingDown) return;
       metrics.totals.messagesIn++;
       metrics.totals.bytesIn += Array.isArray(data) ? data.reduce((a, b) => a + b.byteLength, 0) : (data as Buffer | ArrayBuffer).byteLength;
       const msg = isBinary ? null : decodeClientMessage(data.toString());
@@ -1599,6 +1651,24 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             if (!who || !store || !play) return;
             const accountId = who.account.id;
             inventoryLoading = true;
+            // The same player here already (another window; a connection that's dropped, not yet
+            // noticed): that one kept and let go first, and any saves of theirs still going waited
+            // for, so they're loaded as they were left (and not kept twice, one over the other).
+            keepKey = `${accountId} ${play.inventoryKey}`;
+            const before = playing.get(keepKey);
+            playing.set(keepKey, socket);
+            if (before && before !== socket) {
+              await keeperOf.get(before)?.();
+              if (before.readyState === before.OPEN) {
+                before.send(encodeMessage({ type: 'error', code: 'replaced', message: 'you joined this world somewhere else' }));
+                before.close(4004, 'replaced');
+              }
+            }
+            await saving.get(keepKey);
+            if (socket.readyState !== socket.OPEN) {
+              inventoryLoading = false;
+              return;
+            }
             void Promise.all([
               store.load(accountId, play.inventoryKey),
               store.loadPlace(accountId, play.inventoryKey).catch(() => null),
@@ -1609,7 +1679,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               }),
             ])
               .then(([saved, place, state]) => {
-                if (socket.readyState !== socket.OPEN) return;
+                if (socket.readyState !== socket.OPEN || kept) return;
                 const p = players.get(socket);
                 if (p && state !== undefined) {
                   loadedVitals = state?.vitals ?? null;
@@ -1624,10 +1694,13 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
                 placeKey = { accountId, world: play.inventoryKey };
                 if (p) p.settleUntil = Date.now() + (place && there ? PLACE_SETTLE_MS : 0);
                 inventory = new PlayerInventory(play.mode, saved ?? (play.mode === 'survival' ? starterInventory() : { items: new Map(), hotbar: creativeHotbar() }), (inv) =>
-                  store.save(accountId, play.inventoryKey, inv).catch((err: unknown) => {
-                    metrics.error('inventory', err instanceof Error ? err.message : String(err), clientWorld.get(socket));
-                    app.log.error(err, 'saving an inventory failed');
-                  }),
+                  track(
+                    `${accountId} ${play.inventoryKey}`,
+                    store.save(accountId, play.inventoryKey, inv).catch((err: unknown) => {
+                      metrics.error('inventory', err instanceof Error ? err.message : String(err), clientWorld.get(socket));
+                      app.log.error(err, 'saving an inventory failed');
+                    }),
+                  ),
                 );
                 send(inventory.message());
                 // (With a radio: what's been said by radio here lately.)
