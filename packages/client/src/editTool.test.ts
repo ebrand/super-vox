@@ -400,12 +400,12 @@ describe('EditTool build mode (creative)', () => {
     delete (globalThis as { window?: EventTarget }).window;
   });
 
-  it('is a mode in creative only', () => {
+  it('is a mode in creative only (track and explore in both)', () => {
     const modes = () => Array.from({ length: 4 }, () => (window.dispatchEvent(key('keydown', 'Tab', false)), tool.mode));
-    expect(modes()).toEqual(['explore', 'hybrid', 'explore', 'hybrid']);
+    expect(modes()).toEqual(['track', 'explore', 'hybrid', 'track']);
     tool.mode = 'hybrid';
     tool.bigBoxes = true;
-    expect(modes()).toEqual(['build', 'explore', 'hybrid', 'build']);
+    expect(modes()).toEqual(['build', 'track', 'explore', 'hybrid']);
   });
 
   it('clicks out a box (base, then height) and sends it to be built; U and ⌘Z undo', () => {

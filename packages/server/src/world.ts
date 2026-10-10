@@ -108,12 +108,18 @@ import {
   type Tile,
   JOIN_M,
   UNITS_PER_METER,
-  MAX_ROUTE_M,
-  MAX_ROUTE_POINTS,
+  DESIGN_SPEEDS,
+  MAX_CUT_M,
+  MAX_FILL_M,
   MIN_RADIUS_M,
+  SAMPLE_M,
+  curveSpeed,
   earthworks,
-  layRoute,
+  freeEnds,
+  layLine,
+  segmentLine,
   type EarthPiece,
+  type SegmentAsk,
   type Track,
   type TrackLayout,
   type TrackPoint,
@@ -331,7 +337,9 @@ export class World {
       this.recordEdited(chunk);
     }
     for (const o of this.store?.loadObjects?.() ?? []) this.addObject(o);
+    // (Track kept before segments, without a speed: dropped; its earthworks stay.)
     for (const t of this.store?.loadTracks?.() ?? []) {
+      if (typeof t.speed !== 'number') continue;
       this.tracks.set(t.id, t);
       this.nextTrack = Math.max(this.nextTrack, t.id + 1);
     }
@@ -751,7 +759,7 @@ export class World {
     return [...this.boats.values()];
   }
 
-  // --- Railways (see rail.ts): track laid along routes drawn on the map. (A route's end this near a track's (m) joins it.)
+  // --- Railways (see rail.ts): track laid a segment at a time (a segment's start this near a free track end joins it).
   private readonly tracks = new Map<number, Track>();
   private nextTrack = 1;
   /** Told when track's laid (to tell everyone). */
@@ -761,40 +769,40 @@ export class World {
     return [...this.tracks.values()];
   }
 
+  /** Track ends nothing goes on from yet (see freeEnds). */
+  freeTrackEnds(): ReturnType<typeof freeEnds> {
+    return freeEnds(this.trackList());
+  }
+
   /**
-   * A route (`points`, units: x, z) as it would be laid: its layout over the ground as generated
-   * (see layRoute), its ends joined to track ends within JOIN_M (there, and at its height), and its
-   * earthworks; or why it can't be (too few or many points, off the world, too long, too tight a
-   * curve, or through what players have built: their columns, not track's).
+   * A segment (see SegmentAsk, units) as it would be laid for `speed` km/h (one of DESIGN_SPEEDS):
+   * from a free track end within JOIN_M of where it starts (on from it, at its height: its heading
+   * taken over the one asked), its line (see segmentLine), its layout over the ground as generated
+   * (see layLine), how fast it may be taken (the design speed, or slower in a tighter curve), and
+   * its earthworks; or why it can't be (off the world, too short or long, too tight a curve, a cut
+   * deeper or fill higher than MAX_CUT_M / MAX_FILL_M, or through what players have built: their
+   * columns, not track's).
    */
-  planTrack(points: readonly { x: number; z: number }[]): { layout: TrackLayout; works: ReturnType<typeof earthworks> } | string {
-    if (points.length < 2) return 'a route needs two points at least';
-    if (points.length > MAX_ROUTE_POINTS) return `a route has ${MAX_ROUTE_POINTS} points at most`;
-    const W = this.config.widthUnits, D = this.config.depthUnits;
-    if (!points.every((p) => Number.isFinite(p.x) && Number.isFinite(p.z) && p.x >= 0 && p.x < W && p.z >= 0 && p.z < D)) return 'the route goes off the world';
-    for (let i = 1; i < points.length; i++) if (Math.abs(points[i]!.x - points[i - 1]!.x) > W / 2) return "the route can't cross the world's east-west seam (yet)";
-    // Joined to the end of a track near either end: from it, at its height.
-    const JOIN = JOIN_M * UNITS_PER_METER, pts = points.map((p) => ({ ...p })), pinned: { x: number; z: number; y: number }[] = [];
-    for (const k of [0, pts.length - 1]) {
-      let best: TrackPoint | null = null, bestD = JOIN;
-      for (const t of this.tracks.values())
-        for (const end of [t.points[0]!, t.points.at(-1)!]) {
-          const d = Math.hypot(end.x - pts[k]!.x, end.z - pts[k]!.z);
-          if (d < bestD) (bestD = d), (best = end);
-        }
-      if (best) {
-        pts[k] = { x: best.x, z: best.z };
-        pinned.push({ x: best.x, z: best.z, y: best.y });
-      }
+  planSegment(ask: SegmentAsk & { speed: number }): { layout: TrackLayout; works: ReturnType<typeof earthworks>; radius: number; speed: number; endHeading: number } | string {
+    if (!(DESIGN_SPEEDS as readonly number[]).includes(ask.speed)) return `laid for ${DESIGN_SPEEDS.join(', ')} km/h`;
+    const W = this.config.widthUnits, D = this.config.depthUnits, M = UNITS_PER_METER;
+    const inside = (p: { x: number; z: number }) => Number.isFinite(p.x) && Number.isFinite(p.z) && p.x >= 0 && p.x < W && p.z >= 0 && p.z < D;
+    if (!inside(ask.from) || !inside(ask.to)) return 'it goes off the world';
+    if (Math.abs(ask.to.x - ask.from.x) > W / 2) return "it can't cross the world's east-west seam (yet)";
+    // On from a free track end near where it starts: from there, its way, at its height.
+    let from = { x: ask.from.x, z: ask.from.z }, heading = ask.heading, pin: number | undefined;
+    let best = JOIN_M * M;
+    for (const e of this.freeTrackEnds()) {
+      const d = Math.hypot(e.x - from.x, e.z - from.z);
+      if (d < best) (best = d), (from = { x: e.x, z: e.z }), (heading = e.heading), (pin = e.y);
     }
-    const ground = (x: number, z: number) => {
-      for (const p of pinned) if (Math.hypot(p.x - x, p.z - z) < UNITS_PER_METER) return p.y;
-      return this.generator.surfaceHeightAt(x, z);
-    };
-    const layout = layRoute(pts, ground);
-    if (!layout) return 'a route needs two points at least';
-    if (layout.length > MAX_ROUTE_M) return `too long: ${Math.round(layout.length)} m (${MAX_ROUTE_M} m at most: lay it in parts)`;
-    if (layout.minRadius < MIN_RADIUS_M) return `a curve's too tight: ${Math.round(layout.minRadius)} m across at its tightest (${MIN_RADIUS_M} m at least: spread the points out)`;
+    const seg = segmentLine({ from, heading, to: ask.to, curve: ask.curve }, SAMPLE_M * M);
+    if (typeof seg === 'string') return seg;
+    if (seg.radius < MIN_RADIUS_M) return `too tight a curve: ${Math.round(seg.radius)} m radius (${MIN_RADIUS_M} m at least)`;
+    const layout = layLine(seg.line, (x, z) => this.generator.surfaceHeightAt(x, z), pin === undefined ? {} : { start: pin });
+    if (!layout) return 'too steep';
+    if (layout.maxCut > MAX_CUT_M) return `a cut ${layout.maxCut.toFixed(0)} m deep ${Math.round(layout.cutAt)} m along (${MAX_CUT_M} m at most; tunnels come later): go round the hill, or along its side`;
+    if (layout.maxFill > MAX_FILL_M) return `built up ${layout.maxFill.toFixed(0)} m high ${Math.round(layout.fillAt)} m along (${MAX_FILL_M} m at most; bridges come later): go round the dip`;
     const works = earthworks(layout.points, (x, z) => this.generator.surfaceHeightAt(x, z));
     // Not through what players have built (track's own columns aside).
     const ours = new Set(this.trackList().flatMap((t) => t.columns));
@@ -802,23 +810,25 @@ export class World {
     const hit = works.columns.find((k) => built.has(k));
     if (hit) {
       const [cx, cz] = hit.split(',').map(Number);
-      return `it would cut through what's been built near x ${Math.round(((cx! + 0.5) * CHUNK_SIZE) / UNITS_PER_METER)}, z ${Math.round(((cz! + 0.5) * CHUNK_SIZE) / UNITS_PER_METER)} m: go round it`;
+      return `it would cut through what's been built near x ${Math.round(((cx! + 0.5) * CHUNK_SIZE) / M)}, z ${Math.round(((cz! + 0.5) * CHUNK_SIZE) / M)} m: go round it`;
     }
-    return { layout, works };
+    // (Its speed: in steps of 5 km/h.)
+    const speed = Math.min(ask.speed, Math.floor(curveSpeed(seg.radius) / 5) * 5);
+    return { layout, works, radius: seg.radius, speed, endHeading: seg.endHeading };
   }
 
   /** Track being laid now (see layTrackGradually): one at a time. */
   private laying = false;
 
   /**
-   * Lays a route (see planTrack) without holding the server up: the chunks its earthworks touch
+   * Lays a segment (see planSegment) without holding the server up: the chunks its earthworks touch
    * made first (off the main thread, where there's another thread or the disk to do it), then the
    * earthworks done a chunk column at a time (each told to `changed` as it's done: to send on),
-   * other work done between. The track, kept; or why not (another being laid, or see planTrack).
+   * other work done between. The track, kept; or why not (another being laid, or see planSegment).
    */
-  async layTrackGradually(points: readonly { x: number; z: number }[], changed: (r: EditResult) => void): Promise<Track | string> {
+  async layTrackGradually(ask: SegmentAsk & { speed: number }, changed: (r: EditResult) => void): Promise<Track | string> {
     if (this.laying) return 'track is being laid already: a moment';
-    const plan = this.planTrack(points);
+    const plan = this.planSegment(ask);
     if (typeof plan === 'string') return plan;
     this.laying = true;
     try {
@@ -841,27 +851,34 @@ export class World {
         if (filled.result) changed(filled.result);
         await new Promise((r) => setImmediate(r));
       }
-      return this.keepTrack(plan.layout, plan.works.columns);
+      return this.keepTrack(plan);
     } finally {
       this.laying = false;
     }
   }
 
-  private keepTrack(layout: TrackLayout, columns: string[]): Track {
-    const track: Track = { id: this.nextTrack++, points: layout.points.map((p) => ({ x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, z: Math.round(p.z * 10) / 10, heading: Math.round(p.heading * 1e4) / 1e4, s: Math.round(p.s * 10) / 10 })), columns };
+  private keepTrack(plan: { layout: TrackLayout; works: { columns: string[] }; radius: number; speed: number }): Track {
+    const r = (v: number, k: number) => Math.round(v * k) / k;
+    const track: Track = {
+      id: this.nextTrack++,
+      points: plan.layout.points.map((p) => ({ x: r(p.x, 10), y: r(p.y, 10), z: r(p.z, 10), heading: r(p.heading, 1e4), s: r(p.s, 10) })),
+      speed: plan.speed,
+      radius: Number.isFinite(plan.radius) ? r(plan.radius, 10) : null,
+      columns: plan.works.columns,
+    };
     this.tracks.set(track.id, track);
     this.store?.saveTracks?.(this.trackList());
     this.onTracksChanged?.();
     return track;
   }
 
-  /** Lays a route (see planTrack) at once (tests; see layTrackGradually): the earthworks done, the track kept. The track and what changed, or why not. */
-  layTrack(points: readonly { x: number; z: number }[]): { track: Track; results: EditResult[] } | string {
-    const plan = this.planTrack(points);
+  /** Lays a segment (see planSegment) at once (tests; see layTrackGradually): the earthworks done, the track kept. The track and what changed, or why not. */
+  layTrack(ask: SegmentAsk & { speed: number }): { track: Track; results: EditResult[] } | string {
+    const plan = this.planSegment(ask);
     if (typeof plan === 'string') return plan;
     // Cleared above the bed first, then filled below it (only where there's room).
     const cleared = this.buildPieces(plan.works.clear, true), filled = this.buildPieces(plan.works.fill, false);
-    const track = this.keepTrack(plan.layout, plan.works.columns);
+    const track = this.keepTrack(plan);
     return { track, results: [cleared.result, filled.result].filter((r): r is EditResult => r !== null) };
   }
 

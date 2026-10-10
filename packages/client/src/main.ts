@@ -3,7 +3,8 @@ import * as THREE from 'three';
 import { BLOCK_SIZE, CHUNK_SIZE, avatarFromText, defaultAvatar, type Avatar, blockIndex, blockVoxelContaining, isWater, MAX_AIR, MAX_FOOD, Material, REGEN_FOOD, TABLE_REACH, UNITS_PER_METER, materialNearIn, clockHours, decodeClimate, weatherTime, lightAt, fallDamage, formatHours, isValidTolerance, normalizeX, unitsToMeters, setDesigns, stationAmong, type DayClock, type PlacedObject, type DeathCause, type WorldConfig } from '@super-vox/shared';
 import { LeaveAsk } from './leaveAsk.js';
 import { ChatBox } from './chatBox.js';
-import { TrackDrawer } from './trackDraw.js';
+import { TrackMap } from './trackMap.js';
+import { TrackMode } from './trackMode.js';
 import { TrackView } from './trackView.js';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
@@ -416,6 +417,21 @@ function groundUnder(p: THREE.Vector3): number | undefined {
   for (let by = top; by > top - 64 / block; by--) if (lw.opaque(bx, by, bz)) return (by + 1) * BLOCK_SIZE;
   return undefined;
 }
+/**
+ * Whether there's ground at a point (metres), for TrackMode's pointing: voxels where they're drawn
+ * (leaves and water aren't: through to the ground), else the tiles' ground; undefined where
+ * neither's known.
+ */
+function trackSolid(): (x: number, y: number, z: number) => boolean | undefined {
+  if (!chunks) return () => undefined;
+  const lw = chunks.lightWorld(), block = BLOCK_SIZE / UNITS_PER_METER, c = chunks, t = tiles;
+  return (x, y, z) => {
+    const ux = x * UNITS_PER_METER, uz = z * UNITS_PER_METER;
+    if (c.drawnColumn(Math.floor(ux / CHUNK_SIZE), Math.floor(uz / CHUNK_SIZE))) return lw.opaque(Math.floor(x / block), Math.floor(y / block), Math.floor(z / block));
+    const g = t?.groundAt(ux, uz);
+    return g === undefined ? undefined : y * UNITS_PER_METER < g;
+  };
+}
 /** ?weatherShift=S: the weather S seconds later (or earlier, negative) than now, to see what's coming. */
 const weatherShift = numberParam('weatherShift', 0, -1e7, 1e7);
 /** ?weather=rain (clear, cloudy, rain, storm, snow, fog): that weather wherever the camera is, for testing (this player only). */
@@ -462,9 +478,10 @@ let editTool: EditTool | null = null;
 /** Designed objects placed in the world (see the `objects` message), for the edit tool. */
 let placedObjects: PlacedObject[] = [];
 let worldMap: WorldMapOverlay | null = null;
-/** Railways (see rail.ts): drawing routes on the map, and the track laid. */
-let trackDrawer: TrackDrawer | null = null;
+/** Railways (see rail.ts): laying track (track mode, from above), the track laid, and it on the map. */
+let trackMode: TrackMode | null = null;
 let trackView: TrackView | null = null;
+let trackMap: TrackMap | null = null;
 /**
  * Playing survival (signed in, or anyone where the server has no accounts): no flying, no-clip
  * or travel by map or link; you walk. Visitors who can't build look around as they like.
@@ -638,8 +655,10 @@ function updateLod(force = false): void {
   // chunks (more 1 m tiles) the faster we go, and flying, none until we stop (see SpeedDetail).
   chunkRadius = speedDetail.update(Math.hypot(velocity.x, velocity.z) / UNITS_PER_METER, performance.now(), !controls.walking);
   const lead = focusLead(velocity.x, velocity.z, chunkRadius);
-  const fx = camera.position.x * UNITS_PER_METER + lead.dx;
-  const fz = camera.position.z * UNITS_PER_METER + lead.dz;
+  // (Laying track: around what's looked at from above.)
+  const at = trackMode?.active ? trackMode.focus : camera.position;
+  const fx = at.x * UNITS_PER_METER + lead.dx;
+  const fz = at.z * UNITS_PER_METER + lead.dz;
   const column = `${Math.floor(fx / CHUNK_SIZE)},${Math.floor(fz / CHUNK_SIZE)},${chunkRadius}`;
   if (!force && column === lodColumn) return;
   lodColumn = column;
@@ -788,10 +807,25 @@ connection = connect({
             `/api/world/map?width=1024${worldParam}`,
             (a) => `/api/world/map/area?x0=${a.x0}&z0=${a.z0}&step=${a.step}&cols=${a.cols}&rows=${a.rows}${worldParam}`,
           );
-          // Railways: routes drawn on the map (builders lay them), and track in the world.
+          // Railways: laid in track mode (Tab), seen in the world and on the map.
           {
             const canBuild = msg.canEdit;
-            trackDrawer = new TrackDrawer(worldMap, (m) => connection?.send(m), () => canBuild);
+            trackMap = new TrackMap(worldMap);
+            trackMode ??= new TrackMode({
+              scene,
+              camera,
+              yaw: () => controls.yaw,
+              solid: () => trackSolid(),
+              send: (m) => connection?.send(m),
+              canBuild: () => canBuild,
+              survival: () => survivalMovement,
+              busy: () => !!worldMap?.isOpen || inventoryUi.isOpen || chatBox.isOpen || leaveDialog.open,
+              exit: () => {
+                if (!editTool) return;
+                editTool.mode = 'hybrid';
+                editTool.onModeChange?.('hybrid');
+              },
+            });
             trackView?.group.removeFromParent();
             trackView = new TrackView(() => 1 - 0.85 * atmosphere.uniforms.stars.value);
             scene.add(trackView.group);
@@ -1036,8 +1070,16 @@ connection = connect({
             modeTag.dataset.mode = editTool!.mode;
             // Exploring: no hotbar, crosshair or hand; the compass in the corner.
             document.body.classList.toggle('exploring', editTool!.mode === 'explore');
+            document.body.classList.toggle('laying-track', editTool!.mode === 'track');
           };
           editTool.onModeChange = () => {
+            // Track mode: the mouse free, to point at the ground from above; out of it, captured again (a key press may).
+            const laying = editTool!.mode === 'track';
+            if (trackMode && laying !== trackMode.active) {
+              if (laying && controls.pointerLocked) freeMouse();
+              trackMode.setActive(laying);
+              if (!laying) controls.requestPointerLock();
+            }
             showMode();
             updateHud();
           };
@@ -1197,10 +1239,11 @@ connection = connect({
         break;
       case 'tracks':
         trackView?.setTracks(msg.tracks);
-        trackDrawer?.setTracks(msg.tracks);
+        trackMap?.setTracks(msg.tracks);
+        trackMode?.setTracks(msg.tracks);
         break;
       case 'trackPlan':
-        trackDrawer?.planned(msg);
+        trackMode?.planned(msg);
         break;
       case 'boats':
         boatList = msg.boats;
@@ -1402,8 +1445,10 @@ function showPlaceSize(p: { size: number; why: string } | null): void {
  */
 function thirdPersonFrame(now: number, down: boolean): THREE.Vector3 {
   const off = new THREE.Vector3();
-  if (selfFigure) selfFigure.figure.root.visible = thirdPerson && !down;
-  if (!thirdPerson || !selfFigure || !chunks || down) return off;
+  // (Laying track: seen from above, where we stand.)
+  const seen = thirdPerson || !!trackMode?.active;
+  if (selfFigure) selfFigure.figure.root.visible = seen && !down;
+  if (!seen || !selfFigure || !chunks || down) return off;
   const f = selfFigure, eye = camera.position;
   const feet = { x: eye.x * UNITS_PER_METER, y: eye.y * UNITS_PER_METER - PLAYER.eye, z: eye.z * UNITS_PER_METER };
   f.figure.root.position.set(feet.x / UNITS_PER_METER, feet.y / UNITS_PER_METER, feet.z / UNITS_PER_METER);
@@ -1423,6 +1468,7 @@ function thirdPersonFrame(now: number, down: boolean): THREE.Vector3 {
     f.hand = held === null ? null : heldModel(held, f.handMaterial);
     if (f.hand) f.figure.hand(heldGrip(held!).hand).add(f.hand);
   }
+  if (trackMode?.active) return off;
   // Back along the way we look, and up a little; short of anything solid between.
   const dir = camera.getWorldDirection(new THREE.Vector3());
   off.copy(dir).multiplyScalar(-THIRD_BACK).add(new THREE.Vector3(0, THIRD_UP, 0));
@@ -1440,7 +1486,9 @@ renderer.setAnimationLoop(() => {
   const paused = worldMap?.isOpen || inventoryUi.isOpen;
   controls.stunned = knockdown.active;
   controls.held = knockdown.thrown;
-  if (!paused) controls.update((frameStart - lastFrame) / 1000);
+  const frameDt = (frameStart - lastFrame) / 1000;
+  // (Laying track: we stay where we stand; the keys move the view, see TrackMode.)
+  if (!paused && !trackMode?.active) controls.update(frameDt);
   // Knocked down: thrown, tumbling and bouncing (moved as the player is: walls stop it), and the
   // view down on the ground (drawn so for this frame only, below).
   const wasThrown = knockdown.thrown;
@@ -1450,7 +1498,8 @@ renderer.setAnimationLoop(() => {
   if (!paused) walkSounds(Math.min(0.1, (frameStart - lastFrame) / 1000));
   lastFrame = frameStart;
   trackVelocity(frameStart);
-  chunks?.setViewY(camera.position.y * UNITS_PER_METER);
+  trackMode?.frame(frameDt);
+  chunks?.setViewY((trackMode?.active ? trackMode.view.position.y : camera.position.y) * UNITS_PER_METER);
   updateLod();
   if (!paused) editTool?.update();
   showPlaceSize(paused ? null : (editTool?.placing ?? null));
@@ -1490,8 +1539,12 @@ renderer.setAnimationLoop(() => {
   // shakes the view, for this frame only.
   const shake = explosions.shake();
   const pose = camera.quaternion.clone();
-  // Third person: ourselves where we stand, and the camera pulled back behind.
+  // Third person: ourselves where we stand, and the camera pulled back behind. (Laying track: up where TrackMode has it.)
   const behind = thirdPersonFrame(frameStart, !!downPose);
+  if (trackMode?.active) {
+    behind.copy(trackMode.view.position).sub(camera.position);
+    camera.quaternion.copy(trackMode.view.quaternion);
+  }
   camera.position.add(shake).add(behind);
   if (downPose) {
     camera.position.y -= downPose.drop;
@@ -1503,7 +1556,7 @@ renderer.setAnimationLoop(() => {
   if (!worldMap?.showing3d) {
     water.render(scene, camera);
     // What's in hand, over it all (not while knocked down, or with the map's 3D view up).
-    if (editTool && !downPose && !paused && !viewing && editTool.mode !== 'explore' && !thirdPerson) {
+    if (editTool && !downPose && !paused && !viewing && editTool.mode !== 'explore' && editTool.mode !== 'track' && !thirdPerson) {
       hand.setItem(inventoryUi.enabled ? editTool.shownInHand : null);
       if (frameStart - handLight.at > 250 && chunks) {
         const p = camera.position, l = lightAt(chunks.lightWorld(), Math.floor((p.x * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.y * UNITS_PER_METER) / BLOCK_SIZE), Math.floor((p.z * UNITS_PER_METER) / BLOCK_SIZE));

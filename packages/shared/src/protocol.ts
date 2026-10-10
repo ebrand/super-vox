@@ -4,7 +4,7 @@ import type { TransformOp } from './select.js';
 import type { AnimationLibrary } from './animations.js';
 import type { MeshLibrary } from './meshes.js';
 import { CHAT_MAX, type ChatLine } from './chat.js';
-import { MAX_ROUTE_POINTS, type Track, type TrackPlan } from './rail.js';
+import type { Track, TrackPlan } from './rail.js';
 import { isValidTileLevel } from './tile.js';
 import type { ColumnRange } from './chunk.js';
 import { HOTBAR_SLOTS, type GameMode } from './items.js';
@@ -23,13 +23,13 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 45;
+export const PROTOCOL_VERSION = 46;
 
 export type ClientMessage =
   /** Something said (or a command: see readChat), to be heard by the world (or one player). */
   | { type: 'chat'; text: string }
-  /** A route drawn for track (units: x, z, in order): planned (see trackPlan), or (`lay`) laid. */
-  | { type: 'track'; id: number; points: { x: number; z: number }[]; lay: boolean }
+  /** A segment of track (see SegmentAsk: units) for a design speed (km/h): planned (see trackPlan), or (`lay`) laid. */
+  | { type: 'track'; id: number; from: { x: number; z: number }; heading: number | null; to: { x: number; z: number }; curve: boolean; speed: number; lay: boolean }
   | {
       type: 'hello';
       protocolVersion: number;
@@ -175,7 +175,7 @@ export type ServerMessage =
   | { type: 'animations'; library: AnimationLibrary }
   /** The figures as edited (see MeshLibrary): sent on connecting if any are, and to everyone when they change. */
   | { type: 'meshes'; library: MeshLibrary }
-  /** A route as it'd be laid (see the track message): what it'd take, its line and profile; or why not; `laid`: it has been. */
+  /** A segment as it'd be laid (see the track message): what it'd take, its line and profile; or why not; `laid`: it has been. */
   | { type: 'trackPlan'; id: number; error?: string; laid?: boolean; plan?: TrackPlan }
   /** The world's laid track (see Track), on joining and whenever more's laid. */
   | { type: 'tracks'; tracks: Track[] }
@@ -427,9 +427,10 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
     };
   }
   const isId = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 2 ** 32;
-  // (Track: a route's points; checked by the server too, see planTrack.)
-  if (msg.type === 'track' && isId(msg.id) && typeof msg.lay === 'boolean' && Array.isArray(msg.points) && msg.points.length <= MAX_ROUTE_POINTS && msg.points.every((p) => typeof p === 'object' && p !== null && Number.isFinite((p as { x: unknown }).x) && Number.isFinite((p as { z: unknown }).z)))
-    return { type: 'track', id: msg.id as number, lay: msg.lay, points: (msg.points as { x: number; z: number }[]).map((p) => ({ x: p.x, z: p.z })) };
+  // (Track: a segment's ends; checked by the server too, see planSegment.)
+  const isXZ = (v: unknown): v is { x: number; z: number } => typeof v === 'object' && v !== null && Number.isFinite((v as { x: unknown }).x) && Number.isFinite((v as { z: unknown }).z);
+  if (msg.type === 'track' && isId(msg.id) && typeof msg.lay === 'boolean' && typeof msg.curve === 'boolean' && isXZ(msg.from) && isXZ(msg.to) && (msg.heading === null || Number.isFinite(msg.heading)) && Number.isFinite(msg.speed))
+    return { type: 'track', id: msg.id as number, from: { x: msg.from.x, z: msg.from.z }, heading: msg.heading as number | null, to: { x: msg.to.x, z: msg.to.z }, curve: msg.curve, speed: msg.speed as number, lay: msg.lay };
   if (msg.type === 'placeObject' && isId(msg.id) && isInt32(msg.item) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z) && isFacing(msg.facing)) {
     if (msg.wall !== undefined && typeof msg.wall !== 'boolean') return null;
     if (msg.offset !== undefined && !isDesignOffset(msg.offset)) return null;

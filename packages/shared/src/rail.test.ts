@@ -1,53 +1,100 @@
 import { describe, expect, it } from 'vitest';
-import { BED_WIDTH_M, CLEARANCE_M, MAX_GRADE, SAMPLE_M, SHOULDER_M, earthworks, layRoute, profile, smoothLine } from './rail.js';
+import { BED_WIDTH_M, CLEARANCE_M, MAX_GRADE, MAX_SEGMENT_M, MIN_RADIUS_M, SAMPLE_M, SHOULDER_M, curveSpeed, earthworks, layLine, profile, radiusFor, segmentLine } from './rail.js';
 import { BLOCK_SIZE } from './chunk.js';
 import { Material } from './materials.js';
 import { UNITS_PER_METER } from './units.js';
 
 const M = UNITS_PER_METER;
 
-describe('a route laid as track', () => {
-  it('is a smooth line through its points, evenly sampled, from the first to the last', () => {
-    const pts = [{ x: 0, z: 0 }, { x: 100 * M, z: 0 }, { x: 160 * M, z: 60 * M }, { x: 160 * M, z: 200 * M }];
-    const line = smoothLine(pts, M);
-    expect(line[0]).toEqual({ x: 0, z: 0 });
-    expect(Math.hypot(line.at(-1)!.x - 160 * M, line.at(-1)!.z - 200 * M)).toBeLessThan(1e-6);
-    for (let i = 1; i < line.length - 1; i++) expect(Math.hypot(line[i]!.x - line[i - 1]!.x, line[i]!.z - line[i - 1]!.z)).toBeCloseTo(M, 1);
-    // (Through the points between, near enough.)
-    for (const p of pts.slice(1, -1)) expect(Math.min(...line.map((q) => Math.hypot(q.x - p.x, q.z - p.z)))).toBeLessThan(M);
-    // Drawn straight: straight.
-    const straight = smoothLine([{ x: 0, z: 0 }, { x: 0, z: -50 * M }, { x: 0, z: -120 * M }], M);
-    expect(straight.every((p) => Math.abs(p.x) < 1e-6)).toBe(true);
+describe('a segment of track', () => {
+  const step = SAMPLE_M * M;
+  const gap = (line: { x: number; z: number }[]) => line.slice(1).map((p, i) => Math.hypot(p.x - line[i]!.x, p.z - line[i]!.z));
+
+  it('straight: from anywhere to anywhere; on from a heading, straight on as far as the aim is ahead', () => {
+    const free = segmentLine({ from: { x: 0, z: 0 }, heading: null, to: { x: 30 * M, z: 40 * M }, curve: false }, step);
+    if (typeof free === 'string') throw new Error(free);
+    expect(free.radius).toBe(Infinity);
+    expect(free.line.at(-1)!.x).toBeCloseTo(30 * M, 6);
+    expect(free.line.at(-1)!.z).toBeCloseTo(40 * M, 6);
+    for (const g of gap(free.line)) expect(g).toBeCloseTo(M, 6);
+    // Heading east (-pi/2), aimed east and a bit north: east, as far as it's ahead.
+    const on = segmentLine({ from: { x: 0, z: 0 }, heading: -Math.PI / 2, to: { x: 50 * M, z: -7 * M }, curve: false }, step);
+    if (typeof on === 'string') throw new Error(on);
+    expect(on.line.every((p) => Math.abs(p.z) < 1e-6)).toBe(true);
+    expect(on.line.at(-1)!.x).toBeCloseTo(50 * M, 6);
+    expect(on.endHeading).toBeCloseTo(-Math.PI / 2, 9);
+    expect(segmentLine({ from: { x: 0, z: 0 }, heading: -Math.PI / 2, to: { x: -50 * M, z: 0 }, curve: false }, step)).toMatch(/ahead/);
+    expect(segmentLine({ from: { x: 0, z: 0 }, heading: null, to: { x: (MAX_SEGMENT_M + 1) * M, z: 0 }, curve: false }, step)).toMatch(/too long/);
+    expect(segmentLine({ from: { x: 0, z: 0 }, heading: null, to: { x: 2 * M, z: 0 }, curve: false }, step)).toMatch(/too short/);
+  });
+
+  it('curved: the arc leaving along the heading through the aim, its radius, the heading at its end', () => {
+    // East, to 50 m east and 50 m south (+z): a quarter circle of 50 m, ending heading south (pi).
+    const q = segmentLine({ from: { x: 0, z: 0 }, heading: -Math.PI / 2, to: { x: 50 * M, z: 50 * M }, curve: true }, step);
+    if (typeof q === 'string') throw new Error(q);
+    expect(q.radius).toBeCloseTo(50, 6);
+    expect(q.line.at(-1)!.x).toBeCloseTo(50 * M, 4);
+    expect(q.line.at(-1)!.z).toBeCloseTo(50 * M, 4);
+    expect(Math.abs(Math.cos(q.endHeading) - Math.cos(Math.PI))).toBeLessThan(1e-9);
+    expect(Math.sin(q.endHeading)).toBeCloseTo(0, 9);
+    // (Every point 50 m from the centre, at x 0, z 50 m; starting off east.)
+    for (const p of q.line) expect(Math.hypot(p.x, p.z - 50 * M)).toBeCloseTo(50 * M, 4);
+    expect(q.line[1]!.x).toBeGreaterThan(0.99 * M);
+    for (const g of gap(q.line)) expect(g).toBeGreaterThan(0.95 * M);
+    // The other way (north): mirrored, ending heading north.
+    const n = segmentLine({ from: { x: 0, z: 0 }, heading: -Math.PI / 2, to: { x: 50 * M, z: -50 * M }, curve: true }, step);
+    if (typeof n === 'string') throw new Error(n);
+    expect(n.endHeading).toBeCloseTo(0, 9);
+    expect(segmentLine({ from: { x: 0, z: 0 }, heading: -Math.PI / 2, to: { x: -5 * M, z: 50 * M }, curve: true }, step)).toMatch(/half round/);
+    expect(segmentLine({ from: { x: 0, z: 0 }, heading: null, to: { x: 50 * M, z: 50 * M }, curve: true }, step)).toMatch(/track's end/);
+  });
+
+  it('a curve is as fast as its radius lets it be', () => {
+    expect(curveSpeed(Infinity)).toBe(Infinity);
+    expect(curveSpeed(radiusFor(80))).toBeCloseTo(80, 9);
+    expect(radiusFor(100)).toBeGreaterThan(radiusFor(60));
+    expect(curveSpeed(MIN_RADIUS_M)).toBeGreaterThan(20);
   });
 
   it('keeps to the ground where it can, never steeper than the grade: cut through a hill, built up over a dip', () => {
-    const step = SAMPLE_M * M;
-    const flat = profile(new Array(200).fill(10 * M), step);
+    const flat = profile(new Array(200).fill(10 * M), step)!;
     expect(flat.every((h) => Math.abs(h - 10 * M) < 1e-9)).toBe(true);
     // A hill 6 m high, 10 m wide, then a dip 4 m deep.
     const ground = Array.from({ length: 400 }, (_, i) => (i >= 100 && i < 110 ? 16 * M : i >= 250 && i < 260 ? 6 * M : 10 * M));
-    const h = profile(ground, step);
+    const h = profile(ground, step)!;
     for (let i = 1; i < h.length; i++) expect(Math.abs(h[i]! - h[i - 1]!) / step).toBeLessThanOrEqual(MAX_GRADE + 1e-6);
     expect(Math.max(...h.slice(100, 110))).toBeLessThan(16 * M); // (cut)
     expect(Math.min(...h.slice(250, 260))).toBeGreaterThan(6 * M); // (filled)
     // A deep dip right at an end (a lakeshore): still no steeper than the grade, start to finish.
-    const shore = profile(Array.from({ length: 120 }, (_, i) => (i < 3 ? 0 : i < 60 ? -23 * M : 0)), step);
+    const shore = profile(Array.from({ length: 120 }, (_, i) => (i < 3 ? 0 : i < 60 ? -23 * M : 0)), step)!;
     for (let i = 1; i < shore.length; i++) expect(Math.abs(shore[i]! - shore[i - 1]!) / step, `at ${i}`).toBeLessThanOrEqual(MAX_GRADE + 1e-9);
-    // Far from both: on the ground.
     expect(h[30]).toBeCloseTo(10 * M, 6);
     expect(h[380]).toBeCloseTo(10 * M, 6);
   });
 
-  it('says what it would take: its length, cut and fill, grade and tightest curve', () => {
+  it('starts (or ends) where it is pinned, a track end, keeping to the grade from there; both too far apart: null', () => {
+    const ground = new Array(101).fill(10 * M);
+    const up = profile(ground, step, MAX_GRADE, { start: 12 * M })!;
+    expect(up[0]).toBe(12 * M);
+    for (let i = 1; i < up.length; i++) expect(Math.abs(up[i]! - up[i - 1]!) / step).toBeLessThanOrEqual(MAX_GRADE + 1e-9);
+    expect(up.at(-1)).toBeCloseTo(10 * M, 6); // (back on the ground well before its end)
+    const both = profile(ground, step, MAX_GRADE, { start: 12 * M, end: 10 * M })!;
+    expect(both[0]).toBe(12 * M);
+    expect(both.at(-1)).toBe(10 * M);
+    for (let i = 1; i < both.length; i++) expect(Math.abs(both[i]! - both[i - 1]!) / step).toBeLessThanOrEqual(MAX_GRADE + 1e-9);
+    expect(profile(ground, step, MAX_GRADE, { start: 0, end: 4 * M })).toBeNull(); // (4 m in 100 m: 4%)
+  });
+
+  it('says what it would take: its length, deepest cut and highest fill (and where), steepest grade', () => {
     const hill = (x: number, z: number) => (Math.hypot(x - 50 * M, z) < 8 * M ? 15 * M : 10 * M);
-    const lay = layRoute([{ x: 0, z: 0 }, { x: 100 * M, z: 0 }], hill)!;
-    expect(lay.length).toBeCloseTo(100, 0);
+    const s = segmentLine({ from: { x: 0, z: 0 }, heading: null, to: { x: 100 * M, z: 0 }, curve: false }, step);
+    if (typeof s === 'string') throw new Error(s);
+    const lay = layLine(s.line, hill)!;
+    expect(lay.length).toBeCloseTo(100, 6);
     expect(lay.maxCut).toBeGreaterThan(2);
+    expect(Math.abs(lay.cutAt - 50)).toBeLessThan(8);
     expect(lay.maxGrade).toBeLessThanOrEqual(MAX_GRADE + 1e-6);
-    expect(lay.points[0]!.heading).toBeCloseTo(-Math.PI / 2, 3); // (east: 0 is -z, counter-clockwise)
-    const bend = layRoute([{ x: 0, z: 0 }, { x: 20 * M, z: 0 }, { x: 20 * M, z: 20 * M }], () => 0)!;
-    expect(bend.minRadius).toBeLessThan(25);
-    expect(layRoute([{ x: 0, z: 0 }], () => 0)).toBeNull();
+    expect(lay.points[0]!.heading).toBeCloseTo(-Math.PI / 2, 6); // (east: 0 is -z, counter-clockwise)
   });
 });
 

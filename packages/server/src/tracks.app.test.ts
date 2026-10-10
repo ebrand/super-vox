@@ -43,25 +43,26 @@ async function player(url: string, cookie: string) {
   };
   await until(() => msgs.some((m) => m.type === 'inventory'));
   let id = 0;
-  const route = [{ x: 1000 * M, z: 1000 * M }, { x: 1100 * M, z: 1000 * M }];
   const track = async (lay: boolean) => {
     const asked = ++id;
-    ws.send(JSON.stringify({ type: 'track', id: asked, points: route, lay }));
+    ws.send(JSON.stringify({ type: 'track', id: asked, from: { x: 1000 * M, z: 1000 * M }, heading: null, to: { x: 1100 * M, z: 1000 * M }, curve: false, speed: 80, lay }));
     await until(() => msgs.some((m) => m.type === 'trackPlan' && m.id === asked));
     return msgs.find((m): m is Extract<ServerMessage, { type: 'trackPlan' }> => m.type === 'trackPlan' && m.id === asked)!;
   };
   const tracks = () => msgs.filter((m): m is Extract<ServerMessage, { type: 'tracks' }> => m.type === 'tracks').at(-1)?.tracks ?? [];
   const rails = () => (msgs.filter((m): m is Extract<ServerMessage, { type: 'inventory' }> => m.type === 'inventory').at(-1)?.items.find(([id]) => id === Item.Rail)?.[1] ?? 0);
-  return { ws, msgs, until, track, tracks, rails };
+  /** Standing at (x, z) m. */
+  const stand = (x: number, z: number) => ws.send(JSON.stringify({ type: 'pose', x: x * M, y: 10 * M, z: z * M, yaw: 0 }));
+  return { ws, msgs, until, track, tracks, rails, stand };
 }
 
 describe('track over the connection', () => {
-  it("plans a route (what it'd take, its line), and lays it in creative: everyone told", async () => {
+  it("plans a segment (what it'd take, its line, its speed), and lays it in creative: everyone told", async () => {
     const { url, account } = await setup('creative');
     const a = await player(url, await account('ann', 0)), b = await player(url, await account('bob', 0));
     expect(a.tracks()).toEqual([]);
     const plan = await a.track(false);
-    expect(plan.plan).toMatchObject({ rails: 0 });
+    expect(plan.plan).toMatchObject({ rails: 0, speed: 80, radius: null, end: { x: 1100 * M, z: 1000 * M } });
     expect(plan.plan!.length).toBeCloseTo(100, 0);
     expect(plan.plan!.line.length).toBeGreaterThan(10);
     expect(plan.plan!.profile.length).toBeGreaterThan(10);
@@ -76,10 +77,15 @@ describe('track over the connection', () => {
     const { url, account } = await setup('survival');
     const need = Math.ceil(100 / RAIL_M);
     const poor = await player(url, await account('poor', need - 1));
+    // (Far from it: not.)
+    poor.stand(5000, 5000);
+    expect((await poor.track(true)).error).toMatch(/within \d+ m of where you stand/);
+    poor.stand(1050, 1000);
     const no = await poor.track(true);
     expect(no.error).toMatch(new RegExp(`${need} rails needed`));
     expect(poor.tracks()).toEqual([]);
     const rich = await player(url, await account('rich', need + 3));
+    rich.stand(1050, 1010);
     expect(await rich.track(true)).toMatchObject({ laid: true });
     await rich.until(() => rich.rails() === 3);
     const visitor = await player(url, await account('vic', 999, 'visitor'));

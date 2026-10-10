@@ -59,16 +59,19 @@
       #worldmap canvas.marks:active { cursor: grabbing; }
       /* Drawing track on the map (see trackDraw.ts). */
       #worldmap .bar button.on { border-color: #ffd23f; color: #ffd23f; }
-      #worldmap .track-panel { position: fixed; right: 16px; bottom: 16px; width: 340px; z-index: 21; background: rgba(12, 14, 18, 0.92); border: 1px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 8px 10px; font: 12px/1.45 system-ui, sans-serif; color: #e6e6e6; }
-      #worldmap .track-panel[hidden] { display: none; }
-      #worldmap .track-help { color: #9aa4ae; margin-bottom: 4px; }
-      #worldmap .track-stats { white-space: pre-line; min-height: 1.4em; }
-      #worldmap .track-stats.bad { color: #ff7b72; }
-      #worldmap .track-profile { display: block; position: static; width: 320px; height: 90px; margin: 6px 0; border: 0; background: rgba(255,255,255,0.04); border-radius: 4px; }
-      #worldmap .track-profile[hidden] { display: none; }
-      #worldmap .track-buttons button { background: #21262d; color: #e6e6e6; border: 1px solid rgba(255,255,255,0.25); border-radius: 4px; padding: 3px 10px; font: inherit; cursor: pointer; }
-      #worldmap .track-buttons button.lay { background: #1f6feb; border-color: #1f6feb; }
-      #worldmap .track-buttons button:disabled { opacity: 0.45; cursor: default; }
+      /* Track mode (see TrackMode): the whole view's for pointing at the ground; the panel top right. */
+      .track-mode { position: fixed; inset: 0; z-index: 3; cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none; }
+      .track-mode[hidden] { display: none; }
+      .track-mode.dragging { cursor: grabbing; }
+      .track-mode .track-panel { position: absolute; right: 12px; top: 12px; width: 340px; max-width: calc(100vw - 32px); background: rgba(12, 14, 18, 0.9); border: 1px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 8px 10px; font: 12px/1.45 system-ui, sans-serif; color: #e6e6e6; cursor: default; }
+      .track-mode .track-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+      .track-mode .track-row button { background: #21262d; color: #e6e6e6; border: 1px solid rgba(255,255,255,0.25); border-radius: 4px; padding: 2px 8px; font: inherit; cursor: pointer; }
+      .track-mode .track-row button.on { background: #1f6feb; border-color: #1f6feb; }
+      .track-mode .track-help { color: #9aa4ae; margin-top: 4px; }
+      .track-mode .track-stats { white-space: pre-line; min-height: 1.4em; }
+      .track-mode .track-stats.bad { color: #ff7b72; }
+      .track-mode .track-profile { display: block; position: static; width: 320px; max-width: 100%; height: 90px; margin: 6px 0; background: rgba(255,255,255,0.04); border-radius: 4px; }
+      .track-mode .track-profile[hidden] { display: none; }
       #worldmap .info { font: 12px/1.4 ui-monospace, monospace; color: #e6e6e6; min-height: 1.4em; }
       #worldmap .bar { display: flex; gap: 14px; align-items: center; font: 12px ui-monospace, monospace; color: #e6e6e6; }
       #worldmap .bar button { background: #21262d; color: #e6e6e6; border: 1px solid rgba(255,255,255,0.25); border-radius: 4px; padding: 3px 10px; font: inherit; cursor: pointer; }
@@ -111,6 +114,9 @@
       #hotbar[hidden] { display: none; }
       /* Exploring (the explore mode): no hotbar, crosshair or what the tool shows; the compass in the bottom-right corner. */
       body.exploring #crosshair, body.exploring #hotbar, body.exploring #size-badge, body.exploring #place-size, body.exploring #mining { display: none !important; }
+      /* Laying track: the mouse points at the ground (no crosshair); the compass in the corner. */
+      body.laying-track #crosshair, body.laying-track #size-badge, body.laying-track #place-size, body.laying-track #mining { display: none !important; }
+      body.laying-track #compass { left: auto !important; top: auto !important; right: 12px !important; bottom: 12px !important; margin: 0 !important; opacity: 0.8 !important; }
       body.exploring #compass { left: auto !important; top: auto !important; right: 12px !important; bottom: 12px !important; margin: 0 !important; opacity: 0.8 !important; }
       #mode[data-mode="explore"] { border-left-color: #c8a0ff; }
       /* Just looking round (O): nothing on screen but the world. */

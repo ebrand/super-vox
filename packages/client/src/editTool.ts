@@ -81,14 +81,17 @@ const REACH = 32 * UNITS_PER_METER;
 export const TOOL_SIZES = GRID_SIZES;
 
 /**
- * Tool modes. Tab cycles through CYCLE (build: creative only; explore: no tool at all, just looking
- * round); the first is the default. Dig and place (precise boxes) are kept, out of the cycle.
+ * Tool modes. Tab cycles through CYCLE (build: creative only; track: laying railways from above, see
+ * TrackMode; explore: no tool at all, just looking round); the first is the default. Dig and place
+ * (precise boxes) are kept, out of the cycle.
  */
-export const MODES = ['hybrid', 'build', 'explore', 'dig', 'place'] as const;
+export const MODES = ['hybrid', 'build', 'track', 'explore', 'dig', 'place'] as const;
 export type Mode = (typeof MODES)[number];
-export const CYCLE: readonly Mode[] = ['hybrid', 'build', 'explore'];
+export const CYCLE: readonly Mode[] = ['hybrid', 'build', 'track', 'explore'];
 /** The cycle as the HUD tells it. */
-const cycleText = (creative: boolean) => (creative ? 'hybrid / build / explore' : 'hybrid / explore');
+const cycleText = (creative: boolean) => (creative ? 'hybrid / build / track / explore' : 'hybrid / track / explore');
+/** Modes where this tool does nothing (explore; track: TrackMode has the mouse). */
+const idle = (mode: Mode) => mode === 'explore' || mode === 'track';
 
 /** "1 m", "1/2 m", ... "1/16 m" for a size in units. */
 export function sizeLabel(size: number): string {
@@ -159,7 +162,7 @@ export class EditTool {
    */
   get chosenSize(): number | null {
     // (Extrude copies voxels as they are: no size of its own.)
-    if (this.mode === 'explore' || (this.mode === 'build' && this.builder.tool === 'extrude')) return null;
+    if (idle(this.mode) || (this.mode === 'build' && this.builder.tool === 'extrude')) return null;
     if (this.mode !== 'hybrid') return this.size;
     if (!this.modifiers.meta) return null;
     return this.hybridSize ?? (this.target ? nearestToolSize(this.target.size) : null);
@@ -206,7 +209,7 @@ export class EditTool {
   /** What's drawn in your hand: what's selected (but see showToolsInHand); in explore, nothing. */
   get shownInHand(): ItemId | null {
     const held = this.materialOf();
-    if (this.mode === 'explore' || held === null) return null;
+    if (idle(this.mode) || held === null) return null;
     if (this.mode === 'hybrid' && !this.showToolsInHand && isMiningOrPlacing(held)) return null;
     return held;
   }
@@ -458,7 +461,7 @@ export class EditTool {
   cycleMode(): void {
     this.mode = CYCLE[(CYCLE.indexOf(this.mode) + 1) % CYCLE.length]!;
     // (Build: creative only.)
-    if (this.mode === 'build' && !this.bigBoxes) this.mode = 'explore';
+    if (this.mode === 'build' && !this.bigBoxes) this.mode = 'track';
     this.builder.cancel();
     this.hybridSize = null;
     this.onModeChange?.(this.mode);
@@ -543,7 +546,7 @@ export class EditTool {
 
   /** Re-aims from the camera; call every frame. */
   update(): void {
-    if (!this.enabled || this.mode === 'explore') {
+    if (!this.enabled || idle(this.mode)) {
       this.hideAll();
       return this.tellSize();
     }
@@ -636,7 +639,7 @@ export class EditTool {
    * 2 = right. `mods` are the modifier keys held at that moment.
    */
   click(button: number, mods: Modifiers = this.modifiers): void {
-    if (!this.enabled || this.mode === 'explore') return;
+    if (!this.enabled || idle(this.mode)) return;
     this.setMeta(mods.meta);
     this.modifiers.alt = mods.alt;
     this.update(); // aim with the modifiers as they are right now
@@ -791,6 +794,7 @@ export class EditTool {
           ? `aiming at ${sizeLabel(this.target.size)} of ${materialName(this.targetMaterial)}${this.mode === 'hybrid' ? ' (click: light it, then stand back)' : ''}`
           : `aiming at a ${sizeLabel(this.target.size)} voxel${this.needsPickaxe()}`;
     const held = this.materialOf();
+    if (this.mode === 'track') return `mode: track (Tab: ${cycleText(this.bigBoxes)}) · laying railways, seen from above · Tab: on${msg}`;
     if (this.mode === 'explore') return `mode: explore (Tab: ${cycleText(this.bigBoxes)}) · just looking round: nothing in hand · Tab: back to the tools${msg}`;
     if (this.mode === 'build') {
       const b = this.builder;
@@ -1093,8 +1097,8 @@ export class EditTool {
       this.cycleMode();
       return;
     }
-    // (Exploring: no tool, only Tab on to the next.)
-    if (this.mode === 'explore') return;
+    // (Exploring, or laying track: no tool, only Tab on to the next.)
+    if (idle(this.mode)) return;
     if (this.mode === 'build' && this.buildKey(e.code, e.shiftKey)) return;
     // (In hybrid the size follows the target unless Command is held, so [ ] only work in dig and place.)
     if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && this.mode === 'hybrid') this.say('hybrid: hold ⌘ and turn the wheel to choose a size');

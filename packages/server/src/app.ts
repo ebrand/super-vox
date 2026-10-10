@@ -46,6 +46,7 @@ import {
   CHAT_HELP,
   NEAR_METRES,
   RAIL_M,
+  TRACK_REACH_M,
   type TrackPlan,
   RATE_COUNT,
   RATE_MS,
@@ -1978,10 +1979,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         }
 
         case 'track': {
-          // A route drawn on the map: planned (for the map to show), or laid (builders; survival: paid for in rails).
+          // A segment of track: planned (for the track tool to show), or laid (builders; survival: paid for in rails).
           if (!greeted) break;
           const reply = (r: { error?: string; laid?: boolean; plan?: TrackPlan }) => send({ type: 'trackPlan', id: msg.id, ...r });
-          const planned = world.planTrack(msg.points);
+          const ask = { from: msg.from, heading: msg.heading, to: msg.to, curve: msg.curve, speed: msg.speed };
+          if (msg.lay && !canEdit()) {
+            reply({ error: cantBuild() });
+            break;
+          }
+          const planned = world.planSegment(ask);
           if (typeof planned === 'string') {
             reply({ error: planned });
             break;
@@ -1989,19 +1995,25 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           const { layout } = planned, M = UNITS_PER_METER;
           const survival = catalog.play(clientWorld.get(socket))?.mode === 'survival';
           const rails = survival ? Math.ceil(layout.length / RAIL_M) : 0;
-          // (For the map: a point every 4 m.)
+          // (Survival: near where you stand, both ends.)
+          const pose = players.get(socket)?.pose;
+          const far = survival && (!pose || [layout.points[0]!, layout.points.at(-1)!].some((p) => Math.hypot(p.x - pose.x, p.z - pose.z) > TRACK_REACH_M * M));
+          // (For the tool: a point every 2 m.)
           const every = <T,>(list: T[], n: number) => list.filter((_, i) => i % n === 0 || i === list.length - 1);
+          const last = layout.points.at(-1)!;
           const plan: TrackPlan = {
-            length: layout.length, maxCut: layout.maxCut, maxFill: layout.maxFill, maxGrade: layout.maxGrade, minRadius: layout.minRadius, rails,
-            line: every(layout.points, 4).map((p) => ({ x: Math.round(p.x), z: Math.round(p.z) })),
-            profile: every(layout.points.map((p, i) => ({ s: Math.round((p.s / M) * 10) / 10, y: Math.round((p.y / M) * 100) / 100, ground: Math.round((layout.ground[i]! / M) * 100) / 100 })), 4),
+            length: layout.length, maxCut: layout.maxCut, maxFill: layout.maxFill, maxGrade: layout.maxGrade, rails,
+            radius: Number.isFinite(planned.radius) ? Math.round(planned.radius) : null, speed: planned.speed,
+            end: { x: last.x, z: last.z, heading: planned.endHeading },
+            line: every(layout.points, 2).map((p) => ({ x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) })),
+            profile: every(layout.points.map((p, i) => ({ s: Math.round((p.s / M) * 10) / 10, y: Math.round((p.y / M) * 100) / 100, ground: Math.round((layout.ground[i]! / M) * 100) / 100 })), 2),
           };
-          if (!msg.lay) {
-            reply({ plan });
+          if (far) {
+            reply({ error: `in survival, track's laid within ${TRACK_REACH_M} m of where you stand: walk nearer`, plan });
             break;
           }
-          if (!canEdit()) {
-            reply({ error: cantBuild(), plan });
+          if (!msg.lay) {
+            reply({ plan });
             break;
           }
           if (survival) {
@@ -2015,7 +2027,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (survival && inventory) inventory.addItem(Item.Rail, -rails);
           const id = msg.id, here = world, inv = inventory;
           void here
-            .layTrackGradually(msg.points, (r) => broadcast(here, r))
+            .layTrackGradually(ask, (r) => broadcast(here, r))
             .then((laid) => {
               if (typeof laid === 'string' && survival && inv) inv.addItem(Item.Rail, rails);
               if (inv && survival) send(inv.message());
