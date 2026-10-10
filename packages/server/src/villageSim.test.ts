@@ -4,6 +4,13 @@ import { VillageSim, type VillageWorld } from './villageSim.js';
 import { TrainYard } from './trainYard.js';
 
 const M = UNITS_PER_METER;
+/**
+ * When the simulations here start (ms): fixed, as villagers' choices are seeded by the time (a start
+ * of Date.now() was a different run every time, and some failed). These two each made villagers
+ * stick fast: by rail, against a cottage they were to go round; walling, on the wall's line, built
+ * where they stood.
+ */
+const T0 = 1_800_000_000_000, T0_WALL = 1_800_000_555_000;
 
 /** Flat land at 10 m everywhere (but a lake, if asked), 16 km square; what's built, recorded. */
 function world(lake?: (x: number, z: number) => boolean) {
@@ -119,12 +126,12 @@ describe('villages', () => {
     const { w, built } = world();
     // A village of 14, its cottages and fields done (as kept), and someone outside it.
     const cottages = Array.from({ length: 7 }, (_, n) => ({ ...villagePlot(8000, 8000, n).cottage, floor: 11, stage: 3, work: 0 }));
-    const fields = Array.from({ length: 7 }, (_, n) => ({ ...villagePlot(8000, 8000, n).field, tops: Array(30).fill(10), sown: Array(30).fill(Date.now()), tilled: true }));
+    const fields = Array.from({ length: 7 }, (_, n) => ({ ...villagePlot(8000, 8000, n).field, tops: Array(30).fill(10), sown: Array(30).fill(T0_WALL), tilled: true }));
     const villagers = Array.from({ length: WALL_AT }, (_, i) => ({ id: i + 1, name: `v${i}`, look: '', x: 8000.5 * M + i * M, y: 10 * M, z: 8000.5 * M, yaw: 0, home: 100 }));
     const outside = { id: 50, name: 'out', look: '', x: 8000.5 * M + 45 * M, y: 10 * M, z: 8000.5 * M + 10 * M, yaw: 0, home: 100 };
     const raw = { villagers: [...villagers, outside], villages: [{ id: 100, name: 'Walled', x: 8000.5 * M, y: 10 * M, z: 8000.5 * M, founded: 0, cottages, fields, wheat: 0 }], cells: ['4,4', '3,3', '3,4', '4,3', '5,5', '3,5', '5,3', '4,5', '5,4'], next: 200 };
     const sim = new VillageSim(w, raw);
-    let now = Date.now();
+    let now = T0_WALL;
     for (let i = 0; i < 120 && (sim.list()[0]!.wall ?? 0) < WALL_SECTIONS; i++) now = await run(sim, 60, now, [{ x: 8000 * M, z: 8000 * M }]);
     expect(sim.list()[0]!.wall).toBe(WALL_SECTIONS);
     expect(built.filter((b) => b.place.some((p) => p.material === Material.Cobblestone)).length).toBeGreaterThanOrEqual(WALL_SECTIONS);
@@ -177,10 +184,10 @@ describe('villages', () => {
     // A village of eight by the first station, its fields sown (nothing ripe yet), wheat in store.
     const villagers = Array.from({ length: 8 }, (_, i) => ({ id: i + 1, name: `v${i}`, look: '', x: (8000 + i) * M, y: 10 * M, z: 8000 * M, yaw: 0, home: 100 }));
     const cottages = Array.from({ length: 4 }, (_, k) => ({ ...villagePlot(8000, 8000, k).cottage, floor: 11, stage: 3, work: 0 }));
-    const fields = Array.from({ length: 4 }, (_, k) => ({ ...villagePlot(8000, 8000, k).field, tops: Array(30).fill(10), sown: Array(30).fill(Date.now()), tilled: true }));
+    const fields = Array.from({ length: 4 }, (_, k) => ({ ...villagePlot(8000, 8000, k).field, tops: Array(30).fill(10), sown: Array(30).fill(T0), tilled: true }));
     const sim = new VillageSim(w, { villagers, villages: [{ id: 100, name: 'Home', x: 8000.5 * M, y: 10 * M, z: 8000.5 * M, founded: 0, cottages, fields, wheat: 60 }], cells: ['4,4', '3,3', '3,4', '4,3', '5,5', '3,5', '5,3', '4,5', '5,4'], next: 200 });
     // Coupled by hand: the engine nudged back into them.
-    let now = Date.now();
+    let now = T0;
     const e = yard.list().find((t) => t.cars[0]!.kind === 'engine')!.cars[0]!;
     yard.board(e.id, 7);
     yard.drive(7, -0.15, false, false);

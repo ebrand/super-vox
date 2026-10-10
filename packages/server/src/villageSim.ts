@@ -299,9 +299,11 @@ export class VillageSim {
   private corner(c: Cottage, from: { x: number; z: number }, to: { x: number; z: number }): { x: number; z: number } {
     const m = 1.2 * B, x0 = c.bx * B - m, x1 = (c.bx + c.w) * B + m, z0 = c.bz * B - m, z1 = (c.bz + c.d) * B + m;
     const corners = [{ x: x0, z: z0 }, { x: x1, z: z0 }, { x: x0, z: z1 }, { x: x1, z: z1 }];
-    // (Reached straight: the way there doesn't cross the footprint, checked a metre at a time.)
+    // (Reached straight: the way there doesn't cross the footprint, checked a unit at a time, from
+    // the start: a metre at a time, the first steps of a way from right beside the cottage weren't,
+    // and one blocked there was sent the same way again, and again.)
     const clear = (a: { x: number; z: number }, b: { x: number; z: number }) => {
-      const n = Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / M);
+      const n = Math.ceil(Math.hypot(b.x - a.x, b.z - a.z));
       for (let i = 1; i < n; i++) if (this.buildingAt(a.x + ((b.x - a.x) * i) / n, a.z + ((b.z - a.z) * i) / n) === c) return false;
       return true;
     };
@@ -420,8 +422,10 @@ export class VillageSim {
       const at = { x: v.x + Math.cos(a) * (WALL_M - 2.5) * M, z: v.z + Math.sin(a) * (WALL_M - 2.5) * M };
       p.mode = 'work';
       if (Math.hypot(at.x - p.x, at.z - p.z) > 8 * M) {
-        p.tx = at.x + (rand(seed) - 0.5) * 6 * M;
-        p.tz = at.z + (rand(seed + 1) - 0.5) * 6 * M;
+        // (Somewhere about it, but well inside the wall's line: one standing on it would be walled in.)
+        const tx = at.x + (rand(seed) - 0.5) * 6 * M - v.x, tz = at.z + (rand(seed + 1) - 0.5) * 6 * M - v.z, r = Math.hypot(tx, tz), most = (WALL_M - 2) * M;
+        p.tx = v.x + (r > most ? (tx * most) / r : tx);
+        p.tz = v.z + (r > most ? (tz * most) / r : tz);
       } else if (!this.building) {
         v.wallWork = (v.wallWork ?? 0) + THINK_S;
         if (v.wallWork >= STAGE_S) void this.raiseWall(v, section);
@@ -744,6 +748,8 @@ export class VillageSim {
       if (!v.wall) continue;
       const ra = Math.hypot(a.x - v.x, a.z - v.z) / M, rb = Math.hypot(b.x - v.x, b.z - v.z) / M;
       if ((ra - WALL_M) * (rb - WALL_M) > 0 && Math.abs(rb - WALL_M) > 0.6) continue;
+      // (On its line already, somehow (it built where they stood): let off it, either side.)
+      if (Math.abs(ra - WALL_M) <= 0.6 && Math.abs(rb - WALL_M) > Math.abs(ra - WALL_M)) continue;
       const angle = Math.atan2(b.z - v.z, b.x - v.x);
       if (inGate(angle)) continue;
       // (Only the sections built so far.)
