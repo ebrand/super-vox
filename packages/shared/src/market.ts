@@ -54,6 +54,7 @@ const BUYS: Record<'ore' | 'timber' | 'food', Offer[]> = {
     { item: Item.Stick, lot: 16, price: 1 },
   ],
   food: [
+    { item: Item.Wheat, lot: 8, price: 1 },
     { item: Item.Pork, lot: 1, price: 1 },
     { item: Item.CookedPork, lot: 1, price: 2 },
   ],

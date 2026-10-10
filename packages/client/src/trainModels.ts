@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CAR_SPECS, PLATFORM_M, type CarKind } from '@super-vox/shared';
+import { CAR_SPECS, PLATFORM_M, SEAT_ROWS, SEAT_X, type CarKind } from '@super-vox/shared';
 import { GAUGE_M } from './trackModel.js';
 
 /**
@@ -145,9 +145,8 @@ function flatbed(): THREE.BufferGeometry {
   return b.geometry();
 }
 
-/** A passenger car's seats: four rows a side, facing ahead (along -z). */
-const SEAT_ROWS = [-3.9, -1.3, 1.3, 3.9];
-const SEAT_X = 0.7, SEAT_Y = 1.75;
+/** A passenger car's seats (see SEAT_SPOTS): four rows a side, facing ahead (along -z). */
+const SEAT_Y = 1.75;
 
 function passenger(): THREE.BufferGeometry {
   const L = CAR_SPECS.passenger.length, B = CAR_SPECS.passenger.bogie, b = new Builder();

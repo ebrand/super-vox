@@ -12,6 +12,7 @@ import {
   UNITS_PER_METER,
   VILLAGER_SPEED,
   VILLAGE_RADIUS_M,
+  VILLAGER_SEAT,
   GATES,
   WALL_AT,
   WALL_M,
@@ -60,6 +61,44 @@ export interface VillageWorld {
   editedNear(x: number, z: number, r: number): boolean;
   /** Something else there (a trading post): no village within `r` units. */
   occupied?(x: number, z: number, r: number): boolean;
+  /** The railway (see TrainYard), for going places by train and sending wheat off to sell. */
+  rail?: Rail;
+}
+
+/** What villagers need of the railway: its stations and lines, trains stopped at stations, seats, and wheat loaded and unloaded. */
+export interface Rail {
+  stations(): { id: number; name: string; x: number; z: number }[];
+  lines(): { stations: number[] }[];
+  platformAt(id: number): { x: number; y: number; z: number } | null;
+  stoppedAt(id: number, now: number): { train: { id: number }; line: { stations: number[] } }[];
+  seat(train: number, who: number): { car: number; seat: number } | null;
+  seatPose(who: number): { x: number; y: number; z: number; heading: number } | null;
+  trainOfSeat(who: number): number | null;
+  unseat(who: number): void;
+  ship(train: number, village: number, wheat: number): number;
+  unship(train: number): { village: number; wheat: number }[];
+  /** Trading posts: where, and what they pay for a bundle of wheat (coins). */
+  posts(): { x: number; z: number; wheat: number }[];
+}
+
+/** Stations this near a village (m) are its; this near a trading post, the post's. */
+const STATION_NEAR_M = 400;
+/** A village keeps this much wheat (bundles) for itself; the rest it sends off by rail. */
+const WHEAT_KEPT = 12;
+/** A newcomer comes to a village for each of this many coins it's had for its wheat. */
+const COINS_PER_NEWCOMER = 20;
+/** Villagers going places by train: at most this many from a village at once; a visit there this long (ms); waiting at most this long for a train (ms). */
+const TRAVELLERS = 2;
+const VISIT_MS = 3 * 60_000;
+const WAIT_MS = 15 * 60_000;
+
+/** A trip by train: where it's got to, the stations from and to, where they're visiting, and till when. */
+interface Trip {
+  stage: 'out' | 'wait' | 'ride' | 'visit' | 'back' | 'waitBack' | 'rideBack';
+  from: number;
+  to: number;
+  dest: { x: number; z: number };
+  until: number;
 }
 
 type Mode = 'wander' | 'join' | 'work' | 'field' | 'idle' | 'home';
@@ -75,6 +114,8 @@ interface Walker extends Villager {
   path?: { x: number; z: number }[];
   /** Blocked just now (water, steep ground): somewhere off to the side first. */
   stuck?: boolean;
+  /** Going somewhere by train. */
+  trip?: Trip | null;
 }
 
 /** Kept (see save). */
@@ -153,7 +194,7 @@ export class VillageSim {
 
   /** What's kept. */
   save(): SimSave {
-    return { villagers: [...this.walkers.values()].map(({ tx: _x, tz: _z, mode: _m, busy: _b, path: _p, stuck: _s, ...v }) => v), villages: this.list(), cells: [...this.cells], next: this.next };
+    return { villagers: [...this.walkers.values()].map(({ tx: _x, tz: _z, mode: _m, busy: _b, path: _p, stuck: _s, trip: _t, ...v }) => v), villages: this.list(), cells: [...this.cells], next: this.next };
   }
 
   /** The ground at (x, z) (units, looked up a 4 m square at a time): its height, and whether it can be walked (land, not water). */
@@ -173,7 +214,20 @@ export class VillageSim {
    * where they're going; once a second, their choices; at `night`, home.
    */
   step(dt: number, now: number, players: readonly { x: number; z: number }[], night: boolean): void {
-    for (const p of this.walkers.values()) this.walk(p, dt);
+    for (const p of this.walkers.values()) {
+      // (On a train: where their seat is.)
+      const seated = p.trip && (p.trip.stage === 'ride' || p.trip.stage === 'rideBack') ? this.world.rail?.seatPose(VILLAGER_SEAT + p.id) : null;
+      if (seated) {
+        p.x = seated.x;
+        p.y = seated.y;
+        p.z = seated.z;
+        p.yaw = seated.heading;
+        p.tx = p.x;
+        p.tz = p.z;
+        continue;
+      }
+      this.walk(p, dt);
+    }
     this.thinkIn -= dt;
     if (this.thinkIn <= 0) {
       this.thinkIn = THINK_S;
@@ -181,6 +235,7 @@ export class VillageSim {
       for (const p of this.walkers.values()) this.think(p, now, night);
       for (const v of this.villages.values()) this.grow(v, now);
       this.found(now);
+      this.freight(now);
     }
     this.saveIn -= dt;
     if ((this.dirty || this.changed) && this.saveIn <= 0) this.persist();
@@ -342,6 +397,7 @@ export class VillageSim {
       p.home = null;
       return;
     }
+    if (p.trip) return this.travel(p, p.trip, now);
     // At night: home (by their cottage's door, or the middle).
     if (night) {
       const c = v.cottages.filter((c) => c.stage >= 3)[this.homeOf(p, v)];
@@ -409,12 +465,137 @@ export class VillageSim {
       }
       return;
     }
-    // Nothing to do: about the village.
+    // Nothing to do: now and then, off somewhere by train (if their village has a station on a line); else about the village.
+    if (rank >= 4 && rand(seed + 7) < 1 / 120 && this.startTrip(p, v, now)) return;
     p.mode = 'idle';
     if (this.arrived(p) && rand(seed) < 0.3) {
       const to = this.somewhere(v.x, v.z, VILLAGE_RADIUS_M * 0.7, seed);
       p.tx = to.x;
       p.tz = to.z;
+    }
+  }
+
+  /** A village's stations (those within STATION_NEAR_M of it), nearest first. */
+  private stationsOf(v: { x: number; z: number }): { id: number; name: string; x: number; z: number }[] {
+    return (this.world.rail?.stations() ?? []).filter((s) => Math.hypot(s.x - v.x, s.z - v.z) < STATION_NEAR_M * M).sort((a, b) => Math.hypot(a.x - v.x, a.z - v.z) - Math.hypot(b.x - v.x, b.z - v.z));
+  }
+
+  /** Somewhere to go from station `from`, by a line through it: another station near a village or a trading post, and the place itself. */
+  private destination(from: number, seed: number): { to: number; dest: { x: number; z: number } } | null {
+    const rail = this.world.rail!, all = rail.stations(), posts = rail.posts();
+    const options: { to: number; dest: { x: number; z: number } }[] = [];
+    for (const l of rail.lines()) {
+      if (!l.stations.includes(from)) continue;
+      for (const id of l.stations) {
+        if (id === from) continue;
+        const st = all.find((s) => s.id === id);
+        if (!st) continue;
+        for (const v of this.villages.values()) if (Math.hypot(v.x - st.x, v.z - st.z) < STATION_NEAR_M * M) options.push({ to: id, dest: { x: v.x, z: v.z } });
+        for (const t of posts) if (Math.hypot(t.x - st.x, t.z - st.z) < STATION_NEAR_M * M) options.push({ to: id, dest: { x: t.x + 4 * M, z: t.z + 4 * M } });
+      }
+    }
+    return options.length ? options[Math.floor(rand(seed) * options.length)]! : null;
+  }
+
+  /** `p` off on a trip by train, if their village has a station on a line to somewhere (and few others are away). */
+  private startTrip(p: Walker, v: Village, now: number): boolean {
+    if (!this.world.rail) return false;
+    const away = [...this.walkers.values()].filter((o) => o.home === v.id && o.trip).length;
+    if (away >= TRAVELLERS) return false;
+    for (const st of this.stationsOf(v)) {
+      const d = this.destination(st.id, p.id * 31 + Math.floor(now / 1000));
+      if (!d) continue;
+      p.trip = { stage: 'out', from: st.id, to: d.to, dest: d.dest, until: 0 };
+      this.changed = true;
+      return true;
+    }
+    return false;
+  }
+
+  /** A trip by train, a stage at a time: to the station, waiting, aboard, off at the other end, visiting, and the same back. */
+  private travel(p: Walker, t: Trip, now: number): void {
+    const rail = this.world.rail;
+    const who = VILLAGER_SEAT + p.id;
+    const end = () => {
+      rail?.unseat(who);
+      p.trip = null;
+      p.mode = 'idle';
+      this.changed = true;
+    };
+    if (!rail) return end();
+    p.mode = 'idle';
+    const goTo = (q: { x: number; z: number } | null) => {
+      if (!q) return end();
+      p.tx = q.x;
+      p.tz = q.z;
+    };
+    switch (t.stage) {
+      case 'out':
+      case 'back': {
+        const at = rail.platformAt(t.stage === 'out' ? t.from : t.to);
+        goTo(at);
+        if (at && Math.hypot(at.x - p.x, at.z - p.z) < 3 * M) (t.stage = t.stage === 'out' ? 'wait' : 'waitBack'), (t.until = now + WAIT_MS);
+        return;
+      }
+      case 'wait':
+      case 'waitBack': {
+        const [here, there] = t.stage === 'wait' ? [t.from, t.to] : [t.to, t.from];
+        const ride = rail.stoppedAt(here, now).find((s) => s.line.stations.includes(there) && rail.seat(s.train.id, who));
+        if (ride) {
+          t.stage = t.stage === 'wait' ? 'ride' : 'rideBack';
+          this.changed = true;
+        } else if (now > t.until) end();
+        return;
+      }
+      case 'ride':
+      case 'rideBack': {
+        const train = rail.trainOfSeat(who), there = t.stage === 'ride' ? t.to : t.from;
+        if (train === null) return end();
+        if (rail.stoppedAt(there, now).some((s) => s.train.id === train)) {
+          rail.unseat(who);
+          const at = rail.platformAt(there);
+          if (at) (p.x = at.x), (p.y = at.y), (p.z = at.z);
+          if (t.stage === 'rideBack') return end();
+          t.stage = 'visit';
+          t.until = 0;
+          this.changed = true;
+        }
+        return;
+      }
+      case 'visit': {
+        goTo(t.dest);
+        if (Math.hypot(t.dest.x - p.x, t.dest.z - p.z) < 6 * M && !t.until) t.until = now + VISIT_MS;
+        if (t.until && now > t.until) t.stage = 'back';
+        return;
+      }
+    }
+  }
+
+  /**
+   * Wheat by rail: a village's (over what it keeps) loaded onto the flatbeds of line trains stopped
+   * at its stations; at stations by trading posts, taken off and sold, the coins the village's.
+   */
+  private freight(now: number): void {
+    const rail = this.world.rail;
+    if (!rail) return;
+    for (const v of this.villages.values()) {
+      const spare = Math.floor(v.wheat - WHEAT_KEPT);
+      if (spare <= 0) continue;
+      for (const st of this.stationsOf(v))
+        for (const { train } of rail.stoppedAt(st.id, now)) {
+          const sent = rail.ship(train.id, v.id, Math.floor(v.wheat - WHEAT_KEPT));
+          if (sent > 0) (v.wheat -= sent), (this.changed = true);
+        }
+    }
+    const posts = rail.posts();
+    for (const st of rail.stations()) {
+      const post = posts.find((t) => Math.hypot(t.x - st.x, t.z - st.z) < STATION_NEAR_M * M);
+      if (!post) continue;
+      for (const { train } of rail.stoppedAt(st.id, now))
+        for (const { village, wheat } of rail.unship(train.id)) {
+          const v = this.villages.get(village);
+          if (v) (v.coins = (v.coins ?? 0) + wheat * post.wheat), (this.changed = true);
+        }
     }
   }
 
@@ -616,6 +797,12 @@ export class VillageSim {
     const members = [...this.walkers.values()].filter((p) => p.home === v.id);
     const going = v.cottages.some((c) => c.stage < 3);
     if (!going && v.cottages.length < MAX_COTTAGES && members.length > v.cottages.length * PER_COTTAGE - 1) this.plan(v);
+    if ((v.coins ?? 0) >= COINS_PER_NEWCOMER && members.length < MAX_COTTAGES * PER_COTTAGE) {
+      v.coins! -= COINS_PER_NEWCOMER;
+      const at = this.somewhere(v.x, v.z, 120, v.id * 37 + Math.floor(now / 1000));
+      this.add(at.x, at.z, now, v.id);
+      this.changed = true;
+    }
     if (v.wheat >= WHEAT_PER_NEWCOMER * Math.max(1, members.length) && members.length < MAX_COTTAGES * PER_COTTAGE) {
       v.wheat -= WHEAT_PER_NEWCOMER * Math.max(1, members.length);
       const at = this.somewhere(v.x, v.z, 200, v.id * 31 + Math.floor(now / 1000));

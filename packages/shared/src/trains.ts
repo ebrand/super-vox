@@ -67,8 +67,10 @@ export interface Car {
   fuel?: number;
   /** A flatbed's load: what, and how much (as inventories keep it: blocks by volume, items by count). */
   cargo?: [ItemId, number][];
-  /** A passenger car's seats: who's in each (a player's id), or no one. Not kept: everyone's out when the world's opened again. */
+  /** A passenger car's seats: who's in each (a player's id; or a villager's, VILLAGER_SEAT on), or no one. Not kept: everyone's out when the world's opened again. */
   seats?: (number | null)[];
+  /** A flatbed's wheat that's villages' (by village id: how much), to be sold for them at a trading post's station. */
+  shipments?: Record<string, number>;
 }
 
 /** A train: its cars, front to back; its speed (m/s, + forward); who's driving (a player's id) and how. */
@@ -336,8 +338,18 @@ export interface Line {
   next: number;
   way: 1 | -1;
   until: number;
+  /** The station it's stopped at now (while it's stopped there), if it is. */
+  at?: number | null;
   status: string;
 }
+
+/** A passenger car's seats (m, its frame: x across, z along, its front -z; facing ahead), four rows a side, and how high its floor is (over the rails). */
+export const SEAT_ROWS = [-3.9, -1.3, 1.3, 3.9];
+export const SEAT_X = 0.7;
+export const CAR_FLOOR_M = 1.3;
+export const SEAT_SPOTS: readonly { x: number; z: number }[] = SEAT_ROWS.flatMap((z) => [-1, 1].map((side) => ({ x: side * SEAT_X, z })));
+/** Villagers in seats (see Car.seats): this added to their id (players' ids are under it). */
+export const VILLAGER_SEAT = 1_000_000;
 
 /**
  * The shortest way along the line from `from` (on its track, going `way` along it: +1 as s

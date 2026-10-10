@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { CROP_STAGE_MS, FOUNDERS, GATES, Material, RIPE, UNITS_PER_METER, WALL_AT, WALL_M, WALL_SECTIONS, cottageStage, cropStage, inGate, villagePlot, wallStage, type VillagePiece } from '@super-vox/shared';
+import { CROP_STAGE_MS, FOUNDERS, GATES, Material, RIPE, UNITS_PER_METER, WALL_AT, WALL_M, WALL_SECTIONS, cottageStage, cropStage, inGate, villagePlot, wallStage, VILLAGER_SEAT, type Station, type VillagePiece } from '@super-vox/shared';
 import { VillageSim, type VillageWorld } from './villageSim.js';
+import { TrainYard } from './trainYard.js';
 
 const M = UNITS_PER_METER;
 
@@ -145,4 +146,66 @@ describe('villages', () => {
     expect(crossed).toBeGreaterThan(0);
     expect(Math.hypot(at().x / M - 8000.5, at().z / M - 8000.5)).toBeLessThan(WALL_M);
   });
+
+  it('by rail: villagers go on trips by a line (aboard, off at the other end, home again); wheat sent off and sold for the village', async () => {
+    const { w } = world();
+    // Track east from a village at x 8000 m to a trading post at 8600 m; a station by each; a line between them.
+    const n = 700, points = Array.from({ length: n + 1 }, (_, i) => ({ x: (7950 + i) * M, y: 10 * M, z: 8040 * M, heading: -Math.PI / 2, s: i * M }));
+    const yard = new TrainYard();
+    yard.setTracks([{ id: 1, points, speed: 60, radius: null, columns: [] }]);
+    const home = yard.placeStation(8000 * M, 10 * M, 8042 * M, 'Home') as Station, far = yard.placeStation(8600 * M, 10 * M, 8042 * M, 'Far') as Station;
+    yard.place('engine', 8000 * M, 10 * M, 8040 * M, -Math.PI / 2);
+    yard.place('passenger', 7987 * M, 10 * M, 8040 * M, -Math.PI / 2);
+    yard.place('flatbed', 7974 * M, 10 * M, 8040 * M, -Math.PI / 2);
+    // (Coupled: pushed together, as players do.)
+    expect(yard.list().length).toBe(3);
+    const trains = yard.list();
+    void trains;
+    w.rail = {
+      stations: () => yard.stationList().map((st) => ({ id: st.id, name: st.name, ...yard.stationAt(st.id)! })),
+      lines: () => yard.lineList(),
+      platformAt: (id) => yard.platformAt(id),
+      stoppedAt: (id, now) => yard.stoppedAt(id, now),
+      seat: (t, who) => yard.seat(t, who),
+      seatPose: (who) => yard.seatPose(who),
+      trainOfSeat: (who) => yard.trainOfSeat(who),
+      unseat: (who) => yard.unseat(who),
+      ship: (t, v, k) => yard.ship(t, v, k),
+      unship: (t) => yard.unship(t),
+      posts: () => [{ x: 8610 * M, z: 8050 * M, wheat: 0.25 }],
+    };
+    // A village of eight by the first station, its fields sown (nothing ripe yet), wheat in store.
+    const villagers = Array.from({ length: 8 }, (_, i) => ({ id: i + 1, name: `v${i}`, look: '', x: (8000 + i) * M, y: 10 * M, z: 8000 * M, yaw: 0, home: 100 }));
+    const cottages = Array.from({ length: 4 }, (_, k) => ({ ...villagePlot(8000, 8000, k).cottage, floor: 11, stage: 3, work: 0 }));
+    const fields = Array.from({ length: 4 }, (_, k) => ({ ...villagePlot(8000, 8000, k).field, tops: Array(30).fill(10), sown: Array(30).fill(Date.now()), tilled: true }));
+    const sim = new VillageSim(w, { villagers, villages: [{ id: 100, name: 'Home', x: 8000.5 * M, y: 10 * M, z: 8000.5 * M, founded: 0, cottages, fields, wheat: 60 }], cells: ['4,4', '3,3', '3,4', '4,3', '5,5', '3,5', '5,3', '4,5', '5,4'], next: 200 });
+    // Coupled by hand: the engine nudged back into them.
+    let now = Date.now();
+    const e = yard.list().find((t) => t.cars[0]!.kind === 'engine')!.cars[0]!;
+    yard.board(e.id, 7);
+    yard.drive(7, -0.15, false, false);
+    for (let i = 0; i < 20 * 60 && yard.list().length > 1; i++) yard.step(0.05, false, (now += 50));
+    yard.drive(7, 0, true, false);
+    for (let i = 0; i < 20 * 20; i++) yard.step(0.05, false, (now += 50));
+    yard.leave(7);
+    expect(yard.list()).toHaveLength(1);
+    const line = yard.createLine([home.id, far.id], 30, 'Main');
+    if (typeof line === 'string') throw new Error(line);
+    // Run both, an hour.
+    let rode = 0, sold = false;
+    for (let i = 0; i < 20 * 3600; i++) {
+      now += 50;
+      yard.step(0.05, false, now);
+      if (i % 2 === 0) sim.step(0.1, now, [{ x: 8000 * M, z: 8000 * M }], false);
+      if (i % 200 === 0) {
+        rode = Math.max(rode, yard.list()[0]!.cars.flatMap((c) => c.seats ?? []).filter((x) => x !== null && x >= VILLAGER_SEAT).length);
+        if ((sim.list()[0]!.coins ?? 0) > 0) sold = true;
+      }
+    }
+    const v = sim.list()[0]!;
+    expect(v.wheat).toBeLessThan(60);
+    expect(sold).toBe(true);
+    expect(rode).toBeGreaterThan(0);
+    void far;
+  }, 60_000);
 });

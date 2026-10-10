@@ -2,6 +2,10 @@ import {
   CAR_GAP_M,
   CAR_SPECS,
   LINE_DRIVER,
+  CAR_FLOOR_M,
+  Item,
+  SEAT_SPOTS,
+  STATION_X,
   PLATFORM_M,
   STOP_BRAKE,
   pointAt,
@@ -131,6 +135,97 @@ export class TrainYard {
     return true;
   }
 
+  /** Line trains stopped at a station now, and their lines. */
+  stoppedAt(station: number, now = Date.now()): { train: Train; line: Line }[] {
+    const out: { train: Train; line: Line }[] = [];
+    for (const l of this.lines.values()) {
+      const t = l.train !== null ? this.trains.get(l.train) : undefined;
+      if (t && l.at === station && l.until > now) out.push({ train: t, line: l });
+    }
+    return out;
+  }
+
+  /** Where people wait for trains at a station: its platform's middle (units: its top), and the station. */
+  platformAt(id: number): { x: number; y: number; z: number } | null {
+    const s = this.stations.get(id), p = s && pointAt(this.net, { track: s.track, s: s.s, dir: 1 });
+    if (!s || !p) return null;
+    const rx = Math.cos(p.heading), rz = -Math.sin(p.heading), out = (STATION_X + 1.4) * M;
+    return { x: p.x + rx * out * s.side, y: p.y + M, z: p.z + rz * out * s.side };
+  }
+
+  /** `who` (a seat id: see VILLAGER_SEAT) in a free seat of a passenger car of train `train`: which car and seat; null if there's none. */
+  seat(train: number, who: number): { car: number; seat: number } | null {
+    const t = this.trains.get(train);
+    for (const c of t?.cars ?? []) {
+      const i = c.seats?.indexOf(null) ?? -1;
+      if (c.seats && i >= 0) {
+        c.seats[i] = who;
+        this.changed = true;
+        return { car: c.id, seat: i };
+      }
+    }
+    return null;
+  }
+
+  /** Where seat `who`'s sitter is (units: their feet, on the car's floor), if they're in one. */
+  seatPose(who: number): { x: number; y: number; z: number; heading: number } | null {
+    for (const t of this.trains.values())
+      for (const c of t.cars) {
+        const i = c.seats?.indexOf(who) ?? -1;
+        if (i < 0) continue;
+        const p = carPose(this.net, c), spot = SEAT_SPOTS[i]!;
+        if (!p) return null;
+        const fx = -Math.sin(p.heading), fz = -Math.cos(p.heading), rx = Math.cos(p.heading), rz = -Math.sin(p.heading);
+        return { x: p.x + (rx * spot.x - fx * spot.z) * M, y: p.y + (0.28 + CAR_FLOOR_M) * M, z: p.z + (rz * spot.x - fz * spot.z) * M, heading: p.heading };
+      }
+    return null;
+  }
+
+  /** The train `who` is sitting in, if any. */
+  trainOfSeat(who: number): number | null {
+    for (const t of this.trains.values()) for (const c of t.cars) if (c.seats?.includes(who)) return t.id;
+    return null;
+  }
+
+  /** `who` out of their seat. */
+  unseat(who: number): void {
+    for (const t of this.trains.values())
+      for (const c of t.cars)
+        if (c.seats?.includes(who)) {
+          c.seats = c.seats.map((p) => (p === who ? null : p));
+          this.changed = true;
+        }
+  }
+
+  /** Village `village`'s wheat (bundles) loaded on train `train`'s flatbeds, as much as fits: how much. */
+  ship(train: number, village: number, wheat: number): number {
+    let left = wheat;
+    for (const c of this.trains.get(train)?.cars ?? []) {
+      if (c.kind !== 'flatbed' || left <= 0) continue;
+      const took = this.load(c.id, Item.Wheat, left);
+      if (typeof took === 'string' || took <= 0) continue;
+      c.shipments = { ...c.shipments, [village]: (c.shipments?.[village] ?? 0) + took };
+      left -= took;
+    }
+    return wheat - left;
+  }
+
+  /** The villages' wheat on train `train` taken off it (to be sold for them): how much each's. */
+  unship(train: number): { village: number; wheat: number }[] {
+    const out: { village: number; wheat: number }[] = [];
+    for (const c of this.trains.get(train)?.cars ?? []) {
+      for (const [v, n] of Object.entries(c.shipments ?? {})) {
+        const took = this.load(c.id, Item.Wheat, -n);
+        if (typeof took === 'number' && took > 0) out.push({ village: Number(v), wheat: took });
+      }
+      if (c.shipments) {
+        delete c.shipments;
+        this.changed = true;
+      }
+    }
+    return out;
+  }
+
   /** Where a station's middle is (units). */
   stationAt(id: number): { x: number; y: number; z: number } | null {
     const s = this.stations.get(id);
@@ -199,6 +294,11 @@ export class TrainYard {
       t.brake = brake;
     };
     if (line.until > now) return set(0, true);
+    // (Off again: no longer at that station.)
+    if (line.at) {
+      line.at = null;
+      this.changed = true;
+    }
     const station = this.stations.get(line.stations[line.next]!);
     if (!station) return set(0, true);
     let plan = this.plans.get(t.id);
@@ -217,6 +317,7 @@ export class TrainYard {
     if (left < 1 && Math.abs(t.v) < 0.5) {
       t.v = 0;
       line.until = now + line.dwell * 1000;
+      line.at = station.id;
       line.status = `at ${station.name}`;
       if (line.next + line.way >= line.stations.length || line.next + line.way < 0) line.way = (-line.way) as 1 | -1;
       line.next += line.way;

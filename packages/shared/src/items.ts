@@ -88,6 +88,8 @@ export const Item = {
   PassengerCar: 1036,
   /** Put beside straight track (right-click): a platform trains on a line stop at (see trains.ts). */
   Station: 1037,
+  /** Harvested from fields (villages sell it at trading posts, by rail: see VillageSim). */
+  Wheat: 1038,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -131,6 +133,7 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.FlatbedCar]: 'flatbed car',
   [Item.PassengerCar]: 'passenger car',
   [Item.Station]: 'railway station',
+  [Item.Wheat]: 'wheat',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */

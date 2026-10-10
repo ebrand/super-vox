@@ -78,8 +78,9 @@ export interface Village {
   founded: number;
   cottages: Cottage[];
   fields: Field[];
-  /** Wheat harvested (bundles: its prosperity). */
+  /** Wheat harvested (bundles: its prosperity), and coins it's had for what it's sold (by rail, at trading posts). */
   wheat: number;
+  coins?: number;
   /** Its wall's sections built (0..WALL_SECTIONS), and the work done on the next (s); none till it's WALL_AT. */
   wall?: number;
   wallWork?: number;

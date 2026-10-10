@@ -1160,6 +1160,26 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         editedNear: (x, z, r) => world.editedNear(x, z, r),
         occupied: (x, z, r) => world.tradingPosts(seed).some((t) => Math.hypot(t.x - x, t.z - z) < r),
         saveVillages: (s) => world.saveVillages(s),
+        rail: {
+          stations: () => world.trains.stationList().flatMap((st) => {
+            const at = world.trains.stationAt(st.id);
+            return at ? [{ id: st.id, name: st.name, x: at.x, z: at.z }] : [];
+          }),
+          lines: () => world.trains.lineList(),
+          platformAt: (id) => world.trains.platformAt(id),
+          stoppedAt: (id, now) => world.trains.stoppedAt(id, now),
+          seat: (t, who) => world.trains.seat(t, who),
+          seatPose: (who) => world.trains.seatPose(who),
+          trainOfSeat: (who) => world.trains.trainOfSeat(who),
+          unseat: (who) => world.trains.unseat(who),
+          ship: (t, v, n) => world.trains.ship(t, v, n),
+          unship: (t) => world.trains.unship(t),
+          // (A bundle of wheat's worth: the post's price for a lot, by the lot.)
+          posts: () => world.tradingPosts(seed).map((t) => {
+            const o = t.buys.find((b) => b.item === Item.Wheat);
+            return { x: t.x, z: t.z, wheat: o ? o.price / o.lot : 0 };
+          }),
+        },
       },
       world.loadVillages(),
     );
