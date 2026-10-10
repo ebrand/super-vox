@@ -12,6 +12,13 @@ import {
   UNITS_PER_METER,
   VILLAGER_SPEED,
   VILLAGE_RADIUS_M,
+  GATES,
+  WALL_AT,
+  WALL_M,
+  WALL_SECTIONS,
+  inGate,
+  wallSection,
+  wallStage,
   avatarText,
   cottageStage,
   cropStage,
@@ -64,8 +71,8 @@ interface Walker extends Villager {
   mode: Mode;
   /** Time spent at what they're doing (s). */
   busy: number;
-  /** A corner of a building on the way (units), gone round first. */
-  via?: { x: number; z: number } | null;
+  /** Where to go first, in order, before where they're going (units): round a building's corner, or round a wall and through its gate. */
+  path?: { x: number; z: number }[];
   /** Blocked just now (water, steep ground): somewhere off to the side first. */
   stuck?: boolean;
 }
@@ -146,7 +153,7 @@ export class VillageSim {
 
   /** What's kept. */
   save(): SimSave {
-    return { villagers: [...this.walkers.values()].map(({ tx: _x, tz: _z, mode: _m, busy: _b, ...v }) => v), villages: this.list(), cells: [...this.cells], next: this.next };
+    return { villagers: [...this.walkers.values()].map(({ tx: _x, tz: _z, mode: _m, busy: _b, path: _p, stuck: _s, ...v }) => v), villages: this.list(), cells: [...this.cells], next: this.next };
   }
 
   /** The ground at (x, z) (units, looked up a 4 m square at a time): its height, and whether it can be walked (land, not water). */
@@ -188,25 +195,31 @@ export class VillageSim {
 
   /** Walks a villager toward where they're going: round buildings (by a corner), not into water or up steep ground (blocked there: they pick somewhere else). */
   private walk(p: Walker, dt: number): void {
-    const to = p.via ?? { x: p.tx, z: p.tz };
+    const to = p.path?.[0] ?? { x: p.tx, z: p.tz };
     const dx = to.x - p.x, dz = to.z - p.z, d = Math.hypot(dx, dz);
     if (d < 0.3 * M) {
-      if (p.via) p.via = null;
+      p.path?.shift();
       return;
     }
     const step = Math.min(d, VILLAGER_SPEED * M * dt), nx = p.x + (dx / d) * step, nz = p.z + (dz / d) * step;
     const here = this.groundAt(p.x, p.z), there = this.groundAt(nx, nz);
-    // (Inside one already, somehow: let out.)
-    const building = this.buildingAt(p.x, p.z) ? null : this.buildingAt(nx, nz);
-    if (building && !p.via) {
-      p.via = this.corner(building, p, { x: p.tx, z: p.tz });
+    // A wall in the way: round by a gate (on this side of it), then through.
+    const wall = this.wallBetween(p, { x: nx, z: nz });
+    if (wall && !p.path?.length) {
+      p.path = this.gateFor(wall, p);
       return;
     }
-    if (!there.ok || Math.abs(there.h - here.h) > 1.6 * M || building || nx < 0 || nz < 0 || nx >= this.world.config.widthUnits || nz >= this.world.config.depthUnits) {
+    // (Inside one already, somehow: let out.)
+    const building = this.buildingAt(p.x, p.z) ? null : this.buildingAt(nx, nz);
+    if (building && !p.path?.length) {
+      p.path = [this.corner(building, p, { x: p.tx, z: p.tz })];
+      return;
+    }
+    if (!there.ok || Math.abs(there.h - here.h) > 1.6 * M || building || wall || nx < 0 || nz < 0 || nx >= this.world.config.widthUnits || nz >= this.world.config.depthUnits) {
       // (Blocked: stay, and somewhere else is chosen: off to the side, first.)
       p.tx = p.x;
       p.tz = p.z;
-      p.via = null;
+      p.path = [];
       p.stuck = true;
       return;
     }
@@ -342,8 +355,24 @@ export class VillageSim {
     // to the other when theirs needs nothing.
     const site = v.cottages.find((c) => c.stage < 3);
     const field = v.fields.find((f) => (!f.tilled && v.cottages[v.fields.indexOf(f)]?.stage === 3) || f.sown.some((s) => cropStage(s, now) >= RIPE));
-    const builder = this.rankIn(p, v) < 2;
-    if (site && (builder || !field)) {
+    // (At most four at one job: two builders, two more to help when the fields need nothing.)
+    const rank = this.rankIn(p, v), builder = rank < 2, helper = rank < 4;
+    // (No cottage going up, and it's big enough: its wall, a section at a time.)
+    const walling = !site && this.wallDue(v);
+    if (walling && (builder || (helper && !field))) {
+      const section = v.wall ?? 0, a = ((section + 0.5) * Math.PI * 2) / WALL_SECTIONS;
+      const at = { x: v.x + Math.cos(a) * (WALL_M - 2.5) * M, z: v.z + Math.sin(a) * (WALL_M - 2.5) * M };
+      p.mode = 'work';
+      if (Math.hypot(at.x - p.x, at.z - p.z) > 8 * M) {
+        p.tx = at.x + (rand(seed) - 0.5) * 6 * M;
+        p.tz = at.z + (rand(seed + 1) - 0.5) * 6 * M;
+      } else if (!this.building) {
+        v.wallWork = (v.wallWork ?? 0) + THINK_S;
+        if (v.wallWork >= STAGE_S) void this.raiseWall(v, section);
+      }
+      return;
+    }
+    if (site && (builder || (helper && !field))) {
       const at = this.doorstep(site);
       p.mode = 'work';
       if (Math.hypot(at.x - p.x, at.z - p.z) > 6 * M) {
@@ -465,7 +494,9 @@ export class VillageSim {
     const cx = Math.floor(v.x / B), cz = Math.floor(v.z / B);
     for (let n = v.cottages.length; n < MAX_COTTAGES + 6; n++) {
       const { cottage, field } = villagePlot(cx, cz, n % MAX_COTTAGES);
-      if (v.cottages.some((c) => c.bx === cottage.bx && c.bz === cottage.bz)) continue;
+      // (Not on, or hard by, what it has already: a cottage or field (kept from an older layout, say).)
+      const overlaps = (a: { bx: number; bz: number; w: number; d: number }, b: { bx: number; bz: number; w: number; d: number }) => a.bx - 1 < b.bx + b.w && b.bx - 1 < a.bx + a.w && a.bz - 1 < b.bz + b.d && b.bz - 1 < a.bz + a.d;
+      if ([...v.cottages, ...v.fields].some((o) => overlaps(o, cottage) || overlaps(o, field))) continue;
       const tops: number[] = [];
       let ok = true, floor = -Infinity;
       for (let x = cottage.bx - 1; x <= cottage.bx + cottage.w && ok; x++)
@@ -504,6 +535,59 @@ export class VillageSim {
     } finally {
       this.building = false;
     }
+  }
+
+  /** Whether a village is to wall itself (it's WALL_AT, and its wall isn't done). */
+  private wallDue(v: Village): boolean {
+    return (v.wall ?? 0) < WALL_SECTIONS && [...this.walkers.values()].filter((p) => p.home === v.id).length >= WALL_AT;
+  }
+
+  /** A section of a village's wall built: written into the world. */
+  private async raiseWall(v: Village, section: number): Promise<void> {
+    this.building = true;
+    try {
+      const { clear, place } = wallStage(Math.floor(v.x / B), Math.floor(v.z / B), section, (bx, bz) => Math.ceil(this.groundAt((bx + 0.5) * B, (bz + 0.5) * B).h / B));
+      const results = await this.world.buildWorks(clear, place);
+      v.wall = section + 1;
+      v.wallWork = 0;
+      this.changed = true;
+      this.onEdits?.(results);
+    } finally {
+      this.building = false;
+    }
+  }
+
+  /** A walled village's wall between two points (units), if the way crosses it other than at a gate: the village. */
+  private wallBetween(a: { x: number; z: number }, b: { x: number; z: number }): Village | null {
+    for (const v of this.villages.values()) {
+      if (!v.wall) continue;
+      const ra = Math.hypot(a.x - v.x, a.z - v.z) / M, rb = Math.hypot(b.x - v.x, b.z - v.z) / M;
+      if ((ra - WALL_M) * (rb - WALL_M) > 0 && Math.abs(rb - WALL_M) > 0.6) continue;
+      const angle = Math.atan2(b.z - v.z, b.x - v.x);
+      if (inGate(angle)) continue;
+      // (Only the sections built so far.)
+      if (wallSection(angle) < v.wall) return v;
+    }
+    return null;
+  }
+
+  /**
+   * The way through the nearer gate of `v`: round the wall to it on the side `p` is on (outside, a
+   * point every 30° or so, a little way out: a straight line between two points outside a ring can
+   * cut through it; inside, straight there), to the gate, and out the other side.
+   */
+  private gateFor(v: Village, p: { x: number; z: number }): { x: number; z: number }[] {
+    const inside = Math.hypot(p.x - v.x, p.z - v.z) < WALL_M * M, near = (WALL_M + (inside ? -2.5 : 3)) * M, far = (WALL_M + (inside ? 3 : -2.5)) * M;
+    const from = Math.atan2(p.z - v.z, p.x - v.x), turn = (g: number) => Math.atan2(Math.sin(g - from), Math.cos(g - from));
+    const gate = GATES.reduce((a, g) => (Math.abs(turn(g)) < Math.abs(turn(a)) ? g : a)), sweep = turn(gate);
+    const at = (a: number, r: number) => ({ x: v.x + Math.cos(a) * r, z: v.z + Math.sin(a) * r });
+    const way: { x: number; z: number }[] = [];
+    if (!inside) {
+      const n = Math.ceil(Math.abs(sweep) / (Math.PI / 6));
+      for (let i = 0; i < n; i++) way.push(at(from + (sweep * i) / n, near));
+    }
+    way.push(at(gate, near), at(gate, far));
+    return way;
   }
 
   /** A field tilled (its top blocks farmland, what's over them cleared) and sown. */

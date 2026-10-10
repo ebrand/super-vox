@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CROP_STAGE_MS, FOUNDERS, Material, RIPE, UNITS_PER_METER, cottageStage, cropStage, villagePlot, type VillagePiece } from '@super-vox/shared';
+import { CROP_STAGE_MS, FOUNDERS, GATES, Material, RIPE, UNITS_PER_METER, WALL_AT, WALL_M, WALL_SECTIONS, cottageStage, cropStage, inGate, villagePlot, wallStage, type VillagePiece } from '@super-vox/shared';
 import { VillageSim, type VillageWorld } from './villageSim.js';
 
 const M = UNITS_PER_METER;
@@ -95,5 +95,54 @@ describe('villages', () => {
     const sim = new VillageSim(w);
     await run(sim, 300, 0, [{ x: 8000 * M, z: 8000 * M }]);
     for (const e of sim.near(8000 * M, 8000 * M, 3000 * M)) expect(e.x / M).toBeLessThanOrEqual(8050.5);
+  });
+
+  it('a wall round a village: its ring in sections, but its two gates', () => {
+    const all = Array.from({ length: WALL_SECTIONS }, (_, k) => wallStage(1000, 1000, k, () => 10).place);
+    const cols = new Set(all.flat().map((p) => `${p.x / 16},${p.z / 16}`));
+    // (Each column four blocks: one in the ground, three up.)
+    expect(all.flat().length).toBe(cols.size * 4);
+    for (const key of cols) {
+      const [x, z] = key.split(',').map(Number);
+      expect(Math.abs(Math.hypot(x! + 0.5 - 1000.5, z! + 0.5 - 1000.5) - WALL_M)).toBeLessThan(0.51);
+    }
+    // At its gates: nothing.
+    for (const g of GATES) {
+      const x = Math.floor(1000.5 + Math.cos(g) * WALL_M), z = Math.floor(1000.5 + Math.sin(g) * WALL_M);
+      expect(cols.has(`${x},${z}`)).toBe(false);
+    }
+    expect(all.every((s) => s.length > 0)).toBe(true);
+  });
+
+  it('a village of WALL_AT walls itself round, a section at a time; villagers walk in by its gates', async () => {
+    const { w, built } = world();
+    // A village of 14, its cottages and fields done (as kept), and someone outside it.
+    const cottages = Array.from({ length: 7 }, (_, n) => ({ ...villagePlot(8000, 8000, n).cottage, floor: 11, stage: 3, work: 0 }));
+    const fields = Array.from({ length: 7 }, (_, n) => ({ ...villagePlot(8000, 8000, n).field, tops: Array(30).fill(10), sown: Array(30).fill(Date.now()), tilled: true }));
+    const villagers = Array.from({ length: WALL_AT }, (_, i) => ({ id: i + 1, name: `v${i}`, look: '', x: 8000.5 * M + i * M, y: 10 * M, z: 8000.5 * M, yaw: 0, home: 100 }));
+    const outside = { id: 50, name: 'out', look: '', x: 8000.5 * M + 45 * M, y: 10 * M, z: 8000.5 * M + 10 * M, yaw: 0, home: 100 };
+    const raw = { villagers: [...villagers, outside], villages: [{ id: 100, name: 'Walled', x: 8000.5 * M, y: 10 * M, z: 8000.5 * M, founded: 0, cottages, fields, wheat: 0 }], cells: ['4,4', '3,3', '3,4', '4,3', '5,5', '3,5', '5,3', '4,5', '5,4'], next: 200 };
+    const sim = new VillageSim(w, raw);
+    let now = Date.now();
+    for (let i = 0; i < 40 && (sim.list()[0]!.wall ?? 0) < WALL_SECTIONS; i++) now = await run(sim, 60, now, [{ x: 8000 * M, z: 8000 * M }]);
+    expect(sim.list()[0]!.wall).toBe(WALL_SECTIONS);
+    expect(built.filter((b) => b.place.some((p) => p.material === Material.Cobblestone)).length).toBeGreaterThanOrEqual(WALL_SECTIONS);
+    // Someone outside (the village as kept, them put outside it) comes in (home, at night): by a gate, never through the wall.
+    const kept = JSON.parse(JSON.stringify(sim.save()));
+    Object.assign(kept.villagers.find((p: { name: string }) => p.name === 'out'), { x: 8000.5 * M + 45 * M, z: 8000.5 * M + 10 * M });
+    const walled = new VillageSim(w, kept);
+    const at = () => walled.near(8000 * M, 8000 * M, 200 * M).find((e) => e.name === 'out')!;
+    let crossed = 0;
+    for (let i = 0; i < 1200; i++) {
+      const before = at();
+      now = await run(walled, 0.1, now, [{ x: 8000 * M, z: 8000 * M }], true);
+      const after = at(), r0 = Math.hypot(before.x / M - 8000.5, before.z / M - 8000.5), r1 = Math.hypot(after.x / M - 8000.5, after.z / M - 8000.5);
+      if ((r0 - WALL_M) * (r1 - WALL_M) <= 0 && r0 !== r1) {
+        crossed++;
+        expect(inGate(Math.atan2(after.z / M - 8000.5, after.x / M - 8000.5))).toBe(true);
+      }
+    }
+    expect(crossed).toBeGreaterThan(0);
+    expect(Math.hypot(at().x / M - 8000.5, at().z / M - 8000.5)).toBeLessThan(WALL_M);
   });
 });
