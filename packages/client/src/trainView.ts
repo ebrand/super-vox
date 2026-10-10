@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BLOCK_SIZE, CAR_SPECS, FLATBED_CRATES, Item, PLATFORM_M, STATION_BED, STATION_X, UNITS_PER_METER, designOfItem, type Station, alongLine, cratesFor, carPose, moveTrain, pointAt, route, speedLimit, trackNet, type CarKind, type Track, type TrackNet, type Train } from '@super-vox/shared';
+import { BLOCK_SIZE, CAR_SPECS, FLATBED_CRATES, Item, PLATFORM_M, STATION_BED, STATION_X, UNITS_PER_METER, pickDesign, type Station, alongLine, cratesFor, carPose, moveTrain, pointAt, route, speedLimit, trackNet, type CarKind, type Track, type TrackNet, type Train } from '@super-vox/shared';
 import { AMBER_DISC, CAR_SIZE, GREEN_DISC, carGeometry, crateGeometry, stationGeometry, switchStandGeometry } from './trainModels.js';
 import { nameTag } from './entities.js';
 import { materialColor } from './materials.js';
@@ -163,7 +163,7 @@ export class TrainView {
       const group = new THREE.Group();
       group.position.set(p.x / M, p.y / M, p.z / M);
       group.rotation.y = p.heading;
-      group.add(this.stationLook(st.side));
+      group.add(this.stationLook(st.side, st.id));
       const tag = nameTag(st.name, 4.6);
       tag.position.x = st.side * 2.7;
       group.add(tag);
@@ -186,11 +186,12 @@ export class TrainView {
   }
 
   /**
-   * How a station looks, on `side` of the track: the design standing in for stations, if there is
-   * one (a cube a voxel: see stationDesign for its frame), else the built-in model.
+   * How a station looks, on `side` of the track: a design standing in for stations, if there's one
+   * (of several, one by the station: see pickDesign; a cube a voxel: see stationDesign for its
+   * frame), else the built-in model.
    */
-  private stationLook(side: 1 | -1): THREE.Object3D {
-    const design = designOfItem(Item.Station);
+  private stationLook(side: 1 | -1, id: number): THREE.Object3D {
+    const design = pickDesign('railway-station', id);
     if (!design) return new THREE.Mesh(this.stationGeometries[side], this.material);
     const voxels = design.states[0]?.voxels ?? [];
     const mesh = new THREE.InstancedMesh(this.cube, this.material, Math.max(1, voxels.length));

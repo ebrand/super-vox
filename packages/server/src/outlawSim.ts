@@ -14,6 +14,7 @@ import {
   campStage,
   defaultAvatar,
   outlawName,
+  pickDesign,
   type Avatar,
   type Camp,
   type Outlaw,
@@ -339,7 +340,9 @@ export class OutlawSim {
   /** A camp's stage `stage` written into the world. */
   private build(c: Camp, stage: number): void {
     const top = (bx: number, bz: number) => Math.ceil(this.ground((bx + 0.5) * B, (bz + 0.5) * B).h / B);
-    const { clear, place } = campStage(Math.floor(c.x / B), Math.floor(c.z / B), stage, top);
+    // (Of the designs standing in for the piece, if there are any: one of them, by the camp.)
+    const design = pickDesign(stage === 1 ? 'campfire' : 'lean-to', c.id);
+    const { clear, place } = campStage(Math.floor(c.x / B), Math.floor(c.z / B), stage, top, design);
     c.stage = stage;
     this.writing = this.writing.then(() => this.world.buildWorks(clear, place)).then(
       (r) => this.onEdits?.(r),

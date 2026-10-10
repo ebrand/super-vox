@@ -40,6 +40,7 @@ export * from './market.js';
 export * from './villages.js';
 export * from './outlaws.js';
 export * from './stationDesign.js';
+export * from './campDesigns.js';
 export * from './objects.js';
 export * from './physics.js';
 export * from './flocking.js';

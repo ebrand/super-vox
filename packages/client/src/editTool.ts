@@ -40,6 +40,8 @@ import {
   objectName,
   designById,
   designOfItem,
+  placedDesign,
+  type ObjectDesign,
   designAnchor,
   designOrigin,
   designSpan,
@@ -567,6 +569,12 @@ export class EditTool {
     const spot = design && this.designSpot();
     this.designPreview.visible = this.designBlocksPreview.visible = !!spot;
     if (!design || !spot) return;
+    // (Standing in for something, one of those that do, by where: as the server will place it.)
+    const placed = placedDesign(held!, spot.x, spot.y, spot.z) ?? design;
+    this.showPreviewOf(placed, spot);
+  }
+
+  private showPreviewOf(design: ObjectDesign, spot: { x: number; y: number; z: number; offset: [number, number, number]; facing: ReturnType<typeof facingOfYaw> }): void {
     const at = designOrigin(design, spot.facing, spot.x, spot.y, spot.z);
     const [w, h, d] = designSpan(design, spot.facing);
     const [ox, oy, oz] = spot.offset.map((v) => v / BLOCK_SIZE) as [number, number, number];

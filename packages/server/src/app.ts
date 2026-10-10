@@ -75,6 +75,9 @@ import {
   objectItem,
   objectName,
   designOfItem,
+  pickDesign,
+  placeSeed,
+  placedDesign,
   itemName,
   objectKindOf,
   usable,
@@ -1987,7 +1990,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           let result: EditResult;
           try {
             if (msg.type === 'placeObject') {
-              const kind = objectKindOf(msg.item), design = designOfItem(msg.item);
+              // (A design standing in for something: one of those that do, by where it goes: see placedDesign.)
+              const kind = objectKindOf(msg.item), design = placedDesign(msg.item, msg.x, msg.y, msg.z);
               if (!kind && !design) return fail(`a ${itemName(msg.item)} isn't placed like that`);
               if (design?.role === 'boat') return fail('a boat goes in the water: right-click water');
               const why = inventory?.refuseItem(msg.item);
@@ -2060,7 +2064,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           const near = (x: number, y: number, z: number) => !p.pose || Math.hypot(p.pose.x - x, p.pose.y - y, p.pose.z - z) <= BOAT.reach + 2 * BLOCK_SIZE;
           try {
             if (msg.type === 'boatLaunch') {
-              const design = designOfItem(Item.Boat);
+              const design = pickDesign('boat', placeSeed(msg.x, msg.y, msg.z));
               if (design?.role !== 'boat') return fail('there are no boats yet: one needs designing');
               const why = inventory?.refuseItem(Item.Boat);
               if (why) return fail(why);

@@ -994,21 +994,21 @@ function renderPiece(): void {
   }
 }
 
-/** The saved design (not this one) standing in for station `role`, if any. */
-const holderOf = (role: DesignRole) => library.find((d) => d.role === role && d.id !== editor.draft.id);
+/** The saved designs (not this one) standing in for station `role`. */
+const othersOf = (role: DesignRole) => library.filter((d) => d.role === role && d.id !== editor.draft.id);
 
-/** The stations, each with who stands in for it now (so taking one from another design isn't a surprise). */
+/** The stations, each with how many stand in for it now (any number may: each in the world is one of them, at random). */
 function renderRoles(): void {
-  const saved = editor.draft.id ? library.find((d) => d.id === editor.draft.id)?.role : undefined;
   for (const o of roleEl.options) {
     if (!o.value) continue;
-    const role = o.value as DesignRole, holder = holderOf(role);
-    o.textContent = `the ${stationOf(role).name}${holder ? ` (now: ${holder.name})` : saved === role ? ' (this one)' : ' (none yet)'}`;
+    const role = o.value as DesignRole, n = othersOf(role).length, mine = editor.draft.role === role;
+    const others = `${n} other${n === 1 ? '' : 's'}`;
+    o.textContent = `the ${stationOf(role).name} (${mine ? (n ? `this and ${others}` : 'this one') : n ? `${n} design${n === 1 ? '' : 's'}` : 'none yet'})`;
   }
-  const role = editor.draft.role, holder = role && holderOf(role);
-  const warning = $('role-warning');
-  warning.hidden = !holder;
-  if (holder) warning.textContent = `Saving takes the ${stationOf(role).name} away from ${holder.name} (it then stands in for nothing).`;
+  const role = editor.draft.role, others = role ? othersOf(role) : [];
+  const note = $('role-warning');
+  note.hidden = !others.length;
+  if (role && others.length) note.textContent = `${others.map((d) => d.name).join(', ')} ${others.length === 1 ? 'is' : 'are'} the ${stationOf(role).name} too: each one in the world is one of these, at random.`;
 }
 
 /** How a station's made, for people: "8 cobblestone, at a crafting table". */
@@ -1050,8 +1050,10 @@ function renderRecipe(): void {
   $('recipe-own').hidden = !!role;
   if (role) {
     const s = stationOf(role);
-    $('role-note').textContent = `The ${s.name} item places it, and gives one back when it's taken down; for ${s.use}. One object at most is the ${s.name}.`;
-    $('recipe-station').textContent = `Made as the ${s.name} (${stationRecipe(role)}).`;
+    $('role-note').textContent = s.scenery
+      ? `The game builds it into the world, block for block: for ${s.use}. Several can be the ${s.name}: each built is one of them, at random.`
+      : `The ${s.name} item places it, and gives one back when it's taken down; for ${s.use}. Several can be the ${s.name}: each placed is one of them, at random.`;
+    $('recipe-station').textContent = s.scenery ? 'Not made: built by the game.' : `Made as the ${s.name} (${stationRecipe(role)}).`;
   }
   const r = editor.draft.recipe;
   craftableEl.checked = !!r;

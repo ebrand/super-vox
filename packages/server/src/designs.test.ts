@@ -18,6 +18,7 @@ import {
   decodeChunk,
   defaultFlatGen,
   designOfItem,
+  placedDesign,
   itemName,
   recipeById,
   setDesigns,
@@ -390,12 +391,17 @@ describe('designs off the grid, in play', () => {
 });
 
 describe('the crafting table design', () => {
-  it('is one design at most (the newest), placed by the crafting table item, and recipes needing a table work beside it', async () => {
+  it('can be several designs (each placed one, by where), placed by the crafting table item, and recipes needing a table work beside it', async () => {
     const lib = new DesignLibrary(null);
     lib.put({ ...bench(), id: 'old-table', role: 'crafting-table' });
     lib.put({ ...bench(), id: 'new-table', role: 'crafting-table' });
-    expect(lib.list().map((d) => [d.id, d.role ?? null])).toEqual([['old-table', null], ['new-table', 'crafting-table']]);
-    expect(designOfItem(Item.CraftingTable)?.id).toBe('new-table');
+    expect(lib.list().map((d) => [d.id, d.role ?? null])).toEqual([['old-table', 'crafting-table'], ['new-table', 'crafting-table']]);
+    // (The item: as the first looks.) Places pick among them, each place always the same one, both picked somewhere.
+    expect(designOfItem(Item.CraftingTable)?.id).toBe('old-table');
+    const picks = Array.from({ length: 40 }, (_, i) => placedDesign(Item.CraftingTable, i * 7, 0, i * 3)?.id);
+    expect(new Set(picks)).toEqual(new Set(['old-table', 'new-table']));
+    expect(placedDesign(Item.CraftingTable, 100, 0, 100)?.id).toBe(placedDesign(Item.CraftingTable, 100, 0, 100)?.id);
+    const here = placedDesign(Item.CraftingTable, 100, 0, 100)!.id;
 
     const SECRET = 'k'.repeat(40);
     const accounts = new MemoryAccountStore();
@@ -434,7 +440,7 @@ describe('the crafting table design', () => {
       ws.send(JSON.stringify({ type: 'placeObject', id: 1, item: Item.CraftingTable, x: 100, y: 0, z: 100, facing: 'n' }));
       await until(() => msgs.some((m) => m.type === 'editResult' && m.id === 1));
       expect(msgs.find((m) => m.type === 'editResult' && m.id === 1)).toMatchObject({ ok: true });
-      expect(world.objectAt(101, 0, 100)).toMatchObject({ kind: 'design', design: 'new-table' });
+      expect(world.objectAt(101, 0, 100)).toMatchObject({ kind: 'design', design: here });
       await until(() => have(Item.CraftingTable) === 0);
       expect(await craft('wooden-sword')).toBeNull();
       // Taken down: a crafting table back.

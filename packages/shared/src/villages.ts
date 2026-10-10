@@ -1,5 +1,6 @@
 import { BLOCK_SIZE } from './chunk.js';
 import { Material, type MaterialId } from './materials.js';
+import { designVoxels, type ObjectDesign } from './designs.js';
 
 /**
  * Villages: people (villagers) who wander the world in ones and twos, drift toward each other, and
@@ -78,6 +79,8 @@ export interface Cottage {
   work: number;
   /** Of its next stage, the pieces put in so far (see stagePieces; its site's cleared first): none yet (undefined), not cleared. */
   placed?: number;
+  /** The design it's built of (a 'cottage' design's id: built all at once, a block's worth at a time; see designedCottage); none, the thatched cottage, in stages. */
+  design?: string;
 }
 
 /** A field: its least corner (blocks), how wide and deep, its ground's top (block y) each block (row by row), and when each block was sown (ms; 0: not), whether tilled yet. */
@@ -139,8 +142,11 @@ export const BREAD_WHEAT = 3;
 
 /** The material a piece of a village's building takes from its stock (null: none, thatch being straw from its harvests). */
 export function stockOf(material: MaterialId): keyof VillageStock | null {
-  return material === Material.Wood ? 'wood' : material === Material.Planks ? 'planks' : material === Material.Cobblestone ? 'cobble' : null;
+  return material === Material.Wood ? 'wood' : material === Material.Planks ? 'planks' : material === Material.Cobblestone || material === Material.Stone ? 'cobble' : null;
 }
+
+/** The way a cottage design faces (see designVoxels: its front, +z, the door's side) for each side a door can be on (0 -z, 1 +x, 2 +z, 3 -x). */
+export const DOOR_FACING = ['s', 'w', 'n', 'e'] as const;
 
 /** A stage's pieces to put in, in the order they go: from the bottom up (each on what's under it). */
 export function stagePieces(place: readonly VillagePiece[]): VillagePiece[] {
@@ -241,12 +247,12 @@ export function cottageStage(c: Cottage, stage: number, ground: (bx: number, bz:
 }
 
 /** Where a hamlet's `n`th cottage goes (blocks), round its middle (block x, z) facing it, and its field beyond it: a ring of MAX_COTTAGES (inside where its wall goes). */
-export function villagePlot(cx: number, cz: number, n: number): { cottage: Omit<Cottage, 'floor' | 'stage' | 'work'>; field: Omit<Field, 'tops' | 'sown' | 'tilled'> } {
+export function villagePlot(cx: number, cz: number, n: number, footprint?: (door: 0 | 1 | 2 | 3) => [number, number]): { cottage: Omit<Cottage, 'floor' | 'stage' | 'work'>; field: Omit<Field, 'tops' | 'sown' | 'tilled'> } {
   const a = (n * Math.PI * 2) / MAX_COTTAGES + 0.3, r = 15;
   const ox = Math.round(Math.cos(a) * r), oz = Math.round(Math.sin(a) * r);
-  // Its door the side facing the middle; its long side across that.
+  // Its door the side facing the middle; its long side across that (a design: as big as it is, turned so).
   const door: 0 | 1 | 2 | 3 = Math.abs(ox) > Math.abs(oz) ? (ox > 0 ? 3 : 1) : oz > 0 ? 0 : 2;
-  const w = door % 2 === 0 ? 5 : 4, d = door % 2 === 0 ? 4 : 5;
+  const [w, d] = footprint ? footprint(door) : [door % 2 === 0 ? 5 : 4, door % 2 === 0 ? 4 : 5];
   const bx = cx + ox - (w >> 1), bz = cz + oz - (d >> 1);
   // The field: beyond it, two blocks off, six by five.
   const fw = 6, fd = 5, gap = 2;
@@ -261,3 +267,32 @@ const VILLAGER_NAMES = ['Agnes', 'Bertil', 'Clem', 'Dora', 'Eamon', 'Freya', 'Gi
 /** A name for the `n`th village, and the `n`th villager (as many as there are, then numbered). */
 export const villageName = (n: number) => VILLAGE_NAMES[n % VILLAGE_NAMES.length]! + (n >= VILLAGE_NAMES.length ? ` ${Math.floor(n / VILLAGE_NAMES.length) + 1}` : '');
 export const villagerName = (n: number) => VILLAGER_NAMES[n % VILLAGER_NAMES.length]! + (n >= VILLAGER_NAMES.length ? ` ${Math.floor(n / VILLAGER_NAMES.length) + 1}` : '');
+
+/**
+ * A cottage built of a design (see Cottage.design): its voxels (its first state's) turned so its
+ * front (+z) is the door's side, its y 0 at the floor's block (Cottage.floor - 1: a block over the
+ * highest ground under it), on cobblestone down to the ground wherever it stands over lower ground.
+ * Its site cleared first (and a block round it); its pieces in the order they go, a block's worth
+ * at a time: from the bottom up. `ground`: the ground's top at a column (its first block of air).
+ */
+export function designedCottage(c: Cottage, design: ObjectDesign, ground: (bx: number, bz: number) => number): { clear: VillagePiece[]; groups: VillagePiece[][] } {
+  const B = BLOCK_SIZE, y0 = c.floor - 1, voxels = designVoxels(design, 0, DOOR_FACING[c.door]);
+  const h = design.size[1], clear: VillagePiece[] = [];
+  for (let x = c.bx - 1; x <= c.bx + c.w; x++)
+    for (let z = c.bz - 1; z <= c.bz + c.d; z++) for (let y = Math.min(ground(x, z), y0); y < y0 + h + 1; y++) clear.push({ x: x * B, y: y * B, z: z * B, size: B, material: Material.Air });
+  const cells = new Map<string, { y: number; i: number; pieces: VillagePiece[] }>(), bottom = new Set<string>();
+  voxels.forEach((v, i) => {
+    const wx = c.bx * B + v.x, wy = y0 * B + v.y, wz = c.bz * B + v.z, k = `${Math.floor(wx / B)},${Math.floor(wy / B)},${Math.floor(wz / B)}`;
+    if (v.y < B) bottom.add(`${Math.floor(wx / B)},${Math.floor(wz / B)}`);
+    const cell = cells.get(k) ?? cells.set(k, { y: Math.floor(wy / B), i, pieces: [] }).get(k)!;
+    cell.pieces.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material });
+  });
+  const groups: { y: number; i: number; pieces: VillagePiece[] }[] = [];
+  for (const k of bottom) {
+    const [x, z] = k.split(',').map(Number) as [number, number];
+    for (let y = ground(x, z); y < y0; y++) groups.push({ y, i: -1, pieces: [{ x: x * B, y: y * B, z: z * B, size: B, material: Material.Cobblestone }] });
+  }
+  groups.push(...cells.values());
+  groups.sort((a, b) => a.y - b.y || a.i - b.i);
+  return { clear, groups: groups.map((g) => g.pieces) };
+}

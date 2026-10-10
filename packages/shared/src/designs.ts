@@ -72,14 +72,14 @@ export function pieceName(piece: DesignPiece): string {
   return DESIGN_PIECES.find((p) => p.piece === piece)!.name;
 }
 
-export type DesignRole = 'crafting-table' | 'furnace' | 'stove' | 'anvil' | 'smithing-table' | 'bed' | 'boat' | 'railway-station';
+export type DesignRole = 'crafting-table' | 'furnace' | 'stove' | 'anvil' | 'smithing-table' | 'bed' | 'boat' | 'railway-station' | 'campfire' | 'lean-to' | 'cottage';
 
 /**
  * The stations a design can stand in for: each one's item, what it's for, and how it's made (null:
  * the crafting table's built-in recipe, or not yet: creative only). Recipes and items of those no
  * design stands in for aren't in play.
  */
-export const STATIONS: readonly { role: DesignRole; name: string; item: ItemId; use: string; recipe: Omit<DesignRecipe, 'count'> | null }[] = [
+export const STATIONS: readonly { role: DesignRole; name: string; item: ItemId; use: string; recipe: Omit<DesignRecipe, 'count'> | null; scenery?: true }[] = [
   { role: 'crafting-table', name: 'crafting table', item: Item.CraftingTable, use: 'making what needs a crafting table', recipe: null },
   { role: 'furnace', name: 'furnace', item: Item.Furnace, use: 'smelting raw iron into ingots (right-click it)', recipe: { inputs: [[Material.Cobblestone, 8]], table: true } },
   { role: 'stove', name: 'stove', item: Item.Stove, use: 'cooking pork (right-click it)', recipe: { inputs: [[Material.Cobblestone, 6], [Material.Planks, 2]], table: true } },
@@ -88,9 +88,49 @@ export const STATIONS: readonly { role: DesignRole; name: string; item: ItemId; 
   { role: 'bed', name: 'bed', item: Item.Bed, use: 'coming back to after dying (right-click it to make it yours)', recipe: { inputs: [[Material.Planks, 6]], table: true } },
   // (Not placed like the rest: put in the water, and ridden; see boats.ts.)
   { role: 'railway-station', name: 'railway station', item: Item.Station, use: 'how stations look (beside straight track, its x out from the track, its z along it: right-click track with a station to build one)', recipe: null },
+  // (Scenery: built by the game, in the world, block for block; no item, no recipe.)
+  { role: 'campfire', name: 'outlaw campfire', item: 0, use: "outlaws' camps, built into the world where two of them meet (its middle the fire's; y 0 the ground's top block, a metre under where you'd stand); flames light it", recipe: null, scenery: true },
+  { role: 'lean-to', name: 'outlaw lean-to', item: 0, use: "outlaws' camps, a while after the campfire (its x 0 two metres east of the fire's middle, facing it; z across, centred on the fire; y 0 the ground's top block)", recipe: null, scenery: true },
+  { role: 'cottage', name: 'village cottage', item: 0, use: "villagers' homes, built block by block where they live (its front, +z, the arrow, toward the village's middle, its door in the middle of it; y 0 its floor's block, a metre over the highest ground under it: cobblestone fills under it down to the ground); wood, planks and cobblestone come out of the village's stock", recipe: null, scenery: true },
   { role: 'boat', name: 'boat', item: Item.Boat, use: 'going on water (right-click water to put it in, right-click it to get in; W/S, A/D; Shift gets out)', recipe: { inputs: [[Material.Planks, 5]], table: true } },
 ];
 export const DESIGN_ROLES: readonly DesignRole[] = STATIONS.map((s) => s.role);
+
+/** Whether a role is scenery (see STATIONS): built into the world by the game, not an object players have. */
+export const isScenery = (role: DesignRole | undefined | null) => !!role && !!stationOf(role).scenery;
+
+/** The designs standing in for `role` now (any number: each thing in the world one of them, see pickDesign), in the library's order. */
+export function designsFor(role: DesignRole): ObjectDesign[] {
+  return [...designs.values()].filter((d) => d.role === role);
+}
+
+/** The first design standing in for `role` (what its item looks like), if there is one. */
+export function designFor(role: DesignRole): ObjectDesign | undefined {
+  for (const d of designs.values()) if (d.role === role) return d;
+  return undefined;
+}
+
+/**
+ * Which of the designs standing in for `role` a thing in the world is, by `seed` (what it is: a
+ * station's id, where an object's put...): one of them at random, but the same for the same seed.
+ */
+export function pickDesign(role: DesignRole, seed: number): ObjectDesign | undefined {
+  const all = designsFor(role);
+  if (all.length <= 1) return all[0];
+  let h = Math.round(seed) | 0;
+  h = Math.imul(h ^ (h >>> 16), 2246822507);
+  h = Math.imul(h ^ (h >>> 13), 3266489909);
+  return all[((h ^ (h >>> 16)) >>> 0) % all.length];
+}
+
+/** A seed (see pickDesign) for a place (units). */
+export const placeSeed = (x: number, y: number, z: number) => Math.imul(Math.round(x), 73856093) ^ Math.imul(Math.round(y), 19349663) ^ Math.imul(Math.round(z), 83492791);
+
+/** The design an item puts in the world at (x, y, z) (units): its own; or, standing in for something, one of those that do (see pickDesign). */
+export function placedDesign(item: ItemId, x: number, y: number, z: number): ObjectDesign | undefined {
+  const d = designOfItem(item);
+  return d?.role ? (pickDesign(d.role, placeSeed(x, y, z)) ?? d) : d;
+}
 
 export function stationOf(role: DesignRole): (typeof STATIONS)[number] {
   return STATIONS.find((s) => s.role === role)!;
@@ -165,6 +205,9 @@ export const DESIGN_MATERIALS: readonly MaterialId[] = [
   Material.DryGrass,
   Material.TaigaFloor,
   Material.Tundra,
+  Material.Coal,
+  // (Flames: camp pieces only, see parseDesign. They light what's round them, as a torch's do.)
+  Material.TorchFlame,
 ];
 
 const ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -207,6 +250,7 @@ export function parseDesign(raw: unknown): ObjectDesign | string {
       const vx = v.x, vy = v.y, vz = v.z;
       if (vx % sz || vy % sz || vz % sz) return `state "${st.name}": a voxel off its grid`;
       if (!DESIGN_MATERIALS.includes(v.material as MaterialId)) return `state "${st.name}": a voxel of a material designs can't use`;
+      if (v.material === Material.TorchFlame && !isScenery(d.role as DesignRole)) return `state "${st.name}": flames are only for what the game builds (camp pieces, cottages)`;
       if (taken.overlaps({ x: vx, y: vy, z: vz, size: sz })) return `state "${st.name}": voxels overlap`;
       taken.add({ x: vx, y: vy, z: vz, size: sz });
       voxels.push({ x: vx, y: vy, z: vz, size: sz, material: v.material as MaterialId });
@@ -437,12 +481,13 @@ export function setDesigns(list: readonly ObjectDesign[]): void {
   byItem.clear();
   for (const d of list) {
     designs.set(d.id, d);
-    byItem.set(designItem(d), d);
+    // (Several standing in for one thing: its item is the first's, as it looks; see pickDesign for what's placed.)
+    if (designItem(d) !== 0 && !byItem.has(designItem(d))) byItem.set(designItem(d), d);
   }
   // (Those standing in for a station are its: no item or recipe of their own; the station's item
   // and recipe are in play, the crafting table's always.)
   const own = list.filter((d) => !d.role);
-  const stations = STATIONS.filter((s) => s.role !== 'crafting-table' && list.some((d) => d.role === s.role));
+  const stations = STATIONS.filter((s) => s.role !== 'crafting-table' && !s.scenery && list.some((d) => d.role === s.role));
   setExtraItems([...stations.map((s) => [s.item, s.name] as const), ...own.map((d) => [d.item, d.name] as const)]);
   const group: RecipeGroup = 'building';
   setExtraRecipes([

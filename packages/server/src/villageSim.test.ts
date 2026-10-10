@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { BLOCK_VOLUME, CROP_STAGE_MS, FORGIVE_MS, FOUNDERS, HURT_GRUDGE_MS, Item, KILL_GRUDGE_MS, START_COINS, VILLAGER_DAMAGE, VILLAGER_ENTITY, VILLAGER_HEALTH, villageOffers, GATES, Material, RIPE, UNITS_PER_METER, WALL_AT, WALL_M, WALL_SECTIONS, cottageStage, cropStage, inGate, villagePlot, wallStage, VILLAGER_SEAT, type Station, type VillagePiece } from '@super-vox/shared';
+import { cottageDesign, designedCottage, BLOCK_VOLUME, CROP_STAGE_MS, FORGIVE_MS, FOUNDERS, HURT_GRUDGE_MS, Item, KILL_GRUDGE_MS, START_COINS, VILLAGER_DAMAGE, VILLAGER_ENTITY, VILLAGER_HEALTH, villageOffers, GATES, Material, RIPE, UNITS_PER_METER, WALL_AT, WALL_M, WALL_SECTIONS, cottageStage, cropStage, inGate, villagePlot, wallStage, VILLAGER_SEAT, type Station, type VillagePiece } from '@super-vox/shared';
 import { VillageSim, type VillageWorld } from './villageSim.js';
+import { DesignLibrary } from './designs.js';
 import { TrainYard } from './trainYard.js';
 
 const M = UNITS_PER_METER;
@@ -387,5 +388,95 @@ describe('villagers hurt, and fighting', () => {
       spared.push(...sim.hits.map((h) => h.damage));
     }
     expect(spared).toHaveLength(0);
+  });
+});
+
+describe('walking round cottages', () => {
+  it('one at a corner of a cottage, what they want beyond it: round it, not stuck at that corner', async () => {
+    const { w } = world();
+    const raw = settled(1);
+    const c = raw.villages[0]!.cottages[0]!;
+    // At its far corner (a little out from it, as walkers going round stop), an outlaw across it.
+    const corner = { x: (c.bx + c.w) * M + 1.2 * M, z: (c.bz + c.d) * M + 1.2 * M };
+    Object.assign(raw.villagers[0]!, corner);
+    const sim = new VillageSim(w, raw);
+    const outlaw = { id: 1_000_777, x: (c.bx - 1.5) * M, z: (c.bz - 1.5) * M, outlaw: true, vulnerable: true };
+    let now = T0, hits = 0;
+    for (let i = 0; i < 300 && !hits; i++) {
+      now += 100;
+      sim.step(0.1, now, [{ x: 8000 * M, z: 8000 * M }], false, [outlaw]);
+      hits += sim.hits.length;
+    }
+    expect(hits).toBeGreaterThan(0);
+  });
+});
+
+describe('cottages of designs', () => {
+  it("a village's cottages are its designs (one of them each, turned to face the middle), built a block's worth at a time from the bottom, from its stock", async () => {
+    // The built-in thatched cottage, and a hut of quarter voxels (a 1 m block of them: one piece).
+    const lib = new DesignLibrary(null, true);
+    const q = 4, voxels = [] as { x: number; y: number; z: number; size: number; material: number }[];
+    for (let x = 0; x < 16; x += q) for (let y = 0; y < 16; y += q) for (let z = 0; z < 16; z += q) voxels.push({ x: 16 + x, y, z: 16 + z, size: q, material: Material.Planks });
+    voxels.push({ x: 0, y: 0, z: 0, size: 16, material: Material.Thatch });
+    expect(lib.put({ id: 'hut', name: 'Hut', size: [3, 2, 3], states: [{ name: 'built', voxels }], recipe: null, role: 'cottage' })).toMatchObject({ id: 'hut' });
+    const { w, built } = world();
+    const raw = hamlet({ wood: 200, planks: 400, cobble: 100 });
+    raw.villages[0]!.cottages = [];
+    raw.villages[0]!.fields = [];
+    const sim = new VillageSim(w, raw);
+    const here = [{ x: 8000 * M, z: 8000 * M }];
+    let now = await run(sim, 5, T0, here);
+    const v = sim.list()[0]!;
+    expect(v.cottages).toHaveLength(1);
+    const c = v.cottages[0]!;
+    expect(['thatched-cottage', 'hut']).toContain(c.design);
+    // (Sized as the design turned for its door.)
+    const span = c.design === 'hut' ? [3, 3] : c.door % 2 === 0 ? [7, 6] : [6, 7];
+    expect([c.w, c.d]).toEqual(span);
+    now = await run(sim, 600, now, here);
+    expect(c.stage).toBe(3);
+    const writes = built.filter((b) => b.place.length && b.place[0]!.material !== Material.Farmland);
+    if (c.design === 'hut') {
+      // Its quarter voxels a block at a time (64 to the block), its thatch block on its own; the planks' one block from stock.
+      expect(writes.some((b) => b.place.length === 64)).toBe(true);
+      expect(400 + 6 - v.stock!.planks).toBeGreaterThan(0.99);
+    } else {
+      expect(writes.every((b) => b.place.length === 1)).toBe(true);
+      expect(writes.length).toBeGreaterThan(100);
+    }
+    // All of it inside a cottage's footprint (it's had more since), on its floor and up.
+    const B = 16, pieces = writes.flatMap((b) => b.place);
+    const inside = (p: VillagePiece) => v.cottages.some((k) => p.x >= k.bx * B && p.x < (k.bx + k.w) * B && p.z >= k.bz * B && p.z < (k.bz + k.d) * B && p.y >= (k.floor - 1) * B);
+    expect(pieces.every(inside)).toBe(true);
+    // Another village's plots: both designs used (by the plot).
+    const used = new Set<string>();
+    for (let id = 1; id < 40 && used.size < 2; id++) {
+      const r = hamlet({ wood: 200, planks: 400, cobble: 100 });
+      r.villages[0]!.id = id;
+      r.villagers.forEach((p) => (p.home = id));
+      r.villages[0]!.cottages = [];
+      r.villages[0]!.fields = [];
+      const s2 = new VillageSim(world().w, r);
+      await run(s2, 2, T0, here);
+      for (const cc of s2.list()[0]!.cottages) if (cc.design) used.add(cc.design);
+    }
+    expect(used).toEqual(new Set(['thatched-cottage', 'hut']));
+  });
+
+  it('on sloping ground: its floor level, cobblestone under it down to the ground; first of all, before what stands on it', () => {
+    const d = { ...cottageDesign(), item: 20001 };
+    const c = { bx: 100, bz: 200, w: 7, d: 6, door: 2 as const, floor: 13, stage: 0, work: 0 };
+    // (The ground falls away eastward: its top at 12 at the west, 6 blocks lower at the east.)
+    const ground = (bx: number) => 12 - Math.max(0, Math.min(6, bx - 100));
+    const { groups } = designedCottage(c, d, ground);
+    const flat = groups.flat(), under = flat.filter((p) => p.y < 12 * 16);
+    expect(under.every((p) => p.material === Material.Cobblestone)).toBe(true);
+    // Under its east edge (x 105): from the ground (top 7) up to the floor's block (12): five blocks.
+    expect(under.filter((p) => p.x === 105 * 16 && p.z === 202 * 16).map((p) => p.y / 16).sort((a, b) => a - b)).toEqual([7, 8, 9, 10, 11]);
+    // Bottom up: nothing before something under it.
+    const ys = groups.map((g) => Math.min(...g.map((p) => p.y)));
+    expect(ys).toEqual([...ys].sort((a, b) => a - b));
+    // (Its thatch, the design's, at its top; its door the design's front: the +z side, here.)
+    expect(flat.some((p) => p.material === Material.Thatch)).toBe(true);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { CAMP_APART_M, CAMP_MAX, MOBS, Material, OUTLAW_FAR_M, OUTLAW_NEAR_M, UNITS_PER_METER, type Outlaw, type VillagePiece } from '@super-vox/shared';
+import { BLOCK_SIZE, CAMP_APART_M, CAMP_MAX, MOBS, Material, OUTLAW_FAR_M, OUTLAW_NEAR_M, UNITS_PER_METER, campStage, campfireDesign, designFor, parseDesign, pickDesign, type Outlaw, type VillagePiece } from '@super-vox/shared';
+import { DesignLibrary } from './designs.js';
 import { OutlawSim, type OutlawMobs, type OutlawWorld } from './outlawSim.js';
 
 const M = UNITS_PER_METER;
@@ -120,5 +121,25 @@ describe('outlaws', () => {
     expect(again.people().map((p) => p.name)).toEqual(['o2']);
     expect(again.list().map((c) => c.name)).toEqual(['Rookery']);
     void now;
+  });
+
+  it('camp pieces are designs (built in, to change in the designer: flames only there); a camp is built of the one for it', () => {
+    const lib = new DesignLibrary(null, true);
+    expect(lib.list().map((d) => d.role).sort()).toEqual(['campfire', 'cottage', 'lean-to', 'railway-station']);
+    expect(designFor('campfire')?.id).toBe('outlaw-campfire');
+    // (Flames: not for objects of their own.)
+    expect(parseDesign({ ...campfireDesign(), id: 'lamp', role: undefined, item: 20000 })).toMatch(/flames are only for what the game builds/);
+    // Built of it: its voxels, where its frame says (its middle the fire's; y 0 the ground's top block).
+    const B = BLOCK_SIZE, ground = () => 10;
+    const { clear, place } = campStage(100, 200, 1, ground, designFor('campfire'));
+    expect(place).toHaveLength(designFor('campfire')!.states[0]!.voxels.length);
+    expect(place.find((p) => p.material === Material.Coal)).toMatchObject({ x: 100 * B, y: 9 * B, z: 200 * B, size: B });
+    expect(place.filter((p) => p.material === Material.TorchFlame).every((p) => p.y >= 10 * B && p.size < B)).toBe(true);
+    // (Its coal's block cleared first: it's in the ground.)
+    expect(clear.some((c) => c.x === 100 * B && c.y === 9 * B && c.z === 200 * B)).toBe(true);
+    // Another campfire designed: camps are one or the other.
+    lib.put({ ...campfireDesign(), id: 'big-fire', name: 'Big fire' });
+    const picks = new Set(Array.from({ length: 30 }, (_, i) => pickDesign('campfire', i)?.id));
+    expect(picks).toEqual(new Set(['outlaw-campfire', 'big-fire']));
   });
 });

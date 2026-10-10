@@ -23,6 +23,13 @@ import {
   VILLAGER_HEAL_AFTER_MS,
   VILLAGER_HEALTH,
   stagePieces,
+  DOOR_FACING,
+  designById,
+  designSpan,
+  designedCottage,
+  pickDesign,
+  type ObjectDesign,
+  type VillageStock,
   stockOf,
   villageOffers,
   type Offer,
@@ -153,9 +160,9 @@ export interface VillagerHit {
   from: { x: number; z: number };
 }
 
-/** A building job: a stage's pieces (in order), what's cleared first, how many are in so far (undefined: not cleared yet), where to stand to put one in; done, the next. */
+/** A building job: a stage's pieces (in order, each a block's worth: one or more voxels), what's cleared first, how many are in so far (undefined: not cleared yet), where to stand to put one in; done, the next. */
 interface Job {
-  pieces: VillagePiece[];
+  pieces: VillagePiece[][];
   clear: VillagePiece[];
   placed: number | undefined;
   set(n: number): void;
@@ -243,7 +250,7 @@ export class VillageSim {
   /** Unwatched villages' building, pieces' worth owed (see coarse). */
   private readonly owed = new Map<number, number>();
   /** Stages' pieces, worked out (by village, cottage or wall section, and stage). */
-  private readonly stages = new Map<string, { clear: VillagePiece[]; pieces: VillagePiece[] }>();
+  private readonly stages = new Map<string, { clear: VillagePiece[]; pieces: VillagePiece[][] }>();
   /** Ground looked up, by 4 m square (it doesn't change: it's the ground as generated). */
   private readonly ground = new Map<string, { h: number; ok: boolean; tree: boolean }>();
 
@@ -429,8 +436,12 @@ export class VillageSim {
       return true;
     };
     const way = (k: { x: number; z: number }) => Math.hypot(k.x - from.x, k.z - from.z) + Math.hypot(to.x - k.x, to.z - k.z);
-    const reach = corners.filter((k) => clear(from, k));
-    return (reach.length ? reach : corners).reduce((a, b) => (way(b) < way(a) ? b : a));
+    // (Not the corner they're at: going nowhere is always the shortest way. And one from which where
+    // they're going is in sight, if there's one: else, blocked by the wall just short of a corner,
+    // they were sent to it, and from it straight back into the wall, again and again.)
+    const away = corners.filter((k) => Math.hypot(k.x - from.x, k.z - from.z) > 0.5 * M);
+    const reach = away.filter((k) => clear(from, k)), seeing = reach.filter((k) => clear(k, to));
+    return (seeing.length ? seeing : reach.length ? reach : away.length ? away : corners).reduce((a, b) => (way(b) < way(a) ? b : a));
   }
 
   /** Wanderers to land near players that's not had any yet: PER_CELL to each CELL_M square, on land. */
@@ -527,7 +538,7 @@ export class VillageSim {
     const enemy = this.enemyOf(p, v, now);
     p.hurry = !!enemy;
     if (enemy) {
-      p.path = [];
+      // (Their way there kept: round a cottage it is, often. Cleared each time, they never got round.)
       if (this.rankIn(p, v) < VILLAGE_FIGHTERS && (p.health ?? VILLAGER_HEALTH) > VILLAGER_FLEE_AT) {
         p.mode = 'fight';
         p.tx = enemy.x;
@@ -564,7 +575,7 @@ export class VillageSim {
     // Building (a cottage going up; else, big enough, its wall): to where the next piece goes, and in with it.
     if (job && (builder || (helper && !field))) {
       p.mode = 'work';
-      const piece = job.pieces[job.placed ?? 0];
+      const piece = job.pieces[job.placed ?? 0]?.[0];
       if (!piece) return void this.put(v, job, 0);
       const px = piece.x + piece.size / 2, pz = piece.z + piece.size / 2, spot = job.standAt(piece);
       // (Within reach: in it goes; blocked short of it, near enough will do.)
@@ -817,7 +828,13 @@ export class VillageSim {
   private plan(v: Village): boolean {
     const cx = Math.floor(v.x / B), cz = Math.floor(v.z / B);
     for (let n = v.cottages.length; n < MAX_COTTAGES + 6; n++) {
-      const { cottage, field } = villagePlot(cx, cz, n % MAX_COTTAGES);
+      // (Of the cottage designs, one by the village and the plot, if there are any and it fits inside where its wall goes; else the thatched cottage.)
+      const design = pickDesign('cottage', v.id * 101 + n);
+      const fits = (p: ReturnType<typeof villagePlot>) =>
+        [p.cottage, p.field].every((r) => [[r.bx, r.bz], [r.bx + r.w, r.bz], [r.bx, r.bz + r.d], [r.bx + r.w, r.bz + r.d]].every(([x, z]) => Math.hypot(x! - (cx + 0.5), z! - (cz + 0.5)) < WALL_M - 1.5));
+      const turned = design && villagePlot(cx, cz, n % MAX_COTTAGES, (door) => this.footprint(design, door));
+      const use = turned && fits(turned) ? design : undefined;
+      const { cottage, field } = use && turned ? turned : villagePlot(cx, cz, n % MAX_COTTAGES);
       // (Not on, or hard by, what it has already: a cottage or field (kept from an older layout, say).)
       const overlaps = (a: { bx: number; bz: number; w: number; d: number }, b: { bx: number; bz: number; w: number; d: number }) => a.bx - 1 < b.bx + b.w && b.bx - 1 < a.bx + a.w && a.bz - 1 < b.bz + b.d && b.bz - 1 < a.bz + a.d;
       if ([...v.cottages, ...v.fields].some((o) => overlaps(o, cottage) || overlaps(o, field))) continue;
@@ -836,12 +853,18 @@ export class VillageSim {
           tops.push(Math.ceil(g.h / B));
         }
       if (!ok || Math.max(...tops) - Math.min(...tops) > 2) continue;
-      v.cottages.push({ ...cottage, floor: floor + 1, stage: 0, work: 0 });
+      v.cottages.push({ ...cottage, floor: floor + 1, stage: 0, work: 0, ...(use ? { design: use.id } : {}) });
       v.fields.push({ ...field, tops, sown: tops.map(() => 0), tilled: false });
       this.changed = true;
       return true;
     }
     return false;
+  }
+
+  /** A cottage design's footprint (blocks: across x, along z), turned for a door on side `door`. */
+  private footprint(design: ObjectDesign, door: 0 | 1 | 2 | 3): [number, number] {
+    const [w, , d] = designSpan(design, DOOR_FACING[door]);
+    return [w, d];
   }
 
   /** Whether a village is to wall itself (it's WALL_AT, and its wall isn't done). */
@@ -916,11 +939,19 @@ export class VillageSim {
   private job(v: Village): Job | null {
     const c = v.cottages.find((c) => c.stage < 3);
     if (c) {
-      const key = `${v.id} c${c.bx},${c.bz} ${c.stage + 1}`;
+      // (Of a design: all of it at once, a block's worth at a time; the design gone, the thatched cottage, in stages.)
+      const design = c.design ? designById(c.design) : undefined;
+      const key = design ? `${v.id} c${c.bx},${c.bz} ${design.id}` : `${v.id} c${c.bx},${c.bz} ${c.stage + 1}`;
       let st = this.stages.get(key);
       if (!st) {
-        const { clear, place } = cottageStage(c, c.stage + 1, this.top);
-        this.stages.set(key, (st = { clear, pieces: stagePieces(place) }));
+        if (design) {
+          const { clear, groups } = designedCottage(c, design, (bx, bz) => Math.ceil(this.groundAt((bx + 0.5) * B, (bz + 0.5) * B).h / B));
+          st = { clear, pieces: groups };
+        } else {
+          const { clear, place } = cottageStage(c, c.stage + 1, this.top);
+          st = { clear, pieces: stagePieces(place).map((p) => [p]) };
+        }
+        this.stages.set(key, st);
       }
       const m = 1.2 * B, x0 = c.bx * B - m, x1 = (c.bx + c.w) * B + m, z0 = c.bz * B - m, z1 = (c.bz + c.d) * B + m;
       return {
@@ -929,7 +960,7 @@ export class VillageSim {
         set: (n) => (c.placed = n),
         done: () => {
           this.stages.delete(key);
-          c.stage++;
+          c.stage = design ? 3 : c.stage + 1;
           c.work = 0;
           delete c.placed;
         },
@@ -948,7 +979,7 @@ export class VillageSim {
     let st = this.stages.get(key);
     if (!st) {
       const { clear, place } = wallStage(Math.floor(v.x / B), Math.floor(v.z / B), section, (bx, bz) => Math.ceil(this.groundAt((bx + 0.5) * B, (bz + 0.5) * B).h / B));
-      this.stages.set(key, (st = { clear, pieces: stagePieces(place) }));
+      this.stages.set(key, (st = { clear, pieces: stagePieces(place).map((p) => [p]) }));
     }
     return {
       ...st,
@@ -974,20 +1005,26 @@ export class VillageSim {
    */
   private put(v: Village, job: Job, most: number): number {
     const stock = (v.stock ??= { ...START_STOCK }), out: VillagePiece[] = [];
-    let placed = job.placed, clear: VillagePiece[] = [];
+    let placed = job.placed, clear: VillagePiece[] = [], n = 0;
     if (placed === undefined) (clear = job.clear), (placed = 0);
-    while (out.length < most && placed < job.pieces.length) {
-      const piece = job.pieces[placed]!, k = stockOf(piece.material);
-      if (k && stock[k] < 1) break;
-      if (k) stock[k] -= 1;
-      out.push(piece);
+    // (Each piece: a block's worth, by what it takes from the stock, by volume; thatch, glass and the like: none.)
+    while (n < most && placed < job.pieces.length) {
+      const piece = job.pieces[placed]!, cost: Partial<Record<keyof VillageStock, number>> = {};
+      for (const p of piece) {
+        const k = stockOf(p.material);
+        if (k) cost[k] = (cost[k] ?? 0) + (p.size / B) ** 3;
+      }
+      if (Object.entries(cost).some(([k, c]) => stock[k as keyof VillageStock] < c - 1e-9)) break;
+      for (const [k, c] of Object.entries(cost)) stock[k as keyof VillageStock] -= c;
+      out.push(...piece);
       placed++;
+      n++;
     }
     job.set(placed);
     if (clear.length || out.length) this.write(clear, out);
     if (placed >= job.pieces.length) job.done();
     if (clear.length || out.length) this.changed = true;
-    return out.length;
+    return n;
   }
 
   /** Who's near (see OBSERVE_M): the villages watched. */

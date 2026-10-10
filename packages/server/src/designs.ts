@@ -1,16 +1,10 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { FIRST_DESIGN_ITEM, parseDesign, setDesigns, stationDesign, type ObjectDesign } from '@super-vox/shared';
+import { FIRST_DESIGN_ITEM, campfireDesign, cottageDesign, leanToDesign, parseDesign, setDesigns, stationDesign, type ObjectDesign } from '@super-vox/shared';
 
 /** The library as kept on disk: the designs, and the next item number (never reused, so old items don't become new things). */
 interface LibraryFile {
   designs: unknown[];
   nextItem: number;
-}
-
-/** A design no longer standing in for anything. */
-function withoutRole(d: ObjectDesign): ObjectDesign {
-  const { role: _, ...rest } = d;
-  return rest;
 }
 
 /**
@@ -38,9 +32,10 @@ export class DesignLibrary {
     }
     setDesigns(this.designs);
     // (A kept library with no station design: the one that comes, to change in the designer.)
-    if (builtIn && !this.designs.some((d) => d.role === 'railway-station')) {
-      const made = this.put(stationDesign());
-      if (typeof made === 'string') console.warn(`design library: the station design wouldn't go in: ${made}`);
+    for (const d of builtIn ? [stationDesign(), campfireDesign(), leanToDesign(), cottageDesign()] : []) {
+      if (this.designs.some((o) => o.role === d.role || o.id === d.id)) continue;
+      const made = this.put(d);
+      if (typeof made === 'string') console.warn(`design library: the built-in ${d.name} wouldn't go in: ${made}`);
     }
   }
 
@@ -63,9 +58,8 @@ export class DesignLibrary {
     const design = parseDesign({ ...raw, item: old?.item ?? this.nextItem });
     if (typeof design === 'string') return design;
     if (!old) this.nextItem++;
-    // (One design at most stands in for each thing: the newest takes it.)
-    const others = design.role ? this.designs.map((d) => (d.role === design.role ? withoutRole(d) : d)) : this.designs;
-    this.designs = old ? others.map((d) => (d.id === old.id ? design : d)) : [...others, design];
+    // (Any number may stand in for a thing: each in the world is one of them, see pickDesign.)
+    this.designs = old ? this.designs.map((d) => (d.id === old.id ? design : d)) : [...this.designs, design];
     this.save();
     return design;
   }

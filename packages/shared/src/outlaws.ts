@@ -1,6 +1,7 @@
 import { BLOCK_SIZE } from './chunk.js';
 import { Material, type MaterialId } from './materials.js';
 import type { VillagePiece } from './villages.js';
+import type { ObjectDesign } from './designs.js';
 
 /**
  * Outlaws: people of the wild, who drift about alone until a couple of them meet, and set up a camp
@@ -60,7 +61,8 @@ export const campName = (i: number) => CAMP_NAMES[i % CAMP_NAMES.length]! + (i >
  * column, block y). 1: a fire pit (coal in a ring of cobblestone, flames on it: alight, as a torch
  * is); 2: a lean-to beside it (wooden posts, a sloping roof of planks, open on the fire's side).
  */
-export function campStage(cx: number, cz: number, stage: number, ground: (bx: number, bz: number) => number): { clear: VillagePiece[]; place: VillagePiece[] } {
+export function campStage(cx: number, cz: number, stage: number, ground: (bx: number, bz: number) => number, design?: ObjectDesign): { clear: VillagePiece[]; place: VillagePiece[] } {
+  if (design && (stage === 1 || stage === 2)) return designStage(cx, cz, stage, ground, design);
   const B = BLOCK_SIZE, clear: VillagePiece[] = [], place: VillagePiece[] = [];
   const at = (bx: number, by: number, bz: number, material: MaterialId, size = B, ox = 0, oy = 0, oz = 0) =>
     (material === Material.Air ? clear : place).push({ x: bx * B + ox, y: by * B + oy, z: bz * B + oz, size, material });
@@ -92,6 +94,31 @@ export function campStage(cx: number, cz: number, stage: number, ground: (bx: nu
       at(x1, h + 2, z, Material.Planks);
       at(x1 + 1, h + 1, z, Material.Planks);
     }
+  }
+  return { clear, place };
+}
+
+/**
+ * A camp's stage built of a design (the campfire's for stage 1, the lean-to's for 2: see campDesigns.ts
+ * for their frames): its site cleared over the ground (and round it, a block), the blocks its voxels
+ * go into cleared too, then its voxels (its first state's) put in.
+ */
+function designStage(cx: number, cz: number, stage: number, ground: (bx: number, bz: number) => number, design: ObjectDesign): { clear: VillagePiece[]; place: VillagePiece[] } {
+  const B = BLOCK_SIZE, [sx, sy, sz] = design.size;
+  const x0 = stage === 1 ? cx - Math.floor(sx / 2) : cx + 2, z0 = cz - Math.floor(sz / 2);
+  const y0 = (stage === 1 ? ground(cx, cz) : ground(x0, cz)) - 1;
+  const clear: VillagePiece[] = [], place: VillagePiece[] = [], cleared = new Set<string>();
+  const air = (bx: number, by: number, bz: number) => {
+    const k = `${bx},${by},${bz}`;
+    if (cleared.has(k)) return;
+    cleared.add(k);
+    clear.push({ x: bx * B, y: by * B, z: bz * B, size: B, material: Material.Air });
+  };
+  for (let x = x0 - 1; x <= x0 + sx; x++) for (let z = z0 - 1; z <= z0 + sz; z++) for (let y = ground(x, z); y < Math.max(ground(x, z), y0 + 1) + sy + 1; y++) air(x, y, z);
+  for (const v of design.states[0]?.voxels ?? []) {
+    const wx = x0 * B + v.x, wy = y0 * B + v.y, wz = z0 * B + v.z;
+    air(Math.floor(wx / B), Math.floor(wy / B), Math.floor(wz / B));
+    place.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material });
   }
   return { clear, place };
 }
