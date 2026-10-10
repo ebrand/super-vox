@@ -8,6 +8,7 @@ import { TrackMode } from './trackMode.js';
 import { TrackView } from './trackView.js';
 import { TrainView } from './trainView.js';
 import { PostView } from './postView.js';
+import { CropView } from './cropView.js';
 import { CAB_EYE, SEAT_EYES } from './trainModels.js';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
@@ -489,6 +490,8 @@ let trackMap: TrackMap | null = null;
 let trainView: TrainView | null = null;
 /** The world's trading posts (see PostView): their stalls and traders. */
 let postView: PostView | null = null;
+/** Wheat on the villages' fields (see CropView). */
+let cropView: CropView | null = null;
 let driving: { car: number; throttle: number; brake: boolean; sentAt: number; sent: string; shiftWasDown: boolean; heading: number | null; turnWas: number } | null = null;
 let stopDriving: (gone?: boolean) => void = () => {};
 /** The seat we're in, if any (see the seated message): Shift gets up. */
@@ -879,6 +882,9 @@ connection = connect({
                 editTool.onModeChange?.('hybrid');
               },
             });
+            cropView?.group.removeFromParent();
+            cropView = new CropView(() => 1 - 0.85 * atmosphere.uniforms.stars.value, () => Date.now() + serverOffset);
+            scene.add(cropView.group);
             postView?.group.removeFromParent();
             postView = new PostView(() => 1 - 0.85 * atmosphere.uniforms.stars.value);
             scene.add(postView.group);
@@ -1404,6 +1410,10 @@ connection = connect({
         if (open !== null) inventoryUi.updateCargo(msg.trains.flatMap((t) => t.cars).find((c) => c.id === open)?.cargo ?? null);
         break;
       }
+      case 'villages':
+        cropView?.setVillages(msg.villages);
+        trackMap?.setVillages(msg.villages);
+        break;
       case 'posts':
         postView?.setPosts(msg.posts);
         trackMap?.setPosts(msg.posts);
@@ -1679,6 +1689,7 @@ renderer.setAnimationLoop(() => {
   trackView?.frame();
   trainView?.frame();
   postView?.frame(camera.position);
+  cropView?.frame();
   if (driving) driveFrame();
   if (seated) seatFrame();
   arrows?.frame();

@@ -11,7 +11,8 @@ import { SWORDS } from './tools.js';
  */
 export type MobKind = 'pig' | 'zombie';
 /** Everything the client draws besides the world: other players and mobs. */
-export type EntityKind = 'player' | MobKind;
+/** What's seen moving: players, mobs, and villagers (see villages.ts; drawn as players are). */
+export type EntityKind = 'player' | 'villager' | MobKind;
 
 export interface MobSpec {
   health: number;

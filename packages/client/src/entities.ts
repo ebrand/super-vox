@@ -15,9 +15,13 @@ export function entityBrightness(sky: number, block: number, daylight: number): 
   return Math.max(0.004, Math.min(1, Math.max(0.7 ** (15 - sky) * daylight, torch)));
 }
 
+/** Drawn as people (the figure, their name over them; not hit, not picked to attack): players and villagers. */
+const person = (k: EntityKind) => k === 'player' || k === 'villager';
+
 /** Placeholder looks: a box per kind (metres) and its colour; players 0.6 x 1.8 m, blue. */
 const LOOK: Record<EntityKind, { w: number; h: number; long: number; color: number }> = {
   player: { w: 0.6, h: 1.8, long: 0.6, color: 0x3b82f6 },
+  villager: { w: 0.6, h: 1.8, long: 0.6, color: 0x8a6d3b },
   pig: { w: MOBS.pig.width, h: MOBS.pig.height, long: 1.3, color: 0xf2a0b1 },
   zombie: { w: MOBS.zombie.width, h: MOBS.zombie.height, long: 0.6, color: 0x4d8a3a },
 };
@@ -160,7 +164,7 @@ export class EntityView {
         continue;
       }
       // A player's hand: what's in it now; swung, if they've swung since. Their name and look, if changed.
-      if (e.kind === 'player') {
+      if (person(e.kind)) {
         if (t.figure && e.look !== t.to.look) {
           t.figure.setLook(lookOf(e));
           t.motion!.strideScale = t.figure.strideScale;
@@ -229,7 +233,7 @@ export class EntityView {
 
   /** Puts `item` in a player's hand (its model at their right side), or nothing. */
   private hold(t: Tracked, item: number | undefined): void {
-    if (t.kind !== 'player' || item === t.held) return;
+    if (!person(t.kind) || item === t.held) return;
     t.held = item;
     if (t.hand) {
       t.hand.removeFromParent();
@@ -247,7 +251,7 @@ export class EntityView {
     const camX = this.cameraX();
     let best: { id: number; dist: number } | null = null;
     for (const [id, t] of this.tracked) {
-      if (t.kind === 'player') continue;
+      if (person(t.kind)) continue;
       const p = interpolate(t.from, t.to, (now - t.at) / INTERPOLATION_MS);
       const x = camX + deltaX(this.world, camX, p.x);
       const look = LOOK[t.kind], half = (Math.max(look.w, look.long) * UNITS_PER_METER) / 2;
@@ -265,7 +269,7 @@ export class EntityView {
     const look = LOOK[e.kind];
     const group = new THREE.Group();
     group.name = `${e.kind} ${e.id}`;
-    if (e.kind === 'player') {
+    if (person(e.kind)) {
       // A player: the mannequin, looking as they've chosen, their name over their head.
       const figure = new PlayerFigure(lookOf(e));
       figure.root.traverse((o) => (o.userData.shared = true));

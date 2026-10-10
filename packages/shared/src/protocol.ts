@@ -7,6 +7,7 @@ import { CHAT_MAX, type ChatLine } from './chat.js';
 import type { Track, TrackPlan } from './rail.js';
 import type { Train } from './trains.js';
 import type { TradingPost } from './market.js';
+import type { Village } from './villages.js';
 import { isValidTileLevel } from './tile.js';
 import type { ColumnRange } from './chunk.js';
 import { HOTBAR_SLOTS, type GameMode } from './items.js';
@@ -25,7 +26,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 50;
+export const PROTOCOL_VERSION = 51;
 
 export type ClientMessage =
   /** Something said (or a command: see readChat), to be heard by the world (or one player). */
@@ -195,6 +196,8 @@ export type ServerMessage =
   | { type: 'meshes'; library: MeshLibrary }
   /** A segment as it'd be laid (see the track message): what it'd take, its line and profile; or why not; `laid`: it has been. */
   | { type: 'trackPlan'; id: number; error?: string; laid?: boolean; plan?: TrackPlan }
+  /** The world's villages (see Village), on joining and whenever one changes. */
+  | { type: 'villages'; villages: Village[] }
   /** The world's trading posts (see TradingPost), on joining. */
   | { type: 'posts'; posts: TradingPost[] }
   /** You're sitting in seat `seat` of passenger car `car` (Shift: out, see the drive message). */

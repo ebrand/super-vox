@@ -69,6 +69,9 @@ export const Material = {
   GoldOre: 53,
   RawCopper: 54,
   RawGold: 55,
+  /** Tilled ground: a field's (see villages.ts; crops grow on it), and a cottage roof's straw. */
+  Farmland: 56,
+  Thatch: 57,
 } as const;
 
 /** Light (0..15, as the sky's: see the client's skyLight) given by blocks with any of these in them. */
@@ -144,6 +147,8 @@ const MATERIAL_NAMES: Record<number, string> = {
   [Material.GoldOre]: 'gold ore',
   [Material.RawCopper]: 'raw copper',
   [Material.RawGold]: 'raw gold',
+  [Material.Farmland]: 'farmland',
+  [Material.Thatch]: 'thatch',
 };
 
 

@@ -126,6 +126,7 @@ import {
   type Claim,
 } from '@super-vox/shared';
 import type { WebSocket } from 'ws';
+import { VillageSim } from './villageSim.js';
 import type { EditResult, World } from './world.js';
 import { Explosives } from './explosives.js';
 import { RequestQueue } from './requestQueue.js';
@@ -886,6 +887,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (!isValidWorldName(name)) return reply.code(404).send({ error: 'no such world' });
     try {
       catalog.delete(name);
+      for (const [w, n] of villageNames)
+        if (n === name) {
+          villageSims.delete(w);
+          villageNames.delete(w);
+        }
     } catch (err) {
       if (err instanceof NoSuchWorldError) return reply.code(404).send({ error: err.message });
       if (err instanceof DefaultWorldError) return reply.code(409).send({ error: err.message });
@@ -1137,6 +1143,41 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       } else trainsSaved.set(world, { ...saved, busy });
     }
   }), 50);
+  // Villages (see VillageSim): one a world, made the first time it's stepped, from what was kept;
+  // what they build sent on as it's built.
+  const villageSims = new Map<World, VillageSim>();
+  /** Which world (by name) each simulation is of: dropped, unsaved, if it's deleted. */
+  const villageNames = new Map<World, string>();
+  const villagesOf = (world: World, name: string | undefined): VillageSim => {
+    let sim = villageSims.get(world);
+    if (sim) return sim;
+    const seed = name ?? catalog.defaultName;
+    sim = new VillageSim(
+      {
+        config: world.config,
+        terrainAt: (x, z) => world.terrainAt(x, z),
+        buildWorks: (c, p) => world.buildWorks(c, p),
+        editedNear: (x, z, r) => world.editedNear(x, z, r),
+        occupied: (x, z, r) => world.tradingPosts(seed).some((t) => Math.hypot(t.x - x, t.z - z) < r),
+        saveVillages: (s) => world.saveVillages(s),
+      },
+      world.loadVillages(),
+    );
+    sim.onEdits = (results) => {
+      for (const r of results) {
+        metrics.totals.edits++;
+        broadcast(world, r);
+      }
+    };
+    villageSims.set(world, sim);
+    villageNames.set(world, seed);
+    return sim;
+  };
+  /** Why (x, z) (units) isn't to be built on or dug by players: a village's land. */
+  const villageLand = (world: World, x: number, z: number): string | null => {
+    const v = villageSims.get(world)?.villageAt(x, z);
+    return v ? `that's ${v.name}'s land: leave it be` : null;
+  };
   const mobbing = setInterval(timed('mobs', () => {
     const now = Date.now();
     const byWorld = new Map<World, WebSocket[]>();
@@ -1144,10 +1185,16 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     for (const [world, sockets] of byWorld) {
       let mobs = mobManagers.get(world);
       if (!mobs) mobManagers.set(world, (mobs = opts.mobs ? opts.mobs(world) : new MobManager(world)));
+      const sim = villagesOf(world, sockets[0] ? clientWorld.get(sockets[0]) : undefined);
       const here = sockets.map((s) => ({ s, p: players.get(s)! })).filter(({ p }) => p?.pose);
       const hours = clockHours(catalog.clock(here[0]?.p.world) ?? catalog.clock(undefined)!, now);
       const night = hours < 6 || hours >= 19.5;
       const targets = here.map(({ p }) => ({ id: p.id, x: p.pose!.x, y: p.pose!.y - EYE, z: p.pose!.z, vulnerable: p.vulnerable }));
+      sim.step(0.1, now, here.map(({ p }) => ({ x: p.pose!.x, z: p.pose!.z })), night);
+      if (sim.changed) {
+        sim.changed = false;
+        toWorld(world, { type: 'villages', villages: sim.list() });
+      }
       for (const hit of mobs.step(0.1, now, targets, night)) {
         const e = here.find(({ p }) => p.id === hit.player);
         if (e) harm(e.s, e.p, world, hit.damage, 'mob', now);
@@ -1161,7 +1208,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           sendVitals(s, p);
         }
         // What this player sees: mobs, and other players.
-        const entities = mobs.near(p.pose!.x, p.pose!.z, VIEW, now);
+        const entities = [...mobs.near(p.pose!.x, p.pose!.z, VIEW, now), ...sim.near(p.pose!.x, p.pose!.z, VIEW)];
         for (const o of here) {
           if (o.p === p || Math.hypot(deltaX(world.config, p.pose!.x, o.p.pose!.x), o.p.pose!.z - p.pose!.z) > VIEW) continue;
           entities.push({ id: o.p.id, kind: 'player', x: Math.round(o.p.pose!.x), y: Math.round(o.p.pose!.y - EYE), z: Math.round(o.p.pose!.z), yaw: o.p.pose!.yaw, name: o.p.name ?? 'guest', ...(o.p.look ? { look: o.p.look } : {}), ...(o.p.held !== null ? { held: o.p.held } : {}), ...(o.p.swings ? { swings: o.p.swings } : {}), ...(o.p.pitch ? { pitch: o.p.pitch } : {}), ...(o.p.act ? { act: o.p.act } : {}) });
@@ -1255,6 +1302,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         for (const closed of closing) {
           app.log.info({ world: closed.name, idleMinutes: Math.round(closed.idleMs / 6_000) / 10 }, 'closed an idle world');
           for (const world of closed.worlds) {
+            villageSims.get(world)?.persist();
+            villageSims.delete(world);
+            villageNames.delete(world);
             mobManagers.delete(world);
             stationViewers.delete(world);
             explosivesOf.delete(world);
@@ -1291,6 +1341,13 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     clearInterval(mobbing);
     clearInterval(flying);
     clearInterval(railing);
+    // (Kept as they are now; a world gone meanwhile, never mind.)
+    for (const sim of villageSims.values())
+      try {
+        sim.persist();
+      } catch (err) {
+        app.log.warn(err, "couldn't keep a world's villages");
+      }
     clearInterval(pickingUp);
     clearInterval(stationTicking);
     clearInterval(sampling);
@@ -1493,6 +1550,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               world.onTracksChanged ??= () => toWorld(world, { type: 'tracks', tracks: world.trackList() });
               send({ type: 'trains', trains: world.trains.list(), at: Date.now(), switches: world.trains.switches() });
               send({ type: 'posts', posts: world.tradingPosts(clientWorld.get(socket) ?? catalog.defaultName) });
+              send({ type: 'villages', villages: villagesOf(world, clientWorld.get(socket)).list() });
               // (What's dropped last: the last thing told unasked.)
               send({ type: 'drops', drops: [...(dropsOf.get(world)?.list.values() ?? [])] });
             };
@@ -1645,6 +1703,13 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             send({ type: 'editResult', id: msg.id, ok: false, error: inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded" });
             return;
           }
+          {
+            const why = villageLand(world, msg.edit.x, msg.edit.z);
+            if (why) {
+              send({ type: 'editResult', id: msg.id, ok: false, error: why });
+              return;
+            }
+          }
           // Boxes over 1 m (digging or filling): creative worlds only.
           if (isBigEdit(msg.edit) && catalog.play(clientWorld.get(socket))?.mode !== 'creative') {
             send({ type: 'editResult', id: msg.id, ok: false, error: 'boxes over 1 m are for creative worlds' });
@@ -1733,6 +1798,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
           if (!canEdit()) return fail(cantBuild());
           if (opts.inventories && who && !inventory) return fail(inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded");
+          if (msg.type !== 'use') {
+            const why = villageLand(world, msg.x, msg.z);
+            if (why) return fail(why);
+          }
           let result: EditResult;
           try {
             if (msg.type === 'placeObject') {
@@ -2044,6 +2113,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           } else {
             const cells = buildCells(msg.op);
             if (typeof cells === 'string') return fail(cells);
+            const why = cells.map((c) => villageLand(world, c.x, c.z)).find((w) => w);
+            if (why) return fail(why);
             if (!msg.op.clear && !canPlace(msg.op.material, 'creative')) return fail(`${itemName(msg.op.material)} can't be built with`);
             if (msg.op.clear === false && isWater(msg.op.material)) return fail("water isn't built with: pour it");
             const r = world.build(cells, msg.op.size, msg.op.material, msg.op.clear);

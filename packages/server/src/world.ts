@@ -809,6 +809,57 @@ export class World {
     return list;
   }
 
+  /**
+   * Pieces cleared then placed (a village's cottage stage, its field: see villages.ts) without
+   * holding the server up: the chunks they're in made first (off the main thread where there's
+   * another thread, or the disk), then the edits. What changed (to tell everyone).
+   */
+  async buildWorks(clear: readonly EarthPiece[], place: readonly EarthPiece[]): Promise<EditResult[]> {
+    const C = CHUNK_SIZE, chunks = new Map<string, ChunkCoord>();
+    for (const p of [...clear, ...place]) {
+      const coord = { cx: Math.floor(p.x / C), cy: Math.floor(p.y / C), cz: Math.floor(p.z / C) };
+      chunks.set(chunkKey(coord), coord);
+    }
+    await Promise.all([...chunks.values()].map((c) => Promise.resolve(this.encodedChunk(c)).catch(() => null)));
+    const out: EditResult[] = [];
+    if (clear.length) {
+      const r = this.buildPieces(clear, true).result;
+      if (r) out.push(r);
+    }
+    if (place.length) {
+      const r = this.buildPieces(place, false).result;
+      if (r) out.push(r);
+    }
+    return out;
+  }
+
+  /** The world's villages, as they were left (see VillageSim: unchecked, it checks). */
+  loadVillages(): unknown {
+    return this.store?.loadVillages?.() ?? null;
+  }
+
+  saveVillages(state: unknown): void {
+    this.store?.saveVillages?.(state);
+  }
+
+  /** The natural ground at (x, z) (units): its height, whether there's water over it or a tree on it, and whether it's over the sea. */
+  terrainAt(x: number, z: number): { h: number; water: boolean; tree: boolean; land: boolean } {
+    const s = this.generator.surfaceSamples(Math.round(x), Math.round(z), 1, 1), h = s.heights[0]!, sea = this.generator.seaLevel;
+    return {
+      h,
+      water: !!s.water && s.water[0] !== NO_WATER && s.water[0]! > h,
+      tree: !!s.canopy && s.canopy.top[0] !== NO_CANOPY,
+      land: sea === null || sea === undefined || h >= sea + UNITS_PER_METER / 4,
+    };
+  }
+
+  /** Whether players have built (edited) within `r` units of (x, z): their chunk columns. */
+  editedNear(x: number, z: number, r: number): boolean {
+    const C = CHUNK_SIZE;
+    for (let cx = Math.floor((x - r) / C); cx <= Math.floor((x + r) / C); cx++) for (let cz = Math.floor((z - r) / C); cz <= Math.floor((z + r) / C); cz++) if (this.editSpans.has(`${cx},${cz}`)) return true;
+    return false;
+  }
+
   /** The trains kept as they are now. */
   saveTrains(): void {
     this.store?.saveTrains?.(this.trains.save());

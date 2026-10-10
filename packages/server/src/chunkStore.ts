@@ -20,6 +20,9 @@ export interface ChunkStore {
   /** The world's trains (see TrainYard), as they were left: as kept, unchecked (the yard checks). */
   loadTrains?(): unknown;
   saveTrains?(trains: unknown): void;
+  /** The world's villages and villagers (see VillageSim), as kept: unchecked. */
+  loadVillages?(): unknown;
+  saveVillages?(villages: unknown): void;
 }
 
 const FILE = /^(-?\d+)_(-?\d+)_(-?\d+)\.chunk$/;
@@ -28,6 +31,7 @@ const STATIONS = 'stations.json';
 const BOATS = 'boats.json';
 const TRACKS = 'tracks.json';
 const TRAINS = 'trains.json';
+const VILLAGES = 'villages.json';
 
 /** One file per edited chunk, `<cx>_<cy>_<cz>.chunk`, in a directory. */
 export class FileChunkStore implements ChunkStore {
@@ -110,6 +114,16 @@ export class FileChunkStore implements ChunkStore {
 
   saveTrains(trains: unknown): void {
     this.write(TRAINS, JSON.stringify(trains));
+  }
+
+  /** The villages, in villages.json beside the chunks. */
+  loadVillages(): unknown {
+    const path = join(this.dir, VILLAGES);
+    return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as unknown) : null;
+  }
+
+  saveVillages(villages: unknown): void {
+    this.write(VILLAGES, JSON.stringify(villages));
   }
 
   private write(name: string, data: string | Uint8Array): void {
