@@ -163,6 +163,8 @@ const ITEM_ICONS: Readonly<Partial<Record<ItemId, string>>> = {
     `<path d="M16 28 L10 6 M16 28 L13 5 M16 28 L16 4 M16 28 L19 5 M16 28 L22 6" stroke="${css([0.75, 0.6, 0.22], 1.2)}" stroke-width="1.6" stroke-linecap="round"/>` +
       `<path d="M8.5 7 l3 -3 M11.5 6 l3 -3 M14.5 5 l3 -3 M17.5 5 l3 -3 M20.5 6 l3 -3" stroke="${css([0.85, 0.7, 0.3], 1.3)}" stroke-width="2.2" stroke-linecap="round"/><rect x="12" y="18" width="8" height="2.5" rx="1" fill="${css(WOOD, 1.2)}"/>`,
   ),
+  // Bread: a loaf, scored.
+  [Item.Bread]: svg(`<path d="M4 22 Q4 10 16 10 Q28 10 28 22 Z" fill="${css([0.7, 0.42, 0.16], 1.2)}"${OUTLINE}/><path d="M10 15 l3 4 M15 13 l3 4 M20 14 l3 4" stroke="${css([0.95, 0.75, 0.45], 1.2)}" stroke-width="1.4" stroke-linecap="round"/>`),
   [Item.Boat]: svg(
     `<path d="M3 15 L29 15 L25 23 Q16 26 7 23 Z" fill="${css(WOOD, 1.2)}"${OUTLINE}/><path d="M5 18 L27 18" stroke="${css(DARK_WOOD, 1.2)}" stroke-width="1"/>` +
       `<path d="M2 25 Q6 23 10 25 T18 25 T26 25 T30 25" stroke="${css(WATER, 1.4)}" stroke-width="1.6" fill="none"/><line x1="20" y1="6" x2="13" y2="20" stroke="${css(DARK_WOOD, 1.3)}" stroke-width="1.6" stroke-linecap="round"/>`,

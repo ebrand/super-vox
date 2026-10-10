@@ -48,7 +48,9 @@ export class CropView {
   private readonly geometries = STAGES.map((_, i) => stalksGeometry(i));
   private readonly meshes: THREE.InstancedMesh[] = [];
   private villages: readonly Village[] = [];
-  private shownKey = '';
+  /** Players' wheat: each farmland block sown (block x, y, z) and when. */
+  private crops: readonly [number, number, number, number][] = [];
+  private shownKey: string | null = null;
   private lookedAt = 0;
 
   constructor(
@@ -57,9 +59,22 @@ export class CropView {
     private readonly serverNow: () => number,
   ) {}
 
+  setCrops(crops: readonly [number, number, number, number][]): void {
+    this.crops = crops;
+    this.shownKey = null;
+    this.lookedAt = 0;
+    this.frame();
+  }
+
+  /** The stage of players' wheat on farmland at a block (see cropStage), or null if none's sown there. */
+  stageAt(bx: number, by: number, bz: number): number | null {
+    const c = this.crops.find(([x, y, z]) => x === bx && y === by && z === bz);
+    return c ? cropStage(c[3], this.serverNow()) : null;
+  }
+
   setVillages(villages: readonly Village[]): void {
     this.villages = villages;
-    this.shownKey = '';
+    this.shownKey = null;
     this.lookedAt = 0;
     this.frame();
   }
@@ -82,7 +97,8 @@ export class CropView {
           if (stage >= 0) blocks.push({ x: f.bx + (i % f.w), y: f.tops[i]!, z: f.bz + Math.floor(i / f.w), stage });
         });
       }
-    const key = blocks.map((b) => b.stage).join('');
+    for (const [x, y, z, sown] of this.crops) blocks.push({ x, y: y + 1, z, stage: cropStage(sown, now) });
+    const key = blocks.map((b) => `${b.x},${b.y},${b.z}:${b.stage}`).join(' ');
     if (key === this.shownKey) return;
     this.shownKey = key;
     for (const m of this.meshes) m.removeFromParent();

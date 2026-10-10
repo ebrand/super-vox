@@ -185,6 +185,9 @@ function then<T>(v: T | Promise<T>, f: (v: T) => void): void | Promise<void> {
 /** How near a car (m, its middle) a player may be to put it on, get in, or take it off. */
 const CAR_REACH_M = 12;
 
+/** The shovels (any tills ground into farmland). */
+const SHOVELS = new Set<number>([Item.WoodenShovel, Item.StoneShovel, Item.IronShovel]);
+
 interface Player {
   id: number;
   world: string;
@@ -933,6 +936,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       for (const f of frames) out(client, f);
       metrics.totals.chunksOut += frames.length;
     }
+    // (Wheat on what was changed, gone with it: everyone told.)
+    if (world.cropsLostTo(result)) toWorld(world, { type: 'crops', crops: world.cropList() });
   };
   /**
    * A periodic task timed: one over SLOW_MESSAGE_MS is logged ('slow task'), with how many chunks it
@@ -1571,6 +1576,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               send({ type: 'trains', trains: world.trains.list(), at: Date.now(), switches: world.trains.switches(), stations: world.trains.stationList(), lines: world.trains.lineList() });
               send({ type: 'posts', posts: world.tradingPosts(clientWorld.get(socket) ?? catalog.defaultName) });
               send({ type: 'villages', villages: villagesOf(world, clientWorld.get(socket)).list() });
+              send({ type: 'crops', crops: world.cropList() });
               // (What's dropped last: the last thing told unasked.)
               send({ type: 'drops', drops: [...(dropsOf.get(world)?.list.values() ?? [])] });
             };
@@ -1979,6 +1985,42 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (msg.type !== 'carUse' || msg.act === 'fuel') if (inventory?.mode === 'survival') send(inventory.message());
           showTrains(world);
           world.saveTrains();
+          break;
+        }
+
+        case 'till':
+        case 'sow':
+        case 'harvest': {
+          // Farming wheat: tilling (with a shovel), sowing (wheat: in survival, used up), harvesting (ripe: two back).
+          if (!greeted) return;
+          const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
+          if (!canEdit()) return fail(cantBuild());
+          if (opts.inventories && who && !inventory) return fail(inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded");
+          const p = players.get(socket)!;
+          if (p.pose && Math.hypot(p.pose.x - msg.x, p.pose.y - msg.y, p.pose.z - msg.z) > 8 * UNITS_PER_METER) return fail('too far away');
+          const land = villageLand(world, msg.x, msg.z);
+          if (land) return fail(land);
+          const now = Date.now(), inv = inventory?.mode === 'survival' ? inventory : null;
+          let note = '';
+          if (msg.type === 'till') {
+            if (!SHOVELS.has(msg.tool) || (inv && inv.count(msg.tool) < 1)) return fail('ground is tilled with a shovel');
+            const r = world.till(msg.x, msg.y, msg.z);
+            if (typeof r === 'string') return fail(r);
+            for (const e of r) broadcast(world, e);
+          } else if (msg.type === 'sow') {
+            if (inv && inv.count(Item.Wheat) < 1) return fail('no wheat to sow (dig grass for some, or buy it at a trading post)');
+            const r = world.sow(msg.x, msg.y, msg.z, now);
+            if (r !== true) return fail(r);
+            inv?.addItem(Item.Wheat, -1);
+          } else {
+            const r = world.harvest(msg.x, msg.y, msg.z, now);
+            if (r !== true) return fail(r);
+            inv?.addItem(Item.Wheat, 2);
+            note = 'two bundles of wheat';
+          }
+          if (inv && msg.type !== 'till') send(inv.message());
+          send({ type: 'editResult', id: msg.id, ok: true, ...(note ? { note } : {}) });
+          if (msg.type !== 'till') toWorld(world, { type: 'crops', crops: world.cropList() });
           break;
         }
 

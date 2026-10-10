@@ -1083,6 +1083,7 @@ connection = connect({
           editTool.pickCar = (o, d, max) => trainView?.pick(o, d, max) ?? null;
           editTool.pickSwitch = (o, d, max) => trainView?.pickSwitch(o, d, max) ?? null;
           editTool.pickStation = (o, d, max) => trainView?.pickStation(o, d, max) ?? null;
+          editTool.cropAt = (bx, by, bz) => cropView?.stageAt(bx, by, bz) ?? null;
           editTool.onDriving = (car) => {
             if (riding) endRide();
             driving = { car, throttle: 0, brake: false, sentAt: 0, sent: '', shiftWasDown: true, heading: null, turnWas: 0 };
@@ -1421,6 +1422,9 @@ connection = connect({
         if (open !== null) inventoryUi.updateCargo(msg.trains.flatMap((t) => t.cars).find((c) => c.id === open)?.cargo ?? null);
         break;
       }
+      case 'crops':
+        cropView?.setCrops(msg.crops);
+        break;
       case 'villages':
         cropView?.setVillages(msg.villages);
         trackMap?.setVillages(msg.villages);

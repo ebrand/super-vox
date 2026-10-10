@@ -26,7 +26,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 52;
+export const PROTOCOL_VERSION = 53;
 
 export type ClientMessage =
   /** Something said (or a command: see readChat), to be heard by the world (or one player). */
@@ -41,6 +41,13 @@ export type ClientMessage =
   /** A flatbed's load: `amount` of `item` put on it (`to` 'car') or taken off it ('me'). Answered with an editResult. */
   | { type: 'cargo'; id: number; car: number; item: number; amount: number; to: 'car' | 'me' }
   | { type: 'carTake'; id: number; car: number }
+  /**
+   * Farming: the ground block a point (units: in the voxel aimed at) is in tilled into farmland (a
+   * shovel, `tool`, in hand), wheat sown on farmland, or ripe wheat harvested. Answered with an editResult.
+   */
+  | { type: 'till'; id: number; x: number; y: number; z: number; tool: number }
+  | { type: 'sow'; id: number; x: number; y: number; z: number }
+  | { type: 'harvest'; id: number; x: number; y: number; z: number }
   /** Trading (see market.ts): `lots` lots of `item` bought from, or sold to, trading post `post`'s trader. Answered with an editResult. */
   | { type: 'trade'; id: number; post: number; item: number; lots: number; act: 'buy' | 'sell' }
   /** Driving: the throttle (-1..1, the way the engine faces) and the brake; `leave`: getting out. */
@@ -205,6 +212,8 @@ export type ServerMessage =
   | { type: 'meshes'; library: MeshLibrary }
   /** A segment as it'd be laid (see the track message): what it'd take, its line and profile; or why not; `laid`: it has been. */
   | { type: 'trackPlan'; id: number; error?: string; laid?: boolean; plan?: TrackPlan }
+  /** Players' wheat (see World.crops): each farmland block sown (block x, y, z) and when (ms, by the server's clock), on joining and whenever it changes. */
+  | { type: 'crops'; crops: [number, number, number, number][] }
   /** The world's villages (see Village), on joining and whenever one changes. */
   | { type: 'villages'; villages: Village[] }
   /** The world's trading posts (see TradingPost), on joining. */
@@ -466,6 +475,8 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   if (msg.type === 'carPlace' && isId(msg.id) && Number.isInteger(msg.item) && [msg.x, msg.y, msg.z, msg.heading].every(Number.isFinite))
     return { type: 'carPlace', id: msg.id as number, item: msg.item as number, x: msg.x as number, y: msg.y as number, z: msg.z as number, heading: msg.heading as number };
   if (msg.type === 'carUse' && isId(msg.id) && isId(msg.car) && (msg.act === 'board' || msg.act === 'fuel' || msg.act === 'uncouple' || msg.act === 'sit' || msg.act === 'cargo')) return { type: 'carUse', id: msg.id as number, car: msg.car as number, act: msg.act };
+  if ((msg.type === 'till' || msg.type === 'sow' || msg.type === 'harvest') && isId(msg.id) && [msg.x, msg.y, msg.z].every(Number.isInteger) && (msg.type !== 'till' || Number.isInteger(msg.tool)))
+    return msg.type === 'till' ? { type: 'till', id: msg.id as number, x: msg.x as number, y: msg.y as number, z: msg.z as number, tool: msg.tool as number } : { type: msg.type, id: msg.id as number, x: msg.x as number, y: msg.y as number, z: msg.z as number };
   if (msg.type === 'trade' && isId(msg.id) && isId(msg.post) && Number.isInteger(msg.item) && Number.isInteger(msg.lots) && (msg.lots as number) >= 1 && (msg.lots as number) <= 1000 && (msg.act === 'buy' || msg.act === 'sell'))
     return { type: 'trade', id: msg.id as number, post: msg.post as number, item: msg.item as number, lots: msg.lots as number, act: msg.act };
   if (msg.type === 'cargo' && isId(msg.id) && isId(msg.car) && Number.isInteger(msg.item) && Number.isFinite(msg.amount) && (msg.amount as number) > 0 && (msg.to === 'car' || msg.to === 'me'))

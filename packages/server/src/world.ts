@@ -121,6 +121,9 @@ import {
   SHOULDER_M,
   MIN_RADIUS_M,
   SAMPLE_M,
+  CROP_STAGE_MS,
+  RIPE,
+  cropStage,
   NO_WATER,
   tradingPosts,
   type TradingPost,
@@ -137,6 +140,9 @@ import {
 } from '@super-vox/shared';
 import { TrainYard } from './trainYard.js';
 import type { ChunkStore } from './chunkStore.js';
+
+/** What's tilled into farmland: grass and dirt (and the grounds of other lands). */
+const TILLABLE = new Set<number>([Material.Grass, Material.Dirt, Material.Meadow, Material.DryGrass, Material.JungleFloor, Material.TaigaFloor, Material.Tundra]);
 
 /** An explosive voxel (TNT, C4): its corner and size (units), and material. */
 export interface Explosive {
@@ -831,6 +837,87 @@ export class World {
       if (r) out.push(r);
     }
     return out;
+  }
+
+  /** Players' wheat: each farmland block sown ("bx,by,bz"), and when (ms). */
+  private crops: Map<string, number> | null = null;
+
+  private cropMap(): Map<string, number> {
+    return (this.crops ??= new Map(Object.entries(this.store?.loadCrops?.() ?? {})));
+  }
+
+  /** Material at a block's middle (block coordinates). */
+  private blockMaterial(bx: number, by: number, bz: number): number | undefined {
+    const B = BLOCK_SIZE;
+    return this.materialAtUnit(bx * B + B / 2, by * B + B / 2, bz * B + B / 2);
+  }
+
+  /** Whether an edit has let go of any wheat (its farmland dug, or something put on it): see cropList. */
+  cropsLostTo(result: EditResult): boolean {
+    if (!this.cropMap().size || !result.changes.length) return false;
+    const P = CHUNK_SIZE / BLOCK_SIZE, chunks = new Set(result.changes.map(({ coord: c }) => `${c.cx},${c.cy},${c.cz}`));
+    const near = [...this.cropMap().keys()].some((k) => {
+      const [bx, by, bz] = k.split(',').map(Number) as [number, number, number];
+      return [by, by + 1].some((y) => chunks.has(`${Math.floor(bx / P)},${Math.floor(y / P)},${Math.floor(bz / P)}`));
+    });
+    if (!near) return false;
+    const before = this.cropMap().size;
+    this.cropList();
+    return this.cropMap().size < before;
+  }
+
+  /** The wheat sown (block x, y, z of its farmland; when), but where its farmland's gone or something's on it: let go. */
+  cropList(): [number, number, number, number][] {
+    const out: [number, number, number, number][] = [];
+    let pruned = false;
+    for (const [k, sown] of this.cropMap()) {
+      const [bx, by, bz] = k.split(',').map(Number) as [number, number, number];
+      if (this.blockMaterial(bx, by, bz) !== Material.Farmland || this.blockMaterial(bx, by + 1, bz) !== Material.Air) {
+        this.cropMap().delete(k);
+        pruned = true;
+        continue;
+      }
+      out.push([bx, by, bz, sown]);
+    }
+    if (pruned) this.store?.saveCrops?.(Object.fromEntries(this.cropMap()));
+    return out;
+  }
+
+  /**
+   * The ground block a point (units) is in (grass, dirt...: what's there) tilled: made a whole block
+   * of farmland (a part-filled one, filled). What changed; or why not.
+   */
+  till(x: number, y: number, z: number): EditResult[] | string {
+    const B = BLOCK_SIZE, bx = Math.floor(x / B), by = Math.floor(y / B), bz = Math.floor(z / B);
+    const m = this.materialAtUnit(x, y, z), above = this.blockMaterial(bx, by + 1, bz);
+    if (m === undefined || !TILLABLE.has(m)) return 'only grass or dirt is tilled';
+    if (above !== Material.Air) return "there's something on it";
+    const p = { x: bx * B, y: by * B, z: bz * B, size: B };
+    const cleared = this.buildPieces([{ ...p, material: Material.Air }], true).result;
+    const tilled = this.buildPieces([{ ...p, material: Material.Farmland }], false).result;
+    return [cleared, tilled].filter((r): r is EditResult => r !== null);
+  }
+
+  /** Wheat sown on the farmland a point (units) is in, now; or why not. */
+  sow(x: number, y: number, z: number, now: number): true | string {
+    const B = BLOCK_SIZE, bx = Math.floor(x / B), by = Math.floor(y / B), bz = Math.floor(z / B);
+    if (this.blockMaterial(bx, by, bz) !== Material.Farmland) return 'wheat is sown on farmland (till grass or dirt with a shovel)';
+    if (this.blockMaterial(bx, by + 1, bz) !== Material.Air) return "there's something on it";
+    const k = `${bx},${by},${bz}`;
+    if (this.cropMap().has(k)) return "it's sown already";
+    this.cropMap().set(k, now);
+    this.store?.saveCrops?.(Object.fromEntries(this.cropMap()));
+    return true;
+  }
+
+  /** Ripe wheat harvested (from the farmland a point, units, is in): gone (to be sown again); or why not (how long it has to go). */
+  harvest(x: number, y: number, z: number, now: number): true | string {
+    const B = BLOCK_SIZE, k = `${Math.floor(x / B)},${Math.floor(y / B)},${Math.floor(z / B)}`, sown = this.cropMap().get(k);
+    if (sown === undefined) return 'nothing sown there';
+    if (cropStage(sown, now) < RIPE) return `not ripe yet (another ${Math.ceil((sown + CROP_STAGE_MS * RIPE - now) / 60_000)} min)`;
+    this.cropMap().delete(k);
+    this.store?.saveCrops?.(Object.fromEntries(this.cropMap()));
+    return true;
   }
 
   /** The world's villages, as they were left (see VillageSim: unchecked, it checks). */

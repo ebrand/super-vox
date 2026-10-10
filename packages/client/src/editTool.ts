@@ -21,6 +21,7 @@ import {
   isWater,
   BOAT,
   CAR_ITEM,
+  RIPE,
   TRADE_REACH_M,
   type TradingPost,
   carOfItem,
@@ -81,6 +82,9 @@ const WHEEL_GESTURE_GAP = 200;
 /** Omit over each member of a union. */
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 const REACH = 32 * UNITS_PER_METER;
+/** What a shovel tills into farmland, and the shovels. */
+const TILLABLE = new Set<MaterialId>([Material.Grass, Material.Dirt, Material.Meadow, Material.DryGrass, Material.JungleFloor, Material.TaigaFloor, Material.Tundra]);
+const isShovel = (item: ItemId | null) => item === Item.WoodenShovel || item === Item.StoneShovel || item === Item.IronShovel;
 /** How near a car (m) it's got into, fuelled, uncoupled or taken off from. */
 const CAR_REACH_M = 10;
 
@@ -266,6 +270,8 @@ export class EditTool {
   private readonly answered = new Map<number, (error: string | null) => void>();
   /** Finds a trading post's stall along a ray (units), to trade at (set by the game; see PostView.pick). */
   pickPost: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { post: TradingPost; dist: number } | null) | null = null;
+  /** The stage of players' wheat sown on farmland at a block (see CropView.stageAt), or null. */
+  cropAt: ((bx: number, by: number, bz: number) => number | null) | null = null;
   /** Finds a station's platform along a ray (units), to take it away (set by the game; see TrainView.pickStation). */
   pickStation: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { id: number; name: string; dist: number } | null) | null = null;
   /** Finds a switch's lever stand along a ray (units), to throw it (set by the game; see TrainView.pickSwitch). */
@@ -724,6 +730,15 @@ export class EditTool {
       // A switch's lever in reach: right-click throws it.
       const lever = this.aimedSwitch();
       if (lever && button === 2) return this.request({ type: 'switchThrow', node: lever.key }, 'throwing the switch');
+      // Farming: a shovel tills the top of grass or dirt; wheat is sown on farmland; sown farmland, left-clicked, is harvested (not dug).
+      const farm = this.farmTarget();
+      if (farm) {
+        const { point, block, material } = farm;
+        const sown = this.cropAt?.(block[0], block[1], block[2]) ?? null;
+        if (button === 0 && sown !== null) return this.request({ type: 'harvest', x: point[0], y: point[1], z: point[2] }, 'harvesting');
+        if (button === 2 && isShovel(held) && TILLABLE.has(material)) return this.request({ type: 'till', x: point[0], y: point[1], z: point[2], tool: held! }, 'tilling');
+        if (button === 2 && held === Item.Wheat && material === Material.Farmland) return this.request({ type: 'sow', x: point[0], y: point[1], z: point[2] }, 'sowing');
+      }
       // A trading post's stall in reach: right-click trades.
       const post = this.aimedPost();
       if (post && button === 2) return this.onTrade?.(post);
@@ -796,6 +811,16 @@ export class EditTool {
       this.wheelTravel += dir * WHEEL_STEP;
       this.stepSize(dir, true);
     }
+  }
+
+  /** The voxel aimed at, from above (its top face), if it's farmland or ground: a point in it (units), its block, its material. */
+  private farmTarget(): { point: [number, number, number]; block: [number, number, number]; material: MaterialId } | null {
+    if (!this.hit || !this.target || this.targetMaterial === null || this.hit.normal[1] <= 0) return null;
+    const m = this.targetMaterial;
+    if (m !== Material.Farmland && !TILLABLE.has(m)) return null;
+    const t = this.target, h = t.size / 2, B = BLOCK_SIZE;
+    const point: [number, number, number] = [Math.floor(t.x + h), Math.floor(t.y + h), Math.floor(t.z + h)];
+    return { point, block: [Math.floor(point[0] / B), Math.floor(point[1] / B), Math.floor(point[2] / B)], material: m };
   }
 
   /** The station aimed at, if its platform's in reach and nearer than the voxel aimed at. */
@@ -907,7 +932,17 @@ export class EditTool {
     const post = this.mode === 'hybrid' && !car ? this.aimedPost() : null;
     const lever = this.mode === 'hybrid' && !car && !post ? this.aimedSwitch() : null;
     const platform = this.mode === 'hybrid' && !car && !post && !lever ? this.aimedStation() : null;
-    const target = platform
+    const farm = this.mode === 'hybrid' && !car && !post && !lever && !platform ? this.farmTarget() : null;
+    const sownStage = farm ? (this.cropAt?.(farm.block[0], farm.block[1], farm.block[2]) ?? null) : null;
+    const target = farm && farm.material === Material.Farmland
+      ? sownStage === null
+        ? 'aiming at farmland (right-click with wheat: sow it)'
+        : sownStage >= RIPE
+          ? 'aiming at ripe wheat (left-click: harvest it)'
+          : `aiming at wheat, growing (stage ${sownStage + 1} of ${RIPE + 1})`
+      : farm && isShovel(this.materialOf())
+        ? `aiming at ${materialName(farm.material)} (right-click: till it, to sow wheat)`
+      : platform
       ? `aiming at ${platform.name} (left-click: take it away; lines: on the map, M)`
       : lever
       ? `aiming at a switch, set ${lever.left ? 'left' : 'right'} (right-click: throw it)`

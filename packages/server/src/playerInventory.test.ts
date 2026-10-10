@@ -48,9 +48,14 @@ describe('PlayerInventory', () => {
 
   it('takes what was placed and gives what was mined, grass as dirt, leaves and water as nothing', () => {
     const { p } = survival();
+    p.random = () => 1; // (no seed in the grass this time)
     expect(p.apply(new Map([[Material.Stone, B]]))).toBe(true);
     expect(p.apply(new Map([[Material.Grass, -B / 2], [Material.Leaves, -B], [Material.Water, -64], [Material.Wood, -100]]))).toBe(true);
     expect(new Map(p.message().items)).toEqual(new Map([[Material.Dirt, 16.5 * B], [Material.Stone, 15 * B], [Material.Wood, 16 * B + 100]]));
+    // (Now and then, a wheat in it: seed.)
+    p.random = () => 0;
+    p.apply(new Map([[Material.Grass, -B]]));
+    expect(new Map(p.message().items).get(Item.Wheat)).toBe(1);
     // Water flowing into a dug hole isn't charged; nothing changed, nothing to say.
     expect(p.apply(new Map([[waterMaterial(2), 512]]))).toBe(false);
     expect(p.apply(new Map([[Material.Leaves, -B]]))).toBe(false);

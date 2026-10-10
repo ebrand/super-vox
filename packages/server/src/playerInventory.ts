@@ -28,7 +28,13 @@ import type { Inventory } from './inventories.js';
  * everything placeable is unlimited and only the hotbar is kept. Changes are saved a moment after
  * the last one (and on flush).
  */
+/** Grass dug gives a wheat (seed) this often. */
+const SEED_CHANCE = 0.15;
+const SEEDY = new Set<number>([Material.Grass, Material.Meadow, Material.DryGrass]);
+
 export class PlayerInventory {
+  /** Chance, for seed in dug grass (see apply): 0..1. */
+  random: () => number = Math.random;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private saving: Promise<void> = Promise.resolve();
 
@@ -121,6 +127,8 @@ export class PlayerInventory {
         if (drop === null) continue;
         this.inv.items.set(drop, (this.inv.items.get(drop) ?? 0) - d);
         changed = true;
+        // (Grass dug: now and then, some wheat in it: seed.)
+        if (SEEDY.has(m) && -d >= BLOCK_VOLUME / 2 && this.random() < SEED_CHANCE) this.inv.items.set(Item.Wheat, (this.inv.items.get(Item.Wheat) ?? 0) + 1);
       }
     }
     for (const [m, v] of this.inv.items) if (v <= 0) this.inv.items.delete(m);

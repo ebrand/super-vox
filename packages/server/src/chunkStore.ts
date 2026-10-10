@@ -20,6 +20,9 @@ export interface ChunkStore {
   /** The world's trains (see TrainYard), as they were left: as kept, unchecked (the yard checks). */
   loadTrains?(): unknown;
   saveTrains?(trains: unknown): void;
+  /** Players' wheat (see World.crops): by farmland block ("bx,by,bz"), when it was sown. */
+  loadCrops?(): Record<string, number>;
+  saveCrops?(crops: Record<string, number>): void;
   /** The world's villages and villagers (see VillageSim), as kept: unchecked. */
   loadVillages?(): unknown;
   saveVillages?(villages: unknown): void;
@@ -32,6 +35,7 @@ const BOATS = 'boats.json';
 const TRACKS = 'tracks.json';
 const TRAINS = 'trains.json';
 const VILLAGES = 'villages.json';
+const CROPS = 'crops.json';
 
 /** One file per edited chunk, `<cx>_<cy>_<cz>.chunk`, in a directory. */
 export class FileChunkStore implements ChunkStore {
@@ -114,6 +118,19 @@ export class FileChunkStore implements ChunkStore {
 
   saveTrains(trains: unknown): void {
     this.write(TRAINS, JSON.stringify(trains));
+  }
+
+  /** Players' wheat, in crops.json beside the chunks (what doesn't look like it, left out). */
+  loadCrops(): Record<string, number> {
+    const path = join(this.dir, CROPS);
+    if (!existsSync(path)) return {};
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown, out: Record<string, number> = {};
+    if (typeof raw === 'object' && raw !== null) for (const [k, v] of Object.entries(raw)) if (/^-?\d+,-?\d+,-?\d+$/.test(k) && typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+    return out;
+  }
+
+  saveCrops(crops: Record<string, number>): void {
+    this.write(CROPS, JSON.stringify(crops));
   }
 
   /** The villages, in villages.json beside the chunks. */

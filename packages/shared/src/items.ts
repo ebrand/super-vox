@@ -90,6 +90,8 @@ export const Item = {
   Station: 1037,
   /** Harvested from fields (villages sell it at trading posts, by rail: see VillageSim). */
   Wheat: 1038,
+  /** Baked from wheat: food. */
+  Bread: 1039,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -134,6 +136,7 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.PassengerCar]: 'passenger car',
   [Item.Station]: 'railway station',
   [Item.Wheat]: 'wheat',
+  [Item.Bread]: 'bread',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */

@@ -98,6 +98,7 @@ const GIVES_NOTHING = new Set<MaterialId>([Material.Leaves, Material.Needles, Ma
 const GIVES: Readonly<Partial<Record<MaterialId, MaterialId>>> = {
   ...Object.fromEntries(GROUNDS.map((m) => [m, Material.Dirt])),
   [Material.Stone]: Material.Cobblestone,
+  [Material.Farmland]: Material.Dirt,
   [Material.CoalOre]: Material.Coal,
   [Material.IronOre]: Material.RawIron,
   [Material.CopperOre]: Material.RawCopper,

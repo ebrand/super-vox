@@ -61,6 +61,7 @@ const BUYS: Record<'ore' | 'timber' | 'food', Offer[]> = {
 };
 /** What's sold: everywhere, and at some posts. */
 const SELLS_EVERYWHERE: Offer[] = [
+  { item: Item.Wheat, lot: 4, price: 1 },
   { item: Item.Torch, lot: 4, price: 1 },
   { item: Item.Bucket, lot: 1, price: 8 },
   { item: Item.IronPickaxe, lot: 1, price: 12 },
