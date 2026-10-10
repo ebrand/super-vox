@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLOCK_VOLUME, COAL_SECONDS, CRATE_BLOCKS, FLATBED_CRATES, Item, MAX_COAL, Material, PASSENGER_SEATS, UNITS_PER_METER, carPose, cratesFor, trackNet, type Track, type TrackPoint } from '@super-vox/shared';
+import { BLOCK_VOLUME, LINE_DRIVER, COAL_SECONDS, CRATE_BLOCKS, FLATBED_CRATES, Item, MAX_COAL, Material, PASSENGER_SEATS, UNITS_PER_METER, carPose, cratesFor, trackNet, type Track, type TrackPoint } from '@super-vox/shared';
 import { TrainYard } from './trainYard.js';
 
 const M = UNITS_PER_METER, EAST = -Math.PI / 2, WEST = Math.PI / 2;
@@ -139,5 +139,44 @@ describe('trains in a world', () => {
     expect(y.load(f.id, Item.Stick, -1)).toMatch(/none of that/);
     expect(y.load(f.id, Material.Stone, -1e9)).toBe((FLATBED_CRATES - 2) * CRATE_BLOCKS * BLOCK_VOLUME);
     expect(y.take(f.id)).toBe('flatbed');
+  });
+
+  it('stations beside straight track; a line runs its train there and back, stopping at each a while', () => {
+    const y = yard();
+    expect(y.placeStation(100 * M, 0, 20 * M, 'Nowhere')).toMatch(/aim at it/);
+    expect(y.placeStation(5 * M, 0, 2 * M, 'End')).toMatch(/too near the end/);
+    const a = y.placeStation(100 * M, 0, 2 * M, 'Ashby') as { id: number; side: number };
+    const b = y.placeStation(450 * M, 0, -2 * M, 'Brookend') as { id: number; side: number };
+    expect([a.side, b.side]).toEqual([1, -1]);
+    expect(y.placeStation(110 * M, 0, 2 * M, 'Again')).toMatch(/another station/);
+    // A line needs a train at its first station.
+    expect(y.createLine([a.id, b.id], 10, 'Main')).toMatch(/put a train/);
+    const e = y.place('engine', 100 * M, 0, 0, EAST) as { id: number };
+    const p = y.place('passenger', 88 * M, 0, 0, EAST) as { id: number };
+    void p;
+    const line = y.createLine([a.id, b.id], 10, 'Main');
+    if (typeof line === 'string') throw new Error(line);
+    expect(y.lineList()[0]!.status).toMatch(/to Brookend/);
+    // In time: at Brookend (the train's middle by the platform's), stopped, a while.
+    let t = 0;
+    const at = () => y.list()[0]!;
+    const middle = () => (y.carAt(at().cars[0]!.id)!.x + y.carAt(at().cars.at(-1)!.id)!.x) / 2 / M;
+    for (let i = 0; i < 20 * 300 && !/at Brookend/.test(y.lineList()[0]!.status); i++) y.step(0.05, false, (t += 50));
+    expect(y.lineList()[0]!.status).toBe('at Brookend');
+    expect(at().v).toBe(0);
+    expect(Math.abs(middle() - 450)).toBeLessThan(3);
+    // Then back to Ashby (it reverses, the other way along the line).
+    for (let i = 0; i < 20 * 300 && !/at Ashby/.test(y.lineList()[0]!.status); i++) y.step(0.05, false, (t += 50));
+    expect(Math.abs(middle() - 100)).toBeLessThan(3);
+    // Kept with its line, and read again.
+    const again = new TrainYard(JSON.parse(JSON.stringify(y.save())));
+    expect(again.lineList().map((l) => [l.name, l.train])).toEqual([['Main', at().id]]);
+    expect(again.list()[0]!.driver).toBe(LINE_DRIVER);
+    // Someone takes its engine: off the line.
+    expect(y.board(e.id, 7)).toBe(true);
+    expect(y.lineList()[0]!.train).toBeNull();
+    // A station taken away: its line (left with one) ends.
+    expect(y.takeStation(b.id)).toBe(true);
+    expect(y.lineList()).toEqual([]);
   });
 });

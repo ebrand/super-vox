@@ -1,6 +1,14 @@
 import {
   CAR_GAP_M,
   CAR_SPECS,
+  LINE_DRIVER,
+  PLATFORM_M,
+  STOP_BRAKE,
+  pointAt,
+  routeTo,
+  speedLimit,
+  type Line,
+  type Station,
   FLATBED_CRATES,
   PASSENGER_SEATS,
   crateOf,
@@ -39,6 +47,16 @@ export interface YardSave {
   trains: Train[];
   next: number;
   switches?: Record<string, 0 | 1>;
+  stations?: Station[];
+  lines?: Line[];
+}
+
+/** A line train's way to its next stop: which way it goes (train-forward or back), how far it's still to go (units), its switches, and which station. */
+interface Plan {
+  dir: 1 | -1;
+  remaining: number;
+  switches: Record<string, 0 | 1>;
+  station: number;
 }
 
 /**
@@ -58,8 +76,158 @@ export class TrainYard {
   constructor(raw?: unknown) {
     const saved = kept(raw);
     this.keptSwitches = saved?.switches ?? {};
-    for (const t of saved?.trains ?? []) this.trains.set(t.id, { ...t, cab: (t as { cab?: number | null }).cab ?? null, driver: null, throttle: 0, brake: false });
+    for (const s of saved?.stations ?? []) this.stations.set(s.id, s);
+    for (const l of saved?.lines ?? []) this.lines.set(l.id, { ...l, until: 0 });
+    for (const t of saved?.trains ?? []) this.trains.set(t.id, { ...t, cab: (t as { cab?: number | null }).cab ?? null, driver: t.line ? LINE_DRIVER : null, throttle: 0, brake: false });
     this.next = Math.max(saved?.next ?? 1, ...[...this.trains.values()].flatMap((t) => [t.id + 1, ...t.cars.map((c) => c.id + 1)]));
+  }
+
+  private readonly stations = new Map<number, Station>();
+  private readonly lines = new Map<number, Line>();
+  private readonly plans = new Map<number, Plan>();
+
+  stationList(): Station[] {
+    return [...this.stations.values()];
+  }
+
+  lineList(): Line[] {
+    return [...this.lines.values()].map((l) => ({ ...l, stations: [...l.stations] }));
+  }
+
+  /**
+   * A station put beside the track nearest (x, y, z) (units; its platform the side that is of the
+   * track), named `name`: on straight track, its platform clear of the track's ends and of other
+   * stations. Or why not.
+   */
+  placeStation(x: number, y: number, z: number, name: string): Station | string {
+    let best: { t: Track; i: number } | null = null, bd = 6 * M;
+    for (const t of this.net.tracks.values())
+      for (let i = 0; i < t.points.length; i++) {
+        const p = t.points[i]!, d = Math.hypot(p.x - x, p.z - z);
+        if (d < bd && Math.abs(p.y - y) < 6 * M) (bd = d), (best = { t, i });
+      }
+    if (!best) return 'a station goes beside track: aim at it';
+    const { t, i } = best, p = t.points[i]!, L = t.points.at(-1)!.s, half = (PLATFORM_M / 2) * M;
+    if (t.radius !== null && t.radius < 300) return 'a station goes on straight track';
+    if (p.s < half || L - p.s < half) return `too near the end of the track (or a switch): its platform's ${PLATFORM_M} m long`;
+    for (const o of this.stations.values()) if (o.track === t.id && Math.abs(o.s - p.s) < PLATFORM_M * 1.2 * M) return 'another station is there';
+    // (Its side: right or left of the track as it runs, whichever the aim was.)
+    const rx = Math.cos(p.heading), rz = -Math.sin(p.heading);
+    const station: Station = { id: this.next++, name, track: t.id, s: p.s, side: rx * (x - p.x) + rz * (z - p.z) >= 0 ? 1 : -1 };
+    this.stations.set(station.id, station);
+    this.changed = true;
+    return station;
+  }
+
+  /** A station taken away (out of the lines it's on: those left with fewer than two, gone). Or why not. */
+  takeStation(id: number): true | string {
+    if (!this.stations.delete(id)) return 'that station has gone';
+    for (const l of [...this.lines.values()]) {
+      l.stations = l.stations.filter((s, i, all) => s !== id && (i === 0 || all[i - 1] !== s));
+      if (l.stations.length < 2) this.deleteLine(l.id);
+      else l.next = Math.min(l.next, l.stations.length - 1);
+    }
+    this.changed = true;
+    return true;
+  }
+
+  /** Where a station's middle is (units). */
+  stationAt(id: number): { x: number; y: number; z: number } | null {
+    const s = this.stations.get(id);
+    return s ? pointAt(this.net, { track: s.track, s: s.s, dir: 1 }) : null;
+  }
+
+  /**
+   * A line through `stations` (in order), its train the one standing at the first (a car on its
+   * platform, stopped, no one driving it), stopping `dwell` s at each. Or why not.
+   */
+  createLine(stations: number[], dwell: number, name: string): Line | string {
+    if (stations.length < 2) return 'a line needs two stations at least';
+    if (stations.some((s) => !this.stations.has(s))) return 'one of its stations has gone';
+    if (stations.some((s, i) => i > 0 && stations[i - 1] === s)) return 'the same station twice in a row';
+    const first = this.stations.get(stations[0]!)!, at = this.stationAt(first.id)!;
+    const train = [...this.trains.values()].find(
+      (t) => t.v === 0 && t.driver === null && !t.line && t.cars.some((c) => c.kind === 'engine') && t.cars.some((c) => { const p = carPose(this.net, c); return !!p && Math.hypot(p.x - at.x, p.z - at.z) < (PLATFORM_M / 2) * M; }),
+    );
+    if (!train) return `put a train (an engine, stopped, no one in it) at ${first.name} first`;
+    const line: Line = { id: this.next++, name, stations: [...stations], dwell: Math.max(10, Math.min(1800, dwell)), train: train.id, next: 1, way: 1, until: 0, status: `to ${this.stations.get(stations[1]!)!.name}` };
+    this.lines.set(line.id, line);
+    train.line = line.id;
+    train.driver = LINE_DRIVER;
+    this.changed = true;
+    return line;
+  }
+
+  /** A line ended: its train stopped where it is (its brakes on), no one driving it. */
+  deleteLine(id: number): boolean {
+    const l = this.lines.get(id);
+    if (!l) return false;
+    this.lines.delete(id);
+    const t = l.train !== null ? this.trains.get(l.train) : undefined;
+    if (t) {
+      Object.assign(t, { line: null, driver: null, throttle: 0, brake: true });
+      this.plans.delete(t.id);
+    }
+    this.changed = true;
+    return true;
+  }
+
+  /** A line train's way to `station`: whichever way (forward or back) gets there, the shorter; stopping with the train's middle at the platform's. */
+  private planFor(t: Train, station: Station): Plan | null {
+    const length = t.cars.reduce((n, c) => n + CAR_SPECS[c.kind].length + CAR_GAP_M, -CAR_GAP_M) * M;
+    let best: Plan | null = null;
+    for (const dir of [1, -1] as const) {
+      const lead = dir > 0 ? t.cars[0]! : t.cars.at(-1)!;
+      const r = routeTo(this.net, { track: lead.pos.track, s: lead.pos.s, way: (lead.pos.dir * dir) as 1 | -1 }, { track: station.track, s: station.s });
+      if (!r) continue;
+      // (Its leading car past the platform's middle by half the train, less its own half.)
+      const remaining = r.distance + length / 2 - (CAR_SPECS[lead.kind].length * M) / 2;
+      if (!best || remaining < best.remaining) best = { dir, remaining, switches: r.switches, station: station.id };
+    }
+    return best;
+  }
+
+  /** A line train driven: to its next stop (the throttle open till it must brake for it), stopped there a while, then on (and back, at either end). */
+  private autopilot(t: Train, now: number): void {
+    const line = this.lines.get(t.line!);
+    if (!line) {
+      Object.assign(t, { line: null, driver: null, throttle: 0, brake: true });
+      return;
+    }
+    const set = (throttle: number, brake: boolean) => {
+      t.throttle = throttle;
+      t.brake = brake;
+    };
+    if (line.until > now) return set(0, true);
+    const station = this.stations.get(line.stations[line.next]!);
+    if (!station) return set(0, true);
+    let plan = this.plans.get(t.id);
+    if (!plan || plan.station !== station.id) {
+      plan = this.planFor(t, station) ?? undefined;
+      if (!plan) {
+        if (line.status !== `no way to ${station.name}`) (line.status = `no way to ${station.name}`), (this.changed = true);
+        return set(0, true);
+      }
+      this.plans.set(t.id, plan);
+      line.status = `to ${station.name}`;
+      this.changed = true;
+    }
+    const left = plan.remaining / M;
+    // There: stopped, a while; then the next (back the other way at either end).
+    if (left < 1 && Math.abs(t.v) < 0.5) {
+      t.v = 0;
+      line.until = now + line.dwell * 1000;
+      line.status = `at ${station.name}`;
+      if (line.next + line.way >= line.stations.length || line.next + line.way < 0) line.way = (-line.way) as 1 | -1;
+      line.next += line.way;
+      this.plans.delete(t.id);
+      this.changed = true;
+      return set(0, true);
+    }
+    // As fast as it may go, and as it can still stop by the platform.
+    const engine = t.cars.find((c) => c.kind === 'engine'), way = engine?.flip ? -1 : 1;
+    const want = Math.min(speedLimit(this.net, t), Math.sqrt(2 * STOP_BRAKE * Math.max(0, left - 0.5))), v = t.v * plan.dir;
+    set(v < want - 0.2 ? plan.dir * way : 0, v > want + 0.3);
   }
 
   setTracks(tracks: readonly Track[]): void {
@@ -71,10 +239,12 @@ export class TrainYard {
     return Object.fromEntries(this.net.set);
   }
 
-  /** Cars on track `id` past `at` (units along it): onto track `rest`, as far along it (it's been split there: see World). */
+  /** Cars (and stations) on track `id` past `at` (units along it): onto track `rest`, as far along it (it's been split there: see World). */
   splitTrack(id: number, rest: number, at: number): void {
     for (const t of this.trains.values())
       for (const c of t.cars) if (c.pos.track === id && c.pos.s > at) c.pos = { track: rest, s: c.pos.s - at, dir: c.pos.dir };
+    for (const s of this.stations.values()) if (s.track === id && s.s > at) Object.assign(s, { track: rest, s: s.s - at });
+    this.plans.clear();
   }
 
   /** The switch at node `key`, if there's one. */
@@ -113,6 +283,15 @@ export class TrainYard {
   private chooser(t: Train): Chooser {
     return (node, from) => {
       if (!node.legs || !node.trunk) return route(this.net, node, from);
+      // A line train: the way its route goes.
+      const planned = t.line ? this.plans.get(t.id)?.switches[node.key] : undefined;
+      if (planned !== undefined && node.trunk.track === from.track && node.trunk.end === from.end) {
+        if (this.net.set.get(node.key) !== planned && !this.overSwitch(node, t)) {
+          this.net.set.set(node.key, planned);
+          this.changed = true;
+        }
+        return node.legs[this.net.set.get(node.key) ?? 0];
+      }
       const set = (leg: 0 | 1) => {
         if (this.net.set.get(node.key) === leg || this.overSwitch(node, t)) return;
         this.net.set.set(node.key, leg);
@@ -137,7 +316,13 @@ export class TrainYard {
 
   /** What's kept (drivers and passengers aren't: they're out when the world's opened again). */
   save(): YardSave {
-    return { trains: this.list().map((t) => ({ ...t, driver: null, throttle: 0, brake: false, v: 0, prefer: null, cars: t.cars.map((c) => (c.seats ? { ...c, seats: c.seats.map(() => null) } : c)) })), next: this.next, switches: this.switches() };
+    return {
+      trains: this.list().map((t) => ({ ...t, driver: t.line ? LINE_DRIVER : null, throttle: 0, brake: false, v: 0, prefer: null, cars: t.cars.map((c) => (c.seats ? { ...c, seats: c.seats.map(() => null) } : c)) })),
+      next: this.next,
+      switches: this.switches(),
+      stations: this.stationList(),
+      lines: this.lineList(),
+    };
   }
 
   /** `player` in a free seat of passenger car `car` (out of anything else they were in): which; or why not. */
@@ -254,6 +439,13 @@ export class TrainYard {
     if (!f) return 'that car has gone';
     const c = f.train.cars[f.index]!;
     if (c.kind !== 'engine') return 'only an engine is driven (seats come later)';
+    // (Running a line: taken off it.)
+    if (f.train.line) {
+      const l = this.lines.get(f.train.line);
+      if (l) Object.assign(l, { train: null, status: 'no train: put one at its first station, and make the line again' });
+      Object.assign(f.train, { line: null, driver: null });
+      this.plans.delete(f.train.id);
+    }
     if (f.train.driver !== null && f.train.driver !== player) return 'someone is driving this train';
     this.leave(player);
     f.train.driver = player;
@@ -348,10 +540,11 @@ export class TrainYard {
    * Every train moved on `dt` s (see accelerate; `burn`: engines use coal), then those touching
    * coupled (slowly enough: else both stopped). Whether any moved.
    */
-  step(dt: number, burn: boolean): boolean {
+  step(dt: number, burn: boolean, now = Date.now()): boolean {
     let moved = false;
     for (const t of [...this.trains.values()]) {
       if (!this.trains.has(t.id) || (t.v === 0 && t.driver === null)) continue;
+      if (t.line) this.autopilot(t, now);
       const fuelBefore = t.cars.reduce((f, c) => f + Math.ceil((c.fuel ?? 0) / COAL_SECONDS), 0);
       const wasMoving = t.v !== 0;
       t.v = accelerate(this.net, t, dt, burn);
@@ -364,6 +557,8 @@ export class TrainYard {
       const before = others.map((o) => this.touch(end, lead, o));
       const want = t.v * dt * M, went = moveTrain(this.net, t, want, this.chooser(t));
       if (went > 0) moved = true;
+      const plan = t.line ? this.plans.get(t.id) : undefined;
+      if (plan) plan.remaining -= Math.sign(want) === plan.dir ? went : -went;
       // (At the end of the line: stopped against its buffers.)
       if (went < Math.abs(want) - 1e-6) (t.v = 0), (this.changed = true);
       for (let i = 0; i < others.length; i++) {
@@ -436,5 +631,12 @@ function kept(raw: unknown): YardSave | null {
   const cars = (t: Train) => t.cars.map((c) => (c.kind === 'passenger' ? { ...c, seats: Array<number | null>(PASSENGER_SEATS).fill(null) } : c.kind === 'flatbed' ? { ...c, cargo: c.cargo ?? [] } : c));
   const sw = (r as { switches?: unknown }).switches, switches: Record<string, 0 | 1> = {};
   if (typeof sw === 'object' && sw !== null) for (const [k, v] of Object.entries(sw)) if (v === 0 || v === 1) switches[k] = v;
-  return { trains: trains.map((t) => ({ id: t.id, cars: cars(t), v: 0, driver: null, throttle: 0, brake: false })), next: Number.isInteger(r.next) ? (r.next as number) : 1, switches };
+  const stations = (Array.isArray((r as { stations?: unknown }).stations) ? (r as { stations: unknown[] }).stations : []).filter(
+    (s): s is Station => typeof s === 'object' && s !== null && Number.isInteger((s as Station).id) && typeof (s as Station).name === 'string' && Number.isInteger((s as Station).track) && num((s as Station).s) && ((s as Station).side === 1 || (s as Station).side === -1),
+  );
+  const lines = (Array.isArray((r as { lines?: unknown }).lines) ? (r as { lines: unknown[] }).lines : []).filter(
+    (l): l is Line => typeof l === 'object' && l !== null && Number.isInteger((l as Line).id) && Array.isArray((l as Line).stations) && num((l as Line).dwell) && Number.isInteger((l as Line).next) && ((l as Line).way === 1 || (l as Line).way === -1),
+  );
+  const line = (t: Train) => (Number.isInteger(t.line) && lines.some((l) => l.id === t.line && l.train === t.id) ? t.line! : null);
+  return { trains: trains.map((t) => ({ id: t.id, cars: cars(t), v: 0, driver: line(t) !== null ? LINE_DRIVER : null, throttle: 0, brake: false, line: line(t) })), next: Number.isInteger(r.next) ? (r.next as number) : 1, switches, stations, lines };
 }

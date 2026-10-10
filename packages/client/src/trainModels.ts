@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CAR_SPECS, type CarKind } from '@super-vox/shared';
+import { CAR_SPECS, PLATFORM_M, type CarKind } from '@super-vox/shared';
 import { GAUGE_M } from './trackModel.js';
 
 /**
@@ -221,6 +221,26 @@ export function switchStandGeometry(colour: Rgb, side: 1 | -1): THREE.BufferGeom
   b.cylinder('z', 0, 1.42, 0, 0.26, 0.05, colour, 14);
   // (An arrow over the disc: its head the way the switch sends trains.)
   b.box(-side * 0.08, 1.78, 0, 0.36, 0.08, 0.05, colour).box(-side * 0.3, 1.78, 0, 0.12, 0.2, 0.05, colour);
+  return b.geometry();
+}
+
+const STONE_PLATFORM: Rgb = [0.5, 0.5, 0.52];
+const DARK_WOOD: Rgb = [0.25, 0.16, 0.09];
+const EDGE: Rgb = [0.85, 0.78, 0.3];
+
+/**
+ * A station (m: the track's middle at its bed at the origin, the track along z): a platform PLATFORM_M
+ * long beside it on `side` (+1: +x), its edge picked out, and at its middle a shelter (posts, a roof,
+ * a bench) and a lamp post.
+ */
+export function stationGeometry(side: 1 | -1): THREE.BufferGeometry {
+  const b = new Builder(), L = PLATFORM_M, x = (v: number) => side * v;
+  b.box(x(2.6), 0.15, 0, 2.8, 1.5, L, STONE_PLATFORM).box(x(1.3), 0.91, 0, 0.3, 0.02, L, EDGE);
+  for (const zz of [-3, 3]) for (const xx of [1.8, 3.6]) b.box(x(xx), 2.2, zz, 0.16, 2.6, 0.16, DARK_WOOD);
+  b.box(x(2.7), 3.55, 0, 2.6, 0.14, 7.2, RED).box(x(2.7), 3.7, 0, 2.0, 0.16, 7.0, RED);
+  b.box(x(3.4), 1.35, 0, 0.5, 0.08, 3, TIMBER).box(x(3.65), 1.6, 0, 0.08, 0.5, 3, TIMBER);
+  for (const zz of [-1.2, 1.2]) b.box(x(3.4), 1.1, zz, 0.08, 0.4, 0.08, BLACK);
+  b.box(x(1.9), 2.4, 12, 0.12, 3, 0.12, BLACK).box(x(1.9), 3.95, 12, 0.35, 0.3, 0.35, CREAM);
   return b.geometry();
 }
 

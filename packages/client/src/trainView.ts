@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { CAR_SPECS, FLATBED_CRATES, UNITS_PER_METER, alongLine, cratesFor, carPose, moveTrain, pointAt, route, speedLimit, trackNet, type CarKind, type Track, type TrackNet, type Train } from '@super-vox/shared';
-import { AMBER_DISC, CAR_SIZE, GREEN_DISC, carGeometry, crateGeometry, switchStandGeometry } from './trainModels.js';
+import { CAR_SPECS, FLATBED_CRATES, PLATFORM_M, UNITS_PER_METER, type Station, alongLine, cratesFor, carPose, moveTrain, pointAt, route, speedLimit, trackNet, type CarKind, type Track, type TrackNet, type Train } from '@super-vox/shared';
+import { AMBER_DISC, CAR_SIZE, GREEN_DISC, carGeometry, crateGeometry, stationGeometry, switchStandGeometry } from './trainModels.js';
+import { nameTag } from './entities.js';
 
 const M = UNITS_PER_METER;
 /** The top of the rails over a track point's height (its rails' foot: see trackModel), m. */
@@ -33,6 +34,11 @@ export class TrainView {
   setTracks(tracks: readonly Track[]): void {
     this.net = trackNet(tracks, Object.fromEntries(this.net.set));
     this.showSwitches();
+    // (Their tracks may have been split: placed again.)
+    const stations = [...this.stationMeshes.values()].map((m) => m.station);
+    for (const m of this.stationMeshes.values()) m.group.removeFromParent();
+    this.stationMeshes.clear();
+    this.setStations(stations);
   }
 
   setTrains(trains: Train[], at: number, switches: Readonly<Record<string, 0 | 1>> = {}): void {
@@ -134,6 +140,63 @@ export class TrainView {
     });
     const f = found as { x: number; z: number } | null;
     return f && at ? Math.hypot(f.x - at.x, f.z - at.z) / M : null;
+  }
+
+  /** The stations, each its platform and shelter beside its track, named. */
+  private readonly stationMeshes = new Map<number, { group: THREE.Group; station: Station; key: string }>();
+  private readonly stationGeometries = { 1: stationGeometry(1), [-1]: stationGeometry(-1) } as Record<1 | -1, THREE.BufferGeometry>;
+
+  setStations(stations: readonly Station[]): void {
+    const keep = new Set(stations.map((s) => s.id));
+    for (const [id, m] of this.stationMeshes)
+      if (!keep.has(id)) {
+        m.group.removeFromParent();
+        this.stationMeshes.delete(id);
+      }
+    for (const st of stations) {
+      const key = `${st.track},${st.s},${st.side},${st.name}`, was = this.stationMeshes.get(st.id);
+      if (was?.key === key) continue;
+      was?.group.removeFromParent();
+      const p = pointAt(this.net, { track: st.track, s: st.s, dir: 1 });
+      if (!p) continue;
+      const group = new THREE.Group();
+      group.position.set(p.x / M, p.y / M, p.z / M);
+      group.rotation.y = p.heading;
+      group.add(new THREE.Mesh(this.stationGeometries[st.side], this.material));
+      const tag = nameTag(st.name, 4.6);
+      tag.position.x = st.side * 2.7;
+      group.add(tag);
+      this.group.add(group);
+      this.stationMeshes.set(st.id, { group, station: st, key });
+    }
+  }
+
+  /** Where each station is (units), for the map. */
+  stationPoints(): { id: number; name: string; x: number; z: number }[] {
+    return [...this.stationMeshes.values()].map(({ group, station }) => ({ id: station.id, name: station.name, x: group.position.x * M, z: group.position.z * M }));
+  }
+
+  /** The station whose platform a ray (units) meets within `maxDist` units: its id, name, and how far. */
+  pickStation(origin: readonly number[], dir: readonly number[], maxDist: number): { id: number; name: string; dist: number } | null {
+    let best: { id: number; name: string; dist: number } | null = null;
+    for (const { group, station } of this.stationMeshes.values()) {
+      const px = group.position.x * M, py = group.position.y * M, pz = group.position.z * M, h = group.rotation.y;
+      const c = Math.cos(-h), sn = Math.sin(-h), ox = origin[0]! - px, oy = origin[1]! - py, oz = origin[2]! - pz;
+      const o = [ox * c + oz * sn, oy, -ox * sn + oz * c], d = [dir[0]! * c + dir[2]! * sn, dir[1]!, -dir[0]! * sn + dir[2]! * c];
+      const lo = [Math.min(station.side * 1.2, station.side * 4.1) * M, -0.6 * M, (-PLATFORM_M / 2) * M], hi = [Math.max(station.side * 1.2, station.side * 4.1) * M, 4 * M, (PLATFORM_M / 2) * M];
+      let near = 0, far = maxDist;
+      for (let a = 0; a < 3 && near <= far; a++) {
+        if (Math.abs(d[a]!) < 1e-9) {
+          if (o[a]! < lo[a]! || o[a]! > hi[a]!) far = -1;
+          continue;
+        }
+        const t1 = (lo[a]! - o[a]!) / d[a]!, t2 = (hi[a]! - o[a]!) / d[a]!;
+        near = Math.max(near, Math.min(t1, t2));
+        far = Math.min(far, Math.max(t1, t2));
+      }
+      if (near <= far && (!best || near < best.dist)) best = { id: station.id, name: station.name, dist: near };
+    }
+    return best;
   }
 
   /** The train a car is in (as last told). */

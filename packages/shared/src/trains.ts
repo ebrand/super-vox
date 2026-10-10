@@ -82,7 +82,12 @@ export interface Train {
   brake: boolean;
   /** Which way its driver means to go at the next switch it comes to from its trunk (as seen going that way): set as it gets there. */
   prefer?: 'left' | 'right' | null;
+  /** The line it runs (see Line), if it does: driven by it (its driver LINE_DRIVER). */
+  line?: number | null;
 }
+
+/** Who drives a train running a line (see Line): no one, the line. */
+export const LINE_DRIVER = -1;
 
 /** A track's end: which track, and which end of it. */
 export interface EndRef {
@@ -300,4 +305,89 @@ export function moveTrain(net: TrackNet, t: Train, d: number, choose?: Chooser):
 /** Where the car behind `car` (of `kind`, coupled) goes: back along the line from it. */
 export function behind(net: TrackNet, car: Car, kind: CarKind): CarPos {
   return alongLine(net, car.pos, -((CAR_SPECS[car.kind].length + CAR_SPECS[kind].length) / 2 + CAR_GAP_M) * UNITS_PER_METER).pos;
+}
+
+/** A station's platform: this long (m), beside straight track (its middle at least half that from the track's ends). */
+export const PLATFORM_M = 40;
+/** Line trains: their stops at each station (s, by default), and how hard they brake for them (m/s²). */
+export const DWELL_S = 120;
+export const STOP_BRAKE = 0.7;
+
+/** A station: on which track, how far along it its middle is (units), on which side of it its platform is (+1: right of the track's way, as s increases), and its name. */
+export interface Station {
+  id: number;
+  name: string;
+  track: number;
+  s: number;
+  side: 1 | -1;
+}
+
+/**
+ * A line: its stations in order, run there and back by its train (stopping `dwell` s at each); where
+ * it's going next (an index into its stations, and which way through them), until when it's stopped
+ * there (ms, by the server's clock: 0, running), and how it's doing (for people).
+ */
+export interface Line {
+  id: number;
+  name: string;
+  stations: number[];
+  dwell: number;
+  train: number | null;
+  next: number;
+  way: 1 | -1;
+  until: number;
+  status: string;
+}
+
+/**
+ * The shortest way along the line from `from` (on its track, going `way` along it: +1 as s
+ * increases) to `to` (a point on a track, units), through joins and switches (trains from a switch's
+ * trunk may take either leg; from a leg, only the trunk): how far (units), which way it's going along
+ * the track it gets there on, and how each switch it goes through from its trunk must be set (by
+ * node key). Null if there's no way.
+ */
+export function routeTo(net: TrackNet, from: { track: number; s: number; way: 1 | -1 }, to: { track: number; s: number }): { distance: number; arrive: 1 | -1; switches: Record<string, 0 | 1> } | null {
+  const ahead = (way: 1 | -1, s0: number, s1: number) => (way > 0 ? s1 - s0 : s0 - s1);
+  if (from.track === to.track && ahead(from.way, from.s, to.s) >= 0) return { distance: ahead(from.way, from.s, to.s), arrive: from.way, switches: {} };
+  // Dijkstra over (track, the way along it), entered at one of its ends.
+  type State = { track: number; way: 1 | -1; dist: number; switches: Record<string, 0 | 1> };
+  const start = net.tracks.get(from.track);
+  if (!start) return null;
+  const firstLeg = from.way > 0 ? start.points.at(-1)!.s - from.s : from.s;
+  const queue: State[] = [], best = new Map<string, number>();
+  let found: { distance: number; arrive: 1 | -1; switches: Record<string, 0 | 1> } | null = null;
+  const leave = (st: { track: number; way: 1 | -1; dist: number; switches: Record<string, 0 | 1> }) => {
+    const exit: EndRef = { track: st.track, end: st.way > 0 ? 'end' : 'start' };
+    const node = net.nodeOf.get(`${exit.track}:${exit.end}`);
+    if (!node) return;
+    let options: { e: EndRef; set?: 0 | 1 }[];
+    if (node.trunk && node.legs) {
+      const fromTrunk = node.trunk.track === exit.track && node.trunk.end === exit.end;
+      options = fromTrunk ? [{ e: node.legs[0], set: 0 }, { e: node.legs[1], set: 1 }] : [{ e: node.trunk }];
+    } else {
+      const r = route(net, node, exit);
+      options = r ? [{ e: r }] : [];
+    }
+    for (const o of options) {
+      const way: 1 | -1 = o.e.end === 'start' ? 1 : -1;
+      const key = `${o.e.track}:${way}`;
+      if ((best.get(key) ?? Infinity) <= st.dist) continue;
+      best.set(key, st.dist);
+      queue.push({ track: o.e.track, way, dist: st.dist, switches: o.set === undefined ? st.switches : { ...st.switches, [node.key]: o.set } });
+    }
+  };
+  leave({ track: from.track, way: from.way, dist: firstLeg, switches: {} });
+  while (queue.length) {
+    queue.sort((a, b) => a.dist - b.dist);
+    const st = queue.shift()!;
+    if (found && st.dist >= found.distance) break;
+    const t = net.tracks.get(st.track)!, L = t.points.at(-1)!.s;
+    if (st.track === to.track) {
+      const d = st.dist + (st.way > 0 ? to.s : L - to.s);
+      if (!found || d < found.distance) found = { distance: d, arrive: st.way, switches: st.switches };
+      continue;
+    }
+    leave({ ...st, dist: st.dist + L });
+  }
+  return found;
 }

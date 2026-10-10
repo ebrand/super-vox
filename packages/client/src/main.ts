@@ -9,6 +9,7 @@ import { TrackView } from './trackView.js';
 import { TrainView } from './trainView.js';
 import { PostView } from './postView.js';
 import { CropView } from './cropView.js';
+import { LinesPanel } from './linesPanel.js';
 import { CAB_EYE, SEAT_EYES } from './trainModels.js';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
@@ -492,6 +493,8 @@ let trainView: TrainView | null = null;
 let postView: PostView | null = null;
 /** Wheat on the villages' fields (see CropView). */
 let cropView: CropView | null = null;
+/** Railway lines, on the map (see LinesPanel). */
+let linesPanel: LinesPanel | null = null;
 let driving: { car: number; throttle: number; brake: boolean; sentAt: number; sent: string; shiftWasDown: boolean; heading: number | null; turnWas: number } | null = null;
 let stopDriving: (gone?: boolean) => void = () => {};
 /** The seat we're in, if any (see the seated message): Shift gets up. */
@@ -867,6 +870,8 @@ connection = connect({
           {
             const canBuild = msg.canEdit;
             trackMap = new TrackMap(worldMap);
+            linesPanel = new LinesPanel(worldMap, (m, done) => editTool?.request(m, m.type === 'lineCreate' ? 'starting the line' : 'ending the line', done));
+            linesPanel.onPicking = (ids) => trackMap?.setStations(trainView?.stationPoints() ?? [], ids ?? []);
             trackMode ??= new TrackMode({
               scene,
               camera,
@@ -1077,6 +1082,7 @@ connection = connect({
           // Trains: aimed at, got into; driven (W/S: the throttle up and down, its notch kept; Space: the brake; Shift: out).
           editTool.pickCar = (o, d, max) => trainView?.pick(o, d, max) ?? null;
           editTool.pickSwitch = (o, d, max) => trainView?.pickSwitch(o, d, max) ?? null;
+          editTool.pickStation = (o, d, max) => trainView?.pickStation(o, d, max) ?? null;
           editTool.onDriving = (car) => {
             if (riding) endRide();
             driving = { car, throttle: 0, brake: false, sentAt: 0, sent: '', shiftWasDown: true, heading: null, turnWas: 0 };
@@ -1402,6 +1408,9 @@ connection = connect({
         break;
       case 'trains': {
         trainView?.setTrains(msg.trains, msg.at, msg.switches);
+        trainView?.setStations(msg.stations);
+        trackMap?.setStations(trainView?.stationPoints() ?? []);
+        linesPanel?.update(msg.lines, trainView?.stationPoints() ?? []);
         // (Our engine taken off, or someone else in it: out. Our seat's car gone: up.)
         if (driving && trainView?.trainOf(driving.car)?.driver == null) stopDriving(true);
         if (seated && !trainView?.trainOf(seated.car)) standUp(true);

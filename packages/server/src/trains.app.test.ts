@@ -112,4 +112,25 @@ describe('trains over the connection', () => {
     await until(() => car('passenger').seats!.every((p) => p === null));
     ws.close();
   });
+
+  it('stations put by the track (named), and a line run between them: everyone told how it goes', async () => {
+    const { ws, until, ask, msgs } = await setup('creative', []);
+    const rail = () => msgs.filter((m): m is Extract<ServerMessage, { type: 'trains' }> => m.type === 'trains').at(-1)!;
+    ws.send(JSON.stringify({ type: 'pose', x: 1040 * M, y: 2 * M, z: 1002 * M, yaw: 0 }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await ask({ type: 'railStationPlace', x: 1040 * M, y: 0, z: 1002 * M })).toMatchObject({ ok: true, note: expect.stringMatching(/station built/) });
+    ws.send(JSON.stringify({ type: 'pose', x: 1150 * M, y: 2 * M, z: 1002 * M, yaw: 0 }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await ask({ type: 'railStationPlace', x: 1160 * M, y: 0, z: 998 * M })).toMatchObject({ ok: true });
+    await until(() => rail().stations.length === 2);
+    const [a, b] = rail().stations;
+    expect(a!.name).not.toBe(b!.name);
+    expect(await ask({ type: 'lineCreate', stations: [a!.id, b!.id], dwell: 10 })).toMatchObject({ ok: false, error: expect.stringMatching(/put a train/) });
+    ws.send(JSON.stringify({ type: 'pose', x: 1040 * M, y: 2 * M, z: 1002 * M, yaw: 0 }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await ask({ type: 'carPlace', item: Item.Engine, x: 1040 * M, y: 0, z: 1000 * M, heading: EAST })).toMatchObject({ ok: true });
+    expect(await ask({ type: 'lineCreate', stations: [a!.id, b!.id], dwell: 10 })).toMatchObject({ ok: true });
+    await until(() => rail().lines[0]?.status === `at ${b!.name}`, 30_000);
+    ws.close();
+  }, 40_000);
 });

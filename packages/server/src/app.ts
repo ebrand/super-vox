@@ -1125,7 +1125,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const trainsSaved = new Map<World, { at: number; busy: boolean }>();
   const showTrains = (world: World) => {
     world.trains.changed = false;
-    toWorld(world, { type: 'trains', trains: world.trains.list(), at: Date.now(), switches: world.trains.switches() });
+    toWorld(world, { type: 'trains', trains: world.trains.list(), at: Date.now(), switches: world.trains.switches(), stations: world.trains.stationList(), lines: world.trains.lineList() });
   };
   const railing = setInterval(timed('trains', () => {
     trainTicks++;
@@ -1133,7 +1133,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     for (const [client, w] of clients) if (!worlds.has(w)) worlds.set(w, players.get(client)?.world);
     for (const [world, name] of worlds) {
       const yard = world.trains, busy = yard.busy;
-      const moved = busy && yard.step(0.05, catalog.play(name)?.mode === 'survival');
+      const moved = busy && yard.step(0.05, catalog.play(name)?.mode === 'survival', now);
       const changed = yard.changed;
       if (changed || (moved && trainTicks % 2 === 0)) showTrains(world);
       const saved = trainsSaved.get(world) ?? { at: 0, busy: false };
@@ -1548,7 +1548,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               world.onBoatsChanged ??= () => toWorld(world, { type: 'boats', boats: world.boatList() });
               send({ type: 'tracks', tracks: world.trackList() });
               world.onTracksChanged ??= () => toWorld(world, { type: 'tracks', tracks: world.trackList() });
-              send({ type: 'trains', trains: world.trains.list(), at: Date.now(), switches: world.trains.switches() });
+              send({ type: 'trains', trains: world.trains.list(), at: Date.now(), switches: world.trains.switches(), stations: world.trains.stationList(), lines: world.trains.lineList() });
               send({ type: 'posts', posts: world.tradingPosts(clientWorld.get(socket) ?? catalog.defaultName) });
               send({ type: 'villages', villages: villagesOf(world, clientWorld.get(socket)).list() });
               // (What's dropped last: the last thing told unasked.)
@@ -2021,6 +2021,54 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             send(inv.message());
           }
           send({ type: 'editResult', id: msg.id, ok: true });
+          showTrains(world);
+          world.saveTrains();
+          break;
+        }
+
+        case 'railStationPlace':
+        case 'railStationTake':
+        case 'lineCreate':
+        case 'lineDelete': {
+          // Stations (their item used up putting one on, given back taking it away) and lines.
+          if (!greeted) return;
+          const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
+          if (!canEdit()) return fail(cantBuild());
+          if (opts.inventories && who && !inventory) return fail(inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded");
+          const p = players.get(socket)!, yard = world.trains;
+          const near = (at: { x: number; y: number; z: number } | null) => !p.pose || (!!at && Math.hypot(p.pose.x - at.x, p.pose.z - at.z) <= (CAR_REACH_M + 10) * UNITS_PER_METER);
+          let note = '';
+          if (msg.type === 'railStationPlace') {
+            const why = inventory?.refuseItem(Item.Station);
+            if (why) return fail(why);
+            if (!near(msg)) return fail('too far away');
+            // Named for the nearest village or trading post (within 2 km), else numbered; none the same.
+            const seed = clientWorld.get(socket) ?? catalog.defaultName, M = UNITS_PER_METER;
+            const places = [...(villageSims.get(world)?.list() ?? []).map((v) => ({ name: v.name, x: v.x, z: v.z })), ...world.tradingPosts(seed).map((t) => ({ name: t.name.replace(/ trading post$/, ''), x: t.x, z: t.z }))];
+            const nearest = places.reduce<{ name: string; d: number } | null>((b, q) => {
+              const d = Math.hypot(q.x - msg.x, q.z - msg.z);
+              return d < 2000 * M && (!b || d < b.d) ? { name: q.name, d } : b;
+            }, null);
+            const taken = new Set(yard.stationList().map((s) => s.name));
+            let name = nearest ? `${nearest.name} station` : `Station ${yard.stationList().length + 1}`;
+            for (let n = 2; taken.has(name); n++) name = nearest ? `${nearest.name} station ${n}` : `Station ${yard.stationList().length + n}`;
+            const s = yard.placeStation(msg.x, msg.y, msg.z, name);
+            if (typeof s === 'string') return fail(s);
+            inventory?.addItem(Item.Station, -1);
+            note = `${s.name} built`;
+          } else if (msg.type === 'railStationTake') {
+            if (!near(yard.stationAt(msg.station))) return fail('too far from it');
+            const r = yard.takeStation(msg.station);
+            if (r !== true) return fail(r);
+            inventory?.addItem(Item.Station, 1);
+          } else if (msg.type === 'lineCreate') {
+            const names = msg.stations.map((id) => yard.stationList().find((s) => s.id === id)?.name ?? '?');
+            const r = yard.createLine(msg.stations, msg.dwell, `${names[0]!.replace(/ station$/, '')} – ${names.at(-1)!.replace(/ station$/, '')}`);
+            if (typeof r === 'string') return fail(r);
+            note = `the ${r.name} line runs`;
+          } else if (!yard.deleteLine(msg.line)) return fail('that line has gone');
+          send({ type: 'editResult', id: msg.id, ok: true, ...(note ? { note } : {}) });
+          if (inventory?.mode === 'survival' && (msg.type === 'railStationPlace' || msg.type === 'railStationTake')) send(inventory.message());
           showTrains(world);
           world.saveTrains();
           break;

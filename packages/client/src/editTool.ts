@@ -237,7 +237,7 @@ export class EditTool {
     if (this.mode !== 'hybrid' || this.breaks) return true;
     const held = this.materialOf()!;
     const m = this.targetMaterial;
-    if (held === Item.Bucket || held === Item.Boat || held === Item.GeologistsHammer || carOfItem(held) !== null) return true;
+    if (held === Item.Bucket || held === Item.Boat || held === Item.GeologistsHammer || held === Item.Station || carOfItem(held) !== null) return true;
     if (isBlock(held) ? canPlace(held, this.survival ? 'survival' : 'creative') : objectKindOf(held) !== null || !!designOfItem(held)) return true;
     if (m !== null && (isExplosive(m) || isUsableMaterial(m) || (isSword(held) && LEAVES.has(m)))) return true;
     const design = this.aimedDesign();
@@ -262,8 +262,12 @@ export class EditTool {
   private readonly boarding = new Map<number, number>();
   private readonly driving = new Map<number, number>();
   private readonly cargoOpening = new Map<number, number>();
+  /** Told how a request went (see request). */
+  private readonly answered = new Map<number, (error: string | null) => void>();
   /** Finds a trading post's stall along a ray (units), to trade at (set by the game; see PostView.pick). */
   pickPost: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { post: TradingPost; dist: number } | null) | null = null;
+  /** Finds a station's platform along a ray (units), to take it away (set by the game; see TrainView.pickStation). */
+  pickStation: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { id: number; name: string; dist: number } | null) | null = null;
   /** Finds a switch's lever stand along a ray (units), to throw it (set by the game; see TrainView.pickSwitch). */
   pickSwitch: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { key: string; left: boolean; dist: number } | null) | null = null;
   /** Trading at a post (right-click its stall). */
@@ -709,6 +713,14 @@ export class EditTool {
         return;
       }
       if (button === 2 && carOfItem(held) !== null) return this.placeCar(held!);
+      // A station in hand: beside the track aimed at (the side aimed at). A station aimed at: left-click takes it away.
+      if (button === 2 && held === Item.Station) {
+        if (!this.hit) return this.say('a station goes beside track: aim at the track, the side you want it');
+        const [x, y, z] = this.hit.point;
+        return this.request({ type: 'railStationPlace', x: x!, y: y!, z: z! }, 'building the station');
+      }
+      const platform = this.aimedStation();
+      if (platform && button === 0 && this.breaks) return this.request({ type: 'railStationTake', station: platform.id }, 'taking the station away');
       // A switch's lever in reach: right-click throws it.
       const lever = this.aimedSwitch();
       if (lever && button === 2) return this.request({ type: 'switchThrow', node: lever.key }, 'throwing the switch');
@@ -786,6 +798,14 @@ export class EditTool {
     }
   }
 
+  /** The station aimed at, if its platform's in reach and nearer than the voxel aimed at. */
+  private aimedStation(): { id: number; name: string } | null {
+    const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const hit = this.pickStation?.([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], CAR_REACH_M * UNITS_PER_METER);
+    return hit && (!this.hit || hit.dist < this.hit.distance + UNITS_PER_METER) ? hit : null;
+  }
+
   /** The switch stand aimed at, if one's in reach and nearer than the voxel aimed at. */
   private aimedSwitch(): { key: string; left: boolean } | null {
     const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
@@ -839,9 +859,10 @@ export class EditTool {
   }
 
   /** Sends a request that's answered with an editResult (an id given it; `what`: what it was, if it fails). */
-  request(msg: DistributiveOmit<Extract<ClientMessage, { id: number }>, 'id'>, what: string): void {
+  request(msg: DistributiveOmit<Extract<ClientMessage, { id: number }>, 'id'>, what: string, done?: (error: string | null) => void): void {
     const id = this.nextId++;
     this.pending.set(id, what);
+    if (done) this.answered.set(id, done);
     this.send({ ...msg, id } as ClientMessage);
   }
 
@@ -856,6 +877,9 @@ export class EditTool {
     const engine = this.driving.get(msg.id);
     this.driving.delete(msg.id);
     if (msg.ok && engine !== undefined) this.onDriving?.(engine);
+    const done = this.answered.get(msg.id);
+    this.answered.delete(msg.id);
+    done?.(msg.ok ? null : msg.error);
     const flatbed = this.cargoOpening.get(msg.id);
     this.cargoOpening.delete(msg.id);
     if (msg.ok && flatbed !== undefined) this.onCargo?.(flatbed);
@@ -882,7 +906,10 @@ export class EditTool {
     const car = this.mode === 'hybrid' ? this.aimedCar() : null;
     const post = this.mode === 'hybrid' && !car ? this.aimedPost() : null;
     const lever = this.mode === 'hybrid' && !car && !post ? this.aimedSwitch() : null;
-    const target = lever
+    const platform = this.mode === 'hybrid' && !car && !post && !lever ? this.aimedStation() : null;
+    const target = platform
+      ? `aiming at ${platform.name} (left-click: take it away; lines: on the map, M)`
+      : lever
       ? `aiming at a switch, set ${lever.left ? 'left' : 'right'} (right-click: throw it)`
       : post
       ? `aiming at ${post.trader.name}'s stall, ${post.name} (right-click: trade)`

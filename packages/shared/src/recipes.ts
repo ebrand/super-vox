@@ -84,6 +84,7 @@ const BUILT_IN: readonly Recipe[] = [
   r('steam-engine', 'building', [[Item.IronIngot, 12], [Material.Planks, 4]], [Item.Engine, 1], true),
   r('flatbed-car', 'building', [[Item.IronIngot, 4], [Material.Planks, 8]], [Item.FlatbedCar, 1], true),
   r('passenger-car', 'building', [[Item.IronIngot, 4], [Material.Planks, 12]], [Item.PassengerCar, 1], true),
+  r('railway-station', 'building', [[Material.Planks, 12], [Material.Cobblestone, 8]], [Item.Station, 1], true),
   r('radio', 'tools', [[Item.IronIngot, 2], [Item.CopperCoin, 2], [Material.Planks, 2]], [Item.Radio, 1], true),
   // (Early, and cheap: for finding ore before there's iron.)
   r('geologists-hammer', 'tools', [[Material.Cobblestone, 1], [Item.Stick, 1]], [Item.GeologistsHammer, 1], true),

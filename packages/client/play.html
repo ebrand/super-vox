@@ -62,6 +62,17 @@
       /* Driving an engine: how it's going, over the hotbar. */
       #drive { position: fixed; left: 50%; bottom: 112px; transform: translateX(-50%); z-index: 5; pointer-events: none; font: 600 13px ui-monospace, monospace; color: #f0f0f0; background: rgba(0,0,0,0.55); padding: 4px 10px; border-radius: 6px; white-space: nowrap; }
       #drive[hidden] { display: none; }
+      /* Railway lines, on the map (see LinesPanel). */
+      #worldmap .lines-panel { position: absolute; right: 12px; bottom: 12px; width: 330px; max-width: calc(100vw - 32px); max-height: 60vh; overflow: auto; z-index: 21; background: rgba(12, 14, 18, 0.92); border: 1px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 8px 10px; font: 12px/1.45 system-ui, sans-serif; color: #e6e6e6; }
+      #worldmap .lines-panel[hidden] { display: none; }
+      #worldmap .lines-panel h3 { margin: 0 0 6px; font-size: 13px; }
+      #worldmap .lines-panel .hint { color: #9aa4ae; }
+      #worldmap .lines-panel .line-row { border-top: 1px solid rgba(255,255,255,0.12); padding: 6px 0; }
+      #worldmap .lines-panel .picked { color: #ffd23f; }
+      #worldmap .lines-panel .bad { color: #ff7b72; }
+      #worldmap .lines-panel button { background: #21262d; color: #e6e6e6; border: 1px solid rgba(255,255,255,0.25); border-radius: 4px; padding: 2px 9px; font: inherit; cursor: pointer; margin: 4px 4px 0 0; }
+      #worldmap .lines-panel button:disabled { opacity: 0.45; cursor: default; }
+      #worldmap .lines-panel input { width: 4em; background: #0d1117; color: #e6e6e6; border: 1px solid rgba(255,255,255,0.25); border-radius: 4px; }
       /* Track mode (see TrackMode): the whole view's for pointing at the ground; the panel top right. */
       .track-mode { position: fixed; inset: 0; z-index: 3; cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none; }
       .track-mode[hidden] { display: none; }

@@ -5,7 +5,7 @@ import type { AnimationLibrary } from './animations.js';
 import type { MeshLibrary } from './meshes.js';
 import { CHAT_MAX, type ChatLine } from './chat.js';
 import type { Track, TrackPlan } from './rail.js';
-import type { Train } from './trains.js';
+import type { Line, Station, Train } from './trains.js';
 import type { TradingPost } from './market.js';
 import type { Village } from './villages.js';
 import { isValidTileLevel } from './tile.js';
@@ -26,7 +26,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 51;
+export const PROTOCOL_VERSION = 52;
 
 export type ClientMessage =
   /** Something said (or a command: see readChat), to be heard by the world (or one player). */
@@ -45,6 +45,15 @@ export type ClientMessage =
   | { type: 'trade'; id: number; post: number; item: number; lots: number; act: 'buy' | 'sell' }
   /** Driving: the throttle (-1..1, the way the engine faces) and the brake; `leave`: getting out. */
   | { type: 'drive'; throttle: number; brake: boolean; leave?: boolean; prefer?: 'left' | 'right' | null }
+  /**
+   * Stations and lines (see trains.ts): a station (its item in hand) put beside the track aimed at
+   * (units), one taken away; a line through stations (in order, stopping `dwell` s at each: its
+   * train the one standing at the first), one ended. Answered with an editResult.
+   */
+  | { type: 'railStationPlace'; id: number; x: number; y: number; z: number }
+  | { type: 'railStationTake'; id: number; station: number }
+  | { type: 'lineCreate'; id: number; stations: number[]; dwell: number }
+  | { type: 'lineDelete'; id: number; line: number }
   /** A switch thrown (see TrackNode: by its key), at its lever. Answered with an editResult. */
   | { type: 'switchThrow'; id: number; node: string }
   /** A segment of track (see SegmentAsk: units) for a design speed (km/h): planned (see trackPlan), or (`lay`) laid. */
@@ -203,7 +212,7 @@ export type ServerMessage =
   /** You're sitting in seat `seat` of passenger car `car` (Shift: out, see the drive message). */
   | { type: 'seated'; car: number; seat: number }
   /** The world's trains (see Train), on joining, whenever they change, and while they move (ten times a second); `at`: when, by the server's clock (ms); how its switches are set (by node key: their left leg 0, right 1). */
-  | { type: 'trains'; trains: Train[]; at: number; switches: Record<string, 0 | 1> }
+  | { type: 'trains'; trains: Train[]; at: number; switches: Record<string, 0 | 1>; stations: Station[]; lines: Line[] }
   /** The world's laid track (see Track), on joining and whenever more's laid. */
   | { type: 'tracks'; tracks: Track[] }
   /** Chat (see ChatLine): what's said, as it is; `history`: the world's last lines, on joining. */
@@ -464,6 +473,11 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   if (msg.type === 'carTake' && isId(msg.id) && isId(msg.car)) return { type: 'carTake', id: msg.id as number, car: msg.car as number };
   if (msg.type === 'drive' && Number.isFinite(msg.throttle) && Math.abs(msg.throttle as number) <= 1 && typeof msg.brake === 'boolean' && (msg.leave === undefined || typeof msg.leave === 'boolean'))
     return { type: 'drive', throttle: msg.throttle as number, brake: msg.brake, ...(msg.leave ? { leave: true } : {}), ...(msg.prefer === 'left' || msg.prefer === 'right' || msg.prefer === null ? { prefer: msg.prefer } : {}) };
+  if (msg.type === 'railStationPlace' && isId(msg.id) && [msg.x, msg.y, msg.z].every(Number.isFinite)) return { type: 'railStationPlace', id: msg.id as number, x: msg.x as number, y: msg.y as number, z: msg.z as number };
+  if (msg.type === 'railStationTake' && isId(msg.id) && isId(msg.station)) return { type: 'railStationTake', id: msg.id as number, station: msg.station as number };
+  if (msg.type === 'lineCreate' && isId(msg.id) && Array.isArray(msg.stations) && msg.stations.length <= 32 && msg.stations.every(isId) && Number.isFinite(msg.dwell))
+    return { type: 'lineCreate', id: msg.id as number, stations: msg.stations as number[], dwell: msg.dwell as number };
+  if (msg.type === 'lineDelete' && isId(msg.id) && isId(msg.line)) return { type: 'lineDelete', id: msg.id as number, line: msg.line as number };
   if (msg.type === 'switchThrow' && isId(msg.id) && typeof msg.node === 'string' && /^-?\d+,-?\d+$/.test(msg.node)) return { type: 'switchThrow', id: msg.id as number, node: msg.node };
   // (Track: a segment's ends; checked by the server too, see planSegment.)
   const isXZ = (v: unknown): v is { x: number; z: number } => typeof v === 'object' && v !== null && Number.isFinite((v as { x: unknown }).x) && Number.isFinite((v as { z: unknown }).z);

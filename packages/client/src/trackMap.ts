@@ -6,6 +6,8 @@ export class TrackMap {
   private tracks: readonly Track[] = [];
   private posts: readonly TradingPost[] = [];
   private villages: readonly Village[] = [];
+  private stations: readonly { id: number; name: string; x: number; z: number }[] = [];
+  private picking: readonly number[] = [];
 
   constructor(private readonly map: WorldMapOverlay) {
     map.drawMore = (g, toX, toZ, near, dpr) => {
@@ -24,6 +26,20 @@ export class TrackMap {
       g.font = `${11 * dpr}px system-ui, sans-serif`;
       g.textAlign = 'left';
       g.textBaseline = 'middle';
+      // Stations: blue squares, named; those of a line being made, numbered in order.
+      for (const s of this.stations) {
+        const x = toX(near(s.x)), z = toZ(s.z), r = 4.5 * dpr, k = this.picking.indexOf(s.id);
+        g.fillStyle = k >= 0 ? '#ffd23f' : '#58a6ff';
+        g.strokeStyle = '#000';
+        g.lineWidth = 1.5 * dpr;
+        g.fillRect(x - r, z - r, 2 * r, 2 * r);
+        g.strokeRect(x - r, z - r, 2 * r, 2 * r);
+        const label = k >= 0 ? `${this.picking.map((id, i) => (id === s.id ? i + 1 : 0)).filter(Boolean).join(', ')}. ${s.name}` : s.name;
+        g.lineWidth = 3 * dpr;
+        g.strokeText(label, x + r + 3 * dpr, z);
+        g.fillStyle = '#fff';
+        g.fillText(label, x + r + 3 * dpr, z);
+      }
       // Villages: a green house, named.
       for (const v of this.villages) {
         const x = toX(near(v.x)), z = toZ(v.z), r = 5 * dpr;
@@ -63,6 +79,12 @@ export class TrackMap {
         g.fillText(p.name, x + r + 3 * dpr, z);
       }
     };
+  }
+
+  setStations(stations: readonly { id: number; name: string; x: number; z: number }[], picking: readonly number[] = this.picking): void {
+    this.stations = stations;
+    this.picking = picking;
+    if (this.map.isOpen) this.map.update();
   }
 
   setVillages(villages: readonly Village[]): void {

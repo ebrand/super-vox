@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Track, TrackPoint } from './rail.js';
-import { CAR_GAP_M, CAR_SPECS, accelerate, alongLine, behind, carPose, moveTrain, pointAt, speedLimit, trackNet, type Car, type Train } from './trains.js';
+import { CAR_GAP_M, CAR_SPECS, accelerate, alongLine, behind, carPose, moveTrain, pointAt, speedLimit, trackNet, routeTo, type Car, type Train } from './trains.js';
 import { UNITS_PER_METER } from './units.js';
 
 const M = UNITS_PER_METER;
@@ -104,5 +104,25 @@ describe('along the line', () => {
     moveTrain(net, t, 40 * M, left);
     expect([engine.pos.track, flat.pos.track]).toEqual([3, 3]);
     expect(net.set.get(node.key)).toBe(0);
+  });
+
+  it('finds the way to a point (through switches: from a trunk, either leg), how far, and how its switches must be set', () => {
+    const net = trackNet([straight(1, 0, 0, 100, 0), straight(2, 100, 0, 200, 0), straight(3, 100, 0, 190, -40)]);
+    const node = net.nodes.find((n) => n.legs)!;
+    // From 50 m along the trunk, east, to 20 m along the branch: 70 m, the switch set for it (left).
+    const r = routeTo(net, { track: 1, s: 50 * M, way: 1 }, { track: 3, s: 20 * M })!;
+    expect(r.distance).toBeCloseTo(70 * M, 6);
+    expect(r.switches).toEqual({ [node.key]: 0 });
+    expect(r.arrive).toBe(1);
+    // To the straight leg: set right.
+    expect(routeTo(net, { track: 1, s: 50 * M, way: 1 }, { track: 2, s: 30 * M })!.switches).toEqual({ [node.key]: 1 });
+    // Back from the branch to the trunk: no setting (trailing).
+    const back = routeTo(net, { track: 3, s: 20 * M, way: -1 }, { track: 1, s: 10 * M })!;
+    expect(back.distance).toBeCloseTo(110 * M, 6);
+    expect(back.switches).toEqual({});
+    // Behind, on the same track, the wrong way: no way (no loops).
+    expect(routeTo(net, { track: 1, s: 50 * M, way: 1 }, { track: 1, s: 10 * M })).toBeNull();
+    // From branch to the other leg: can't (legs don't lead to each other).
+    expect(routeTo(net, { track: 3, s: 20 * M, way: -1 }, { track: 2, s: 30 * M })).toBeNull();
   });
 });

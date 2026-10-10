@@ -135,6 +135,16 @@ export class WorldMapOverlay {
    * to them (`near`: a world x at its copy nearest the view's middle), `dpr` the pixel ratio.
    */
   drawMore: ((g: CanvasRenderingContext2D, toX: (x: number) => number, toZ: (z: number) => number, near: (x: number) => number, dpr: number) => void) | null = null;
+  /** A plain click on the map (not a drag, not a travel click): where (world units), and how many units a screen pixel is; true if it was taken. */
+  clicked: ((at: { x: number; z: number }, perPixel: number) => boolean) | null = null;
+  /** Where more controls go (the bar over the map). */
+  get bar(): HTMLDivElement {
+    return this.root.querySelector('div.bar')!;
+  }
+  /** The map's own element (for panels over it). */
+  get element(): HTMLDivElement {
+    return this.root;
+  }
 
   constructor(
     worldSize: { width: number; depth: number; wrapX?: boolean },
@@ -184,6 +194,13 @@ export class WorldMapOverlay {
     window.addEventListener('mouseup', (e) => {
       const d = this.drag;
       this.drag = null;
+      if (d && !d.moved && e.button === 0 && this.isOpen && !travelClick(e) && this.clicked && !this.in3d && e.target === this.canvas) {
+        const r = this.canvas.getBoundingClientRect(), v = this.currentView();
+        const [x, z] = screenToWorld(v, r.width, r.height, e.clientX - r.left, e.clientY - r.top);
+        const [x2] = screenToWorld(v, r.width, r.height, e.clientX - r.left + 1, e.clientY - r.top);
+        const W = this.world.width;
+        if (this.clicked({ x: this.world.wrapX ? mod(x, W) : x, z }, Math.abs(x2 - x))) return this.update();
+      }
       if (!d || d.moved || e.button !== 0 || !this.isOpen || !this.canTravel || !travelClick(e)) return;
       const p = this.at(e);
       if (p) {

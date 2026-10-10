@@ -153,6 +153,11 @@ const ITEM_ICONS: Readonly<Partial<Record<ItemId, string>>> = {
       `<rect x="5" y="12" width="4" height="4" fill="rgb(230 210 150)"/><rect x="11" y="12" width="4" height="4" fill="rgb(230 210 150)"/><rect x="17" y="12" width="4" height="4" fill="rgb(230 210 150)"/><rect x="23" y="12" width="4" height="4" fill="rgb(230 210 150)"/>` +
       `<circle cx="8" cy="25" r="2.6" fill="rgb(30 30 32)"${OUTLINE}/><circle cx="24" cy="25" r="2.6" fill="rgb(30 30 32)"${OUTLINE}/>`,
   ),
+  // A station: a platform, its shelter's roof on posts, a bench.
+  [Item.Station]: svg(
+    `<rect x="2" y="22" width="28" height="5" fill="rgb(150 150 154)"${OUTLINE}/><path d="M4 10 L28 10 L26 6 L6 6 Z" fill="${css([0.6, 0.1, 0.08], 1.1)}"${OUTLINE}/>` +
+      `<rect x="6" y="10" width="2" height="12" fill="${css(DARK_WOOD, 1.3)}"/><rect x="24" y="10" width="2" height="12" fill="${css(DARK_WOOD, 1.3)}"/><rect x="11" y="17" width="10" height="2" fill="${css(WOOD, 1.3)}"/><rect x="12" y="19" width="1.5" height="3" fill="${css(DARK_WOOD, 1.3)}"/><rect x="18.5" y="19" width="1.5" height="3" fill="${css(DARK_WOOD, 1.3)}"/>`,
+  ),
   [Item.Boat]: svg(
     `<path d="M3 15 L29 15 L25 23 Q16 26 7 23 Z" fill="${css(WOOD, 1.2)}"${OUTLINE}/><path d="M5 18 L27 18" stroke="${css(DARK_WOOD, 1.2)}" stroke-width="1"/>` +
       `<path d="M2 25 Q6 23 10 25 T18 25 T26 25 T30 25" stroke="${css(WATER, 1.4)}" stroke-width="1.6" fill="none"/><line x1="20" y1="6" x2="13" y2="20" stroke="${css(DARK_WOOD, 1.3)}" stroke-width="1.6" stroke-linecap="round"/>`,
