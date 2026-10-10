@@ -5,6 +5,7 @@ import type { WorldMapOverlay } from './worldMap.js';
 export class TrackMap {
   private tracks: readonly Track[] = [];
   private posts: readonly TradingPost[] = [];
+  private camps: readonly { name: string; x: number; z: number }[] = [];
   private villages: readonly Village[] = [];
   private stations: readonly { id: number; name: string; x: number; z: number }[] = [];
   private picking: readonly number[] = [];
@@ -60,6 +61,24 @@ export class TrackMap {
         g.fillStyle = '#fff';
         g.fillText(v.name, x + r + 3 * dpr, z);
       }
+      // Outlaw camps: a red tent, named.
+      for (const c of this.camps) {
+        const x = toX(near(c.x)), z = toZ(c.z), r = 5 * dpr;
+        g.fillStyle = '#e5534b';
+        g.strokeStyle = '#000';
+        g.lineWidth = 1.5 * dpr;
+        g.beginPath();
+        g.moveTo(x - r, z + r * 0.8);
+        g.lineTo(x, z - r);
+        g.lineTo(x + r, z + r * 0.8);
+        g.closePath();
+        g.fill();
+        g.stroke();
+        g.lineWidth = 3 * dpr;
+        g.strokeText(c.name, x + r + 3 * dpr, z);
+        g.fillStyle = '#fff';
+        g.fillText(c.name, x + r + 3 * dpr, z);
+      }
       for (const p of this.posts) {
         const x = toX(near(p.x)), z = toZ(p.z), r = 5 * dpr;
         g.fillStyle = '#ffd23f';
@@ -89,6 +108,11 @@ export class TrackMap {
 
   setVillages(villages: readonly Village[]): void {
     this.villages = villages;
+    if (this.map.isOpen) this.map.update();
+  }
+
+  setCamps(camps: readonly { name: string; x: number; z: number }[]): void {
+    this.camps = camps;
     if (this.map.isOpen) this.map.update();
   }
 

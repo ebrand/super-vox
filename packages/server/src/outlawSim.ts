@@ -126,6 +126,14 @@ export class OutlawSim {
     return [...this.camps.values()];
   }
 
+  /** Whether the camps have changed since players were last told (see told). */
+  changed = false;
+
+  /** The camps as players are told them: with how many keep about each. */
+  told(): (Camp & { people: number })[] {
+    return this.list().map((c) => ({ ...c, people: this.membersOf(c) }));
+  }
+
   /** The outlaws (as records: where they last were). */
   people(): Outlaw[] {
     return [...this.outlaws.values()].map(({ mob: _m, tx: _x, tz: _z, ...o }) => o);
@@ -161,6 +169,7 @@ export class OutlawSim {
         if (!m) {
           this.outlaws.delete(o.id);
           this.dirty = true;
+          if (o.camp !== null) this.changed = true;
           this.onDeath?.(o, { x: o.x, y: o.y, z: o.z });
           continue;
         }
@@ -277,6 +286,7 @@ export class OutlawSim {
       if (c) {
         o.camp = c.id;
         this.dirty = true;
+        this.changed = true;
       }
     }
     const dx = o.tx - o.x, dz = o.tz - o.z, d = Math.hypot(dx, dz);
@@ -311,6 +321,7 @@ export class OutlawSim {
       if (!site) continue;
       const c: Camp = { id: this.next++, name: campName(this.camps.size), x: site.x, y: this.ground(site.x, site.z).h, z: site.z, stage: 0, founded: now, roam: null };
       this.camps.set(c.id, c);
+      this.changed = true;
       for (const p of group.slice(0, CAMP_MAX)) p.camp = c.id;
       this.build(c, 1);
       this.dirty = true;
@@ -344,6 +355,7 @@ export class OutlawSim {
     const design = pickDesign(stage === 1 ? 'campfire' : 'lean-to', c.id);
     const { clear, place } = campStage(Math.floor(c.x / B), Math.floor(c.z / B), stage, top, design);
     c.stage = stage;
+    this.changed = true;
     this.writing = this.writing.then(() => this.world.buildWorks(clear, place)).then(
       (r) => this.onEdits?.(r),
       (err: unknown) => this.onError?.(err),

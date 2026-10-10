@@ -8,6 +8,7 @@ import type { Track, TrackPlan } from './rail.js';
 import type { Line, Station, Train } from './trains.js';
 import type { TradingPost } from './market.js';
 import type { Village } from './villages.js';
+import type { Camp } from './outlaws.js';
 import { isValidTileLevel } from './tile.js';
 import type { ColumnRange } from './chunk.js';
 import { HOTBAR_SLOTS, type GameMode } from './items.js';
@@ -26,7 +27,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 56;
+export const PROTOCOL_VERSION = 57;
 
 export type ClientMessage =
   /** Something said (or a command: see readChat), to be heard by the world (or one player). */
@@ -217,6 +218,8 @@ export type ServerMessage =
   | { type: 'crops'; crops: [number, number, number, number][] }
   /** The world's villages (see Village), on joining and whenever one changes. */
   | { type: 'villages'; villages: Village[] }
+  /** The world's outlaw camps (see OutlawSim): where, and how many keep about each. */
+  | { type: 'camps'; camps: (Camp & { people: number })[] }
   /** The world's trading posts (see TradingPost), on joining. */
   | { type: 'posts'; posts: TradingPost[] }
   /** You're sitting in seat `seat` of passenger car `car` (Shift: out, see the drive message). */

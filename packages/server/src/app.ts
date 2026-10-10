@@ -1291,7 +1291,12 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       const targets = here.map(({ p }) => ({ id: p.id, x: p.pose!.x, y: p.pose!.y - EYE, z: p.pose!.z, vulnerable: p.vulnerable }));
       const at = here.map(({ p }) => ({ x: p.pose!.x, z: p.pose!.z }));
       // Outlaws: creatures near players, records further off (see OutlawSim).
-      outlawsOf(world, sockets[0] ? clientWorld.get(sockets[0]) : undefined).step(0.1, now, at, mobs);
+      const outlaws = outlawsOf(world, sockets[0] ? clientWorld.get(sockets[0]) : undefined);
+      outlaws.step(0.1, now, at, mobs);
+      if (outlaws.changed) {
+        outlaws.changed = false;
+        toWorld(world, { type: 'camps', camps: outlaws.told() });
+      }
       // Villagers: what's after their village (outlaws; players it's a grudge against), and their hits back.
       const threats = [
         ...mobs.ofKind('outlaw').map((m) => ({ id: m.id, x: m.x, z: m.z, outlaw: true, vulnerable: true })),
@@ -1324,7 +1329,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       }
       if (sim.changed) {
         sim.changed = false;
-        toWorld(world, { type: 'villages', villages: sim.list() });
+        toWorld(world, { type: 'villages', villages: sim.told() });
       }
       for (const { s, p } of here) {
         // Breath, food, healing (see Vitals): the eye under water or not.
@@ -1713,7 +1718,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               world.onTracksChanged ??= () => toWorld(world, { type: 'tracks', tracks: world.trackList() });
               send({ type: 'trains', trains: world.trains.list(), at: Date.now(), switches: world.trains.switches(), stations: world.trains.stationList(), lines: world.trains.lineList() });
               send({ type: 'posts', posts: world.tradingPosts(clientWorld.get(socket) ?? catalog.defaultName) });
-              send({ type: 'villages', villages: villagesOf(world, clientWorld.get(socket)).list() });
+              send({ type: 'villages', villages: villagesOf(world, clientWorld.get(socket)).told() });
+              send({ type: 'camps', camps: outlawsOf(world, clientWorld.get(socket)).told() });
               send({ type: 'crops', crops: world.cropList() });
               // (What's dropped last: the last thing told unasked.)
               send({ type: 'drops', drops: [...(dropsOf.get(world)?.list.values() ?? [])] });
@@ -2231,7 +2237,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             send({ type: 'editResult', id: msg.id, ok: true, note });
             if (sim.changed) {
               sim.changed = false;
-              toWorld(world, { type: 'villages', villages: sim.list() });
+              toWorld(world, { type: 'villages', villages: sim.told() });
             }
             break;
           }

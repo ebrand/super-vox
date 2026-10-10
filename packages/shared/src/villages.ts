@@ -117,6 +117,8 @@ export interface Village {
   tools?: { axes: number; picks: number };
   /** Grudges against players (by account): till when (ms). */
   grudges?: Record<string, number>;
+  /** How many live there (as players are told it: see VillageSim.told). */
+  people?: number;
 }
 
 /** A village's building materials, in blocks (fractions: gathered a little at a time). */
@@ -270,8 +272,9 @@ export const villagerName = (n: number) => VILLAGER_NAMES[n % VILLAGER_NAMES.len
 
 /**
  * A cottage built of a design (see Cottage.design): its voxels (its first state's) turned so its
- * front (+z) is the door's side, its y 0 at the floor's block (Cottage.floor - 1: a block over the
- * highest ground under it), on cobblestone down to the ground wherever it stands over lower ground.
+ * front (+z) is the door's side, its y 0 (its bottom layer) on the ground at the highest point under
+ * it (Cottage.floor - 1: the first block of air there), on cobblestone down to the ground wherever
+ * that layer stands over lower ground.
  * Its site cleared first (and a block round it); its pieces in the order they go, a block's worth
  * at a time: from the bottom up. `ground`: the ground's top at a column (its first block of air).
  */

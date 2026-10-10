@@ -559,10 +559,15 @@ export class WorldMapOverlay {
 
   /** World position, height, and material under the mouse (from the sharpest picture there), or null outside the world. */
   private at(e: MouseEvent): { x: number; z: number; height: number; material: number } | null {
+    const r = this.canvas.getBoundingClientRect();
+    const [x, z] = screenToWorld(this.currentView(), r.width, r.height, e.clientX - r.left, e.clientY - r.top);
+    return this.sample(x, z);
+  }
+
+  /** The map at (x, z) (units): the cell there (its middle), its height and surface; null off the world, or before the map's come. */
+  private sample(x: number, z: number): { x: number; z: number; height: number; material: number } | null {
     const m = this.map;
     if (!m) return null;
-    const r = this.canvas.getBoundingClientRect();
-    let [x, z] = screenToWorld(this.currentView(), r.width, r.height, e.clientX - r.left, e.clientY - r.top);
     if (this.world.wrapX) x = mod(x, this.world.width);
     if (x < 0 || x >= this.world.width || z < 0 || z >= this.world.depth) return null;
     for (const p of [...this.tiles.values()].sort((a, b) => a.map.step - b.map.step)) {
@@ -574,6 +579,21 @@ export class WorldMapOverlay {
     const i = Math.min(m.cols - 1, Math.floor(x / m.step)), j = Math.min(m.rows - 1, Math.floor(z / m.step));
     const k = i + m.cols * j;
     return { x: (i + 0.5) * m.step, z: (j + 0.5) * m.step, height: m.heights[k]!, material: m.materials[k]! };
+  }
+
+  /** The view moved to (x, z) (units), close enough in to see a village (`across` units across the narrower side). */
+  centerOn(x: number, z: number, across = 600 * 16): void {
+    const { w, h } = this.frameSize();
+    this.setView({ cx: x, cz: z, scale: Math.min(w, h) / across });
+  }
+
+  /** Off to (x, z) (units), on the ground there as the map has it, where travel's allowed (see canTravel); whether it went. */
+  travelTo(x: number, z: number): boolean {
+    const p = this.canTravel ? this.sample(x, z) : null;
+    if (!p) return false;
+    this.teleport(x, z, p.height);
+    this.close();
+    return true;
   }
 
   /** The help line (for the 3D view or the flat one). */

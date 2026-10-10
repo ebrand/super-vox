@@ -276,6 +276,13 @@ export class VillageSim {
     return [...this.villages.values()];
   }
 
+  /** The villages as players are told them: with how many live in each. */
+  told(): Village[] {
+    const people = new Map<number, number>();
+    for (const p of this.walkers.values()) if (p.home !== null) people.set(p.home, (people.get(p.home) ?? 0) + 1);
+    return this.list().map((v) => ({ ...v, people: people.get(v.id) ?? 0 }));
+  }
+
   get population(): number {
     return this.walkers.size;
   }

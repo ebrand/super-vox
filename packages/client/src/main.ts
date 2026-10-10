@@ -10,6 +10,7 @@ import { TrainView } from './trainView.js';
 import { PostView } from './postView.js';
 import { CropView } from './cropView.js';
 import { LinesPanel } from './linesPanel.js';
+import { PlacesPanel, type Place } from './placesPanel.js';
 import { CAB_EYE, SEAT_EYES } from './trainModels.js';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
@@ -496,6 +497,18 @@ let postView: PostView | null = null;
 let cropView: CropView | null = null;
 /** Railway lines, on the map (see LinesPanel). */
 let linesPanel: LinesPanel | null = null;
+/** Places on the map (see PlacesPanel): the world's villages, outlaw camps and trading posts, as last told. */
+let placesPanel: PlacesPanel | null = null;
+let camps: readonly { name: string; x: number; z: number; people: number; stage: number }[] = [];
+let posts: readonly { name: string; x: number; z: number }[] = [];
+function showPlaces(): void {
+  const all: Place[] = [
+    ...villages.map((v): Place => ({ kind: 'village', name: v.name, x: v.x, z: v.z, about: `${v.people ?? '?'} villagers, ${v.cottages.filter((c) => c.stage >= 3).length} cottage${v.cottages.filter((c) => c.stage >= 3).length === 1 ? '' : 's'}${v.wall ? (v.wall >= 8 ? ', walled' : ', walling') : ''}` })),
+    ...camps.map((c): Place => ({ kind: 'camp', name: c.name, x: c.x, z: c.z, about: `${c.people} outlaw${c.people === 1 ? '' : 's'}${c.stage < 2 ? ', setting up' : ''}` })),
+    ...posts.map((p): Place => ({ kind: 'post', name: p.name, x: p.x, z: p.z, about: 'trading post' })),
+  ];
+  placesPanel?.update(all);
+}
 let driving: { car: number; throttle: number; brake: boolean; sentAt: number; sent: string; shiftWasDown: boolean; heading: number | null; turnWas: number } | null = null;
 let stopDriving: (gone?: boolean) => void = () => {};
 /** The seat we're in, if any (see the seated message): Shift gets up. */
@@ -873,6 +886,8 @@ connection = connect({
             trackMap = new TrackMap(worldMap);
             linesPanel = new LinesPanel(worldMap, (m, done) => editTool?.request(m, m.type === 'lineCreate' ? 'starting the line' : 'ending the line', done));
             linesPanel.onPicking = (ids) => trackMap?.setStations(trainView?.stationPoints() ?? [], ids ?? []);
+            placesPanel = new PlacesPanel(worldMap, () => ({ x: normalizeX(w, camera.position.x * UNITS_PER_METER), z: camera.position.z * UNITS_PER_METER }), w.wrapX ? w.widthUnits : null);
+            showPlaces();
             trackMode ??= new TrackMode({
               scene,
               camera,
@@ -1442,6 +1457,7 @@ connection = connect({
         cropView?.setVillages(msg.villages);
         trackMap?.setVillages(msg.villages);
         villages = msg.villages;
+        showPlaces();
         // (Trading with one: what it offers now.)
         const open = inventoryUi.tradeOpen, v = open?.villager !== undefined ? villages.find((x) => x.id === open.id) : undefined;
         if (open?.villager !== undefined && v) inventoryUi.refreshTrade(villageTrade(v, open.villager, open.trader.name));
@@ -1450,6 +1466,13 @@ connection = connect({
       case 'posts':
         postView?.setPosts(msg.posts);
         trackMap?.setPosts(msg.posts);
+        posts = msg.posts;
+        showPlaces();
+        break;
+      case 'camps':
+        camps = msg.camps;
+        trackMap?.setCamps(msg.camps);
+        showPlaces();
         break;
       case 'seated':
         sitIn(msg.car, msg.seat);
