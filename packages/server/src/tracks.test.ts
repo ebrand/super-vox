@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { FLAT_WORLD_16KM, FlatGenerator, MAX_CUT_M, MIN_RADIUS_M, Material, UNITS_PER_METER, curveSpeed, defaultFlatGen } from '@super-vox/shared';
+import { FLAT_WORLD_16KM, FlatGenerator, MAX_FILL_M, MIN_RADIUS_M, Material, UNITS_PER_METER, curveSpeed, defaultFlatGen } from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
 import { World } from './world.js';
 
@@ -76,19 +76,35 @@ describe('laying track, a segment at a time', () => {
     expect(world.planSegment({ from: { x: e3.x, z: e3.z }, heading: null, to: { x: e3.x + 20 * M, z: e3.z + 10 * M }, curve: true, speed: 60 })).toMatch(new RegExp(`${MIN_RADIUS_M} m at least`));
   });
 
-  it("doesn't cut deeper than it may (a hill in the way: go round), or through what players have built", () => {
-    // A hill 25 m high at x 2040 m.
-    const hill = new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4));
-    hill.surfaceHeightAt = ((x: number) => (Math.abs(x / M - 2040) < 30 ? 25 * M : 0)) as typeof hill.surfaceHeightAt;
-    const world = new World(FLAT_WORLD_16KM, hill);
-    expect(world.planSegment(east(2000, 2000, 80))).toMatch(new RegExp(`cut \\d+ m deep .*${MAX_CUT_M} m at most`));
+  it("isn't laid up or down ground steeper than the grade, or cut deeper than it may be, or through what players have built", () => {
+    const shaped = (h: (x: number) => number) => {
+      const g = new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4));
+      g.surfaceHeightAt = ((x: number) => h(x / M) * M) as typeof g.surfaceHeightAt;
+      return new World(FLAT_WORLD_16KM, g);
+    };
+    // A hill 25 m high at x 2040 m (its sides 5% and more): too steep.
+    expect(shaped((x) => Math.max(0, 25 - Math.abs(x - 2040) * 0.5)).planSegment(east(2000, 2000, 80))).toMatch(/ground's \d+\.\d% steep .*3% at most/);
+    // A gentle rise (2%): fine, the track up it.
+    const gentle = shaped((x) => Math.max(0, (x - 2000) * 0.02)).planSegment(east(2000, 2000, 80));
+    if (typeof gentle === 'string') throw new Error(gentle);
+    expect(gentle.layout.groundGrade).toBeCloseTo(0.02, 3);
+    // On from a track's end high over the ground (the ground lowered under it, as if it had been laid
+    // on a ridge): built up too high where it starts.
+    let level = 0;
+    const lowered = shaped(() => level);
+    const first = lowered.layTrack(east(2000, 2000, 50));
+    if (typeof first === 'string') throw new Error(first);
+    level = -20;
+    const end = first.track.points.at(-1)!;
+    expect(lowered.planSegment({ from: { x: end.x, z: end.z }, heading: null, to: { x: end.x + 80 * M, z: end.z }, curve: false, speed: 60 })).toMatch(new RegExp(`built up \\d+ m high .*${MAX_FILL_M} m at most`));
     const { world: w } = flat();
     // A block someone's placed, 40 m along.
     w.applyEdit({ op: 'place', x: 2040 * M, y: 0, z: 2000 * M, size: 16, material: Material.Planks });
     expect(w.planSegment(east(2000, 2000, 80))).toMatch(/cut through what's been built/);
-    // Track elsewhere, and more alongside it (through its earthworks): fine.
+    // Track elsewhere, and more alongside it (through its earthworks): fine; across it, not.
     expect(typeof w.layTrack(east(3000, 3000, 80))).not.toBe('string');
     expect(typeof w.planSegment(east(3000, 3010, 80))).not.toBe('string');
+    expect(w.planSegment({ from: { x: 3040 * M, z: 2960 * M }, heading: null, to: { x: 3040 * M, z: 3040 * M }, curve: false, speed: 60 })).toMatch(/cross track 3\d m along/);
   });
 
   it('drops track kept before segments (no speed): its earthworks stay', () => {

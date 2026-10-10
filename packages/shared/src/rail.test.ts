@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BED_WIDTH_M, CLEARANCE_M, MAX_GRADE, MAX_SEGMENT_M, MIN_RADIUS_M, SAMPLE_M, SHOULDER_M, curveSpeed, earthworks, layLine, profile, radiusFor, segmentLine } from './rail.js';
+import { BED_WIDTH_M, CLEARANCE_M, MAX_GRADE, groundGrade, MAX_SEGMENT_M, MIN_RADIUS_M, SAMPLE_M, SHOULDER_M, curveSpeed, earthworks, layLine, profile, radiusFor, segmentLine } from './rail.js';
 import { BLOCK_SIZE } from './chunk.js';
 import { Material } from './materials.js';
 import { UNITS_PER_METER } from './units.js';
@@ -120,5 +120,54 @@ describe('earthworks', () => {
     expect(Math.max(...c20.map((p) => p.y + p.size))).toBeGreaterThanOrEqual(17 * M);
     // The chunk columns it changed (a chunk is 16 m; the bed reaching 2.5 m past each end: x -2.5..42.5 m, z -2.5..2.5).
     expect(columns).toEqual(['-1,-1', '-1,0', '0,-1', '0,0', '1,-1', '1,0', '2,-1', '2,0']);
+  });
+
+  it('at its edges, in quarter-metre columns: none outside the bed and shoulders, all within cleared at the bed', () => {
+    // North-east, on flat ground at 10 m, the rails' foot 10.3 m.
+    const pts = Array.from({ length: 60 }, (_, i) => ({ x: (i * M) / Math.SQRT2, y: 10.3 * M, z: -(i * M) / Math.SQRT2, heading: -Math.PI / 4, s: i * M }));
+    const { clear } = earthworks(pts, () => 10 * M);
+    const half = (BED_WIDTH_M / 2 + SHOULDER_M) * M, Q = BLOCK_SIZE / 4;
+    // (How far from the line: across it, the line being x = -z, from 3 m to 38 m along, clear of its ends.)
+    const off = (x: number, z: number) => Math.abs(x + z) / Math.SQRT2;
+    const along = (x: number, z: number) => (x - z) / Math.SQRT2;
+    const bed = clear.filter((p) => p.y <= 9.5 * M && p.y + p.size > 9.5 * M);
+    expect(bed.some((p) => p.size === Q)).toBe(true);
+    for (const p of bed) {
+      // Every corner of a whole block, and the middle of a quarter, within.
+      const corners = p.size === Q ? [[p.x + Q / 2, p.z + Q / 2]] : [[p.x, p.z], [p.x + p.size, p.z], [p.x, p.z + p.size], [p.x + p.size, p.z + p.size]];
+      for (const [x, z] of corners) if (along(x!, z!) > 3 * M && along(x!, z!) < 38 * M) expect(off(x!, z!)).toBeLessThanOrEqual(half + 1e-6);
+    }
+    // All within (a quarter in from the edge), cleared at the bed.
+    const covered = (x: number, z: number) => bed.some((p) => x >= p.x && x < p.x + p.size && z >= p.z && z < p.z + p.size);
+    for (let a = 5 * M; a < 35 * M; a += 0.37 * M)
+      for (let o = -half + Q; o <= half - Q; o += 0.29 * M) {
+        const x = (a + o) / Math.SQRT2, z = (o - a) / Math.SQRT2;
+        expect(covered(x, z), `at ${(a / M).toFixed(2)} m along, ${(o / M).toFixed(2)} m across`).toBe(true);
+      }
+  });
+
+  it("measures the ground's grade over GRADE_WINDOW_M: a short step's nothing, a long slope's its grade", () => {
+    const step = M;
+    expect(groundGrade(Array.from({ length: 200 }, (_, i) => (i < 100 ? 0 : 0.5 * M)), step).grade).toBeLessThan(MAX_GRADE);
+    const slope = groundGrade(Array.from({ length: 200 }, (_, i) => (i >= 50 && i < 150 ? (i - 50) * 0.05 * M : i >= 150 ? 5 * M : 0)), step);
+    expect(slope.grade).toBeCloseTo(0.05, 6);
+    expect(slope.at / M).toBeGreaterThan(50);
+    expect(slope.at / M).toBeLessThan(150);
+  });
+
+  it('in a cut, the bed under the rails is solid gravel (cleared, then made again), in whole blocks and at the edges', () => {
+    // East along z 0.4 m; the ground 14 m, the rails' foot 10.3 m: a cut 3.7 m deep.
+    const pts = Array.from({ length: 41 }, (_, i) => ({ x: i * M, y: 10.3 * M, z: 0.4 * M, heading: -Math.PI / 2, s: i * M }));
+    const { fill, clear } = earthworks(pts, () => 14 * M);
+    const Q = BLOCK_SIZE / 4;
+    const at = (list: typeof fill, x: number, y: number, z: number) => list.filter((p) => x >= p.x && x < p.x + p.size && y >= p.y && y < p.y + p.size && z >= p.z && z < p.z + p.size);
+    // Across the bed (whole blocks in the middle, quarters at the edges), from a metre under the foot to it: filled, gravel; over it, cleared.
+    for (let zq = -1.6; zq <= 2.4; zq += 0.25)
+      for (let y = 9.3 + Q / M / 2; y < 10.25; y += 0.25) {
+        const f = at(fill, 20.5 * M, y * M, zq * M);
+        expect(f.length, `filled at z ${zq}, y ${y.toFixed(3)}`).toBeGreaterThan(0);
+        expect(f.every((p) => p.material === Material.Gravel)).toBe(true);
+      }
+    expect(at(clear, 20.5 * M, 12 * M, 0.4 * M).length).toBeGreaterThan(0);
   });
 });

@@ -110,7 +110,10 @@ import {
   UNITS_PER_METER,
   DESIGN_SPEEDS,
   MAX_CUT_M,
+  BED_WIDTH_M,
   MAX_FILL_M,
+  MAX_GRADE,
+  SHOULDER_M,
   MIN_RADIUS_M,
   SAMPLE_M,
   curveSpeed,
@@ -801,8 +804,22 @@ export class World {
     if (seg.radius < MIN_RADIUS_M) return `too tight a curve: ${Math.round(seg.radius)} m radius (${MIN_RADIUS_M} m at least)`;
     const layout = layLine(seg.line, (x, z) => this.generator.surfaceHeightAt(x, z), pin === undefined ? {} : { start: pin });
     if (!layout) return 'too steep';
+    // (Not up or down ground steeper than track may be: along the slope instead.)
+    if (layout.groundGrade > MAX_GRADE + 1e-4)
+      return `the ground's ${(layout.groundGrade * 100).toFixed(1)}% steep ${Math.round(layout.groundGradeAt)} m along (${(MAX_GRADE * 100).toFixed(0)}% at most): go along the slope, not up it`;
     if (layout.maxCut > MAX_CUT_M) return `a cut ${layout.maxCut.toFixed(0)} m deep ${Math.round(layout.cutAt)} m along (${MAX_CUT_M} m at most; tunnels come later): go round the hill, or along its side`;
     if (layout.maxFill > MAX_FILL_M) return `built up ${layout.maxFill.toFixed(0)} m high ${Math.round(layout.fillAt)} m along (${MAX_FILL_M} m at most; bridges come later): go round the dip`;
+    // Not across other track (junctions come later): its bed and this one's don't meet, but where it starts from a track's end.
+    {
+      const apart = (BED_WIDTH_M + 2 * SHOULDER_M) * M, startFree = (JOIN_M + BED_WIDTH_M) * M;
+      for (const t of this.tracks.values())
+        for (let i = 0; i < t.points.length; i += 2) {
+          const q = t.points[i]!;
+          if (pin !== undefined && Math.hypot(q.x - from.x, q.z - from.z) < startFree) continue;
+          const hit = layout.points.find((p) => Math.abs(p.x - q.x) < apart && Math.abs(p.z - q.z) < apart && Math.hypot(p.x - q.x, p.z - q.z) < apart);
+          if (hit) return `it would cross track ${Math.round(hit.s / M)} m along (junctions come later): go round it`;
+        }
+    }
     const works = earthworks(layout.points, (x, z) => this.generator.surfaceHeightAt(x, z));
     // Not through what players have built (track's own columns aside).
     const ours = new Set(this.trackList().flatMap((t) => t.columns));

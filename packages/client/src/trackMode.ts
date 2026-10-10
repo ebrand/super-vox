@@ -521,7 +521,7 @@ export class TrackMode {
     else if (!current) lines.push('working it out…');
     if (p) {
       const radius = p.radius === null ? 'straight' : `${p.radius} m radius`;
-      lines.push(`${Math.round(p.length)} m · ${radius} · ${p.speed} km/h · steepest ${(p.maxGrade * 100).toFixed(1)}% (${(MAX_GRADE * 100).toFixed(0)}% at most)`);
+      lines.push(`${Math.round(p.length)} m · ${radius} · ${p.speed} km/h · track ${(p.maxGrade * 100).toFixed(1)}%, ground ${(p.groundGrade * 100).toFixed(1)}% at its steepest (${(MAX_GRADE * 100).toFixed(0)}% at most)`);
       lines.push(`cut ${p.maxCut.toFixed(1)} m (${MAX_CUT_M} at most) · built up ${p.maxFill.toFixed(1)} m (${MAX_FILL_M} at most)${p.rails ? ` · ${p.rails} rails` : ''}`);
       if (p.speed < this.speed) lines.push(`⚠ slower: ${this.speed} km/h needs a ${Math.ceil(radiusFor(this.speed))} m radius at least`);
     }

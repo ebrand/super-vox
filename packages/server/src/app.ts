@@ -2002,7 +2002,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           const every = <T,>(list: T[], n: number) => list.filter((_, i) => i % n === 0 || i === list.length - 1);
           const last = layout.points.at(-1)!;
           const plan: TrackPlan = {
-            length: layout.length, maxCut: layout.maxCut, maxFill: layout.maxFill, maxGrade: layout.maxGrade, rails,
+            length: layout.length, maxCut: layout.maxCut, maxFill: layout.maxFill, maxGrade: layout.maxGrade, groundGrade: Math.round(layout.groundGrade * 1e4) / 1e4, rails,
             radius: Number.isFinite(planned.radius) ? Math.round(planned.radius) : null, speed: planned.speed,
             end: { x: last.x, z: last.z, heading: planned.endHeading },
             line: every(layout.points, 2).map((p) => ({ x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) })),

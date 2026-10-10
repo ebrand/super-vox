@@ -28,6 +28,8 @@ export const TRACK_REACH_M = 250;
 /** A segment's shortest and longest (m). */
 export const MIN_SEGMENT_M = 4;
 export const MAX_SEGMENT_M = 400;
+/** Ground's grade is measured over this far (m): steps and bumps shorter than it are cut or filled. */
+export const GRADE_WINDOW_M = 20;
 /** Deepest cut and highest fill (m) a segment may have (tunnels and bridges: later). */
 export const MAX_CUT_M = 10;
 export const MAX_FILL_M = 15;
@@ -68,6 +70,9 @@ export interface TrackLayout {
   cutAt: number;
   fillAt: number;
   maxGrade: number;
+  /** The natural ground's steepest grade along it (over GRADE_WINDOW_M), and how far along (m) it's centred. */
+  groundGrade: number;
+  groundGradeAt: number;
 }
 
 type XZ = { x: number; z: number };
@@ -213,7 +218,24 @@ export function layLine(line: readonly XZ[], groundAt: (x: number, z: number) =>
     if (-d > maxCut) (maxCut = -d), (cutAt = points[i]!.s);
     if (i > 0) maxGrade = Math.max(maxGrade, Math.abs(ys[i]! - ys[i - 1]!) / step);
   }
-  return { points, ground, length: points.at(-1)!.s / M, maxCut: maxCut / M, maxFill: maxFill / M, cutAt: cutAt / M, fillAt: fillAt / M, maxGrade };
+  const steep = groundGrade(ground, step);
+  return { points, ground, length: points.at(-1)!.s / M, maxCut: maxCut / M, maxFill: maxFill / M, cutAt: cutAt / M, fillAt: fillAt / M, maxGrade, groundGrade: steep.grade, groundGradeAt: steep.at / M };
+}
+
+/**
+ * The steepest the ground `ground` (units, `step` apart) climbs or falls over GRADE_WINDOW_M (or
+ * the whole of it, if shorter), and where (units along: the window's middle).
+ */
+export function groundGrade(ground: readonly number[], step: number): { grade: number; at: number } {
+  const n = ground.length;
+  if (n < 2) return { grade: 0, at: 0 };
+  const w = Math.min(n - 1, Math.max(1, Math.round((GRADE_WINDOW_M * UNITS_PER_METER) / step)));
+  let grade = 0, at = 0;
+  for (let i = 0; i + w < n; i++) {
+    const g = Math.abs(ground[i + w]! - ground[i]!) / (w * step);
+    if (g > grade) (grade = g), (at = (i + w / 2) * step);
+  }
+  return { grade, at };
 }
 
 /**
@@ -228,6 +250,8 @@ export interface TrackPlan {
   maxCut: number;
   maxFill: number;
   maxGrade: number;
+  /** The ground's steepest, along it (see groundGrade). */
+  groundGrade: number;
   radius: number | null;
   speed: number;
   rails: number;
@@ -267,38 +291,70 @@ export interface EarthPiece {
 }
 
 /**
- * The earthworks for a laid track over natural ground `groundAt` (units): every 1 m column within
- * the bed and its shoulders (of the nearest point) cleared from a metre under the rails' foot
+ * The earthworks for a laid track over natural ground `groundAt` (units): the ground within the
+ * bed and its shoulders (of the nearest point) cleared from a metre under the rails' foot
  * (CLEARANCE_M up, or to the ground and a metre over in a cut: open, not a tunnel), then built up
- * from the ground to the rails' foot (1 m blocks of dirt, then 1/4 m voxels to the height; the top
- * metre gravel: the bed). Clear first: fill only goes where there's room.
+ * from the ground to the rails' foot (dirt, then gravel: the top metre, the bed). Clear first: fill
+ * only goes where there's room. Blocks wholly within: in whole metres (and quarters to the foot);
+ * blocks the edge crosses, in 1/4 m columns, those within (so its edges are fine), up to the
+ * block's ground; over that (trees), in whole blocks again.
  */
 export function earthworks(points: readonly TrackPoint[], groundAt: (x: number, z: number) => number): { fill: EarthPiece[]; clear: EarthPiece[]; columns: string[] } {
-  const B = BLOCK_SIZE, Q = B / 4, half = (BED_WIDTH_M / 2 + SHOULDER_M) * UNITS_PER_METER;
-  // Each column (block x, z) near the line: the height of the nearest point.
-  const top = new Map<string, { bx: number; bz: number; y: number; d: number }>();
-  for (const p of points) {
-    for (let bx = Math.floor((p.x - half) / B); bx <= Math.floor((p.x + half) / B); bx++)
-      for (let bz = Math.floor((p.z - half) / B); bz <= Math.floor((p.z + half) / B); bz++) {
-        const d = Math.hypot(bx * B + B / 2 - p.x, bz * B + B / 2 - p.z);
+  const B = BLOCK_SIZE, Q = B / 4, half = (BED_WIDTH_M / 2 + SHOULDER_M) * UNITS_PER_METER, PER = B / Q;
+  // Each quarter column (x, z, in quarters) near the line: the height of the nearest point, and how near.
+  const near = new Map<number, { y: number; d: number }>();
+  const key = (qx: number, qz: number) => qx * 4194304 + qz; // (quarter coordinates well within 2^22)
+  for (const p of points)
+    for (let qx = Math.floor((p.x - half) / Q); qx <= Math.floor((p.x + half) / Q); qx++)
+      for (let qz = Math.floor((p.z - half) / Q); qz <= Math.floor((p.z + half) / Q); qz++) {
+        const d = Math.hypot(qx * Q + Q / 2 - p.x, qz * Q + Q / 2 - p.z);
         if (d > half) continue;
-        const key = `${bx},${bz}`, was = top.get(key);
-        if (!was || d < was.d) top.set(key, { bx, bz, y: p.y, d });
+        const k = key(qx, qz), was = near.get(k);
+        if (!was || d < was.d) near.set(k, { y: p.y, d });
       }
+  // By block: which of its quarter columns are within.
+  const blocks = new Map<string, { bx: number; bz: number; quarters: { qx: number; qz: number; y: number; d: number }[] }>();
+  for (const [k, v] of near) {
+    const qx = Math.round(k / 4194304), qz = k - qx * 4194304, bx = Math.floor(qx / PER), bz = Math.floor(qz / PER);
+    const bk = `${bx},${bz}`;
+    const b = blocks.get(bk) ?? blocks.set(bk, { bx, bz, quarters: [] }).get(bk)!;
+    b.quarters.push({ qx, qz, y: v.y, d: v.d });
   }
   const fill: EarthPiece[] = [], clear: EarthPiece[] = [], columns = new Set<string>();
   const CHUNK = CHUNK_SIZE / B; // (blocks a chunk across)
-  for (const { bx, bz, y } of top.values()) {
-    const x = bx * B, z = bz * B, ground = groundAt(x + B / 2, z + B / 2);
+  const footOf = (y: number) => Math.floor(y / Q) * Q;
+  for (const { bx, bz, quarters } of blocks.values()) {
+    const x = bx * B, z = bz * B;
     columns.add(`${Math.floor(bx / CHUNK)},${Math.floor(bz / CHUNK)}`);
-    const foot = Math.floor(y / Q) * Q, whole = Math.floor(foot / B) * B;
-    // Up from the ground: whole blocks, then quarters to the foot; gravel for the top metre.
-    for (let b = Math.floor(ground / B) * B - B; b < whole; b += B) fill.push({ x, y: b, z, size: B, material: b >= whole - B ? Material.Gravel : Material.Dirt });
-    for (let q = whole; q < foot; q += Q) for (let qx = 0; qx < B; qx += Q) for (let qz = 0; qz < B; qz += Q) fill.push({ x: x + qx, y: q, z: z + qz, size: Q, material: Material.Gravel });
-    // Cleared from the metre under the bed's top (that metre made gravel again: the bed, even on
-    // ground as it was), as high as needs be: whole blocks.
-    const up = Math.max(foot + CLEARANCE_M * UNITS_PER_METER, ground + B);
-    for (let b = whole - B; b < up; b += B) clear.push({ x, y: b, z, size: B, material: Material.Air });
+    if (quarters.length === PER * PER) {
+      // Wholly within: as high as its nearest quarter's point.
+      const y = quarters.reduce((a, b) => (b.d < a.d ? b : a)).y;
+      const ground = groundAt(x + B / 2, z + B / 2), foot = footOf(y), whole = Math.floor(foot / B) * B;
+      // Up from the ground: whole blocks, then quarters to the foot; gravel for the top metre.
+      // (From the bed's bottom at least: in a cut, that's been cleared.)
+      for (let b = Math.min(Math.floor(ground / B) * B - B, whole - B); b < whole; b += B) fill.push({ x, y: b, z, size: B, material: b >= whole - B ? Material.Gravel : Material.Dirt });
+      for (let q = whole; q < foot; q += Q) for (let qx = 0; qx < B; qx += Q) for (let qz = 0; qz < B; qz += Q) fill.push({ x: x + qx, y: q, z: z + qz, size: Q, material: Material.Gravel });
+      // Cleared from the metre under the bed's top (that metre made gravel again: the bed, even on
+      // ground as it was), as high as needs be: whole blocks.
+      const up = Math.max(foot + CLEARANCE_M * UNITS_PER_METER, ground + B);
+      for (let b = whole - B; b < up; b += B) clear.push({ x, y: b, z, size: B, material: Material.Air });
+      continue;
+    }
+    // The edge crosses it: quarter columns, those within, up to the top of the block's ground (all of it, within or not); whole blocks over that.
+    let top = -Infinity, highest = -Infinity;
+    for (let qx = 0; qx < PER; qx++) for (let qz = 0; qz < PER; qz++) top = Math.max(top, groundAt(x + qx * Q + Q / 2, z + qz * Q + Q / 2));
+    for (const q of quarters) highest = Math.max(highest, q.y);
+    const solidTop = Math.ceil(top / B) * B;
+    for (const q of quarters) {
+      const qx = q.qx * Q, qz = q.qz * Q, ground = groundAt(qx + Q / 2, qz + Q / 2), foot = footOf(q.y), bedBottom = foot - B;
+      // Up from the ground (to a quarter): dirt, the top metre gravel.
+      for (let h = Math.min(Math.floor(ground / Q) * Q - Q, bedBottom); h < foot; h += Q) fill.push({ x: qx, y: h, z: qz, size: Q, material: h >= bedBottom ? Material.Gravel : Material.Dirt });
+      // Cleared from the metre under the bed's top to the block's ground top.
+      for (let h = bedBottom; h < solidTop; h += Q) clear.push({ x: qx, y: h, z: qz, size: Q, material: Material.Air });
+    }
+    // Over the ground (trees), as high as for the rest: whole blocks.
+    const up = Math.max(footOf(highest) + CLEARANCE_M * UNITS_PER_METER, top + B);
+    for (let b = solidTop; b < up; b += B) clear.push({ x, y: b, z, size: B, material: Material.Air });
   }
   return { fill, clear, columns: [...columns].sort() };
 }
