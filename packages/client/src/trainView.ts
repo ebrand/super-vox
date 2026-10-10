@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { CAR_SPECS, UNITS_PER_METER, carPose, moveTrain, speedLimit, trackNet, type CarKind, type Track, type TrackNet, type Train } from '@super-vox/shared';
-import { CAR_SIZE, carGeometry } from './trainModels.js';
+import { CAR_SPECS, FLATBED_CRATES, UNITS_PER_METER, cratesFor, carPose, moveTrain, speedLimit, trackNet, type CarKind, type Track, type TrackNet, type Train } from '@super-vox/shared';
+import { CAR_SIZE, carGeometry, crateGeometry } from './trainModels.js';
 
 const M = UNITS_PER_METER;
 /** The top of the rails over a track point's height (its rails' foot: see trackModel), m. */
@@ -46,14 +46,24 @@ export class TrainView {
       }
     for (const t of trains)
       for (const c of t.cars) {
-        const was = this.meshes.get(c.id);
-        if (was && was.userData.kind === c.kind) continue;
-        was?.removeFromParent();
-        const m = new THREE.Mesh(carGeometry(c.kind), this.material);
-        m.userData.kind = c.kind;
-        m.rotation.order = 'YXZ';
-        this.meshes.set(c.id, m);
-        this.group.add(m);
+        let m = this.meshes.get(c.id);
+        if (!m || m.userData.kind !== c.kind) {
+          m?.removeFromParent();
+          m = new THREE.Mesh(carGeometry(c.kind), this.material);
+          m.userData.kind = c.kind;
+          m.rotation.order = 'YXZ';
+          this.meshes.set(c.id, m);
+          this.group.add(m);
+        }
+        // A flatbed's load: as many crates as it takes.
+        if (c.kind === 'flatbed') {
+          const n = Math.min(FLATBED_CRATES, cratesFor(c.cargo));
+          if (m.userData.crates !== n) {
+            m.userData.crates = n;
+            m.clear();
+            if (n) m.add(new THREE.Mesh(crateGeometry(n), this.material));
+          }
+        }
       }
     this.frame();
   }

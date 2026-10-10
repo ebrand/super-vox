@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { COAL_SECONDS, MAX_COAL, UNITS_PER_METER, carPose, trackNet, type Track, type TrackPoint } from '@super-vox/shared';
+import { BLOCK_VOLUME, COAL_SECONDS, CRATE_BLOCKS, FLATBED_CRATES, Item, MAX_COAL, Material, PASSENGER_SEATS, UNITS_PER_METER, carPose, cratesFor, trackNet, type Track, type TrackPoint } from '@super-vox/shared';
 import { TrainYard } from './trainYard.js';
 
 const M = UNITS_PER_METER, EAST = -Math.PI / 2, WEST = Math.PI / 2;
@@ -110,5 +110,34 @@ describe('trains in a world', () => {
     expect(carPose(trackNet([east(1, 0, 300), east(2, 300, 600)]), again.list()[0]!.cars[0]!)!.x / M).toBeCloseTo(xOf(y, e.id), 3);
     // (Something not trains: none.)
     expect(new TrainYard({ trains: [{ id: 'x' }] }).list()).toEqual([]);
+  });
+
+  it("seats passengers (each in their own, till they're full); loads a flatbed in crates, as much as fits; neither taken off till empty", () => {
+    const y = yard();
+    const p = y.place('passenger', 100 * M, 0, 0, EAST) as { id: number };
+    const f = y.place('flatbed', 200 * M, 0, 0, EAST) as { id: number };
+    expect(y.sit(f.id, 1)).toMatch(/only a passenger car/);
+    const seats = Array.from({ length: PASSENGER_SEATS }, (_, i) => y.sit(p.id, i + 1));
+    expect(seats).toEqual(Array.from({ length: PASSENGER_SEATS }, (_, i) => i));
+    expect(y.sit(p.id, 99)).toMatch(/every seat/);
+    expect(y.take(p.id)).toMatch(/sitting/);
+    // Out (one, and the rest): the seat's free again; kept without them.
+    y.leave(3);
+    expect(y.sit(p.id, 99)).toBe(2);
+    expect(y.save().trains.flatMap((t) => t.cars).find((c) => c.id === p.id)!.seats!.every((s) => s === null)).toBe(true);
+    for (let i = 1; i <= 99; i++) y.leave(i);
+    expect(y.take(p.id)).toBe('passenger');
+    // Loads: in crates (items by CRATE_ITEMS, blocks by CRATE_BLOCKS), as many as fit.
+    expect(y.load(p.id + 99, Item.Stick, 1)).toMatch(/gone/);
+    expect(y.load(f.id, Item.Stick, 100)).toBe(100);
+    expect(cratesFor(y.list()[0]!.cars[0]!.cargo)).toBe(2);
+    expect(y.load(f.id, Material.Stone, 1000 * BLOCK_VOLUME)).toBe((FLATBED_CRATES - 2) * CRATE_BLOCKS * BLOCK_VOLUME);
+    expect(y.load(f.id, Item.Stick, 28)).toBe(28); // (the stick crate topped up)
+    expect(y.load(f.id, Item.Stick, 1)).toMatch(/full/);
+    expect(y.take(f.id)).toMatch(/unload/);
+    expect(y.load(f.id, Item.Stick, -500)).toBe(128);
+    expect(y.load(f.id, Item.Stick, -1)).toMatch(/none of that/);
+    expect(y.load(f.id, Material.Stone, -1e9)).toBe((FLATBED_CRATES - 2) * CRATE_BLOCKS * BLOCK_VOLUME);
+    expect(y.take(f.id)).toBe('flatbed');
   });
 });

@@ -1861,6 +1861,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             } else if (msg.act === 'uncouple') {
               const r = yard.uncouple(msg.car);
               if (r !== true) return fail(r);
+            } else if (msg.act === 'sit') {
+              const seat = yard.sit(msg.car, p.id);
+              if (typeof seat === 'string') return fail(seat);
+              send({ type: 'seated', car: msg.car, seat });
+            } else if (msg.act === 'cargo') {
+              // (Opened: what's on it comes with the trains.)
+              const t = yard.list().find((t) => t.cars.some((c) => c.id === msg.car));
+              if (t?.cars.find((c) => c.id === msg.car)?.kind !== 'flatbed') return fail('only a flatbed carries a load');
             } else {
               // Coal: survival only (creative's engines need none); a block of it at most a time, by the lump.
               if (inventory?.mode !== 'survival') return fail("in creative, engines need no coal");
@@ -1874,6 +1882,30 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           }
           send({ type: 'editResult', id: msg.id, ok: true, ...(note ? { note } : {}) });
           if (msg.type !== 'carUse' || msg.act === 'fuel') if (inventory?.mode === 'survival') send(inventory.message());
+          showTrains(world);
+          world.saveTrains();
+          break;
+        }
+
+        case 'cargo': {
+          // A flatbed loaded from, or unloaded into, the inventory (survival: what's there; creative: as much as asked).
+          if (!greeted) return;
+          const fail = (error: string) => send({ type: 'editResult', id: msg.id, ok: false, error });
+          if (!canEdit()) return fail(cantBuild());
+          if (opts.inventories && who && !inventory) return fail(inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded");
+          const p = players.get(socket)!, yard = world.trains, at = yard.carAt(msg.car);
+          if (p.pose && (!at || Math.hypot(p.pose.x - at.x, p.pose.y - at.y, p.pose.z - at.z) > CAR_REACH_M * UNITS_PER_METER)) return fail('too far from it');
+          const inv = inventory?.mode === 'survival' ? inventory : null;
+          const amount = msg.to === 'car' && inv ? Math.min(msg.amount, inv.count(msg.item)) : msg.amount;
+          if (amount <= 0) return fail(`no ${itemName(msg.item)} to put on it`);
+          const moved = yard.load(msg.car, msg.item, msg.to === 'car' ? amount : -amount);
+          if (typeof moved === 'string') return fail(moved);
+          if (inv) {
+            if (msg.to === 'car') inv.discard(msg.item, moved);
+            else inv.addItem(msg.item, moved);
+            send(inv.message());
+          }
+          send({ type: 'editResult', id: msg.id, ok: true });
           showTrains(world);
           world.saveTrains();
           break;

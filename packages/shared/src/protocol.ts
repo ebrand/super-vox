@@ -24,7 +24,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 47;
+export const PROTOCOL_VERSION = 48;
 
 export type ClientMessage =
   /** Something said (or a command: see readChat), to be heard by the world (or one player). */
@@ -35,7 +35,9 @@ export type ClientMessage =
    * one taken off. Answered with an editResult.
    */
   | { type: 'carPlace'; id: number; item: number; x: number; y: number; z: number; heading: number }
-  | { type: 'carUse'; id: number; car: number; act: 'board' | 'fuel' | 'uncouple' }
+  | { type: 'carUse'; id: number; car: number; act: 'board' | 'fuel' | 'uncouple' | 'sit' | 'cargo' }
+  /** A flatbed's load: `amount` of `item` put on it (`to` 'car') or taken off it ('me'). Answered with an editResult. */
+  | { type: 'cargo'; id: number; car: number; item: number; amount: number; to: 'car' | 'me' }
   | { type: 'carTake'; id: number; car: number }
   /** Driving: the throttle (-1..1, the way the engine faces) and the brake; `leave`: getting out. */
   | { type: 'drive'; throttle: number; brake: boolean; leave?: boolean }
@@ -188,6 +190,8 @@ export type ServerMessage =
   | { type: 'meshes'; library: MeshLibrary }
   /** A segment as it'd be laid (see the track message): what it'd take, its line and profile; or why not; `laid`: it has been. */
   | { type: 'trackPlan'; id: number; error?: string; laid?: boolean; plan?: TrackPlan }
+  /** You're sitting in seat `seat` of passenger car `car` (Shift: out, see the drive message). */
+  | { type: 'seated'; car: number; seat: number }
   /** The world's trains (see Train), on joining, whenever they change, and while they move (ten times a second); `at`: when, by the server's clock (ms). */
   | { type: 'trains'; trains: Train[]; at: number }
   /** The world's laid track (see Track), on joining and whenever more's laid. */
@@ -442,7 +446,9 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   const isId = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 2 ** 32;
   if (msg.type === 'carPlace' && isId(msg.id) && Number.isInteger(msg.item) && [msg.x, msg.y, msg.z, msg.heading].every(Number.isFinite))
     return { type: 'carPlace', id: msg.id as number, item: msg.item as number, x: msg.x as number, y: msg.y as number, z: msg.z as number, heading: msg.heading as number };
-  if (msg.type === 'carUse' && isId(msg.id) && isId(msg.car) && (msg.act === 'board' || msg.act === 'fuel' || msg.act === 'uncouple')) return { type: 'carUse', id: msg.id as number, car: msg.car as number, act: msg.act };
+  if (msg.type === 'carUse' && isId(msg.id) && isId(msg.car) && (msg.act === 'board' || msg.act === 'fuel' || msg.act === 'uncouple' || msg.act === 'sit' || msg.act === 'cargo')) return { type: 'carUse', id: msg.id as number, car: msg.car as number, act: msg.act };
+  if (msg.type === 'cargo' && isId(msg.id) && isId(msg.car) && Number.isInteger(msg.item) && Number.isFinite(msg.amount) && (msg.amount as number) > 0 && (msg.to === 'car' || msg.to === 'me'))
+    return { type: 'cargo', id: msg.id as number, car: msg.car as number, item: msg.item as number, amount: msg.amount as number, to: msg.to };
   if (msg.type === 'carTake' && isId(msg.id) && isId(msg.car)) return { type: 'carTake', id: msg.id as number, car: msg.car as number };
   if (msg.type === 'drive' && Number.isFinite(msg.throttle) && Math.abs(msg.throttle as number) <= 1 && typeof msg.brake === 'boolean' && (msg.leave === undefined || typeof msg.leave === 'boolean'))
     return { type: 'drive', throttle: msg.throttle as number, brake: msg.brake, ...(msg.leave ? { leave: true } : {}) };

@@ -20,12 +20,14 @@ const TIMBER: Rgb = [0.42, 0.29, 0.17];
 const MAROON: Rgb = [0.42, 0.08, 0.1];
 const CREAM: Rgb = [0.86, 0.8, 0.62];
 const ROOF: Rgb = [0.28, 0.28, 0.3];
-const GLASS: Rgb = [0.55, 0.62, 0.66];
+const SEAT: Rgb = [0.13, 0.27, 0.32];
+const CRATE: Rgb = [0.6, 0.44, 0.25];
+const DARK_CRATE: Rgb = [0.3, 0.2, 0.1];
 
 /** How tall each is (m, over the rails) and how wide: for aiming at it. */
 export const CAR_SIZE: Record<CarKind, { width: number; height: number }> = {
   engine: { width: 2.9, height: 4.4 },
-  flatbed: { width: 2.7, height: 1.6 },
+  flatbed: { width: 2.7, height: 3.6 },
   passenger: { width: 2.9, height: 4.3 },
 };
 
@@ -143,15 +145,59 @@ function flatbed(): THREE.BufferGeometry {
   return b.geometry();
 }
 
+/** A passenger car's seats: four rows a side, facing ahead (along -z). */
+const SEAT_ROWS = [-3.9, -1.3, 1.3, 3.9];
+const SEAT_X = 0.7, SEAT_Y = 1.75;
+
 function passenger(): THREE.BufferGeometry {
   const L = CAR_SPECS.passenger.length, B = CAR_SPECS.passenger.bogie, b = new Builder();
   b.bogie(-B).bogie(B).box(0, 0.95, 0, 2.3, 0.3, L - 0.6, BLACK).ends(L, 0.95);
-  b.box(0, 2.45, 0, 2.8, 2.6, L - 0.6, MAROON).box(0, 3.85, 0, 2.95, 0.2, L - 0.4, ROOF).box(0, 4.05, 0, 2.3, 0.2, L - 0.8, ROOF);
-  // Windows along both sides, a cream band under them; a door at each end.
-  for (let z = -(L - 2.4) / 2; z <= (L - 2.4) / 2 + 1e-6; z += 1.3) for (const side of [-1, 1]) b.box(side * 1.41, 2.85, z, 0.02, 0.8, 0.9, GLASS);
-  for (const side of [-1, 1]) b.box(side * 1.405, 2.25, 0, 0.02, 0.18, L - 0.7, CREAM);
-  for (const s of [-1, 1]) b.box(0, 2.3, s * (L / 2 - 0.31), 1.0, 2.0, 0.02, IRON);
+  // Its body: walls of panels (seen from inside too: each its own box) round open windows, a floor, its ends, a roof.
+  const end = (L - 0.6) / 2, floor = 1.3, sill = 2.45, head = 3.25, eaves = 3.78;
+  b.box(0, floor - 0.08, 0, 2.7, 0.16, L - 0.6, TIMBER);
+  const windows: number[] = [];
+  for (let z = -(L - 2.4) / 2; z <= (L - 2.4) / 2 + 1e-6; z += 1.3) windows.push(z);
+  for (const side of [-1, 1]) {
+    const x = side * 1.36;
+    b.box(x, (floor + sill) / 2, 0, 0.08, sill - floor, L - 0.6, MAROON).box(x, (head + eaves) / 2, 0, 0.08, eaves - head, L - 0.6, MAROON);
+    // (Between the windows: pillars; and from the end windows to the ends.)
+    const edges = [-end, ...windows.flatMap((z) => [z - 0.45, z + 0.45]), end];
+    for (let i = 0; i < edges.length; i += 2) if (edges[i + 1]! - edges[i]! > 1e-6) b.box(x, (sill + head) / 2, (edges[i]! + edges[i + 1]!) / 2, 0.08, head - sill, edges[i + 1]! - edges[i]!, MAROON);
+    b.box(side * 1.405, 2.25, 0, 0.02, 0.18, L - 0.7, CREAM);
+  }
+  for (const s of [-1, 1]) {
+    b.box(0, (floor + eaves) / 2, s * (end - 0.04), 2.7, eaves - floor, 0.08, MAROON);
+    b.box(0, 2.3, s * (end + 0.01), 1.0, 2.0, 0.02, IRON);
+  }
+  b.box(0, 3.85, 0, 2.95, 0.2, L - 0.4, ROOF).box(0, 4.05, 0, 2.3, 0.2, L - 0.8, ROOF);
+  // Benches, two a row.
+  for (const z of SEAT_ROWS)
+    for (const side of [-1, 1]) {
+      b.box(side * SEAT_X, SEAT_Y - 0.2, z, 1.0, 0.5, 0.6, BLACK);
+      b.box(side * SEAT_X, SEAT_Y + 0.08, z, 1.0, 0.12, 0.62, SEAT);
+      b.box(side * SEAT_X, SEAT_Y + 0.34, z + 0.33, 1.0, 0.56, 0.12, SEAT);
+    }
   return b.geometry();
+}
+
+/** Where each seat's sitter's eye is (m, the car's frame), in seat order (row by row, left then right). */
+export const SEAT_EYES: THREE.Vector3[] = SEAT_ROWS.flatMap((z) => [-1, 1].map((side) => new THREE.Vector3(side * SEAT_X, SEAT_Y + 0.8, z + 0.05)));
+
+const CRATES = new Map<number, THREE.BufferGeometry>();
+/** A flatbed's crates, `n` of them (two by six on its deck, then a second layer: see FLATBED_CRATES). */
+export function crateGeometry(n: number): THREE.BufferGeometry {
+  let g = CRATES.get(n);
+  if (g) return g;
+  const b = new Builder(), deck = 1.34, size = 1.1;
+  for (let i = 0; i < n; i++) {
+    const layer = Math.floor(i / 12), j = i % 12, x = (j % 2 ? 1 : -1) * 0.62, z = -3.125 + Math.floor(j / 2) * 1.25, y = deck + size / 2 + layer * size;
+    // (Each a little different: boards of a slightly different wood.)
+    const k = 0.9 + ((i * 37) % 7) * 0.03;
+    b.box(x, y, z, size, size - 0.02, 1.15, [CRATE[0] * k, CRATE[1] * k, CRATE[2] * k]);
+    b.box(x, y, z, size + 0.02, 0.12, 1.17, DARK_CRATE).box(x, y + size / 2 - 0.08, z, size + 0.02, 0.06, 1.17, DARK_CRATE);
+  }
+  CRATES.set(n, (g = b.geometry()));
+  return g;
 }
 
 const MADE = new Map<CarKind, THREE.BufferGeometry>();

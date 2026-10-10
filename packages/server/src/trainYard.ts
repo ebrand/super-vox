@@ -1,6 +1,11 @@
 import {
   CAR_GAP_M,
   CAR_SPECS,
+  FLATBED_CRATES,
+  PASSENGER_SEATS,
+  crateOf,
+  cratesFor,
+  type ItemId,
   COAL_SECONDS,
   COUPLE_SPEED,
   MAX_COAL,
@@ -54,12 +59,55 @@ export class TrainYard {
   }
 
   list(): Train[] {
-    return [...this.trains.values()].map(({ cab: _, ...t }) => ({ ...t, cars: t.cars.map((c) => ({ ...c, pos: { ...c.pos } })) }));
+    return [...this.trains.values()].map(({ cab: _, ...t }) => ({ ...t, cars: t.cars.map((c) => ({ ...c, pos: { ...c.pos }, ...(c.cargo ? { cargo: c.cargo.map(([i, n]) => [i, n] as [ItemId, number]) } : {}), ...(c.seats ? { seats: [...c.seats] } : {}) })) }));
   }
 
-  /** What's kept (drivers aren't: they're out when the world's opened again). */
+  /** What's kept (drivers and passengers aren't: they're out when the world's opened again). */
   save(): YardSave {
-    return { trains: this.list().map((t) => ({ ...t, driver: null, throttle: 0, brake: false, v: 0 })), next: this.next };
+    return { trains: this.list().map((t) => ({ ...t, driver: null, throttle: 0, brake: false, v: 0, cars: t.cars.map((c) => (c.seats ? { ...c, seats: c.seats.map(() => null) } : c)) })), next: this.next };
+  }
+
+  /** `player` in a free seat of passenger car `car` (out of anything else they were in): which; or why not. */
+  sit(car: number, player: number): number | string {
+    const f = this.find(car);
+    if (!f) return 'that car has gone';
+    const c = f.train.cars[f.index]!;
+    if (!c.seats) return 'only a passenger car has seats';
+    const seat = c.seats.indexOf(null);
+    if (seat < 0) return 'every seat is taken';
+    this.leave(player);
+    c.seats[seat] = player;
+    this.changed = true;
+    return seat;
+  }
+
+  /**
+   * A flatbed's load changed: `amount` of `item` put on (+) or taken off (-), as much as fits (or
+   * is there). How much was; or why none.
+   */
+  load(car: number, item: ItemId, amount: number): number | string {
+    const f = this.find(car);
+    if (!f) return 'that car has gone';
+    const c = f.train.cars[f.index]!;
+    if (!c.cargo) return 'only a flatbed carries a load';
+    const at = c.cargo.findIndex(([i]) => i === item), has = at >= 0 ? c.cargo[at]![1] : 0;
+    let n: number;
+    if (amount > 0) {
+      // (As much as fits in the crates it has room for: the last of this kind's crate topped up first.)
+      const others = cratesFor(c.cargo.filter(([i]) => i !== item)), room = (FLATBED_CRATES - others) * crateOf(item) - has;
+      n = Math.min(amount, Math.max(0, room));
+      if (n <= 0) return "it's full";
+    } else {
+      n = -Math.min(-amount, has);
+      if (n === 0) return "there's none of that on it";
+    }
+    const left = has + n;
+    if (at >= 0) {
+      if (left > 0) c.cargo[at] = [item, left];
+      else c.cargo.splice(at, 1);
+    } else c.cargo.push([item, left]);
+    this.changed = true;
+    return Math.abs(n);
   }
 
   /** The train a car's in, and where in it. */
@@ -96,7 +144,7 @@ export class TrainYard {
     if (!best) return 'a car goes on track: aim at it';
     const half = (CAR_SPECS[kind].length * M) / 2;
     if (alongLine(this.net, best, half).moved < half - 1 || alongLine(this.net, best, -half).moved < half - 1) return "too near the end of the line: there isn't room";
-    const car: Car = { id: this.next++, kind, pos: best, flip: false, ...(kind === 'engine' ? { fuel: 0 } : {}) };
+    const car: Car = { id: this.next++, kind, pos: best, flip: false, ...(kind === 'engine' ? { fuel: 0 } : kind === 'flatbed' ? { cargo: [] } : { seats: Array<number | null>(PASSENGER_SEATS).fill(null) }) };
     // (Not on another: their middles further apart than their halves and the gap.)
     const here = carPose(this.net, car)!;
     for (const t of this.trains.values())
@@ -116,7 +164,10 @@ export class TrainYard {
     const { train, index } = f;
     if (Math.abs(train.v) > 0.2) return "it's moving";
     if (train.cab === car && train.driver !== null) return 'someone is driving it';
-    if (index !== 0 && index !== train.cars.length - 1) return 'uncouple it first (right-click it, and the car behind it)';
+    if (index !== 0 && index !== train.cars.length - 1) return 'uncouple it first (shift-right-click it, and the car behind it)';
+    const c = train.cars[index]!;
+    if (c.cargo?.length) return 'unload it first';
+    if (c.seats?.some((p) => p !== null)) return 'someone is sitting in it';
     const [taken] = train.cars.splice(index, 1);
     if (!train.cars.length) this.trains.delete(train.id);
     else if (train.cab === car) (train.cab = null), (train.driver = null);
@@ -177,9 +228,9 @@ export class TrainYard {
 
   /** What the driver `player` does: the throttle (-1..1, the way their engine faces) and brake; or out. False if they're not driving. */
   drive(player: number, throttle: number, brake: boolean, leave: boolean): boolean {
+    if (leave) return this.leave(player), true;
     const t = this.driven(player);
     if (!t) return false;
-    if (leave) return this.leave(player), true;
     t.throttle = Math.max(-1, Math.min(1, throttle));
     t.brake = brake;
     return true;
@@ -190,12 +241,24 @@ export class TrainYard {
     return null;
   }
 
-  /** `player` out of what they're driving (gone, or got out). */
+  /** `player` out of what they're driving or sitting in (gone, or got out). */
   leave(player: number): void {
+    for (const t of this.trains.values())
+      for (const c of t.cars)
+        if (c.seats?.includes(player)) {
+          c.seats = c.seats.map((p) => (p === player ? null : p));
+          this.changed = true;
+        }
     const t = this.driven(player);
     if (!t) return;
     Object.assign(t, { driver: null, throttle: 0, brake: false, cab: null });
     this.changed = true;
+  }
+
+  /** Whether `player`'s in a seat. */
+  seated(player: number): boolean {
+    for (const t of this.trains.values()) for (const c of t.cars) if (c.seats?.includes(player)) return true;
+    return false;
   }
 
   /** Whether any train's moving or being driven (stepping does something). */
@@ -287,11 +350,12 @@ function kept(raw: unknown): YardSave | null {
   const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
   const car = (c: unknown): c is Car => {
     const o = c as Car;
-    return typeof o === 'object' && o !== null && Number.isInteger(o.id) && o.kind in CAR_SPECS && typeof o.flip === 'boolean' && typeof o.pos === 'object' && o.pos !== null && Number.isInteger(o.pos.track) && num(o.pos.s) && (o.pos.dir === 1 || o.pos.dir === -1) && (o.fuel === undefined || num(o.fuel));
+    return typeof o === 'object' && o !== null && Number.isInteger(o.id) && o.kind in CAR_SPECS && typeof o.flip === 'boolean' && typeof o.pos === 'object' && o.pos !== null && Number.isInteger(o.pos.track) && num(o.pos.s) && (o.pos.dir === 1 || o.pos.dir === -1) && (o.fuel === undefined || num(o.fuel)) && (o.cargo === undefined || (Array.isArray(o.cargo) && o.cargo.every((e) => Array.isArray(e) && Number.isInteger(e[0]) && num(e[1]) && e[1] > 0))) && (o.seats === undefined || Array.isArray(o.seats));
   };
   const trains = (Array.isArray(r.trains) ? r.trains : []).filter((t): t is Train => {
     const o = t as Train;
     return typeof o === 'object' && o !== null && Number.isInteger(o.id) && Array.isArray(o.cars) && o.cars.length > 0 && o.cars.every(car);
   });
-  return { trains: trains.map((t) => ({ id: t.id, cars: t.cars, v: 0, driver: null, throttle: 0, brake: false })), next: Number.isInteger(r.next) ? (r.next as number) : 1 };
+  const cars = (t: Train) => t.cars.map((c) => (c.kind === 'passenger' ? { ...c, seats: Array<number | null>(PASSENGER_SEATS).fill(null) } : c.kind === 'flatbed' ? { ...c, cargo: c.cargo ?? [] } : c));
+  return { trains: trains.map((t) => ({ id: t.id, cars: cars(t), v: 0, driver: null, throttle: 0, brake: false })), next: Number.isInteger(r.next) ? (r.next as number) : 1 };
 }

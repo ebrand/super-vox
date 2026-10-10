@@ -76,6 +76,8 @@ const WHEEL_STEP = 30;
 const WHEEL_GESTURE_GAP = 200;
 
 /** How far away voxels can be edited (units): 32 m. */
+/** Omit over each member of a union. */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 const REACH = 32 * UNITS_PER_METER;
 /** How near a car (m) it's got into, fuelled, uncoupled or taken off from. */
 const CAR_REACH_M = 10;
@@ -257,6 +259,9 @@ export class EditTool {
   /** Requests to get into a boat, by message id: the boat's; and into an engine: the car's. */
   private readonly boarding = new Map<number, number>();
   private readonly driving = new Map<number, number>();
+  private readonly cargoOpening = new Map<number, number>();
+  /** A flatbed's load opened, to see and change (the server said it could be). */
+  onCargo: ((car: number) => void) | null = null;
   private placement: (Box & { valid: boolean; reason: string }) | null = null;
   private dig: Box | null = null;
   /** Outward normal of the face the dig box starts at (the surface aimed at). */
@@ -686,9 +691,11 @@ export class EditTool {
           this.pending.set(id, 'taking it off');
           this.send({ type: 'carTake', id, car: car.id });
         } else {
-          const act = car.kind !== 'engine' ? 'uncouple' : held === Material.Coal && this.survival ? 'fuel' : 'board';
-          this.pending.set(id, act === 'board' ? 'getting in' : act === 'fuel' ? 'putting coal in' : 'uncoupling');
+          // (Shift: uncoupled from the car ahead, whatever it is.)
+          const act = mods.shift ? 'uncouple' : car.kind === 'flatbed' ? 'cargo' : car.kind === 'passenger' ? 'sit' : held === Material.Coal && this.survival ? 'fuel' : 'board';
+          this.pending.set(id, { board: 'getting in', fuel: 'putting coal in', uncouple: 'uncoupling', sit: 'sitting down', cargo: 'opening it' }[act]);
           if (act === 'board') this.driving.set(id, car.id);
+          if (act === 'cargo') this.cargoOpening.set(id, car.id);
           this.send({ type: 'carUse', id, car: car.id, act });
         }
         return;
@@ -801,6 +808,13 @@ export class EditTool {
     this.send({ type: 'boatLaunch', id, x, y: y - BOAT.draft, z, yaw: Math.atan2(-dir.x, -dir.z) });
   }
 
+  /** Sends a request that's answered with an editResult (an id given it; `what`: what it was, if it fails). */
+  request(msg: DistributiveOmit<Extract<ClientMessage, { id: number }>, 'id'>, what: string): void {
+    const id = this.nextId++;
+    this.pending.set(id, what);
+    this.send({ ...msg, id } as ClientMessage);
+  }
+
   /** Handles editResult messages; returns true if the message was one. */
   onServerMessage(msg: ServerMessage): boolean {
     if (msg.type !== 'editResult') return false;
@@ -812,6 +826,9 @@ export class EditTool {
     const engine = this.driving.get(msg.id);
     this.driving.delete(msg.id);
     if (msg.ok && engine !== undefined) this.onDriving?.(engine);
+    const flatbed = this.cargoOpening.get(msg.id);
+    this.cargoOpening.delete(msg.id);
+    if (msg.ok && flatbed !== undefined) this.onCargo?.(flatbed);
     const was = this.unselect.get(msg.id);
     this.unselect.delete(msg.id);
     if (!msg.ok && was) this.builder.select(was);
@@ -834,7 +851,7 @@ export class EditTool {
     const next = design && states && usable(design) ? states[((design.state ?? 0) + 1) % states.length]!.name : null;
     const car = this.mode === 'hybrid' ? this.aimedCar() : null;
     const target = car
-      ? `aiming at a ${itemName(CAR_ITEM[car.kind])} (right-click: ${car.kind === 'engine' ? (this.survival && this.materialOf() === Material.Coal ? 'put coal in' : 'drive it') : 'uncouple it from the car ahead'}) (left-click: take it off)`
+      ? `aiming at a ${itemName(CAR_ITEM[car.kind])} (right-click: ${car.kind === 'engine' ? (this.survival && this.materialOf() === Material.Coal ? 'put coal in' : 'drive it') : car.kind === 'flatbed' ? 'its load' : 'sit down'}; shift-right-click: uncouple it from the car ahead) (left-click: take it off)`
       : !this.target
       ? 'nothing in reach'
       : design

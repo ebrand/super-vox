@@ -1,6 +1,6 @@
 import { UNITS_PER_METER } from './units.js';
 import type { Track } from './rail.js';
-import { Item, type ItemId } from './items.js';
+import { BLOCK_VOLUME, Item, isBlock, type ItemId } from './items.js';
 
 /**
  * Trains: cars on track (see rail.ts), coupled into trains. A car's where its middle is on a track
@@ -16,6 +16,16 @@ export const CAR_KINDS: readonly CarKind[] = ['engine', 'flatbed', 'passenger'];
 export const CAR_ITEM: Record<CarKind, ItemId> = { engine: Item.Engine, flatbed: Item.FlatbedCar, passenger: Item.PassengerCar };
 /** The kind of car an item is, if it's one. */
 export const carOfItem = (item: ItemId | null): CarKind | null => CAR_KINDS.find((k) => CAR_ITEM[k] === item) ?? null;
+/** A flatbed holds this many crates (two layers of two by six); a crate holds CRATE_ITEMS of an item, or CRATE_BLOCKS blocks of a material. */
+export const FLATBED_CRATES = 24;
+export const CRATE_ITEMS = 64;
+export const CRATE_BLOCKS = 8;
+/** How much of `item` fills a crate (as inventories keep it). */
+export const crateOf = (item: ItemId): number => (isBlock(item) ? CRATE_BLOCKS * BLOCK_VOLUME : CRATE_ITEMS);
+/** How many crates a load takes (each kind of thing in its own). */
+export const cratesFor = (cargo: readonly [ItemId, number][] | undefined): number => (cargo ?? []).reduce((n, [item, amount]) => n + Math.ceil(amount / crateOf(item) - 1e-9), 0);
+/** A passenger car's seats. */
+export const PASSENGER_SEATS = 8;
 /** Coal's put in an engine by the lump: an eighth of a block. */
 export const COAL_LUMP = 1 / 8;
 
@@ -55,6 +65,10 @@ export interface Car {
   flip: boolean;
   /** An engine's fuel (s at full throttle; survival). */
   fuel?: number;
+  /** A flatbed's load: what, and how much (as inventories keep it: blocks by volume, items by count). */
+  cargo?: [ItemId, number][];
+  /** A passenger car's seats: who's in each (a player's id), or no one. Not kept: everyone's out when the world's opened again. */
+  seats?: (number | null)[];
 }
 
 /** A train: its cars, front to back; its speed (m/s, + forward); who's driving (a player's id) and how. */

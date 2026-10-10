@@ -7,7 +7,7 @@ import { TrackMap } from './trackMap.js';
 import { TrackMode } from './trackMode.js';
 import { TrackView } from './trackView.js';
 import { TrainView } from './trainView.js';
-import { CAB_EYE } from './trainModels.js';
+import { CAB_EYE, SEAT_EYES } from './trainModels.js';
 import { ChunkManager } from './chunkManager.js';
 import { connect } from './connection.js';
 import { EditTool, sizeLabel } from './editTool.js';
@@ -488,6 +488,9 @@ let trackMap: TrackMap | null = null;
 let trainView: TrainView | null = null;
 let driving: { car: number; throttle: number; brake: boolean; sentAt: number; sent: string; shiftWasDown: boolean; heading: number | null } | null = null;
 let stopDriving: (gone?: boolean) => void = () => {};
+/** The seat we're in, if any (see the seated message): Shift gets up. */
+let seated: { car: number; seat: number; heading: number | null; shiftWasDown: boolean } | null = null;
+let standUp: (gone?: boolean) => void = () => {};
 /**
  * Playing survival (signed in, or anyone where the server has no accounts): no flying, no-clip
  * or travel by map or link; you walk. Visitors who can't build look around as they like.
@@ -525,6 +528,20 @@ function myAct(): number {
  * way), ourselves drawn as others see us (see PlayerFigure).
  */
 let thirdPerson = false;
+let sitIn: (car: number, seat: number) => void = () => {};
+/** Our seat: us in it, turning with the car (facing ahead when we sit down). */
+function seatFrame(): void {
+  const s = seated, p = s && trainView?.pose(s.car);
+  if (!s || !p) return standUp(true);
+  if (s.heading !== null) controls.yaw += p.heading - s.heading;
+  else {
+    controls.yaw = p.heading;
+    controls.pitch = 0;
+  }
+  s.heading = p.heading;
+  const eye = (SEAT_EYES[s.seat] ?? SEAT_EYES[0]!).clone().applyEuler(new THREE.Euler(p.pitch, p.heading, 0, 'YXZ'));
+  camera.position.set(p.x / UNITS_PER_METER + eye.x, p.y / UNITS_PER_METER + 0.28 + eye.y, p.z / UNITS_PER_METER + eye.z);
+}
 /** The engine we're driving: us in its cab (turning with it), and how it's going. */
 const driveHud = document.getElementById('drive')!;
 function driveFrame(): void {
@@ -1064,6 +1081,42 @@ connection = connect({
             driveHud.hidden = false;
             editTool?.say('driving: W/S throttle up and down, Space brakes, Shift gets out');
           };
+          // A flatbed's load: in the inventory window (its own tab), the mouse free to click.
+          editTool.onCargo = (car) => {
+            const c = trainView?.trainOf(car)?.cars.find((c) => c.id === car);
+            if (!c) return;
+            if (controls.pointerLocked) freeMouse();
+            inventoryUi.showCargo(car, c.cargo ?? []);
+          };
+          inventoryUi.onCargo = (car, item, amount, to) => editTool?.request({ type: 'cargo', car, item, amount, to }, to === 'car' ? 'loading it' : 'unloading it');
+          sitIn = (car, seat) => {
+            if (riding) endRide();
+            if (driving) stopDriving();
+            seated = { car, seat, heading: null, shiftWasDown: true };
+            controls.walking = false;
+            controls.ride = (input) => {
+              const s = seated;
+              if (!s) return;
+              if (input.leave && !s.shiftWasDown) return standUp();
+              s.shiftWasDown = input.leave;
+            };
+            editTool?.say('sitting: look round as you like; Shift gets up');
+          };
+          standUp = (gone = false) => {
+            const s = seated;
+            if (!s) return;
+            seated = null;
+            controls.ride = null;
+            if (!gone) send({ type: 'drive', throttle: 0, brake: false, leave: true });
+            // Out of its side door (on foot again in survival).
+            const p = trainView?.pose(s.car);
+            if (p) {
+              const across = { x: Math.cos(p.heading), z: -Math.sin(p.heading) };
+              camera.position.set(p.x / UNITS_PER_METER + across.x * 2.4, p.y / UNITS_PER_METER + 1.2 + PLAYER.eye / UNITS_PER_METER, p.z / UNITS_PER_METER + across.z * 2.4);
+            }
+            if (survivalMovement) controls.walking = true;
+            controls.stopFalling();
+          };
           stopDriving = (gone = false) => {
             const d = driving;
             if (!d) return;
@@ -1314,10 +1367,18 @@ connection = connect({
         trackMap?.setTracks(msg.tracks);
         trackMode?.setTracks(msg.tracks);
         break;
-      case 'trains':
+      case 'trains': {
         trainView?.setTrains(msg.trains, msg.at);
-        // (Our engine taken off, or someone else in it: out.)
+        // (Our engine taken off, or someone else in it: out. Our seat's car gone: up.)
         if (driving && trainView?.trainOf(driving.car)?.driver == null) stopDriving(true);
+        if (seated && !trainView?.trainOf(seated.car)) standUp(true);
+        // The flatbed open: what's on it now.
+        const open = inventoryUi.cargoOpen;
+        if (open !== null) inventoryUi.updateCargo(msg.trains.flatMap((t) => t.cars).find((c) => c.id === open)?.cargo ?? null);
+        break;
+      }
+      case 'seated':
+        sitIn(msg.car, msg.seat);
         break;
       case 'trackPlan':
         trackMode?.planned(msg);
@@ -1587,6 +1648,7 @@ renderer.setAnimationLoop(() => {
   trackView?.frame();
   trainView?.frame();
   if (driving) driveFrame();
+  if (seated) seatFrame();
   arrows?.frame();
   drops?.frame();
   flocks?.update(handDt);

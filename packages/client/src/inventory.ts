@@ -7,6 +7,11 @@ import {
   cannotCraft,
   creativeHotbar,
   formatAmount,
+  CRATE_BLOCKS,
+  CRATE_ITEMS,
+  FLATBED_CRATES,
+  crateOf,
+  cratesFor,
   formatBlocks,
   Material,
   designMaterial,
@@ -92,7 +97,7 @@ function colorOf(id: ItemId): string {
 }
 
 /** The window's tabs: those that work, and the stations still to come (shown, greyed, with why). */
-type Tab = 'inventory' | 'crafting' | 'recipes' | 'station';
+type Tab = 'inventory' | 'crafting' | 'recipes' | 'station' | 'cargo';
 const COMING: readonly { name: string; why: string }[] = [
   { name: 'Smelting', why: 'right-click a furnace to smelt' },
   { name: 'Cooking', why: 'right-click a stove to cook' },
@@ -130,6 +135,10 @@ export class InventoryUi {
   private discarding: ItemId | null = null;
   /** The furnace or stove open (see showStation), and when (performance.now) its state came. */
   private station: { msg: StationMessage & { state: NonNullable<StationMessage['state']> }; at: number } | null = null;
+  /** The flatbed whose load is open (see showCargo), and what's on it. */
+  private cargo: { car: number; load: [ItemId, number][] } | null = null;
+  /** Put `amount` of `item` on the open flatbed (`to` 'car') or take it off ('me'). */
+  onCargo: (car: number, item: ItemId, amount: number, to: 'car' | 'me') => void = () => {};
   /** While a station's open: its gauges move between the server's updates. */
   private gauges: number | null = null;
   private readonly bar: HTMLElement;
@@ -272,6 +281,35 @@ export class InventoryUi {
     }
     if (this.gauges !== null) clearInterval(this.gauges);
     this.gauges = null;
+    if (this.cargo) {
+      this.cargo = null;
+      if (this.tab === 'cargo') this.tab = 'inventory';
+    }
+  }
+
+  /** A flatbed's load opened: the window opens on its tab. */
+  showCargo(car: number, load: [ItemId, number][]): void {
+    this.cargo = { car, load };
+    this.note.textContent = '';
+    this.tab = 'cargo';
+    this.panel.hidden = false;
+    this.render();
+  }
+
+  /** What's on the open flatbed now (null: it's gone, taken off). */
+  updateCargo(load: [ItemId, number][] | null): void {
+    if (!this.cargo) return;
+    if (!load) {
+      this.cargo = null;
+      if (this.tab === 'cargo') this.tab = 'inventory';
+      this.note.textContent = "it's gone: taken off the track";
+    } else this.cargo.load = load;
+    this.render();
+  }
+
+  /** The flatbed open, if one is (and the window's showing it). */
+  get cargoOpen(): number | null {
+    return !this.panel.hidden && this.tab === 'cargo' && this.cargo ? this.cargo.car : null;
   }
 
   /**
@@ -483,9 +521,10 @@ export class InventoryUi {
       if (open === kind) tab(c.name, this.tab === 'station', () => this.show('station'));
       else if (this.mode === 'survival') tab(c.name, false, null, c.why);
     }
+    if (this.cargo) tab('Flatbed', this.tab === 'cargo', () => this.show('cargo'));
     this.tabs.replaceChildren(...tabs);
     this.windowBar.replaceChildren(...this.hotbar.map((m, i) => this.slot(m, i)));
-    const body = this.tab === 'station' && this.station ? this.stationTab() : this.tab === 'crafting' ? this.craftingTab() : this.tab === 'recipes' ? this.recipesTab() : this.inventoryTab();
+    const body = this.tab === 'cargo' && this.cargo ? this.cargoTab() : this.tab === 'station' && this.station ? this.stationTab() : this.tab === 'crafting' ? this.craftingTab() : this.tab === 'recipes' ? this.recipesTab() : this.inventoryTab();
     this.body.replaceChildren(...body);
   }
 
@@ -493,6 +532,59 @@ export class InventoryUi {
     this.tab = tab;
     this.discarding = null;
     this.render();
+  }
+
+  // ---- A flatbed's load (see trains.ts): in crates, a kind of thing to each.
+
+  private cargoTab(): HTMLElement[] {
+    const { car, load } = this.cargo!;
+    const owned = (id: ItemId) => (this.mode === 'creative' ? Infinity : (this.items.get(id) ?? 0));
+    const card = (id: ItemId, count: string, title: string, click: (all: boolean) => void) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'item';
+      const label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = itemName(id);
+      const n = document.createElement('div');
+      n.className = 'count';
+      n.textContent = count;
+      b.append(this.swatch(id, ''), label, n);
+      b.title = title;
+      b.addEventListener('click', (e) => click(e.shiftKey));
+      return b;
+    };
+    const section = (heading: string, cards: HTMLElement[], empty: string) => {
+      const box = document.createElement('div');
+      const h = document.createElement('h3');
+      h.textContent = heading;
+      const grid = document.createElement('div');
+      grid.className = 'grid small';
+      grid.append(...cards);
+      box.append(h, grid);
+      if (!cards.length) {
+        const none = document.createElement('p');
+        none.className = 'hint';
+        none.textContent = empty;
+        box.append(none);
+      }
+      return box;
+    };
+    const crate = (id: ItemId) => (isBlock(id) ? `a crate (${CRATE_BLOCKS} blocks)` : `a crate (${CRATE_ITEMS})`);
+    const on = load.map(([id, n]) =>
+      card(id, formatAmount(id, n), `click: ${crate(id)} off · shift-click: all of it`, (all) => this.onCargo(car, id, all ? n : Math.min(n, crateOf(id)), 'me')),
+    );
+    const mine = this.listed()
+      .filter((id) => owned(id) > 0)
+      .map((id) =>
+        card(id, this.mode === 'creative' ? '' : this.amountText(id), `click: ${crate(id)} on · shift-click: all you have`, (all) =>
+          this.onCargo(car, id, all && this.mode === 'survival' ? owned(id) : Math.min(owned(id), crateOf(id)), 'car'),
+        ),
+      );
+    return [
+      section(`On the flatbed: ${cratesFor(load)} of ${FLATBED_CRATES} crates`, on, 'Nothing on it: click your things below to load them.'),
+      section('Your things', mine, 'Nothing to load.'),
+    ];
   }
 
   // ---- A furnace or stove (see stations.ts).

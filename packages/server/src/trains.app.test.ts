@@ -48,7 +48,7 @@ async function setup(mode: GameMode, items: [number, number][]) {
   };
   const trains = () => msgs.filter((m): m is Extract<ServerMessage, { type: 'trains' }> => m.type === 'trains').at(-1)?.trains ?? [];
   const count = (item: number) => msgs.filter((m): m is Extract<ServerMessage, { type: 'inventory' }> => m.type === 'inventory').at(-1)?.items.find(([i]) => i === item)?.[1] ?? 0;
-  return { ws, until, ask, trains, count };
+  return { ws, until, ask, trains, count, msgs };
 }
 
 describe('trains over the connection', () => {
@@ -84,6 +84,32 @@ describe('trains over the connection', () => {
     await until(() => (trains()[0]!.cars[0]!.fuel ?? 0) > 0);
     expect(await ask({ type: 'carTake', car })).toMatchObject({ ok: true });
     await until(() => count(Item.Engine) === 1);
+    ws.close();
+  });
+
+  it('in survival: a flatbed loaded from the inventory (what there is of it) and unloaded back; a seat in a passenger car, told which; out', async () => {
+    const { ws, until, ask, trains, count, msgs } = await setup('survival', [[Item.FlatbedCar, 1], [Item.PassengerCar, 1], [Item.Stick, 10]]);
+    expect(await ask({ type: 'carPlace', item: Item.FlatbedCar, x: 1100 * M, y: 0, z: 1000 * M, heading: EAST })).toMatchObject({ ok: true });
+    // (Stepped along, within reach of where it goes.)
+    ws.send(JSON.stringify({ type: 'pose', x: 1107 * M, y: 2 * M, z: 1002 * M, yaw: 0 }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await ask({ type: 'carPlace', item: Item.PassengerCar, x: 1115 * M, y: 0, z: 1000 * M, heading: EAST })).toMatchObject({ ok: true });
+    await until(() => trains().length === 2);
+    const car = (kind: string) => trains().flatMap((t) => t.cars).find((c) => c.kind === kind)!;
+    expect(await ask({ type: 'carUse', car: car('flatbed').id, act: 'cargo' })).toMatchObject({ ok: true });
+    expect(await ask({ type: 'carUse', car: car('passenger').id, act: 'cargo' })).toMatchObject({ ok: false });
+    // 64 asked for, 10 there: 10 on.
+    expect(await ask({ type: 'cargo', car: car('flatbed').id, item: Item.Stick, amount: 64, to: 'car' })).toMatchObject({ ok: true });
+    await until(() => count(Item.Stick) === 0 && (car('flatbed').cargo ?? []).some(([i, n]) => i === Item.Stick && n === 10));
+    expect(await ask({ type: 'cargo', car: car('flatbed').id, item: Item.Stick, amount: 4, to: 'me' })).toMatchObject({ ok: true });
+    await until(() => count(Item.Stick) === 4);
+    expect(await ask({ type: 'carTake', car: car('flatbed').id })).toMatchObject({ ok: false, error: expect.stringMatching(/unload/) });
+    // A seat.
+    expect(await ask({ type: 'carUse', car: car('passenger').id, act: 'sit' })).toMatchObject({ ok: true });
+    await until(() => msgs.some((m) => m.type === 'seated' && m.car === car('passenger').id && m.seat === 0));
+    await until(() => car('passenger').seats!.filter((p) => p !== null).length === 1);
+    ws.send(JSON.stringify({ type: 'drive', throttle: 0, brake: false, leave: true }));
+    await until(() => car('passenger').seats!.every((p) => p === null));
     ws.close();
   });
 });
