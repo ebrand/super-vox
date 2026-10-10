@@ -26,7 +26,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 53;
+export const PROTOCOL_VERSION = 54;
 
 export type ClientMessage =
   /** Something said (or a command: see readChat), to be heard by the world (or one player). */
@@ -49,7 +49,8 @@ export type ClientMessage =
   | { type: 'sow'; id: number; x: number; y: number; z: number }
   | { type: 'harvest'; id: number; x: number; y: number; z: number }
   /** Trading (see market.ts): `lots` lots of `item` bought from, or sold to, trading post `post`'s trader. Answered with an editResult. */
-  | { type: 'trade'; id: number; post: number; item: number; lots: number; act: 'buy' | 'sell' }
+  /** At a trading post (`post`), or with a villager (`villager`: their village; `post` then 0). */
+  | { type: 'trade'; id: number; post: number; villager?: number; item: number; lots: number; act: 'buy' | 'sell' }
   /** Driving: the throttle (-1..1, the way the engine faces) and the brake; `leave`: getting out. */
   | { type: 'drive'; throttle: number; brake: boolean; leave?: boolean; prefer?: 'left' | 'right' | null }
   /**
@@ -324,6 +325,8 @@ export interface EntitySnapshot {
   /** Players: where they look (radians, up +) and what they're doing (PlayerAct flags). */
   pitch?: number;
   act?: number;
+  /** Villagers: the village they live in (none: a wanderer). */
+  home?: number;
 }
 
 /** What a player's doing, as flags (see the pose message): for others to draw them doing it. */
@@ -478,7 +481,7 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   if ((msg.type === 'till' || msg.type === 'sow' || msg.type === 'harvest') && isId(msg.id) && [msg.x, msg.y, msg.z].every(Number.isInteger) && (msg.type !== 'till' || Number.isInteger(msg.tool)))
     return msg.type === 'till' ? { type: 'till', id: msg.id as number, x: msg.x as number, y: msg.y as number, z: msg.z as number, tool: msg.tool as number } : { type: msg.type, id: msg.id as number, x: msg.x as number, y: msg.y as number, z: msg.z as number };
   if (msg.type === 'trade' && isId(msg.id) && isId(msg.post) && Number.isInteger(msg.item) && Number.isInteger(msg.lots) && (msg.lots as number) >= 1 && (msg.lots as number) <= 1000 && (msg.act === 'buy' || msg.act === 'sell'))
-    return { type: 'trade', id: msg.id as number, post: msg.post as number, item: msg.item as number, lots: msg.lots as number, act: msg.act };
+    return { type: 'trade', id: msg.id as number, post: msg.post as number, ...(isId(msg.villager) ? { villager: msg.villager as number } : {}), item: msg.item as number, lots: msg.lots as number, act: msg.act };
   if (msg.type === 'cargo' && isId(msg.id) && isId(msg.car) && Number.isInteger(msg.item) && Number.isFinite(msg.amount) && (msg.amount as number) > 0 && (msg.to === 'car' || msg.to === 'me'))
     return { type: 'cargo', id: msg.id as number, car: msg.car as number, item: msg.item as number, amount: msg.amount as number, to: msg.to };
   if (msg.type === 'carTake' && isId(msg.id) && isId(msg.car)) return { type: 'carTake', id: msg.id as number, car: msg.car as number };

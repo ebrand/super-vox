@@ -278,6 +278,10 @@ export class EditTool {
   pickSwitch: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { key: string; left: boolean; dist: number } | null) | null = null;
   /** Trading at a post (right-click its stall). */
   onTrade: ((post: TradingPost) => void) | null = null;
+  /** Finds a villager along a ray (units), and their village's name (set by the game; see EntityView.pickVillager). */
+  pickVillager: ((origin: readonly number[], dir: readonly number[], maxDist: number) => { id: number; dist: number; name: string; home: number | null; village: string | null } | null) | null = null;
+  /** Trading with a villager (right-click them): their village's goods. */
+  onTradeVillager: ((villager: { id: number; name: string; home: number }) => void) | null = null;
   /** A flatbed's load opened, to see and change (the server said it could be). */
   onCargo: ((car: number) => void) | null = null;
   private placement: (Box & { valid: boolean; reason: string }) | null = null;
@@ -740,6 +744,9 @@ export class EditTool {
         if (button === 2 && held === Item.Wheat && material === Material.Farmland) return this.request({ type: 'sow', x: point[0], y: point[1], z: point[2] }, 'sowing');
       }
       // A trading post's stall in reach: right-click trades.
+      // A villager in reach (of a village): right-click trades with it.
+      const villager = this.aimedVillager();
+      if (villager && villager.home !== null && button === 2) return this.onTradeVillager?.({ id: villager.id, name: villager.name, home: villager.home });
       const post = this.aimedPost();
       if (post && button === 2) return this.onTrade?.(post);
       if (button === 0) {
@@ -847,6 +854,14 @@ export class EditTool {
     return hit && (!this.hit || hit.dist < this.hit.distance + UNITS_PER_METER) ? hit.post : null;
   }
 
+  /** The villager aimed at, if they're in reach and nearer than the voxel aimed at. */
+  private aimedVillager(): { id: number; name: string; home: number | null; village: string | null } | null {
+    const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const hit = this.pickVillager?.([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], TRADE_REACH_M * UNITS_PER_METER);
+    return hit && (!this.hit || hit.dist < this.hit.distance) ? hit : null;
+  }
+
   /** The car aimed at, if one's in reach and nearer than the voxel aimed at. */
   private aimedCar(): { id: number; kind: CarKind } | null {
     const origin = this.camera.getWorldPosition(new THREE.Vector3()).multiplyScalar(UNITS_PER_METER);
@@ -929,12 +944,17 @@ export class EditTool {
     const states = design && designById(design.design ?? '')?.states;
     const next = design && states && usable(design) ? states[((design.state ?? 0) + 1) % states.length]!.name : null;
     const car = this.mode === 'hybrid' ? this.aimedCar() : null;
-    const post = this.mode === 'hybrid' && !car ? this.aimedPost() : null;
-    const lever = this.mode === 'hybrid' && !car && !post ? this.aimedSwitch() : null;
-    const platform = this.mode === 'hybrid' && !car && !post && !lever ? this.aimedStation() : null;
-    const farm = this.mode === 'hybrid' && !car && !post && !lever && !platform ? this.farmTarget() : null;
+    const villager = this.mode === 'hybrid' && !car ? this.aimedVillager() : null;
+    const post = this.mode === 'hybrid' && !car && !villager ? this.aimedPost() : null;
+    const lever = this.mode === 'hybrid' && !car && !villager && !post ? this.aimedSwitch() : null;
+    const platform = this.mode === 'hybrid' && !car && !villager && !post && !lever ? this.aimedStation() : null;
+    const farm = this.mode === 'hybrid' && !car && !villager && !post && !lever && !platform ? this.farmTarget() : null;
     const sownStage = farm ? (this.cropAt?.(farm.block[0], farm.block[1], farm.block[2]) ?? null) : null;
-    const target = farm && farm.material === Material.Farmland
+    const target = villager
+      ? villager.village
+        ? `aiming at ${villager.name} of ${villager.village} (right-click: trade with ${villager.village})`
+        : `aiming at ${villager.name}, a wanderer`
+      : farm && farm.material === Material.Farmland
       ? sownStage === null
         ? 'aiming at farmland (right-click with wheat: sow it)'
         : sownStage >= RIPE

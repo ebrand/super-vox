@@ -55,6 +55,8 @@ export interface Cottage {
   door: 0 | 1 | 2 | 3;
   stage: number;
   work: number;
+  /** Of its next stage, the pieces put in so far (see stagePieces; its site's cleared first): none yet (undefined), not cleared. */
+  placed?: number;
 }
 
 /** A field: its least corner (blocks), how wide and deep, its ground's top (block y) each block (row by row), and when each block was sown (ms; 0: not), whether tilled yet. */
@@ -84,6 +86,42 @@ export interface Village {
   /** Its wall's sections built (0..WALL_SECTIONS), and the work done on the next (s); none till it's WALL_AT. */
   wall?: number;
   wallWork?: number;
+  /** Of its wall's next section, the pieces put in so far (as Cottage.placed). */
+  wallPlaced?: number;
+  /** What it builds with (blocks: see VillageStock), and the tools it's bought (each gathers faster). */
+  stock?: VillageStock;
+  tools?: { axes: number; picks: number };
+}
+
+/** A village's building materials, in blocks (fractions: gathered a little at a time). */
+export interface VillageStock {
+  wood: number;
+  planks: number;
+  cobble: number;
+}
+
+/** What a village starts with: enough for its first cottage; and coins (to buy with). */
+export const START_STOCK: VillageStock = { wood: 16, planks: 60, cobble: 30 };
+export const START_COINS = 30;
+/** Gathered a minute (blocks), with no tools; each axe (wood, planks) or pickaxe (cobblestone) a village has gathers GATHER_TOOL as much again, up to MAX_TOOLS of each. */
+export const GATHER: VillageStock = { wood: 0.5, planks: 1.5, cobble: 1.5 };
+export const GATHER_TOOL = 0.5;
+export const MAX_TOOLS = 4;
+/** A village keeps this much of each (blocks) at most; wants this much (paying twice as much below it, half above twice it). */
+export const STOCK_MAX: VillageStock = { wood: 200, planks: 400, cobble: 1500 };
+export const STOCK_WANT: VillageStock = { wood: 30, planks: 80, cobble: 200 };
+/** Wheat a village keeps for itself (bundles): it sells (or sends off) only what's over. Bread: baked from this many. */
+export const WHEAT_KEPT = 12;
+export const BREAD_WHEAT = 3;
+
+/** The material a piece of a village's building takes from its stock (null: none, thatch being straw from its harvests). */
+export function stockOf(material: MaterialId): keyof VillageStock | null {
+  return material === Material.Wood ? 'wood' : material === Material.Planks ? 'planks' : material === Material.Cobblestone ? 'cobble' : null;
+}
+
+/** A stage's pieces to put in, in the order they go: from the bottom up (each on what's under it). */
+export function stagePieces(place: readonly VillagePiece[]): VillagePiece[] {
+  return place.map((p, i) => ({ p, i })).sort((a, b) => a.p.y - b.p.y || a.i - b.i).map(({ p }) => p);
 }
 
 /** Whether an angle (radians, round a village's middle) is in one of its gates, at radius `r` m. */

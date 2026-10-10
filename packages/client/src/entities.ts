@@ -261,6 +261,21 @@ export class EntityView {
     return best;
   }
 
+  /** The villager the ray (units) hits first within `maxDist`, if any: who they are, and their village. */
+  pickVillager(origin: readonly number[], dir: readonly number[], maxDist: number, now = performance.now()): { id: number; dist: number; name: string; home: number | null } | null {
+    const camX = this.cameraX();
+    let best: { id: number; dist: number; name: string; home: number | null } | null = null;
+    for (const [id, t] of this.tracked) {
+      if (t.kind !== 'villager') continue;
+      const p = interpolate(t.from, t.to, (now - t.at) / INTERPOLATION_MS);
+      const x = camX + deltaX(this.world, camX, p.x);
+      const look = LOOK[t.kind], half = (Math.max(look.w, look.long) * UNITS_PER_METER) / 2;
+      const d = rayBox(origin, dir, [x - half, p.y, p.z - half], [x + half, p.y + look.h * UNITS_PER_METER, p.z + half]);
+      if (d !== null && d <= maxDist && (!best || d < best.dist)) best = { id, dist: d, name: t.to.name ?? 'a villager', home: t.to.home ?? null };
+    }
+    return best;
+  }
+
   get count(): number {
     return this.tracked.size;
   }

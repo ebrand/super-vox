@@ -46,7 +46,8 @@ import { BoatView } from './boatView.js';
 import { ArrowView } from './arrowView.js';
 import { DropView } from './dropView.js';
 import { HeldItem, SWING_S } from './heldItem.js';
-import { COAL_SECONDS, Item, PlayerAct, getOutAt, stepBoat, waterSurface, type Boat, type BoatMotion, type DroppedItem, type Hull } from '@super-vox/shared';
+import { COAL_SECONDS, Item, PlayerAct, getOutAt, stepBoat, villageOffers, waterSurface, type Boat, type BoatMotion, type DroppedItem, type Hull, type Village } from '@super-vox/shared';
+import type { Trade } from './inventory.js';
 import type { Footprint } from './coverage.js';
 import { createCompassRose } from './compassRose.js';
 import { coveredAboveFor, materialAtFor, solidAtFor, waterAtFor } from './worldQuery.js';
@@ -1127,7 +1128,19 @@ connection = connect({
             if (controls.pointerLocked) freeMouse();
             inventoryUi.showTrade(post);
           };
-          inventoryUi.onTrade = (post, item, lots, act) => editTool?.request({ type: 'trade', post, item, lots, act }, act === 'buy' ? 'buying' : 'selling');
+          inventoryUi.onTrade = (post, item, lots, act) =>
+            editTool?.request(post.villager !== undefined ? { type: 'trade', post: 0, villager: post.villager, item, lots, act } : { type: 'trade', post: post.id, item, lots, act }, act === 'buy' ? 'buying' : 'selling');
+          // Villagers: right-click one, to trade with their village.
+          editTool.pickVillager = (o, d, max) => {
+            const hit = entities?.pickVillager(o, d, max);
+            return hit ? { ...hit, village: villages.find((v) => v.id === hit.home)?.name ?? null } : null;
+          };
+          editTool.onTradeVillager = ({ id, name, home }) => {
+            const v = villages.find((x) => x.id === home);
+            if (!v) return;
+            if (controls.pointerLocked) freeMouse();
+            inventoryUi.showTrade(villageTrade(v, id, name));
+          };
           inventoryUi.onCargo = (car, item, amount, to) => editTool?.request({ type: 'cargo', car, item, amount, to }, to === 'car' ? 'loading it' : 'unloading it');
           sitIn = (car, seat) => {
             if (riding) endRide();
@@ -1425,10 +1438,15 @@ connection = connect({
       case 'crops':
         cropView?.setCrops(msg.crops);
         break;
-      case 'villages':
+      case 'villages': {
         cropView?.setVillages(msg.villages);
         trackMap?.setVillages(msg.villages);
+        villages = msg.villages;
+        // (Trading with one: what it offers now.)
+        const open = inventoryUi.tradeOpen, v = open?.villager !== undefined ? villages.find((x) => x.id === open.id) : undefined;
+        if (open?.villager !== undefined && v) inventoryUi.refreshTrade(villageTrade(v, open.villager, open.trader.name));
         break;
+      }
       case 'posts':
         postView?.setPosts(msg.posts);
         trackMap?.setPosts(msg.posts);
@@ -1595,6 +1613,17 @@ function updateHud(): void {
 }
 
 let lastFrame = performance.now();
+
+/** The world's villages, as the server last told them. */
+let villages: readonly Village[] = [];
+/** Trading with a village (by its villager `villager`, an entity id, named `name`): its offers now, and how it's doing. */
+function villageTrade(v: Village, villager: number, name: string): Trade {
+  const s = v.stock;
+  return {
+    id: v.id, x: v.x, y: v.y, z: v.z, heading: 0, name: v.name, trader: { name, look: '' }, ...villageOffers(v), villager,
+    about: `its coins: ${Math.floor(v.coins ?? 0)}${s ? `; it has ${Math.floor(s.wood)} wood, ${Math.floor(s.planks)} planks, ${Math.floor(s.cobble)} cobblestone (blocks)` : ''}`,
+  };
+}
 
 // Tell the server where we are (mobs chase it, the dashboard shows it), ten times a second when
 // we've moved. A timer, not the render loop: frames stop in background tabs.

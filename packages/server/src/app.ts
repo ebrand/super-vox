@@ -1213,6 +1213,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       },
       world.loadVillages(),
     );
+    sim.onError = (err) => app.log.warn(err, "a village's building couldn't be written");
     sim.onEdits = (results) => {
       for (const r of results) {
         metrics.totals.edits++;
@@ -2105,6 +2106,47 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (opts.inventories && who && !inventory) return fail(inventoryLoading ? 'still loading your inventory' : "your inventory couldn't be loaded");
           const inv = inventory;
           if (inv?.mode !== 'survival') return fail("in creative everything's to hand: trading is for survival");
+          if (msg.villager !== undefined) {
+            // With a villager: their village's goods, out of its stock and coins (see villageOffers).
+            const sim = villageSims.get(world), who = sim?.villagerOf(msg.villager);
+            if (!sim || !who) return fail("they've no village to trade for");
+            const p = players.get(socket)!, v = who.village, name = itemName(msg.item);
+            if (!p.pose || Math.hypot(p.pose.x - who.x, p.pose.z - who.z) > (TRADE_REACH_M + 4) * UNITS_PER_METER) return fail(`too far from ${who.name}`);
+            const offers = sim.offers(v);
+            let note: string;
+            if (msg.act === 'sell') {
+              const offer = offers.buys.find((o) => o.item === msg.item);
+              if (!offer) return fail(`${v.name} doesn't buy ${name}`);
+              const lots = Math.min(msg.lots, Math.floor(inv.count(msg.item) / offer.lot + 1e-9), offer.most ?? Infinity);
+              if (lots < 1) return fail(inv.count(msg.item) < offer.lot ? `not enough ${name} (they buy ${lotLabel(msg.item, offer.lot)} at a time)` : `${v.name} can't take more ${name} (it's coins or room it hasn't)`);
+              inv.discard(msg.item, lots * offer.lot);
+              const paid = coins(lots * offer.price);
+              if (paid.gold) inv.addItem(Item.GoldCoin, paid.gold);
+              if (paid.copper) inv.addItem(Item.CopperCoin, paid.copper);
+              sim.bought(v, msg.item, lots * offer.lot, lots * offer.price, BLOCK_VOLUME);
+              note = `sold ${v.name} ${lotLabel(msg.item, lots * offer.lot)} ${name} for ${lots * offer.price} copper's worth`;
+            } else {
+              const offer = offers.sells.find((o) => o.item === msg.item);
+              if (!offer) return fail(`${v.name} doesn't sell ${name}`);
+              const lots = Math.min(msg.lots, offer.most ?? Infinity);
+              if (lots < 1) return fail(`${v.name} has no ${name} to spare`);
+              const price = lots * offer.price, purse = pay(price, inv.count(Item.CopperCoin), inv.count(Item.GoldCoin));
+              if (!purse) return fail(`not enough coins: ${price} copper's worth (a gold coin is ${GOLD_COPPER})`);
+              if (purse.copper) inv.addItem(Item.CopperCoin, -purse.copper);
+              if (purse.gold) inv.addItem(Item.GoldCoin, -purse.gold);
+              if (purse.change) inv.addItem(Item.CopperCoin, purse.change);
+              inv.addItem(msg.item, lots * offer.lot);
+              sim.sold(v, msg.item, lots, price);
+              note = `bought ${lotLabel(msg.item, lots * offer.lot)} ${name} from ${v.name} for ${price} copper's worth`;
+            }
+            send(inv.message());
+            send({ type: 'editResult', id: msg.id, ok: true, note });
+            if (sim.changed) {
+              sim.changed = false;
+              toWorld(world, { type: 'villages', villages: sim.list() });
+            }
+            break;
+          }
           const post = world.tradingPosts(clientWorld.get(socket) ?? catalog.defaultName).find((t) => t.id === msg.post);
           if (!post) return fail("there's no trading post there");
           const p = players.get(socket)!;

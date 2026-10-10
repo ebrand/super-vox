@@ -124,6 +124,9 @@ const DRAG_TYPE = 'application/x-super-vox';
  * The hotbar's along the top of every tab. Until the server sends an inventory (servers without
  * accounts), it's creative.
  */
+/** Who's traded with: a trading post; or a village (by one of its villagers: `villager`, their entity id; `about`, how it's doing). */
+export type Trade = TradingPost & { villager?: number; about?: string };
+
 export class InventoryUi {
   mode: GameMode = 'creative';
   private items = new Map<MaterialId, number>();
@@ -141,10 +144,10 @@ export class InventoryUi {
   private station: { msg: StationMessage & { state: NonNullable<StationMessage['state']> }; at: number } | null = null;
   /** The flatbed whose load is open (see showCargo), and what's on it. */
   private cargo: { car: number; load: [ItemId, number][] } | null = null;
-  /** The trading post being traded at (see showTrade). */
-  private trading: TradingPost | null = null;
-  /** Buy or sell `lots` lots of `item` at trading post `post`. */
-  onTrade: (post: number, item: ItemId, lots: number, act: 'buy' | 'sell') => void = () => {};
+  /** The trading post (or village: see Trade) being traded at (see showTrade). */
+  private trading: Trade | null = null;
+  /** Buy or sell `lots` lots of `item` at trading post `post` (or with its villager). */
+  onTrade: (post: Trade, item: ItemId, lots: number, act: 'buy' | 'sell') => void = () => {};
   /** Put `amount` of `item` on the open flatbed (`to` 'car') or take it off ('me'). */
   onCargo: (car: number, item: ItemId, amount: number, to: 'car' | 'me') => void = () => {};
   /** While a station's open: its gauges move between the server's updates. */
@@ -299,8 +302,15 @@ export class InventoryUi {
     }
   }
 
-  /** Trading at a post: the window opens on its tab. */
-  showTrade(post: TradingPost): void {
+  /** What a village (traded with) is offering now: the window, if it's showing that village, shown again. */
+  refreshTrade(post: Trade): void {
+    if (!this.trading || this.trading.villager === undefined || this.trading.id !== post.id) return;
+    this.trading = post;
+    if (!this.panel.hidden && this.tab === 'trade') this.render();
+  }
+
+  /** Trading at a post (or with a villager): the window opens on its tab. */
+  showTrade(post: Trade): void {
     this.trading = post;
     this.note.textContent = '';
     this.tab = 'trade';
@@ -309,7 +319,7 @@ export class InventoryUi {
   }
 
   /** The trading post being traded at, if the window's showing it. */
-  get tradeOpen(): TradingPost | null {
+  get tradeOpen(): Trade | null {
     return !this.panel.hidden && this.tab === 'trade' ? this.trading : null;
   }
 
@@ -602,19 +612,21 @@ export class InventoryUi {
     const about = document.createElement('p');
     about.className = 'could';
     about.textContent =
-      `${post.trader.name}, ${post.name}. ` +
+      (post.villager !== undefined ? `${post.trader.name}, for ${post.name}${post.about ? ` (${post.about})` : ''}. ` : `${post.trader.name}, ${post.name}. `) +
       (this.mode === 'creative'
         ? "In creative everything's to hand: trading is for survival."
         : `You have ${have(Item.CopperCoin)} copper and ${have(Item.GoldCoin)} gold coins (${purse} copper's worth; a gold coin is ${GOLD_COPPER}).`);
+    // (A village's: only as many lots as it has, or can take: `most`.)
+    const most = (o: { most?: number }) => o.most ?? Infinity;
     const sells = post.sells.map((o) =>
-      card(o.item, `${lotLabel(o.item, o.lot)} · ${coinsText(o.price)}`, `click: buy ${lotLabel(o.item, o.lot)} for ${o.price} copper · shift-click: five times that`, purse >= o.price, (shift) =>
-        this.onTrade(post.id, o.item, shift ? 5 : 1, 'buy'),
+      card(o.item, `${lotLabel(o.item, o.lot)} · ${coinsText(o.price)}${o.most !== undefined ? ` · ${o.most} to spare` : ''}`, `click: buy ${lotLabel(o.item, o.lot)} for ${o.price} copper · shift-click: five times that`, purse >= o.price && most(o) > 0, (shift) =>
+        this.onTrade(post, o.item, Math.max(1, Math.min(shift ? 5 : 1, most(o))), 'buy'),
       ),
     );
     const buys = post.buys.map((o) => {
       const lots = Math.floor(have(o.item) / o.lot + 1e-9);
-      return card(o.item, `${lotLabel(o.item, o.lot)} · ${coinsText(o.price)}${this.mode === 'survival' ? ` · you have ${this.amountText(o.item)}` : ''}`, `click: sell ${lotLabel(o.item, o.lot)} for ${o.price} copper · shift-click: all you have`, lots > 0, (shift) =>
-        this.onTrade(post.id, o.item, shift ? Math.max(1, Math.min(1000, lots)) : 1, 'sell'),
+      return card(o.item, `${lotLabel(o.item, o.lot)} · ${coinsText(o.price)}${o.most !== undefined ? ` · takes ${o.most}` : ''}${this.mode === 'survival' ? ` · you have ${this.amountText(o.item)}` : ''}`, `click: sell ${lotLabel(o.item, o.lot)} for ${o.price} copper · shift-click: all you have${o.most !== undefined ? ' (as much as they take)' : ''}`, lots > 0 && most(o) > 0, (shift) =>
+        this.onTrade(post, o.item, shift ? Math.max(1, Math.min(1000, lots, most(o))) : 1, 'sell'),
       );
     });
     return [about, section('They sell', sells, 'Nothing for sale.'), section('They buy', buys, 'They buy nothing.')];

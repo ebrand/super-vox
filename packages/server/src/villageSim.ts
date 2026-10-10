@@ -1,6 +1,20 @@
 import {
   BLOCK_SIZE,
+  CROP_STAGE_MS,
   DRIFT_M,
+  GATHER,
+  GATHER_TOOL,
+  START_COINS,
+  START_STOCK,
+  STOCK_MAX,
+  BREAD_WHEAT,
+  WHEAT_KEPT,
+  MAX_TOOLS,
+  Item,
+  stagePieces,
+  stockOf,
+  villageOffers,
+  type Offer,
   FOUNDERS,
   FOUND_M,
   JOIN_VILLAGE_M,
@@ -8,7 +22,6 @@ import {
   Material,
   PER_COTTAGE,
   RIPE,
-  STAGE_S,
   UNITS_PER_METER,
   VILLAGER_SPEED,
   VILLAGE_RADIUS_M,
@@ -83,14 +96,37 @@ export interface Rail {
 
 /** Stations this near a village (m) are its; this near a trading post, the post's. */
 const STATION_NEAR_M = 400;
-/** A village keeps this much wheat (bundles) for itself; the rest it sends off by rail. */
-const WHEAT_KEPT = 12;
 /** A newcomer comes to a village for each of this many coins it's had for its wheat. */
 const COINS_PER_NEWCOMER = 20;
 /** Villagers going places by train: at most this many from a village at once; a visit there this long (ms); waiting at most this long for a train (ms). */
 const TRAVELLERS = 2;
 const VISIT_MS = 3 * 60_000;
 const WAIT_MS = 15 * 60_000;
+/**
+ * A village a player's this near (m) is watched: its villagers walk and work, building a piece at a
+ * time (each PLACE_S s, within BUILD_REACH_M of it). One nobody's near goes on as CREW builders
+ * would, a piece every PLACE_S s each, in batches; its villagers stay where they are.
+ */
+const OBSERVE_M = 300;
+const PLACE_S = 1;
+const BUILD_REACH_M = 4.5;
+const CREW = 2;
+/** Away (the world shut, nobody in it) longer than GAP_MS: caught up with, CATCH_UP_S at a time, at most CATCH_UP_MS of it. */
+const GAP_MS = 5000;
+const CATCH_UP_S = 60;
+const CATCH_UP_MS = 4 * 3600_000;
+/** What entities show villagers as: this and their id. */
+const VILLAGER_ENTITY = 1_000_000;
+
+/** A building job: a stage's pieces (in order), what's cleared first, how many are in so far (undefined: not cleared yet), where to stand to put one in; done, the next. */
+interface Job {
+  pieces: VillagePiece[];
+  clear: VillagePiece[];
+  placed: number | undefined;
+  set(n: number): void;
+  done(): void;
+  standAt(piece: VillagePiece): { x: number; z: number };
+}
 
 /** A trip by train: where it's got to, the stations from and to, where they're visiting, and till when. */
 interface Trip {
@@ -124,6 +160,8 @@ interface SimSave {
   villages: Village[];
   cells: string[];
   next: number;
+  /** When it was last stepped (ms). */
+  at?: number;
 }
 
 /** A repeatable random number in [0, 1). */
@@ -151,10 +189,19 @@ export class VillageSim {
   private dirty = false;
   /** Whether what's told about villages has changed (to tell everyone). */
   changed = false;
-  /** A stage being built or a field tilled now (one at a time). */
-  private building = false;
-  /** Told what building changes in the world (to send on). */
+  /** What's written into the world, in order (one at a time). */
+  private writing: Promise<void> = Promise.resolve();
+  /** Told what building changes in the world (to send on); and of a write that failed. */
   onEdits: ((r: EditResult[]) => void) | null = null;
+  onError: ((err: unknown) => void) | null = null;
+  /** The villages someone's near (see OBSERVE_M), as of the last choices made. */
+  private readonly watched = new Set<number>();
+  /** When last stepped (ms; null: not yet). */
+  private at: number | null = null;
+  /** Unwatched villages' building, pieces' worth owed (see coarse). */
+  private readonly owed = new Map<number, number>();
+  /** Stages' pieces, worked out (by village, cottage or wall section, and stage). */
+  private readonly stages = new Map<string, { clear: VillagePiece[]; pieces: VillagePiece[] }>();
   /** Ground looked up, by 4 m square (it doesn't change: it's the ground as generated). */
   private readonly ground = new Map<string, { h: number; ok: boolean; tree: boolean }>();
 
@@ -164,7 +211,13 @@ export class VillageSim {
   ) {
     const saved = kept(raw);
     if (!saved) return;
-    for (const v of saved.villages) this.villages.set(v.id, v);
+    for (const v of saved.villages) {
+      // (Kept before villages had stock or coins: as a new one's.)
+      v.stock ??= { ...START_STOCK };
+      v.coins ??= START_COINS;
+      this.villages.set(v.id, v);
+    }
+    this.at = saved.at ?? null;
     for (const p of saved.villagers) this.walkers.set(p.id, { ...p, tx: p.x, tz: p.z, mode: p.home === null ? 'wander' : 'idle', busy: 0 });
     for (const c of saved.cells) this.cells.add(c);
     this.next = saved.next;
@@ -188,13 +241,23 @@ export class VillageSim {
   near(x: number, z: number, r: number): EntitySnapshot[] {
     const out: EntitySnapshot[] = [];
     for (const p of this.walkers.values())
-      if (Math.abs(p.x - x) < r && Math.abs(p.z - z) < r) out.push({ id: 1_000_000 + p.id, kind: 'villager', x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z), yaw: p.yaw, name: p.name, look: p.look });
+      if (Math.abs(p.x - x) < r && Math.abs(p.z - z) < r) out.push({ id: VILLAGER_ENTITY + p.id, kind: 'villager', x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z), yaw: p.yaw, name: p.name, look: p.look, ...(p.home !== null ? { home: p.home } : {}) });
     return out;
   }
 
   /** What's kept. */
   save(): SimSave {
-    return { villagers: [...this.walkers.values()].map(({ tx: _x, tz: _z, mode: _m, busy: _b, path: _p, stuck: _s, trip: _t, ...v }) => v), villages: this.list(), cells: [...this.cells], next: this.next };
+    return { villagers: [...this.walkers.values()].map(({ tx: _x, tz: _z, mode: _m, busy: _b, path: _p, stuck: _s, trip: _t, ...v }) => v), villages: this.list(), cells: [...this.cells], next: this.next, ...(this.at !== null ? { at: this.at } : {}) };
+  }
+
+  /** Done once what's been asked to be written into the world has been. */
+  written(): Promise<void> {
+    return this.writing;
+  }
+
+  /** Whether a village is watched (someone's near it: its villagers walking and working). */
+  isWatched(id: number): boolean {
+    return this.watched.has(id);
   }
 
   /** The ground at (x, z) (units, looked up a 4 m square at a time): its height, and whether it can be walked (land, not water). */
@@ -214,7 +277,11 @@ export class VillageSim {
    * where they're going; once a second, their choices; at `night`, home.
    */
   step(dt: number, now: number, players: readonly { x: number; z: number }[], night: boolean): void {
+    // (Back after a while with nobody here: what would have happened meanwhile, roughly.)
+    if (this.at !== null && now - this.at > GAP_MS) this.catchUp(this.at, now);
+    this.at = now;
     for (const p of this.walkers.values()) {
+      if (!this.detailed(p)) continue;
       // (On a train: where their seat is.)
       const seated = p.trip && (p.trip.stage === 'ride' || p.trip.stage === 'rideBack') ? this.world.rail?.seatPose(VILLAGER_SEAT + p.id) : null;
       if (seated) {
@@ -231,9 +298,14 @@ export class VillageSim {
     this.thinkIn -= dt;
     if (this.thinkIn <= 0) {
       this.thinkIn = THINK_S;
+      this.watch(players);
       this.bring(players, now);
-      for (const p of this.walkers.values()) this.think(p, now, night);
-      for (const v of this.villages.values()) this.grow(v, now);
+      for (const p of this.walkers.values()) if (this.detailed(p)) this.think(p, now, night);
+      for (const v of this.villages.values()) {
+        if (!this.watched.has(v.id)) this.coarse(v, THINK_S, now);
+        this.gather(v, THINK_S);
+        this.grow(v, now);
+      }
       this.found(now);
       this.freight(now);
     }
@@ -412,35 +484,29 @@ export class VillageSim {
     // Builders (the first two to live there) to a cottage going up, the rest to the fields; either
     // to the other when theirs needs nothing.
     const site = v.cottages.find((c) => c.stage < 3);
+    const job = this.job(v);
     const field = v.fields.find((f) => (!f.tilled && v.cottages[v.fields.indexOf(f)]?.stage === 3) || f.sown.some((s) => cropStage(s, now) >= RIPE));
     // (At most four at one job: two builders, two more to help when the fields need nothing.)
     const rank = this.rankIn(p, v), builder = rank < 2, helper = rank < 4;
-    // (No cottage going up, and it's big enough: its wall, a section at a time.)
-    const walling = !site && this.wallDue(v);
-    if (walling && (builder || (helper && !field))) {
-      const section = v.wall ?? 0, a = ((section + 0.5) * Math.PI * 2) / WALL_SECTIONS;
-      const at = { x: v.x + Math.cos(a) * (WALL_M - 2.5) * M, z: v.z + Math.sin(a) * (WALL_M - 2.5) * M };
+    // Building (a cottage going up; else, big enough, its wall): to where the next piece goes, and in with it.
+    if (job && (builder || (helper && !field))) {
       p.mode = 'work';
-      if (Math.hypot(at.x - p.x, at.z - p.z) > 8 * M) {
-        // (Somewhere about it, but well inside the wall's line: one standing on it would be walled in.)
-        const tx = at.x + (rand(seed) - 0.5) * 6 * M - v.x, tz = at.z + (rand(seed + 1) - 0.5) * 6 * M - v.z, r = Math.hypot(tx, tz), most = (WALL_M - 2) * M;
-        p.tx = v.x + (r > most ? (tx * most) / r : tx);
-        p.tz = v.z + (r > most ? (tz * most) / r : tz);
-      } else if (!this.building) {
-        v.wallWork = (v.wallWork ?? 0) + THINK_S;
-        if (v.wallWork >= STAGE_S) void this.raiseWall(v, section);
-      }
-      return;
-    }
-    if (site && (builder || (helper && !field))) {
-      const at = this.doorstep(site);
-      p.mode = 'work';
-      if (Math.hypot(at.x - p.x, at.z - p.z) > 6 * M) {
-        p.tx = at.x + (rand(seed) - 0.5) * 4 * M;
-        p.tz = at.z + (rand(seed + 1) - 0.5) * 4 * M;
-      } else if (!this.building) {
-        site.work += THINK_S;
-        if (site.work >= STAGE_S) void this.raise(v, site);
+      const piece = job.pieces[job.placed ?? 0];
+      if (!piece) return void this.put(v, job, 0);
+      const px = piece.x + piece.size / 2, pz = piece.z + piece.size / 2, spot = job.standAt(piece);
+      // (Within reach: in it goes; blocked short of it, near enough will do.)
+      const reach = Math.hypot(px - p.x, pz - p.z);
+      if (reach <= BUILD_REACH_M * M || (p.stuck && reach <= 8 * M)) {
+        p.stuck = false;
+        p.busy += THINK_S;
+        if (p.busy >= PLACE_S) {
+          p.busy = 0;
+          this.put(v, job, 1);
+        }
+      } else {
+        p.stuck = false;
+        p.tx = spot.x;
+        p.tz = spot.z;
       }
       return;
     }
@@ -452,7 +518,7 @@ export class VillageSim {
         p.tx = mid.x + (rand(seed) - 0.5) * field.w * M * 0.8;
         p.tz = mid.z + (rand(seed + 1) - 0.5) * field.d * M * 0.8;
       } else if (!field.tilled) {
-        if (!this.building) void this.till(field, now);
+        this.till(field, now);
       } else {
         p.busy += THINK_S;
         if (p.busy >= HARVEST_S) {
@@ -640,7 +706,7 @@ export class VillageSim {
       const cx = group.reduce((s, o) => s + o.x, 0) / group.length, cz = group.reduce((s, o) => s + o.z, 0) / group.length;
       const site = this.site(cx, cz);
       if (!site) continue;
-      const v: Village = { id: this.next++, name: villageName(this.villages.size), x: site.x, y: this.groundAt(site.x, site.z).h, z: site.z, founded: now, cottages: [], fields: [], wheat: 0 };
+      const v: Village = { id: this.next++, name: villageName(this.villages.size), x: site.x, y: this.groundAt(site.x, site.z).h, z: site.z, founded: now, cottages: [], fields: [], wheat: 0, stock: { ...START_STOCK }, coins: START_COINS };
       this.villages.set(v.id, v);
       for (const o of group) (o.home = v.id), (o.mode = 'idle');
       this.plan(v);
@@ -705,41 +771,9 @@ export class VillageSim {
     return false;
   }
 
-  /** A cottage's next stage raised: written into the world, then it's done. */
-  private async raise(v: Village, c: Cottage): Promise<void> {
-    this.building = true;
-    try {
-      const stage = c.stage + 1;
-      const { clear, place } = cottageStage(c, stage, (bx, bz) => Math.floor(this.groundAt((bx + 0.5) * B, (bz + 0.5) * B).h / B));
-      const results = await this.world.buildWorks(clear, place);
-      c.stage = stage;
-      c.work = 0;
-      this.changed = true;
-      this.onEdits?.(results);
-      void v;
-    } finally {
-      this.building = false;
-    }
-  }
-
   /** Whether a village is to wall itself (it's WALL_AT, and its wall isn't done). */
   private wallDue(v: Village): boolean {
     return (v.wall ?? 0) < WALL_SECTIONS && [...this.walkers.values()].filter((p) => p.home === v.id).length >= WALL_AT;
-  }
-
-  /** A section of a village's wall built: written into the world. */
-  private async raiseWall(v: Village, section: number): Promise<void> {
-    this.building = true;
-    try {
-      const { clear, place } = wallStage(Math.floor(v.x / B), Math.floor(v.z / B), section, (bx, bz) => Math.ceil(this.groundAt((bx + 0.5) * B, (bz + 0.5) * B).h / B));
-      const results = await this.world.buildWorks(clear, place);
-      v.wall = section + 1;
-      v.wallWork = 0;
-      this.changed = true;
-      this.onEdits?.(results);
-    } finally {
-      this.building = false;
-    }
   }
 
   /** A walled village's wall between two points (units), if the way crosses it other than at a gate: the village. */
@@ -778,24 +812,206 @@ export class VillageSim {
   }
 
   /** A field tilled (its top blocks farmland, what's over them cleared) and sown. */
-  private async till(f: Field, now: number): Promise<void> {
-    this.building = true;
-    try {
-      const clear: VillagePiece[] = [], place: VillagePiece[] = [];
-      for (let i = 0; i < f.tops.length; i++) {
-        const x = (f.bx + (i % f.w)) * B, z = (f.bz + Math.floor(i / f.w)) * B, top = f.tops[i]!;
-        // (The ground's top block too: part-filled, it's no room for a whole one; made farmland.)
-        for (let y = top - 1; y < top + 3; y++) clear.push({ x, y: y * B, z, size: B, material: Material.Air });
-        place.push({ x, y: (top - 1) * B, z, size: B, material: Material.Farmland });
-      }
-      const results = await this.world.buildWorks(clear, place);
-      f.tilled = true;
-      f.sown = f.sown.map(() => now);
-      this.changed = true;
-      this.onEdits?.(results);
-    } finally {
-      this.building = false;
+  private till(f: Field, now: number): void {
+    const clear: VillagePiece[] = [], place: VillagePiece[] = [];
+    for (let i = 0; i < f.tops.length; i++) {
+      const x = (f.bx + (i % f.w)) * B, z = (f.bz + Math.floor(i / f.w)) * B, top = f.tops[i]!;
+      // (The ground's top block too: part-filled, it's no room for a whole one; made farmland.)
+      for (let y = top - 1; y < top + 3; y++) clear.push({ x, y: y * B, z, size: B, material: Material.Air });
+      place.push({ x, y: (top - 1) * B, z, size: B, material: Material.Farmland });
     }
+    f.tilled = true;
+    f.sown = f.sown.map(() => now);
+    this.changed = true;
+    this.write(clear, place);
+  }
+
+  /** Written into the world, after whatever's waiting to be. */
+  private write(clear: readonly VillagePiece[], place: readonly VillagePiece[]): void {
+    this.writing = this.writing
+      .then(() => this.world.buildWorks(clear, place))
+      .then(
+        (results) => this.onEdits?.(results),
+        (err: unknown) => this.onError?.(err),
+      );
+  }
+
+  /** The ground's top at a block column (block y). */
+  private top = (bx: number, bz: number) => Math.floor(this.groundAt((bx + 0.5) * B, (bz + 0.5) * B).h / B);
+
+  /** What a village is building now: a cottage going up; else (it's WALL_AT) the next section of its wall; else nothing. */
+  private job(v: Village): Job | null {
+    const c = v.cottages.find((c) => c.stage < 3);
+    if (c) {
+      const key = `${v.id} c${c.bx},${c.bz} ${c.stage + 1}`;
+      let st = this.stages.get(key);
+      if (!st) {
+        const { clear, place } = cottageStage(c, c.stage + 1, this.top);
+        this.stages.set(key, (st = { clear, pieces: stagePieces(place) }));
+      }
+      const m = 1.2 * B, x0 = c.bx * B - m, x1 = (c.bx + c.w) * B + m, z0 = c.bz * B - m, z1 = (c.bz + c.d) * B + m;
+      return {
+        ...st,
+        placed: c.placed,
+        set: (n) => (c.placed = n),
+        done: () => {
+          this.stages.delete(key);
+          c.stage++;
+          c.work = 0;
+          delete c.placed;
+        },
+        // (Just outside its footprint, the nearest there to the piece.)
+        standAt: (piece) => {
+          const px = piece.x + piece.size / 2, pz = piece.z + piece.size / 2;
+          if (px < x0 || px > x1 || pz < z0 || pz > z1) return { x: px, z: pz };
+          const out = [{ d: px - x0, x: x0, z: pz }, { d: x1 - px, x: x1, z: pz }, { d: pz - z0, x: px, z: z0 }, { d: z1 - pz, x: px, z: z1 }];
+          const best = out.reduce((a, b) => (b.d < a.d ? b : a));
+          return { x: best.x, z: best.z };
+        },
+      };
+    }
+    if (!this.wallDue(v)) return null;
+    const section = v.wall ?? 0, key = `${v.id} w${section}`;
+    let st = this.stages.get(key);
+    if (!st) {
+      const { clear, place } = wallStage(Math.floor(v.x / B), Math.floor(v.z / B), section, (bx, bz) => Math.ceil(this.groundAt((bx + 0.5) * B, (bz + 0.5) * B).h / B));
+      this.stages.set(key, (st = { clear, pieces: stagePieces(place) }));
+    }
+    return {
+      ...st,
+      placed: v.wallPlaced,
+      set: (n) => (v.wallPlaced = n),
+      done: () => {
+        this.stages.delete(key);
+        v.wall = section + 1;
+        v.wallWork = 0;
+        delete v.wallPlaced;
+      },
+      // (Inside it, 2 m in from its line, by the piece: one standing on the line would be walled in.)
+      standAt: (piece) => {
+        const a = Math.atan2(piece.z + piece.size / 2 - v.z, piece.x + piece.size / 2 - v.x), r = (WALL_M - 2) * M;
+        return { x: v.x + Math.cos(a) * r, z: v.z + Math.sin(a) * r };
+      },
+    };
+  }
+
+  /**
+   * Up to `most` more of a job's pieces put in, as its village's stock has them (its site cleared
+   * first): written into the world together; done, if that's all of them. How many went in.
+   */
+  private put(v: Village, job: Job, most: number): number {
+    const stock = (v.stock ??= { ...START_STOCK }), out: VillagePiece[] = [];
+    let placed = job.placed, clear: VillagePiece[] = [];
+    if (placed === undefined) (clear = job.clear), (placed = 0);
+    while (out.length < most && placed < job.pieces.length) {
+      const piece = job.pieces[placed]!, k = stockOf(piece.material);
+      if (k && stock[k] < 1) break;
+      if (k) stock[k] -= 1;
+      out.push(piece);
+      placed++;
+    }
+    job.set(placed);
+    if (clear.length || out.length) this.write(clear, out);
+    if (placed >= job.pieces.length) job.done();
+    if (clear.length || out.length) this.changed = true;
+    return out.length;
+  }
+
+  /** Who's near (see OBSERVE_M): the villages watched. */
+  private watch(players: readonly { x: number; z: number }[]): void {
+    this.watched.clear();
+    for (const v of this.villages.values()) if (players.some((p) => Math.hypot(p.x - v.x, p.z - v.z) < OBSERVE_M * M)) this.watched.add(v.id);
+  }
+
+  /** Whether a villager's walked and thinks for themselves: wanderers, those away by train, and the people of watched villages. */
+  private detailed(p: Walker): boolean {
+    return p.home === null || !!p.trip || this.watched.has(p.home);
+  }
+
+  /**
+   * An unwatched village `dt` s on, roughly: its fields tilled once their cottages are up, ripe wheat
+   * harvested (as many times as it's ripened since); its building on as CREW builders would.
+   */
+  private coarse(v: Village, dt: number, now: number): void {
+    const cycle = CROP_STAGE_MS * RIPE;
+    v.fields.forEach((f, i) => {
+      if (!f.tilled) {
+        if (v.cottages[i]?.stage === 3) this.till(f, now);
+        return;
+      }
+      f.sown.forEach((s, k) => {
+        const n = s ? Math.floor((now - s) / cycle) : 0;
+        if (n <= 0) return;
+        f.sown[k] = s + n * cycle;
+        v.wheat += n;
+        this.changed = true;
+      });
+    });
+    const members = [...this.walkers.values()].filter((p) => p.home === v.id).length;
+    let owed = (this.owed.get(v.id) ?? 0) + (Math.min(CREW, members) * dt) / PLACE_S;
+    for (let job = this.job(v); job && owed >= 1; job = this.job(v)) {
+      const n = Math.floor(owed), put = this.put(v, job, n);
+      owed -= put;
+      // (Out of stock: nothing owed for the time it's waited.)
+      if (put < n && (job.placed ?? 0) < job.pieces.length) owed = 0;
+    }
+    this.owed.set(v.id, this.job(v) ? Math.min(owed, 10) : 0);
+  }
+
+  /** What a village gathers to build with, `dt` s of it (faster with tools; up to STOCK_MAX). */
+  private gather(v: Village, dt: number): void {
+    const s = (v.stock ??= { ...START_STOCK }), t = v.tools ?? { axes: 0, picks: 0 }, m = dt / 60;
+    s.wood = Math.min(STOCK_MAX.wood, s.wood + GATHER.wood * (1 + GATHER_TOOL * t.axes) * m);
+    s.planks = Math.min(STOCK_MAX.planks, s.planks + GATHER.planks * (1 + GATHER_TOOL * t.axes) * m);
+    s.cobble = Math.min(STOCK_MAX.cobble, s.cobble + GATHER.cobble * (1 + GATHER_TOOL * t.picks) * m);
+    this.dirty = true;
+  }
+
+  /** From `from` to `to` (ms): every village on (coarse), CATCH_UP_S at a time, the last CATCH_UP_MS of it at most. */
+  private catchUp(from: number, to: number): void {
+    for (let t = Math.max(from, to - CATCH_UP_MS); t < to; ) {
+      const dt = Math.min(CATCH_UP_S, (to - t) / 1000);
+      t += dt * 1000;
+      for (const v of this.villages.values()) {
+        this.coarse(v, dt, t);
+        this.gather(v, dt);
+        this.grow(v, t);
+      }
+    }
+    this.changed = true;
+  }
+
+  // ---- Trading (see villageOffers): with any villager, for their village.
+
+  /** A villager (by their entity id) and the village they live in, if they have one. */
+  villagerOf(entity: number): { x: number; y: number; z: number; name: string; village: Village } | null {
+    const p = this.walkers.get(entity - VILLAGER_ENTITY), v = p && p.home !== null ? this.villages.get(p.home) : undefined;
+    return p && v ? { x: p.x, y: p.y, z: p.z, name: p.name, village: v } : null;
+  }
+
+  /** A village's offers now. */
+  offers(v: Village): { sells: Offer[]; buys: Offer[] } {
+    return villageOffers(v);
+  }
+
+  /** A player bought `lots` lots of what `v` sells (see villageOffers; checked already): its wheat used, the coins its. */
+  sold(v: Village, item: number, lots: number, price: number): void {
+    v.wheat -= item === Item.Bread ? lots * BREAD_WHEAT : lots * 4;
+    v.coins = (v.coins ?? 0) + price;
+    this.changed = true;
+  }
+
+  /** A player sold `v` `amount` of what it buys (blocks by volume; tools by count), for `price` coins of its. */
+  bought(v: Village, item: number, amount: number, price: number, blockVolume: number): void {
+    const stock = (v.stock ??= { ...START_STOCK }), tools = (v.tools ??= { axes: 0, picks: 0 });
+    if (item === Item.IronAxe) tools.axes = Math.min(MAX_TOOLS, tools.axes + amount);
+    else if (item === Item.IronPickaxe) tools.picks = Math.min(MAX_TOOLS, tools.picks + amount);
+    else {
+      const k = stockOf(item);
+      if (k) stock[k] += amount / blockVolume;
+    }
+    v.coins = (v.coins ?? 0) - price;
+    this.changed = true;
   }
 
   /** A village growing: another cottage when it's full and none's going up; a newcomer when it's prospered. */
@@ -803,7 +1019,7 @@ export class VillageSim {
     const members = [...this.walkers.values()].filter((p) => p.home === v.id);
     const going = v.cottages.some((c) => c.stage < 3);
     if (!going && v.cottages.length < MAX_COTTAGES && members.length > v.cottages.length * PER_COTTAGE - 1) this.plan(v);
-    if ((v.coins ?? 0) >= COINS_PER_NEWCOMER && members.length < MAX_COTTAGES * PER_COTTAGE) {
+    if ((v.coins ?? 0) >= COINS_PER_NEWCOMER + START_COINS && members.length < MAX_COTTAGES * PER_COTTAGE) {
       v.coins! -= COINS_PER_NEWCOMER;
       const at = this.somewhere(v.x, v.z, 120, v.id * 37 + Math.floor(now / 1000));
       this.add(at.x, at.z, now, v.id);
@@ -827,5 +1043,5 @@ function kept(raw: unknown): SimSave | null {
   const villages = (Array.isArray(r.villages) ? r.villages : []).filter(
     (v): v is Village => typeof v === 'object' && v !== null && Number.isInteger(v.id) && typeof v.name === 'string' && num(v.x) && num(v.z) && Array.isArray(v.cottages) && Array.isArray(v.fields) && num(v.wheat),
   );
-  return { villagers, villages, cells: (Array.isArray(r.cells) ? r.cells : []).filter((c): c is string => typeof c === 'string'), next: num(r.next) ? r.next : 1 };
+  return { villagers, villages, cells: (Array.isArray(r.cells) ? r.cells : []).filter((c): c is string => typeof c === 'string'), next: num(r.next) ? r.next : 1, ...(num(r.at) ? { at: r.at } : {}) };
 }

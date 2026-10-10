@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CROP_STAGE_MS, FOUNDERS, GATES, Material, RIPE, UNITS_PER_METER, WALL_AT, WALL_M, WALL_SECTIONS, cottageStage, cropStage, inGate, villagePlot, wallStage, VILLAGER_SEAT, type Station, type VillagePiece } from '@super-vox/shared';
+import { BLOCK_VOLUME, CROP_STAGE_MS, FOUNDERS, Item, START_COINS, villageOffers, GATES, Material, RIPE, UNITS_PER_METER, WALL_AT, WALL_M, WALL_SECTIONS, cottageStage, cropStage, inGate, villagePlot, wallStage, VILLAGER_SEAT, type Station, type VillagePiece } from '@super-vox/shared';
 import { VillageSim, type VillageWorld } from './villageSim.js';
 import { TrainYard } from './trainYard.js';
 
@@ -35,8 +35,8 @@ async function run(sim: VillageSim, s: number, t0: number, players: { x: number;
   for (let i = 0; i < s * 10; i++) {
     now += 100;
     sim.step(0.1, now, players, night);
-    // (Building's done between steps, as the server's would be.)
-    if (i % 10 === 0) await Promise.resolve();
+    // (What's written into the world, done between steps, as the server's would be.)
+    if (i % 10 === 0) await sim.written();
   }
   return now;
 }
@@ -129,7 +129,7 @@ describe('villages', () => {
     const fields = Array.from({ length: 7 }, (_, n) => ({ ...villagePlot(8000, 8000, n).field, tops: Array(30).fill(10), sown: Array(30).fill(T0_WALL), tilled: true }));
     const villagers = Array.from({ length: WALL_AT }, (_, i) => ({ id: i + 1, name: `v${i}`, look: '', x: 8000.5 * M + i * M, y: 10 * M, z: 8000.5 * M, yaw: 0, home: 100 }));
     const outside = { id: 50, name: 'out', look: '', x: 8000.5 * M + 45 * M, y: 10 * M, z: 8000.5 * M + 10 * M, yaw: 0, home: 100 };
-    const raw = { villagers: [...villagers, outside], villages: [{ id: 100, name: 'Walled', x: 8000.5 * M, y: 10 * M, z: 8000.5 * M, founded: 0, cottages, fields, wheat: 0 }], cells: ['4,4', '3,3', '3,4', '4,3', '5,5', '3,5', '5,3', '4,5', '5,4'], next: 200 };
+    const raw = { villagers: [...villagers, outside], villages: [{ id: 100, name: 'Walled', x: 8000.5 * M, y: 10 * M, z: 8000.5 * M, founded: 0, cottages, fields, wheat: 0, stock: { wood: 0, planks: 0, cobble: 1000 } }], cells: ['4,4', '3,3', '3,4', '4,3', '5,5', '3,5', '5,3', '4,5', '5,4'], next: 200 };
     const sim = new VillageSim(w, raw);
     let now = T0_WALL;
     for (let i = 0; i < 120 && (sim.list()[0]!.wall ?? 0) < WALL_SECTIONS; i++) now = await run(sim, 60, now, [{ x: 8000 * M, z: 8000 * M }]);
@@ -215,4 +215,96 @@ describe('villages', () => {
     expect(rode).toBeGreaterThan(0);
     void far;
   }, 60_000);
+});
+/** A hamlet of three by (8000, 8000) m, its first cottage not begun, and what it has to build with. */
+function hamlet(stock: { wood: number; planks: number; cobble: number }, extra: Record<string, unknown> = {}) {
+  const villagers = Array.from({ length: 3 }, (_, i) => ({ id: i + 1, name: `v${i}`, look: '', x: (8000 + i) * M, y: 10 * M, z: 8000 * M, yaw: 0, home: 100 }));
+  const cottages = [{ ...villagePlot(8000, 8000, 0).cottage, floor: 11, stage: 0, work: 0 }];
+  const fields = [{ ...villagePlot(8000, 8000, 0).field, tops: Array(30).fill(10), sown: Array(30).fill(0), tilled: false }];
+  return { villagers, villages: [{ id: 100, name: 'Small', x: 8000.5 * M, y: 10 * M, z: 8000.5 * M, founded: 0, cottages, fields, wheat: 0, coins: START_COINS, stock, ...extra }], cells: ['4,4', '3,3', '3,4', '4,3', '5,5', '3,5', '5,3', '4,5', '5,4'], next: 200 };
+}
+const pieces = (built: { place: VillagePiece[] }[], m: number) => built.flatMap((b) => b.place).filter((p) => p.material === m).length;
+
+describe('villages watched and not', () => {
+  it('watched: builders put a piece in at a time, from their stock (out of it, they wait), walking to each', async () => {
+    const { w, built } = world();
+    const sim = new VillageSim(w, hamlet({ wood: 0, planks: 0, cobble: 0 }));
+    const here = [{ x: 8000 * M, z: 8000 * M }];
+    let now = await run(sim, 120, T0, here);
+    expect(sim.isWatched(100)).toBe(true);
+    // (No planks but what they've gathered in two minutes: a few pieces at most.)
+    expect(pieces(built, Material.Planks)).toBeLessThanOrEqual(3);
+    expect(sim.list()[0]!.cottages[0]!.stage).toBe(0);
+    // Given planks and wood (as a player selling them would): built, one piece to each write.
+    sim.bought(sim.list()[0]!, Material.Planks, 100 * BLOCK_VOLUME, 0, BLOCK_VOLUME);
+    sim.bought(sim.list()[0]!, Material.Wood, 30 * BLOCK_VOLUME, 0, BLOCK_VOLUME);
+    const before = sim.near(8000 * M, 8000 * M, 100 * M).map((e) => [e.x, e.z]);
+    now = await run(sim, 600, now, here);
+    expect(sim.list()[0]!.cottages[0]!.stage).toBe(3);
+    const writes = built.filter((b) => b.place.length && b.place[0]!.material !== Material.Farmland);
+    expect(writes.length).toBeGreaterThan(40);
+    expect(writes.every((b) => b.place.length === 1)).toBe(true);
+    // (They moved about to do it.)
+    expect(sim.near(8000 * M, 8000 * M, 100 * M).map((e) => [e.x, e.z])).not.toEqual(before);
+    // Its stock used: a block each (but thatch: straw).
+    const v = sim.list()[0]!;
+    expect(v.stock!.planks).toBeLessThan(100 - 40);
+  });
+
+  it("unwatched: built on in batches, its fields worked, its villagers where they were; caught up with after time away (kept too)", async () => {
+    const { w, built, saved } = world();
+    const sim = new VillageSim(w, hamlet({ wood: 100, planks: 200, cobble: 100 }));
+    const far = [{ x: 3000 * M, z: 3000 * M }];
+    const at = () => sim.near(8000 * M, 8000 * M, 100 * M).filter((e) => e.home === 100).map((e) => [e.x, e.z]);
+    const before = at();
+    let now = await run(sim, 300, T0, far);
+    expect(sim.isWatched(100)).toBe(false);
+    expect(sim.list()[0]!.cottages[0]!.stage).toBe(3);
+    expect(sim.list()[0]!.fields[0]!.tilled).toBe(true);
+    expect(at()).toEqual(before);
+    expect(built.some((b) => b.place.filter((p) => p.material !== Material.Farmland).length > 1)).toBe(true);
+    // Kept, then nobody here for two hours: on again, it's caught up (wheat grown and harvested, many times over).
+    sim.persist();
+    const again = new VillageSim(w, JSON.parse(JSON.stringify(saved())));
+    now += 2 * 3600_000;
+    await run(again, 1, now, far);
+    const v = again.list()[0]!, members = again.near(8000 * M, 8000 * M, 400 * M).filter((e) => e.home === 100).length;
+    // (30 blocks, ten harvests each: some of it into newcomers.)
+    expect(v.wheat + (members - 3) * 36).toBeGreaterThan(200);
+    expect(v.fields[0]!.sown.every((s) => now - s < CROP_STAGE_MS * RIPE)).toBe(true);
+    // A hamlet kept as it was, its cottage not begun: after two hours away, it's built (a second's
+    // stepping, without catching up, would put in two pieces).
+    const fresh = new VillageSim(w, { ...hamlet({ wood: 100, planks: 200, cobble: 100 }), at: T0 });
+    await run(fresh, 1, T0 + 2 * 3600_000, far);
+    expect(fresh.list()[0]!.cottages[0]!.stage).toBe(3);
+  });
+
+  it('trade: sells wheat it has over what it keeps, and bread; buys materials and tools with its coins, as it has room and wants', () => {
+    const { w } = world();
+    const sim = new VillageSim(w, hamlet({ wood: 0, planks: 0, cobble: 0 }, { wheat: 32, coins: 20 }));
+    const v = sim.list()[0]!;
+    const { sells, buys } = villageOffers(v);
+    // Wheat over the 12 kept: 20 bundles, five lots of four; six loaves.
+    expect(sells.find((o) => o.item === Item.Wheat)).toMatchObject({ lot: 4, most: 5 });
+    expect(sells.find((o) => o.item === Item.Bread)).toMatchObject({ lot: 1, most: 6 });
+    // Short of wood: two copper a block; 20 coins: ten lots at most.
+    expect(buys.find((o) => o.item === Material.Wood)).toMatchObject({ lot: BLOCK_VOLUME, price: 2, most: 10 });
+    expect(buys.find((o) => o.item === Item.IronAxe)).toMatchObject({ price: 8, most: 2 });
+    sim.sold(v, Item.Wheat, 2, 4);
+    expect(v.wheat).toBe(24);
+    expect(v.coins).toBe(24);
+    sim.bought(v, Material.Wood, 40 * BLOCK_VOLUME, 20, BLOCK_VOLUME);
+    expect(v.stock!.wood).toBe(40);
+    expect(v.coins).toBe(4);
+    // Plenty of wood now (over twice what it wants): it pays less; and it can't afford tools.
+    const after = villageOffers(v);
+    expect(after.buys.find((o) => o.item === Material.Wood)!.price / (after.buys.find((o) => o.item === Material.Wood)!.lot / BLOCK_VOLUME)).toBeLessThan(2);
+    expect(after.buys.find((o) => o.item === Item.IronAxe)!.most).toBe(0);
+    // Sold an axe: it gathers faster.
+    v.coins = 8;
+    sim.bought(v, Item.IronAxe, 1, 8, BLOCK_VOLUME);
+    expect(v.tools).toEqual({ axes: 1, picks: 0 });
+    expect(sim.villagerOf(1_000_000 + 1)?.village.id).toBe(100);
+    expect(sim.villagerOf(1_000_000 + 99)).toBeNull();
+  });
 });

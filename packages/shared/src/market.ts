@@ -2,6 +2,7 @@ import { BLOCK_VOLUME, Item, isBlock, type ItemId } from './items.js';
 import { Material } from './materials.js';
 import { UNITS_PER_METER } from './units.js';
 import { avatarText, defaultAvatar, type Avatar } from './avatar.js';
+import { BREAD_WHEAT, MAX_TOOLS, START_STOCK, STOCK_MAX, STOCK_WANT, WHEAT_KEPT, type Village, type VillageStock } from './villages.js';
 
 /**
  * Trading posts: a market stall where a trader buys raw goods (ore, ingots, coal, timber, pork) and
@@ -25,6 +26,8 @@ export interface Offer {
   item: ItemId;
   lot: number;
   price: number;
+  /** At most this many lots (a village: what it has to sell, what it can pay for and has room for); unlimited, without. */
+  most?: number;
 }
 
 export interface TradingPost {
@@ -179,3 +182,36 @@ export function pay(price: number, copper: number, gold: number): { copper: numb
 
 /** Coins for `price` (copper's worth): as many gold as it makes, the rest copper. */
 export const coins = (price: number) => ({ gold: Math.floor(price / GOLD_COPPER), copper: price % GOLD_COPPER });
+
+/** What a village buys for its building (a block's worth, copper) by its stock, and its tools (copper each). */
+const VILLAGE_BUYS: { item: ItemId; stock: keyof VillageStock; value: number }[] = [
+  { item: Material.Wood, stock: 'wood', value: 1 },
+  { item: Material.Planks, stock: 'planks', value: 0.5 },
+  { item: Material.Cobblestone, stock: 'cobble', value: 0.25 },
+];
+const TOOL_PRICE = 8;
+
+/**
+ * Trading with a village (any of its villagers): it sells wheat it has over what it keeps, and bread
+ * it bakes from that (BREAD_WHEAT a loaf); it buys what it builds with (paying twice as much while
+ * it's short, under STOCK_WANT; half, over twice that; nothing past STOCK_MAX), and axes and
+ * pickaxes (to gather faster). Each offer's `most`: what it has, or can pay for (its coins).
+ */
+export function villageOffers(v: Village): { sells: Offer[]; buys: Offer[] } {
+  const spare = Math.max(0, Math.floor(v.wheat - WHEAT_KEPT)), plenty = spare >= 40;
+  const sells: Offer[] = [
+    { item: Item.Wheat, lot: 4, price: plenty ? 1 : 2, most: Math.floor(spare / 4) },
+    { item: Item.Bread, lot: 1, price: plenty ? 2 : 3, most: Math.floor(spare / BREAD_WHEAT) },
+  ];
+  const coinsHad = Math.max(0, Math.floor(v.coins ?? 0)), stock = v.stock ?? START_STOCK, tools = v.tools ?? { axes: 0, picks: 0 };
+  const buys: Offer[] = VILLAGE_BUYS.map(({ item, stock: k, value }) => {
+    const have = stock[k], each = value * (have < STOCK_WANT[k] ? 2 : have < STOCK_WANT[k] * 2 ? 1 : 0.5);
+    const blocks = Math.max(1, Math.ceil(1 / each - 1e-9)), price = Math.round(blocks * each);
+    return { item, lot: blocks * BLOCK_VOLUME, price, most: Math.max(0, Math.min(Math.floor(coinsHad / price), Math.floor((STOCK_MAX[k] - have) / blocks))) };
+  });
+  buys.push(
+    { item: Item.IronAxe, lot: 1, price: TOOL_PRICE, most: Math.max(0, Math.min(MAX_TOOLS - tools.axes, Math.floor(coinsHad / TOOL_PRICE))) },
+    { item: Item.IronPickaxe, lot: 1, price: TOOL_PRICE, most: Math.max(0, Math.min(MAX_TOOLS - tools.picks, Math.floor(coinsHad / TOOL_PRICE))) },
+  );
+  return { sells, buys };
+}
