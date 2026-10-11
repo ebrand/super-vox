@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { FLAT_WORLD_16KM, FlatGenerator, MOBS, Material, darkEnoughForZombies, defaultFlatGen, lightAt } from '@super-vox/shared';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DiskCache } from './diskCache.js';
 import { MobManager } from './mobManager.js';
 import { World } from './world.js';
 
@@ -116,5 +120,29 @@ describe('zombies in the dark', () => {
     expect(darkEnoughForZombies({ sky: 15, block: 1 }, true)).toBe(false);
     expect(darkEnoughForZombies({ sky: 7, block: 0 }, false)).toBe(true);
     expect(darkEnoughForZombies({ sky: 8, block: 0 }, false)).toBe(false);
+  });
+
+  it("spawns only where what it looks at is made already: else it's asked for (off the main thread) and looked at again later, not made here", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'super-vox-spawn-'));
+    try {
+      const world = new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4)), { disk: new DiskCache(dir) });
+      let r = 0.21;
+      const mobs = new MobManager(world, () => (r = ((r * 9301 + 49297) % 233280) / 233280));
+      const player = { id: 1, x: 8000 * M, y: 0, z: 8000 * M, vulnerable: true };
+      // Nothing to hand yet: none made here, none spawned (for now).
+      run(mobs, [player], 3, false);
+      expect(world.mainThread.chunksMade).toBe(0);
+      expect(mobs.near(player.x, player.z, 96 * M, 0)).toHaveLength(0);
+      // Once what it asked for has come: pigs, still none made here.
+      for (let i = 0; i < 60; i++) {
+        await new Promise((res) => setTimeout(res, 50));
+        run(mobs, [player], 1, false, 3000 + i * 1000);
+        if (mobs.near(player.x, player.z, 96 * M, 0).length >= 4) break;
+      }
+      expect(mobs.near(player.x, player.z, 96 * M, 0).filter((e) => e.kind === 'pig').length).toBe(4);
+      expect(world.mainThread.chunksMade).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

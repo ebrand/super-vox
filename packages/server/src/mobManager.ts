@@ -31,6 +31,8 @@ const AROUND_PLAYER: Record<MobKind, { day: number; night: number }> = { pig: { 
 const SPAWN_MIN = 24 * M, SPAWN_MAX = 48 * M;
 /** How far (blocks) a daytime check for dark looks for the sky: light from further off is under ZOMBIE_DARK. */
 const SKY_REACH = 15 - ZOMBIE_DARK;
+/** How far round a spawning column (units) light's looked for (see groundAt): its chunks wanted to hand. */
+const SPAWN_LOOK = 16 * M;
 /** Mobs further than this from every player go away. */
 const KEEP = 96 * M;
 /** Most mobs in a world at once. */
@@ -154,6 +156,11 @@ export class MobManager {
       if (have >= want) continue;
       const a = this.random() * Math.PI * 2, r = SPAWN_MIN + this.random() * (SPAWN_MAX - SPAWN_MIN);
       const x = Math.floor(p.x + Math.sin(a) * r), z = Math.floor(p.z + Math.cos(a) * r);
+      // (Only where what it looks at, the column and the light round it, is made already: else it's
+      // asked for, off the main thread, and looked at another time. Underground, beside a player,
+      // it's seldom been asked for: making it here held the server up a second or more at a time.)
+      const L = SPAWN_LOOK;
+      if (this.world.chunksToHand?.(x - L, p.y - 24 * M - L, z - L, x + L, p.y + 16 * M + L, z + L) === false) continue;
       const y = this.groundAt(x, p.y, z, kind, night);
       if (y !== null) {
         this.add(kind, x + 0.5, y, z + 0.5, now);

@@ -453,6 +453,30 @@ export class World {
   }
 
   /**
+   * Whether the chunks in a box (units, least corner to most) are to hand (cached, edited, or
+   * decoded): those that aren't asked for off the main thread (made there, or read from the disk)
+   * and false, so what wanted them can look again later rather than make them here. Where the world
+   * has neither another thread nor a disk, true (made here when looked at, as ever).
+   */
+  chunksToHand(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): boolean {
+    if (!this.remote && !this.disk) return true;
+    const n = CHUNK_SIZE;
+    let ready = true;
+    for (let cy = Math.floor(y0 / n); cy <= Math.floor(y1 / n); cy++)
+      for (let cz = Math.floor(z0 / n); cz <= Math.floor(z1 / n); cz++)
+        for (let cx = Math.floor(x0 / n); cx <= Math.floor(x1 / n); cx++) {
+          const resolved = resolveChunk(this.config, { cx, cy, cz });
+          if (!resolved) continue;
+          const key = chunkKey(resolved);
+          if (this.cache.has(key) || this.edited.has(key) || this.decoded.has(key)) continue;
+          ready = false;
+          const got = this.encodedChunk(resolved);
+          if (got instanceof Promise) got.catch(() => {}); // (asked again next time, if it failed)
+        }
+    return ready;
+  }
+
+  /**
    * Gets ready the chunks within `reach` (units) of (x, y, z) that aren't to hand: made off the main
    * thread (or read from disk) and cached, so what then reads them (a blast that's coming: see
    * Explosives.light) only decodes them. Nothing where there's no other thread or disk to do it.
