@@ -20,6 +20,7 @@ import {
   type Outlaw,
   type VillagePiece,
 } from '@super-vox/shared';
+import { SiteSearch } from './siteSearch.js';
 import type { EditResult } from './world.js';
 
 const M = UNITS_PER_METER, B = BLOCK_SIZE;
@@ -41,6 +42,9 @@ const ROAM_EVERY_S = 600;
 const ROAM_MS = 5 * 60_000;
 const ROAM_M = 250;
 const ROAM_VILLAGE_M = 500;
+/** Places looked at for a camp a second (each samples the ground 25 times); how long (ms) loners who found nowhere wait to look again. */
+const SITES_A_STEP = 4;
+const SITE_REST_MS = 2 * 60_000;
 /** A camp with room gets a newcomer about once in this long (s). */
 const RECRUIT_EVERY_S = 900;
 /** A record heals this much a second. */
@@ -98,6 +102,8 @@ export class OutlawSim {
   private readonly outlaws = new Map<number, Rec>();
   private readonly camps = new Map<number, Camp>();
   private readonly cells = new Set<string>();
+  /** Loners met looking for somewhere to camp (see found). */
+  private readonly searches = new SiteSearch<{ x: number; z: number }>(SITES_A_STEP, SITE_REST_MS);
   private next = 1;
   private thinkIn = 0;
   private saveIn = SAVE_S;
@@ -327,27 +333,37 @@ export class OutlawSim {
   /** Loners meeting (OUTLAW_FOUNDERS within OUTLAW_MEET_M) set up a camp near them, where there's open land clear of everyone else. */
   private found(now: number): void {
     const loners = [...this.outlaws.values()].filter((o) => o.camp === null);
-    for (const o of loners) {
-      if (o.camp !== null) continue;
-      const group = loners.filter((p) => p.camp === null && Math.hypot(p.x - o.x, p.z - o.z) < OUTLAW_MEET_M * M);
-      if (group.length < OUTLAW_FOUNDERS) continue;
-      const site = this.site(o.x, o.z);
-      if (!site) continue;
-      const c: Camp = { id: this.next++, name: campName(this.camps.size), x: site.x, y: this.ground(site.x, site.z).h, z: site.z, stage: 0, founded: now, roam: null };
-      this.camps.set(c.id, c);
-      this.changed = true;
-      for (const p of group.slice(0, CAMP_MAX)) p.camp = c.id;
-      this.build(c, 1);
-      this.dirty = true;
-    }
+    // (A few places a second, for one group at a time: see SiteSearch.)
+    const r = this.searches.step(now, () => {
+      for (const o of loners) {
+        if (!this.searches.free(o.id, now)) continue;
+        const group = loners.filter((p) => this.searches.free(p.id, now) && Math.hypot(p.x - o.x, p.z - o.z) < OUTLAW_MEET_M * M);
+        if (group.length >= OUTLAW_FOUNDERS) return { ids: group.map((p) => p.id), places: this.sites(o.x, o.z) };
+      }
+      return null;
+    });
+    if (!r) return;
+    // (Those still loners: some may have died, or joined a camp, while it looked.)
+    const group = r.ids.map((id) => this.outlaws.get(id)).filter((o): o is Rec => o !== undefined && o.camp === null);
+    if (group.length < OUTLAW_FOUNDERS) return;
+    const site = r.site;
+    const c: Camp = { id: this.next++, name: campName(this.camps.size), x: site.x, y: this.ground(site.x, site.z).h, z: site.z, stage: 0, founded: now, roam: null };
+    this.camps.set(c.id, c);
+    this.changed = true;
+    for (const p of group.slice(0, CAMP_MAX)) p.camp = c.id;
+    this.build(c, 1);
+    this.dirty = true;
   }
 
-  /** Somewhere near (x, z) (units, within 200 m) for a camp: land, flat (within 2 m over 6 m round), few trees, clear of everyone else. */
-  private site(x: number, z: number): { x: number; z: number } | null {
+  /** Places near (x, z) (units, within 200 m) for a camp, one by one: null for each that won't do, the first that will (land, flat within 2 m over 6 m round, few trees, clear of everyone else). */
+  private *sites(x: number, z: number): Generator<{ x: number; z: number } | null, null> {
     for (let ring = 0; ring <= 6; ring++)
       for (let k = 0; k < Math.max(1, ring * 6); k++) {
         const a = (k / Math.max(1, ring * 6)) * Math.PI * 2, sx = x + Math.cos(a) * ring * 30 * M, sz = z + Math.sin(a) * ring * 30 * M;
-        if (!this.inside(sx - 10 * M, sz - 10 * M) || !this.inside(sx + 10 * M, sz + 10 * M) || !this.clearOf(sx, sz)) continue;
+        if (!this.inside(sx - 10 * M, sz - 10 * M) || !this.inside(sx + 10 * M, sz + 10 * M) || !this.clearOf(sx, sz)) {
+          yield null;
+          continue;
+        }
         let lo = Infinity, hi = -Infinity, trees = 0, ok = true;
         for (let i = -2; i <= 2 && ok; i++)
           for (let j = -2; j <= 2 && ok; j++) {
@@ -357,7 +373,11 @@ export class OutlawSim {
             hi = Math.max(hi, g.h);
             if (g.tree) trees++;
           }
-        if (ok && hi - lo <= 2 * M && trees <= 3) return { x: Math.floor(sx / B) * B + B / 2, z: Math.floor(sz / B) * B + B / 2 };
+        if (ok && hi - lo <= 2 * M && trees <= 3) {
+          yield { x: Math.floor(sx / B) * B + B / 2, z: Math.floor(sz / B) * B + B / 2 };
+          return null;
+        }
+        yield null;
       }
     return null;
   }

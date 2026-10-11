@@ -66,6 +66,7 @@ import {
   type VillagePiece,
   type Villager,
 } from '@super-vox/shared';
+import { SiteSearch } from './siteSearch.js';
 import type { EditResult } from './world.js';
 
 const M = UNITS_PER_METER, B = BLOCK_SIZE;
@@ -131,6 +132,9 @@ const BUILD_REACH_M = 4.5;
 const CREW = 2;
 /** Away (the world shut, nobody in it) longer than GAP_MS: caught up with, CATCH_UP_S at a time, at most CATCH_UP_MS of it. */
 const GAP_MS = 5000;
+/** Places looked at for a village a second (each samples the ground 81 times); how long (ms) wanderers who found nowhere wait to look again. */
+const SITES_A_STEP = 3;
+const SITE_REST_MS = 2 * 60_000;
 const CATCH_UP_S = 60;
 const CATCH_UP_MS = 4 * 3600_000;
 /** Fighting (or running from it), villagers go this fast (m/s); a fighter hits from this near (m), once in VILLAGER_HIT_MS. */
@@ -253,6 +257,8 @@ export class VillageSim {
   private readonly stages = new Map<string, { clear: VillagePiece[]; pieces: VillagePiece[][] }>();
   /** Ground looked up, by 4 m square (it doesn't change: it's the ground as generated). */
   private readonly ground = new Map<string, { h: number; ok: boolean; tree: boolean }>();
+  /** Wanderers met looking for somewhere to found a village (see found). */
+  private readonly searches = new SiteSearch<{ x: number; z: number }>(SITES_A_STEP, SITE_REST_MS);
 
   constructor(
     private readonly world: VillageWorld & { saveVillages?(s: unknown): void },
@@ -807,33 +813,47 @@ export class VillageSim {
   /** Wanderers meeting (FOUNDERS within FOUND_M of each other) found a village on good land near them, if there's some. */
   private found(now: number): void {
     const free = [...this.walkers.values()].filter((p) => p.home === null);
-    for (const p of free) {
-      if (p.home !== null) continue;
-      const group = free.filter((o) => o.home === null && Math.hypot(o.x - p.x, o.z - p.z) < FOUND_M * M);
-      if (group.length < FOUNDERS) continue;
-      const cx = group.reduce((s, o) => s + o.x, 0) / group.length, cz = group.reduce((s, o) => s + o.z, 0) / group.length;
-      const site = this.site(cx, cz);
-      if (!site) continue;
-      const v: Village = { id: this.next++, name: villageName(this.villages.size), x: site.x, y: this.groundAt(site.x, site.z).h, z: site.z, founded: now, cottages: [], fields: [], wheat: 0, stock: { ...START_STOCK }, coins: START_COINS };
-      this.villages.set(v.id, v);
-      for (const o of group) (o.home = v.id), (o.mode = 'idle');
-      this.plan(v);
-      this.changed = true;
-    }
+    // (A few places a second, for one group at a time: see SiteSearch.)
+    const r = this.searches.step(now, () => {
+      for (const p of free) {
+        if (!this.searches.free(p.id, now)) continue;
+        const group = free.filter((o) => this.searches.free(o.id, now) && Math.hypot(o.x - p.x, o.z - p.z) < FOUND_M * M);
+        if (group.length < FOUNDERS) continue;
+        const cx = group.reduce((s, o) => s + o.x, 0) / group.length, cz = group.reduce((s, o) => s + o.z, 0) / group.length;
+        return { ids: group.map((o) => o.id), places: this.sites(cx, cz) };
+      }
+      return null;
+    });
+    if (!r) return;
+    // (Those still without a home: some may have found one, or died, while it looked.)
+    const group = r.ids.map((id) => this.walkers.get(id)).filter((o): o is Walker => o !== undefined && o.home === null);
+    if (group.length < FOUNDERS) return;
+    const site = r.site;
+    const v: Village = { id: this.next++, name: villageName(this.villages.size), x: site.x, y: this.groundAt(site.x, site.z).h, z: site.z, founded: now, cottages: [], fields: [], wheat: 0, stock: { ...START_STOCK }, coins: START_COINS };
+    this.villages.set(v.id, v);
+    for (const o of group) (o.home = v.id), (o.mode = 'idle');
+    this.plan(v);
+    this.changed = true;
   }
 
   /**
-   * Somewhere near (x, z) (units, within 300 m) for a village: land, no water, not steep (its ground
-   * within 6 m), not much forest, clear of other villages, trading posts and what players have built.
+   * Places near (x, z) (units, within 300 m) for a village, one by one: null for each that won't do,
+   * the first that will (land, no water, not steep (its ground within 6 m), not much forest, clear of
+   * other villages, trading posts and what players have built).
    */
-  private site(x: number, z: number): { x: number; z: number } | null {
+  private *sites(x: number, z: number): Generator<{ x: number; z: number } | null, null> {
     const R = VILLAGE_RADIUS_M * M;
     for (let ring = 0; ring <= 10; ring++)
       for (let k = 0; k < Math.max(1, ring * 6); k++) {
         const a = (k / Math.max(1, ring * 6)) * Math.PI * 2, sx = x + Math.cos(a) * ring * 30 * M, sz = z + Math.sin(a) * ring * 30 * M;
-        if (sx < R || sz < R || sx > this.world.config.widthUnits - R || sz > this.world.config.depthUnits - R) continue;
-        if ([...this.villages.values()].some((v) => Math.hypot(v.x - sx, v.z - sz) < APART_M * M)) continue;
-        if (this.world.editedNear(sx, sz, R + 16 * M) || this.world.occupied?.(sx, sz, R + 60 * M)) continue;
+        if (
+          sx < R || sz < R || sx > this.world.config.widthUnits - R || sz > this.world.config.depthUnits - R ||
+          [...this.villages.values()].some((v) => Math.hypot(v.x - sx, v.z - sz) < APART_M * M) ||
+          this.world.editedNear(sx, sz, R + 16 * M) || this.world.occupied?.(sx, sz, R + 60 * M)
+        ) {
+          yield null;
+          continue;
+        }
         let lo = Infinity, hi = -Infinity, trees = 0, ok = true;
         for (let i = -4; i <= 4 && ok; i++)
           for (let j = -4; j <= 4 && ok; j++) {
@@ -843,7 +863,11 @@ export class VillageSim {
             hi = Math.max(hi, g.h);
             if (g.tree) trees++;
           }
-        if (ok && hi - lo <= 6 * M && trees <= 30) return { x: sx, z: sz };
+        if (ok && hi - lo <= 6 * M && trees <= 30) {
+          yield { x: sx, z: sz };
+          return null;
+        }
+        yield null;
       }
     return null;
   }
