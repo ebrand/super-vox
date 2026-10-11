@@ -1,6 +1,6 @@
-# Backlog
+# Backlog: done
 
-Ideas queued for later, in the order they were proposed. Each has a rough size, the systems it touches, and the questions to settle before building it. Sizes are relative: **S** is an afternoon-sized change like buckets, **M** is like shaped blocks or crafting, **L** is like structural integrity plus cave-ins, **XL** is bigger than anything built so far.
+Finished items (and the finished parts of items still open in BACKLOG.md), by their numbers there. Originally: ideas queued for later, in the order they were proposed. Each has a rough size, the systems it touches, and the questions to settle before building it. Sizes are relative: **S** is an afternoon-sized change like buckets, **M** is like shaped blocks or crafting, **L** is like structural integrity plus cave-ins, **XL** is bigger than anything built so far.
 
 ## 1. Weather — M (Done)
 
@@ -15,7 +15,7 @@ Every so often the weather turns: far more cloud, the land darkens, rain falls f
   - Snow instead of rain in cold places (needs biomes, item 4).
 - **Save:** the weather state and its timer.
 
-## 2. Rail tracks and enclosed rail cars — XL
+## 2. Rail tracks and enclosed rail cars — XL (Done: track drawn on the map, steam engine, flatbed and passenger cars)
 
 Tracks the player lays, and closed cars they ride in.
 
@@ -67,16 +67,7 @@ What you hold is drawn in the corner of the view and moves when used: a sword sw
 - **Multiplayer:** other players show what they hold too (phase 3 draws other players).
 - **Questions:** blocky models built from the 16x16 icons (like Minecraft's extruded sprites), or hand-made models per tool?
 
-## 17. Animals: rabbits, deer and bears — L (Partially Done)
-
-Wildlife by biome: rabbits and deer that flee, bears that are meat and a threat.
-
-- **Builds on:** creatures (`mobs.ts`: AI states, pathfinding, spawning, senses), drops and items, health.
-- **Parts:** a creature type per animal with its own model, speed and senses; rabbits and deer spawn by day in grassland and forest, flee from players (and bears); bears wander, and charge when close or hurt; each drops meat (and hide?).
-- **Needs food:** meat is for eating, and there's no hunger or eating yet. A food system (hunger, cooking at a furnace or fire, item 18) would come with this.
-- **Questions:** herds? Breeding, or just spawning? Do animals leave prints in snow (they could, like Lurkers)?
-
-## 21. Survival progression: ores, tools, furnace and cooking — L (Partially Done - needs recipes?)
+## 21. Survival progression: ores, tools, furnace and cooking — L (Done; the recipe gaps left are item 21 in BACKLOG.md)
 
 Survival has swords and hand-mining only: nothing to dig for, no faster tools, no way to cook the pork pigs drop.
 
@@ -120,7 +111,7 @@ The only sound is an explosion's boom. Item 1 (thunder) and item 10 (music) both
 - **Parts:** one audio manager (volume settings, master, effects, music); positional sounds (panning and fall-off with distance) for footsteps by material, mining and placing, doors and gates, splashes and swimming, mobs (pigs, zombies), hurt, eating; ambient beds by biome and time (wind, birds by day, crickets at night, the sea near the shore).
 - **Questions:** made sounds (synthesised, like the boom) or recorded samples (better, but they need finding and licensing)? Other players' sounds too (their footsteps, their mining)?
 
-## 24. Playing together: chat, player list, names — M
+## 24. Playing together: chat, player list, names — M (Done: radio chat, names, admin mute)
 
 Several players can share a world, but they can't talk, and there's no way to see who's on.
 
@@ -128,7 +119,7 @@ Several players can share a world, but they can't talk, and there's no way to se
 - **Parts:** text chat in a world (Enter to type, messages fading over the view, a short history); a player list (Tab is the tool mode, so another key); names over players' heads; admin commands from chat (kick, set time, set mode, teleport a player).
 - **Questions:** moderation (mute, rate limits, a word filter) once the game is public? Chat across worlds, or per world only?
 
-## 27. The server: heavy work off the main thread — L (Done?)
+## 27. The server: heavy work off the main thread — L (Done)
 
 One thread does everything that changes the world: a 16 m blast's carving holds up every player in every world for about 0.4–0.7 s (more on Railway), and water steps, edits and mob AI all queue behind it. The server has 32 cores.
 
@@ -150,15 +141,46 @@ Every page gets one look: a header bar (title, navigation, a fullscreen button a
 - **Settings** (its own page, not a panel): header; the settings area; at the bottom, reset to defaults (left), cancel and save (right).
 - **Questions:** where the Terraformer, Site finder and Claims pages go (from the world list's buttons, per the wireframe, rather than the landing page?); what the world picture is (the map, the 3D relief, a saved snapshot?); whether the game itself gets the header.
 
-## 32. Grassland
+## 32. Grassland (Done)
 
 Grass in open meadows and on the ground below forests and jungles.
+
+## 3. Ships on the ocean: the rowboat — (Done)
+
+A boat item, crafted from planks at a crafting table, put in the water and rowed (W/S, A/D; Shift gets out). Drawn as the design in the Object Designer's boat slot. Block-built ships are still open (item 3 in BACKLOG.md).
+
+## 6. NPCs who build markets and buy goods — XL (Done, 2026-10-10)
+
+Trading posts placed by the world (open, flat land, one in each large square), each with a trader buying raw goods and selling finished ones for coins (copper and gold, smelted); some posts sell rolling stock or tools. Shown on the map and the Places panel. Villages trade too (any villager, out of the village's stock).
+
+## 15. NPCs who build and live in settlements: stages 1–5 — XL (Done, 2026-10-10)
+
+- **Villages:** wanderers drift together and found hamlets on open land; cottages built in stages (a footing, walls with a door and windows, thatch), fields of wheat, newcomers as the village prospers, to nine cottages (eighteen villagers); a wall with two gates at fourteen. Their land is protected.
+- **Watched or not:** villages a player is near build a block at a time from the village's stock, the builders walking to each piece; others go on in batches and catch up after time away.
+- **Cottages as designs:** the Object Designer's cottage slot, any number of designs (one picked for each cottage); villagers build them a block's worth at a time.
+- **Rail:** villagers ride line trains to other villages and trading posts; spare wheat goes by flatbed to be sold.
+- **Outlaws:** loners who meet and set up camps (a campfire, then a lean-to; both Object Designer slots), roam in bands, fight players and villagers (swords, some bows), drop coins.
+- **Villagers who can be hurt:** the first four of a village fight back, the rest flee; a village holds a grudge against whoever hurt or killed one (no trading till it fades; killing outlaws nearby shortens it).
+- **Trade:** any villager trades for their village: its spare wheat and bread, buying what it builds with.
+- **Places:** villages, camps and trading posts listed on the map, nearest first.
+
+## 26. Saving the player — S (Done)
+
+Health, food, breath and position saved with the inventory (on leaving, and when the server shuts down); a bed (crafted, right-clicked to make it yours) sets where you come back to. What's left (dying costing something) is item 26 in BACKLOG.md.
+
+## 29. Moving worlds between environments — (Done 2026-10-11, part of item 29)
+
+Synchronize (admins): sends objects (with their slots), the meshes, the animations and whole worlds from one environment to another (staging to production, or back), comparing first; the target keeps what it replaces in a backup (the last five syncs) and sends players out of a world it replaces. Environments trust each other by SYNC_SECRET and know each other by SYNC_TARGETS. Confirmed working staging to production, a large world (new-c) included. Backups off the volume and restoring are still open (item 29 in BACKLOG.md).
+
+## 33. Rail stations and lines — (Done 2026-10-10; was items 32 and 33)
+
+Stations placed beside straight track (an Object Designer slot); lines set on the map (stations in order, minutes at each), their trains running there and back on their own; villagers commuting by them, and wheat sent by flatbed.
+
+## 40. Admins' pages locked — (Done 2026-10-11)
+
+The Object Designer, mesh editor, animation designer, players, terraforming and Synchronize are for admins only (anyone else is sent to the landing page and told why; their links hidden); creating worlds and terraforming admin-only as before.
 
 ## Design rules (from engineering advice, to keep to as systems are added)
 
 - **Keep the voxel compact.** A cell is a 1-byte block id (a global palette of up to 256) plus a byte of light; water's level is part of the block id; structural stress is worked out when needed, not stored. New per-cell state (temperature, fire, moisture) goes in sparse per-chunk maps holding only the cells that have it, never as a new array for every cell.
 - **Budget the simulation.** Every cellular system (water, falling blocks, heat, fire, erosion) competes for the same tick. Aim for a global scheduler with a time budget per system and active-region tracking (only chunks with something happening, near players, get ticked), and run the simulation off the render thread (a worker in the browser, the game server in multiplayer) with double-buffered chunk state for the view to read.
-
-## Decisions so far
-
-## Suggested order
