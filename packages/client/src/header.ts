@@ -13,6 +13,7 @@ const PAGES: readonly { href: string; name: string; wide?: boolean; admin?: true
   { href: '/animator.html', name: 'Animation designer', wide: true, admin: true },
   { href: '/meshes.html', name: 'Mesh editor', wide: true, admin: true },
   { href: '/players.html', name: 'Players', wide: true, admin: true },
+  { href: '/sync.html', name: 'Synchronize', wide: true, admin: true },
   { href: '/account.html', name: 'My account' },
   { href: '/settings.html', name: 'Settings' },
 ];

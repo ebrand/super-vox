@@ -1,13 +1,16 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { rmSync } from 'node:fs';
+import { Readable } from 'node:stream';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
-import { posix } from 'node:path';
+import { dirname, join, posix } from 'node:path';
 import fastifyCookie from '@fastify/cookie';
 import type { Auth, SignedIn } from './auth.js';
 import { NameTakenError, isRole, shownName, type Account, type Role } from './accounts.js';
 import { starterInventory, type InventoryStore } from './inventories.js';
 import { PlayerInventory } from './playerInventory.js';
+import { Backups, packFolder, syncId, unpackFolder, type SyncTarget } from './sync.js';
 import { MobManager } from './mobManager.js';
 import { ArrowFlights, type Target } from './arrowFlights.js';
 import type { BuildChange } from './world.js';
@@ -129,6 +132,7 @@ import {
   weatherSeed,
   type Plan,
   type Claim,
+  type ObjectDesign,
 } from '@super-vox/shared';
 import type { WebSocket } from 'ws';
 import { VillageSim } from './villageSim.js';
@@ -142,7 +146,7 @@ import { MeshStore } from './meshStore.js';
 import { ChatStore } from './chatStore.js';
 import { HISTORY, Metrics, percentile } from './metrics.js';
 import { MAX_PICTURE_BYTES, NoSuchWorldError, PICTURE_TYPES, WorldExistsError } from './worldFile.js';
-import { DefaultWorldError, StaleStrokesError, StrokesOverBuildsError, singleWorld, type WorldCatalog } from './worlds.js';
+import { DefaultWorldError, StaleStrokesError, StrokesOverBuildsError, singleWorld, type WorldCatalog, type WorldSummary } from './worlds.js';
 
 export type AppOptions = (
   | { catalog: WorldCatalog }
@@ -180,6 +184,11 @@ export type AppOptions = (
   chat?: ChatStore;
   /** Which deployment this is (APP_ENV: production, staging, development), told by /api/health; default development. */
   environment?: string;
+  /**
+   * Synchronizing with other environments (see sync.ts): the secret they share (SYNC_SECRET; none:
+   * this one takes nothing in), and the others it may send to (SYNC_TARGETS).
+   */
+  sync?: { secret?: string; targets: readonly SyncTarget[] };
 };
 
 /** `f` of a value, at once if it's to hand, else when its promise settles (a promise of that). */
@@ -268,8 +277,8 @@ export const PLACE_SETTLE_MS = 1500;
 const SLOW_MESSAGE_MS = 100;
 const STALL_MS = 300;
 
-/** The pages only admins may reach (see the onRequest hook in buildApp): the object designer, the mesh editor, the animation designer, the players' page and terraforming. */
-export const ADMIN_PAGES: readonly string[] = ['/designer.html', '/meshes.html', '/animator.html', '/players.html', '/terraform.html'];
+/** The pages only admins may reach (see the onRequest hook in buildApp): the object designer, the mesh editor, the animation designer, the players' page, terraforming and synchronizing. */
+export const ADMIN_PAGES: readonly string[] = ['/designer.html', '/meshes.html', '/animator.html', '/players.html', '/terraform.html', '/sync.html'];
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
@@ -953,6 +962,230 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     }
     evict(name, 'world_deleted', `the world "${name}" was deleted`);
     return reply.code(204).send();
+  });
+
+  // --- Synchronizing with other environments (see sync.ts). Sending: admins (operators), from the
+  // Synchronize page, to one of SYNC_TARGETS. Taking in: another environment, by the shared secret.
+  const syncTargets = opts.sync?.targets ?? [], syncSecret = opts.sync?.secret;
+  const here = opts.environment ?? 'development';
+  const backups = catalog.backups ? new Backups(catalog.backups) : null;
+  /** Whether a request carries the shared secret (compared by hash: no time given away). */
+  const fromPeer = (req: FastifyRequest) => {
+    if (!syncSecret) return false;
+    const got = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1] ?? '';
+    const h = (v: string) => createHash('sha256').update(v).digest();
+    return timingSafeEqual(h(got), h(syncSecret));
+  };
+  /** One sync taken in at a time (another waits its turn). */
+  let receiving: Promise<unknown> = Promise.resolve();
+  const oneAtATime = <T>(f: () => Promise<T>): Promise<T> => {
+    const run = receiving.then(f, f);
+    receiving = run.catch(() => undefined);
+    return run;
+  };
+  /** A design as compared between environments: what it is, not its item number here. */
+  const designShape = (d: ObjectDesign) => JSON.stringify([d.id, d.name, d.size, d.states, d.recipe ?? null, d.role ?? null, d.piece ?? null]);
+  /** Everyone out of world `name` (told why), and what's running for it stopped and written out: it's to be replaced. */
+  const letWorldGo = async (name: string) => {
+    const worlds = new Set<World>();
+    for (const o of catalog.openWorlds()) if (o.name === name) worlds.add(o.world);
+    for (const [w, n] of villageNames) if (n === name) worlds.add(w);
+    for (const [c, n] of clientWorld) if (n === name) worlds.add(clients.get(c)!);
+    evict(name, 'world_changed', `the world "${name}" was just updated`);
+    for (const w of worlds) {
+      // (What they'd still to write, written: else it might land in the new one.)
+      await villageSims.get(w)?.written();
+      await outlawSims.get(w)?.written();
+      villageSims.delete(w);
+      villageNames.delete(w);
+      outlawSims.delete(w);
+      mobManagers.delete(w);
+      stationViewers.delete(w);
+      explosivesOf.delete(w);
+    }
+  };
+
+  app.get('/api/sync/targets', async (req, reply) => {
+    if (!(await operator(req))) return reply.code(403).send(notOperator('synchronizing'));
+    return { environment: here, targets: syncTargets.map((t) => ({ name: t.name, url: t.url })), canSend: !!syncSecret };
+  });
+
+  const targetOf = (name: unknown) => syncTargets.find((t) => t.name === name);
+  /** What target `t` serves anyone (its libraries, its worlds): JSON, or why not. */
+  const askTarget = async <T>(t: SyncTarget, path: string): Promise<T> => {
+    const res = await fetch(`${t.url}${path}`, { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) throw new Error(`${t.name} answered ${path} with ${res.status}`);
+    return (await res.json()) as T;
+  };
+
+  // What's here and what's there: each object (new there, different, the same), the meshes and
+  // the animations (the same or not), each world (new there, or to replace theirs).
+  app.get<{ Querystring: { target?: string } }>('/api/sync/compare', async (req, reply) => {
+    if (!(await operator(req))) return reply.code(403).send(notOperator('synchronizing'));
+    const t = targetOf(req.query.target);
+    if (!t) return reply.code(404).send({ error: 'no such environment to sync to' });
+    let theirs: [{ designs: ObjectDesign[] }, { library: unknown }, { library: unknown }, { worlds: WorldSummary[]; default: string }];
+    try {
+      theirs = await Promise.all([askTarget<{ designs: ObjectDesign[] }>(t, '/api/designs'), askTarget<{ library: unknown }>(t, '/api/meshes'), askTarget<{ library: unknown }>(t, '/api/animations'), askTarget<{ worlds: WorldSummary[]; default: string }>(t, '/api/worlds')]);
+    } catch (err) {
+      return reply.code(502).send({ error: `couldn't reach ${t.name}: ${(err as Error).message}` });
+    }
+    const [{ designs: theirDesigns }, theirMeshes, theirAnimations, theirWorlds] = theirs;
+    const byId = new Map(theirDesigns.map((d) => [d.id, d]));
+    const mine = designs.list();
+    return {
+      target: t.name,
+      designs: mine.map((d) => {
+        const there = byId.get(d.id);
+        // (The target's others in this one's slot, that aren't coming from here: they stay, and share it.)
+        const sharing = d.role ? theirDesigns.filter((o) => o.role === d.role && o.id !== d.id && !mine.some((m) => m.id === o.id)).map((o) => o.name) : [];
+        return { id: d.id, name: d.name, role: d.role ?? null, status: !there ? 'new' : designShape(there) === designShape(d) ? 'same' : 'differs', sharing };
+      }),
+      theirsOnly: theirDesigns.filter((d) => !mine.some((m) => m.id === d.id)).map((d) => ({ id: d.id, name: d.name, role: d.role ?? null })),
+      meshes: JSON.stringify(theirMeshes.library) === JSON.stringify(meshes.get()) ? 'same' : 'differs',
+      animations: JSON.stringify(theirAnimations.library) === JSON.stringify(animations.get()) ? 'same' : 'differs',
+      worlds: catalog.list().map((w) => {
+        const there = theirWorlds.worlds.find((o) => o.name === w.name);
+        return { name: w.name, mode: w.mode, editedChunks: w.editedChunks, status: there ? 'replaces' : 'new', ...(there ? { theirEditedChunks: there.editedChunks, theirDefault: theirWorlds.default === w.name } : {}) };
+      }),
+    };
+  });
+
+  // Sends what's picked to a target: the objects, meshes and animations together, then each world
+  // (one at a time). What became of each.
+  app.post<{ Body: unknown }>('/api/sync/run', async (req, reply) => {
+    if (!(await operator(req))) return reply.code(403).send(notOperator('synchronizing'));
+    if (!syncSecret) return reply.code(409).send({ error: "this server has no SYNC_SECRET: it can't send" });
+    const b = (req.body ?? {}) as { target?: unknown; designs?: unknown; meshes?: unknown; animations?: unknown; worlds?: unknown };
+    const t = targetOf(b.target);
+    if (!t) return reply.code(404).send({ error: 'no such environment to sync to' });
+    const strings = (v: unknown) => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : null);
+    const ids = strings(b.designs ?? []), names = strings(b.worlds ?? []);
+    if (!ids || !names) return reply.code(400).send({ error: 'designs and worlds are lists of ids and names' });
+    const picked = ids.map((id) => designs.get(id));
+    if (picked.some((d) => !d)) return reply.code(404).send({ error: `no design ${ids[picked.indexOf(undefined)]} here` });
+    for (const n of names) if (!catalog.folderOf?.(n)) return reply.code(404).send({ error: `no world ${n} here` });
+    if (!ids.length && !names.length && b.meshes !== true && b.animations !== true) return reply.code(400).send({ error: 'nothing picked' });
+    const id = syncId(), headers = { authorization: `Bearer ${syncSecret}`, 'x-sync-id': id, 'x-sync-from': here };
+    const result: { id: string; target: string; library?: unknown; worlds: { name: string; ok: boolean; error?: string; replaced?: boolean; files?: number; bytes?: number }[] } = { id, target: t.name, worlds: [] };
+    req.log.info({ sync: id, target: t.name, designs: ids, meshes: b.meshes === true, animations: b.animations === true, worlds: names }, 'syncing');
+    if (ids.length || b.meshes === true || b.animations === true) {
+      const body = {
+        ...(ids.length ? { designs: picked.map((d) => ({ ...d!, item: 0 })) } : {}),
+        ...(b.meshes === true ? { meshes: meshes.get() } : {}),
+        ...(b.animations === true ? { animations: animations.get() } : {}),
+      };
+      try {
+        const res = await fetch(`${t.url}/api/sync/receive/library`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(120_000) });
+        const answer = (await res.json().catch(() => ({ error: `${res.status}` }))) as Record<string, unknown>;
+        result.library = res.ok ? answer : { error: answer.error ?? `${t.name} answered ${res.status}` };
+      } catch (err) {
+        result.library = { error: `couldn't reach ${t.name}: ${(err as Error).message}` };
+      }
+    }
+    for (const name of names) {
+      try {
+        const body = Readable.toWeb(packFolder(catalog.folderOf!(name)!)) as ReadableStream<Uint8Array>;
+        const res = await fetch(`${t.url}/api/sync/receive/world/${encodeURIComponent(name)}`, {
+          method: 'POST',
+          headers: { ...headers, 'content-type': 'application/x-supervox-world' },
+          body,
+          duplex: 'half',
+          signal: AbortSignal.timeout(30 * 60_000),
+        } as RequestInit);
+        const answer = (await res.json().catch(() => ({}))) as { error?: string; replaced?: boolean; files?: number; bytes?: number };
+        result.worlds.push(res.ok ? { name, ok: true, replaced: !!answer.replaced, files: answer.files ?? 0, bytes: answer.bytes ?? 0 } : { name, ok: false, error: answer.error ?? `${t.name} answered ${res.status}` });
+      } catch (err) {
+        result.worlds.push({ name, ok: false, error: (err as Error).message });
+      }
+    }
+    req.log.info({ sync: id, result }, 'synced');
+    return result;
+  });
+
+  // Taking in (from another environment, by the secret): the objects, meshes and animations sent.
+  // What was here first goes in the backup.
+  const peerHeaders = (req: FastifyRequest) => ({ id: String(req.headers['x-sync-id'] ?? ''), from: String(req.headers['x-sync-from'] ?? '') });
+  app.post<{ Body: unknown }>('/api/sync/receive/library', { bodyLimit: 256 * 1024 * 1024 }, async (req, reply) => {
+    if (!fromPeer(req)) return reply.code(401).send({ error: 'not from an environment this one trusts' });
+    if (!backups) return reply.code(409).send({ error: 'this server keeps nothing on disk to take things into' });
+    const { id, from } = peerHeaders(req);
+    const b = (req.body ?? {}) as { designs?: unknown; meshes?: unknown; animations?: unknown };
+    return oneAtATime(async () => {
+      let dir: string;
+      try {
+        dir = backups.folder(id, from);
+      } catch (err) {
+        return reply.code(400).send({ error: (err as Error).message });
+      }
+      const took: { backup: string; designs?: Record<string, string>; meshes?: string; animations?: string } = { backup: dir.split(/[\\/]/).at(-1)! };
+      if (b.designs !== undefined) {
+        if (!Array.isArray(b.designs)) return reply.code(400).send({ error: 'designs: a list' });
+        backups.keep(dir, 'designs', designs.list());
+        took.designs = {};
+        for (const d of b.designs as { id?: unknown }[]) {
+          const had = typeof d?.id === 'string' && !!designs.get(d.id);
+          const made = designs.put(d);
+          took.designs[String(d?.id)] = typeof made === 'string' ? `not taken: ${made}` : had ? 'replaced' : 'added';
+        }
+        designsChanged();
+      }
+      if (b.meshes !== undefined) {
+        backups.keep(dir, 'meshes', meshes.get());
+        const lib = meshes.put(b.meshes);
+        took.meshes = typeof lib === 'string' ? `not taken: ${lib}` : 'replaced';
+        if (typeof lib !== 'string') {
+          const bytes = encodeMessage({ type: 'meshes', library: lib });
+          for (const [client] of clients) if (client.readyState === client.OPEN) out(client, bytes);
+        }
+      }
+      if (b.animations !== undefined) {
+        backups.keep(dir, 'animations', animations.get());
+        const lib = animations.put(b.animations);
+        took.animations = typeof lib === 'string' ? `not taken: ${lib}` : 'replaced';
+        if (typeof lib !== 'string') animationsChanged();
+      }
+      req.log.info({ sync: id, from, result: took }, 'took in a sync');
+      return took;
+    });
+  });
+
+  // Taking in a world (packed: see packFolder) in place of the one of that name here, if any (whoever
+  // is in it sent out first), or as a new one; the old one goes in the backup.
+  app.addContentTypeParser('application/x-supervox-world', (_req, payload, done) => done(null, payload));
+  app.post<{ Params: { name: string }; Body: Readable }>('/api/sync/receive/world/:name', async (req, reply) => {
+    if (!fromPeer(req)) return reply.code(401).send({ error: 'not from an environment this one trusts' });
+    const { name } = req.params;
+    if (!isValidWorldName(name)) return reply.code(400).send({ error: `"${name}" isn't a world's name` });
+    if (!backups || !catalog.receiving || !catalog.replace || !catalog.folderOf) return reply.code(409).send({ error: 'this server keeps no worlds on disk to take one into' });
+    const { id, from } = peerHeaders(req);
+    let dir: string;
+    try {
+      dir = backups.folder(id, from);
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+    // (Unpacked first, beside the worlds: only once it's all here and good does anything change.)
+    const incoming = catalog.receiving(name);
+    let got: { files: number; bytes: number };
+    try {
+      got = await unpackFolder(req.body, incoming);
+    } catch (err) {
+      rmSync(dirname(incoming), { recursive: true, force: true });
+      return reply.code(400).send({ error: `the world didn't come whole: ${(err as Error).message}` });
+    }
+    return oneAtATime(async () => {
+      const had = !!catalog.folderOf!(name);
+      try {
+        await letWorldGo(name);
+        const world = catalog.replace!(name, incoming, had ? join(dir, 'worlds', name) : null);
+        req.log.info({ sync: id, from, world: name, replaced: had, ...got }, 'took in a world');
+        return { world, replaced: had, ...got };
+      } catch (err) {
+        rmSync(dirname(incoming), { recursive: true, force: true });
+        return reply.code(400).send({ error: (err as Error).message });
+      }
+    });
   });
 
   const metrics = new Metrics();

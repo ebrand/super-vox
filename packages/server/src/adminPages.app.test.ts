@@ -22,7 +22,7 @@ afterEach(async () => {
 async function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'pages-'));
   dirs.push(dir);
-  for (const page of ['index', 'worlds', 'account', 'settings', 'play', 'terraform', 'sites', 'claim', 'designer', 'meshes', 'animator', 'players']) writeFileSync(join(dir, `${page}.html`), `<p>${page}</p>`);
+  for (const page of ['index', 'worlds', 'account', 'settings', 'play', 'terraform', 'sites', 'claim', 'designer', 'meshes', 'animator', 'players', 'sync']) writeFileSync(join(dir, `${page}.html`), `<p>${page}</p>`);
   const accounts = new MemoryAccountStore();
   const auth = new Auth({ googleClientId: 'c', googleClientSecret: 's', sessionSecret: SECRET, adminEmails: ['boss@x.com'], secureCookies: false }, accounts);
   const world = new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4)));
@@ -34,7 +34,7 @@ async function setup() {
   return { boss: await cookie('boss@x.com'), ann: await cookie('ann@x.com') };
 }
 
-describe("admins' pages (objects, meshes, animations, players, terraforming)", () => {
+describe("admins' pages (objects, meshes, animations, players, terraforming, synchronizing)", () => {
   it('are served to admins only; anyone else is sent to the landing page, the other pages served to all', async () => {
     const { boss, ann } = await setup();
     const get = (url: string, cookie?: string) => app.inject({ method: 'GET', url, headers: cookie ? { cookie } : {} });

@@ -1,5 +1,5 @@
-import { existsSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import {
   CHUNK_SIZE,
   DEFAULT_DAY_MINUTES,
@@ -29,7 +29,7 @@ import {
   type Claim,
 } from '@super-vox/shared';
 import { FileChunkStore } from './chunkStore.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { rm, readdir } from 'node:fs/promises';
 import { DiskCache } from './diskCache.js';
 import { GenPool, startWorker } from './genPool.js';
@@ -121,6 +121,18 @@ export interface WorldCatalog {
   picture?: (name: string) => { type: string; data: Buffer; at: number } | null;
   /** Gives world `name` a picture, or takes it away (null): see writePicture, which throws as it does. */
   savePicture?: (name: string, data: Uint8Array | null) => void;
+  /**
+   * Moving worlds between servers (see sync.ts): world `name`'s folder (null if there's no such
+   * world); a new, empty folder to unpack one coming in as `name` into (beside the worlds, not one
+   * itself); and putting it in place of world `name` (or as a new one: it must hold a good world of
+   * that name, else it throws, nothing changed), what was there moved to `keepAt` (or deleted, null).
+   * The world must be let go of first (no one in it). Where they're kept: `backups`. Absent where
+   * worlds aren't kept in folders.
+   */
+  folderOf?: (name: string) => string | null;
+  receiving?: (name: string) => string;
+  replace?: (name: string, from: string, keepAt: string | null) => WorldSummary;
+  readonly backups?: string;
 }
 
 /** Bumped when what the disk cache holds changes form. */
@@ -236,6 +248,8 @@ export class FileWorldCatalog implements WorldCatalog {
     private readonly opts: { dev: boolean; config?: WorldConfig; dayMinutes?: number | 'real'; generationWorkers?: number; diskCache?: boolean },
   ) {
     this.dev = opts.dev;
+    // (Worlds that were coming in (see receiving) when the server last stopped: never put in place.)
+    if (existsSync(dataRoot)) for (const e of readdirSync(dataRoot)) if (e.startsWith('.incoming-')) rmSync(join(dataRoot, e), { recursive: true, force: true });
     if (opts.diskCache) for (const f of listWorlds(dataRoot)) this.prebuild(f.name);
     // Anyone the server lets (see app.ts: development, or admins) may change a world's clock.
     this.setClock = (name, change) => {
@@ -293,6 +307,41 @@ export class FileWorldCatalog implements WorldCatalog {
         this.clocks.delete(name);
       };
     }
+  }
+
+  /** Where what syncs replace is kept (see Backups): beside the worlds, not one (a name can't start with '.'). */
+  get backups(): string {
+    return join(this.dataRoot, '.backups');
+  }
+
+  folderOf(name: string): string | null {
+    return isValidWorldName(name) && readWorld(this.dataRoot, name) ? join(this.dataRoot, name) : null;
+  }
+
+  receiving(name: string): string {
+    if (!isValidWorldName(name)) throw new RangeError(`"${name}" isn't a world's name`);
+    const dir = join(this.dataRoot, `.incoming-${randomUUID()}`, name);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  replace(name: string, from: string, keepAt: string | null): WorldSummary {
+    const file = readWorld(dirname(from), basename(from));
+    if (basename(from) !== name || !file || file.name !== name) throw new RangeError(`what came isn't a world named "${name}"`);
+    const dir = join(this.dataRoot, name);
+    this.close(name);
+    this.clocks.delete(name);
+    this.disk.delete(name);
+    if (existsSync(dir)) {
+      if (keepAt) {
+        mkdirSync(dirname(keepAt), { recursive: true });
+        renameSync(dir, keepAt);
+      } else rmSync(dir, { recursive: true, force: true });
+    }
+    renameSync(from, dir);
+    rmSync(dirname(from), { recursive: true, force: true });
+    if (this.opts.diskCache) this.prebuild(name);
+    return this.summary(readWorld(this.dataRoot, name)!);
   }
 
   get(name: string | undefined, tolerance?: number): World | null {

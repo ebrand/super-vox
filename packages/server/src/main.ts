@@ -15,6 +15,7 @@ import { Auth } from './auth.js';
 import { authConfigFromEnv, loadDevSecrets } from './authConfig.js';
 import { openWorld, type WorldSpec } from './worldFile.js';
 import { FileWorldCatalog } from './worlds.js';
+import { parseSyncTargets } from './sync.js';
 
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? '127.0.0.1';
@@ -171,7 +172,12 @@ const environment = process.env.APP_ENV || (production ? 'production' : 'develop
 // How long a world nobody's in or asked for stays open (IDLE_WORLD_MINUTES; default 10).
 const idleMinutes = process.env.IDLE_WORLD_MINUTES === undefined || process.env.IDLE_WORLD_MINUTES === '' ? null : Number(process.env.IDLE_WORLD_MINUTES);
 if (idleMinutes !== null && !(idleMinutes > 0 && idleMinutes <= 24 * 60)) throw new RangeError(`IDLE_WORLD_MINUTES must be more than 0 and at most ${24 * 60}; got "${process.env.IDLE_WORLD_MINUTES}"`);
-const app = await buildApp({ catalog, designs, animations, meshes, chat, environment, logger: true, ...(clientDir ? { clientDir } : {}), ...(auth ? { auth } : {}), ...(inventories ? { inventories } : {}), ...(idleMinutes !== null ? { idleWorldMs: idleMinutes * 60_000 } : {}) });
+// Synchronizing with other environments (see sync.ts): SYNC_SECRET (the same on each, at least 32
+// characters; none: nothing taken in, nothing sent) and SYNC_TARGETS (name=url, comma-separated).
+const syncSecret = process.env.SYNC_SECRET || undefined;
+if (syncSecret !== undefined && syncSecret.length < 32) throw new RangeError('SYNC_SECRET must be at least 32 characters');
+const sync = { ...(syncSecret ? { secret: syncSecret } : {}), targets: parseSyncTargets(process.env.SYNC_TARGETS, environment) };
+const app = await buildApp({ catalog, designs, animations, meshes, chat, environment, sync, logger: true, ...(clientDir ? { clientDir } : {}), ...(auth ? { auth } : {}), ...(inventories ? { inventories } : {}), ...(idleMinutes !== null ? { idleWorldMs: idleMinutes * 60_000 } : {}) });
 app.addHook('onClose', async () => pool?.end());
 app.log.info(
   { signIn: !!auth, accounts: accounts ? (pool ? 'postgres' : 'memory') : null, fromAuthDir },
