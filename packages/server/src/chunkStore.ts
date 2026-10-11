@@ -23,6 +23,9 @@ export interface ChunkStore {
   /** Players' wheat (see World.crops): by farmland block ("bx,by,bz"), when it was sown. */
   loadCrops?(): Record<string, number>;
   saveCrops?(crops: Record<string, number>): void;
+  /** Players' saplings (see World.saplings): by the block each is in ("bx,by,bz"), its item and when it was planted. */
+  loadSaplings?(): Record<string, [number, number]>;
+  saveSaplings?(saplings: Record<string, [number, number]>): void;
   /** The world's villages and villagers (see VillageSim), as kept: unchecked. */
   loadVillages?(): unknown;
   saveVillages?(villages: unknown): void;
@@ -39,6 +42,7 @@ const TRAINS = 'trains.json';
 const VILLAGES = 'villages.json';
 const OUTLAWS = 'outlaws.json';
 const CROPS = 'crops.json';
+const SAPLINGS = 'saplings.json';
 
 /** One file per edited chunk, `<cx>_<cy>_<cz>.chunk`, in a directory. */
 export class FileChunkStore implements ChunkStore {
@@ -134,6 +138,20 @@ export class FileChunkStore implements ChunkStore {
 
   saveCrops(crops: Record<string, number>): void {
     this.write(CROPS, JSON.stringify(crops));
+  }
+
+  /** Players' saplings, in saplings.json beside the chunks (what doesn't look like them, left out). */
+  loadSaplings(): Record<string, [number, number]> {
+    const path = join(this.dir, SAPLINGS);
+    if (!existsSync(path)) return {};
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown, out: Record<string, [number, number]> = {};
+    if (typeof raw === 'object' && raw !== null)
+      for (const [k, v] of Object.entries(raw)) if (/^-?\d+,-?\d+,-?\d+$/.test(k) && Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === 'number' && Number.isFinite(n))) out[k] = [v[0], v[1]];
+    return out;
+  }
+
+  saveSaplings(saplings: Record<string, [number, number]>): void {
+    this.write(SAPLINGS, JSON.stringify(saplings));
   }
 
   /** The villages, in villages.json beside the chunks. */

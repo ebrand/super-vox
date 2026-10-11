@@ -58,7 +58,15 @@ describe('PlayerInventory', () => {
     expect(new Map(p.message().items).get(Item.Wheat)).toBe(1);
     // Water flowing into a dug hole isn't charged; nothing changed, nothing to say.
     expect(p.apply(new Map([[waterMaterial(2), 512]]))).toBe(false);
+    p.random = () => 1;
     expect(p.apply(new Map([[Material.Leaves, -B]]))).toBe(false);
+    // (Leaves dug: now and then, by how much, a sapling of their tree.)
+    p.random = () => 0.05;
+    expect(p.apply(new Map([[Material.Needles, -B / 8]]))).toBe(false); // (an eighth of a block: a 1-in-80 chance)
+    expect(p.apply(new Map([[Material.Needles, -B]]))).toBe(true);
+    expect(p.apply(new Map([[Material.AcaciaLeaves, -B]]))).toBe(true);
+    const items = new Map(p.message().items);
+    expect([items.get(Item.PineSapling), items.get(Item.AcaciaSapling), items.get(Item.OakSapling)]).toEqual([1, 1, undefined]);
   });
 
   it('drops materials used up, and never goes below nothing', () => {

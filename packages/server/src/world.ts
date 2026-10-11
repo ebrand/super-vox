@@ -122,6 +122,11 @@ import {
   MIN_RADIUS_M,
   SAMPLE_M,
   CROP_STAGE_MS,
+  PLANTABLE,
+  TREE_OF_SAPLING,
+  grownTree,
+  saplingGrowth,
+  treeVoxels,
   RIPE,
   cropStage,
   NO_WATER,
@@ -918,6 +923,98 @@ export class World {
     this.cropMap().delete(k);
     this.store?.saveCrops?.(Object.fromEntries(this.cropMap()));
     return true;
+  }
+
+  /** Players' saplings: the block each is in ("bx,by,bz"), its item (see TREE_OF_SAPLING) and when it was planted (ms). */
+  private saplings: Map<string, [number, number]> | null = null;
+
+  private saplingMap(): Map<string, [number, number]> {
+    return (this.saplings ??= new Map(Object.entries(this.store?.loadSaplings?.() ?? {})));
+  }
+
+  private saveSaplingMap(): void {
+    this.store?.saveSaplings?.(Object.fromEntries(this.saplingMap()));
+  }
+
+  /** Whether a sapling can stand in block (bx, by, bz): it's empty, and over grass or dirt. */
+  private saplingRoom(bx: number, by: number, bz: number): boolean {
+    const below = this.blockMaterial(bx, by - 1, bz);
+    return this.blockAt(bx, by, bz) === null && below !== undefined && PLANTABLE.has(below);
+  }
+
+  /**
+   * The saplings planted (block x, y, z of each; its item; when planted), but those whose ground's
+   * gone (dug, or no longer grass or dirt) or that something's been put in the way of: let go.
+   */
+  saplingList(): [number, number, number, number, number][] {
+    const out: [number, number, number, number, number][] = [];
+    let pruned = false;
+    for (const [k, [item, planted]] of this.saplingMap()) {
+      const [bx, by, bz] = k.split(',').map(Number) as [number, number, number];
+      if (!this.saplingRoom(bx, by, bz)) {
+        this.saplingMap().delete(k);
+        pruned = true;
+        continue;
+      }
+      out.push([bx, by, bz, item, planted]);
+    }
+    if (pruned) this.saveSaplingMap();
+    return out;
+  }
+
+  /** Whether an edit has let go of any sapling (its ground dug, or something put in its block): see saplingList. */
+  saplingsLostTo(result: EditResult): boolean {
+    if (!this.saplingMap().size || !result.changes.length) return false;
+    const P = CHUNK_SIZE / BLOCK_SIZE, chunks = new Set(result.changes.map(({ coord: c }) => `${c.cx},${c.cy},${c.cz}`));
+    const near = [...this.saplingMap().keys()].some((k) => {
+      const [bx, by, bz] = k.split(',').map(Number) as [number, number, number];
+      return [by - 1, by].some((y) => chunks.has(`${Math.floor(bx / P)},${Math.floor(y / P)},${Math.floor(bz / P)}`));
+    });
+    if (!near) return false;
+    const before = this.saplingMap().size;
+    this.saplingList();
+    return this.saplingMap().size < before;
+  }
+
+  /**
+   * A sapling (`item`) planted on the grass or dirt a point (units) is in, in the block over it,
+   * now; or why not.
+   */
+  plant(x: number, y: number, z: number, item: number, now: number): true | string {
+    if (TREE_OF_SAPLING[item] === undefined) return "that isn't a sapling";
+    const B = BLOCK_SIZE, bx = Math.floor(x / B), by = Math.floor(y / B) + 1, bz = Math.floor(z / B);
+    const ground = this.blockMaterial(bx, by - 1, bz);
+    if (ground === undefined || !PLANTABLE.has(ground)) return 'saplings are planted on grass or dirt';
+    if (this.blockAt(bx, by, bz) !== null) return "there's something in the way";
+    const k = `${bx},${by},${bz}`;
+    if (this.saplingMap().has(k)) return "there's one planted there already";
+    this.saplingMap().set(k, [item, now]);
+    this.saveSaplingMap();
+    return true;
+  }
+
+  /** The sapling in block (bx, by, bz), if any: its item and when it was planted. */
+  saplingAt(bx: number, by: number, bz: number): [number, number] | undefined {
+    return this.saplingMap().get(`${bx},${by},${bz}`);
+  }
+
+  /**
+   * Saplings grown by `now` (see SAPLING_GROW_MS) made trees: each its tree's voxels put in where
+   * there's room (nothing there is lost), the sapling gone. What changed (null: none grew).
+   */
+  growSaplings(now: number): EditResult | null {
+    const B = BLOCK_SIZE;
+    let out: EditResult | null = null, grew = false;
+    for (const [bx, by, bz, item, planted] of this.saplingList()) {
+      if (saplingGrowth(planted, now) < 1) continue;
+      this.saplingMap().delete(`${bx},${by},${bz}`);
+      grew = true;
+      const tree = grownTree(TREE_OF_SAPLING[item]!, bx * B + B / 2, by * B, bz * B + B / 2, 0);
+      const r = this.buildPieces(treeVoxels(tree), false).result;
+      if (r) out = out ? mergeResults(out, r) : r;
+    }
+    if (grew) this.saveSaplingMap();
+    return out;
   }
 
   /** The world's outlaws and camps, as they were left (see OutlawSim: unchecked, it checks). */

@@ -129,13 +129,13 @@ Two ideas about the ground: its edges drawn smoother, and something worth diggin
 - **Relics:** a layer of archaeological finds (bones, artifacts, scrolls, coins of old civilizations) in particular strata, rarer and richer deeper and near old sites (and in ruins, item 15), found by careful digging. Sold for a lot at trading posts: a reason to explore and dig beyond ore.
 - **Questions:** does a relic break if you dig it carelessly (a brush tool)? Are they items only, or also blocks you can see in the ground?
 
-## 17. Animals: rabbits, deer and bears — L
+## 17. Animals you can hunt — L
 
-Pigs are the only animal (with zombies and outlaws as the other creatures). The rest of this item hasn't been started.
+There are wild animals already, but only for show: horses, cows, rams, pigs, kangaroos, bears and cats drawn about each player by the client (`wildAnimals.ts`, `animalRig.ts`), grazing and running off when you come near. No one else sees the same ones, and they can't be hit, hunted or eaten. Pigs are the only real creature (on the server: hit, killed, drop pork), with zombies and outlaws.
 
-- **Builds on:** creatures (`mobs.ts`: AI states, pathfinding, spawning, senses), drops, food and cooking (the stove).
-- **Parts:** a creature type per animal with its own model, speed and senses; rabbits and deer spawn by day in grassland and forest, flee from players (and bears); bears wander, and charge when close or hurt; each drops meat (and hide, for armor: item 35?).
-- **Questions:** herds? Breeding, or just spawning? Do animals leave prints in snow?
+- **Builds on:** creatures on the server (`mobs.ts`: AI states, pathfinding, spawning, senses), the client's animal models and rigs, drops, food and cooking (the stove).
+- **Parts:** the wild animals made real creatures (the server's, seen alike by everyone): hit and killed, each dropping meat (and hide or leather, for armor); deer and rabbits to add; bears that charge when close or hurt.
+- **Questions:** which of the client's animals become real (all, or only the huntable ones)? Herds? Breeding, or just spawning?
 
 ## 18. Heat and fire — XL
 

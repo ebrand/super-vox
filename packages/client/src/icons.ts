@@ -163,6 +163,14 @@ const ITEM_ICONS: Readonly<Partial<Record<ItemId, string>>> = {
     `<path d="M16 28 L10 6 M16 28 L13 5 M16 28 L16 4 M16 28 L19 5 M16 28 L22 6" stroke="${css([0.75, 0.6, 0.22], 1.2)}" stroke-width="1.6" stroke-linecap="round"/>` +
       `<path d="M8.5 7 l3 -3 M11.5 6 l3 -3 M14.5 5 l3 -3 M17.5 5 l3 -3 M20.5 6 l3 -3" stroke="${css([0.85, 0.7, 0.3], 1.3)}" stroke-width="2.2" stroke-linecap="round"/><rect x="12" y="18" width="8" height="2.5" rx="1" fill="${css(WOOD, 1.2)}"/>`,
   ),
+  // Saplings: a stem and a tuft of their tree's leaves (a cone for the pine).
+  ...Object.fromEntries(
+    ([[Item.OakSapling, Material.Leaves], [Item.JungleSapling, Material.JungleLeaves], [Item.AcaciaSapling, Material.AcaciaLeaves]] as const).map(([item, leaves]) => [
+      item,
+      svg(`<path d="M16 29 L16 14" stroke="${css(DARK_WOOD, 1.3)}" stroke-width="2.2" stroke-linecap="round"/><path d="M16 22 L11 18" stroke="${css(DARK_WOOD, 1.3)}" stroke-width="1.5" stroke-linecap="round"/><circle cx="16" cy="11" r="7" fill="${css(materialColor(leaves), 1.6)}"${OUTLINE}/><circle cx="10.5" cy="17" r="3.5" fill="${css(materialColor(leaves), 1.4)}"${OUTLINE}/>`),
+    ]),
+  ),
+  [Item.PineSapling]: svg(`<path d="M16 29 L16 20" stroke="${css(DARK_WOOD, 1.3)}" stroke-width="2.2" stroke-linecap="round"/><path d="M16 3 L24 21 L8 21 Z" fill="${css(materialColor(Material.Needles), 1.6)}"${OUTLINE}/>`),
   // Bread: a loaf, scored.
   [Item.Bread]: svg(`<path d="M4 22 Q4 10 16 10 Q28 10 28 22 Z" fill="${css([0.7, 0.42, 0.16], 1.2)}"${OUTLINE}/><path d="M10 15 l3 4 M15 13 l3 4 M20 14 l3 4" stroke="${css([0.95, 0.75, 0.45], 1.2)}" stroke-width="1.4" stroke-linecap="round"/>`),
   [Item.Boat]: svg(

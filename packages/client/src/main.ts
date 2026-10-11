@@ -9,6 +9,7 @@ import { TrackView } from './trackView.js';
 import { TrainView } from './trainView.js';
 import { PostView } from './postView.js';
 import { CropView } from './cropView.js';
+import { SaplingView } from './saplingView.js';
 import { LinesPanel } from './linesPanel.js';
 import { PlacesPanel, type Place } from './placesPanel.js';
 import { CAB_EYE, SEAT_EYES } from './trainModels.js';
@@ -495,6 +496,8 @@ let trainView: TrainView | null = null;
 let postView: PostView | null = null;
 /** Wheat on the villages' fields (see CropView). */
 let cropView: CropView | null = null;
+/** Players' saplings (see SaplingView). */
+let saplingView: SaplingView | null = null;
 /** Railway lines, on the map (see LinesPanel). */
 let linesPanel: LinesPanel | null = null;
 /** Places on the map (see PlacesPanel): the world's villages, outlaw camps and trading posts, as last told. */
@@ -906,6 +909,9 @@ connection = connect({
             cropView?.group.removeFromParent();
             cropView = new CropView(() => 1 - 0.85 * atmosphere.uniforms.stars.value, () => Date.now() + serverOffset);
             scene.add(cropView.group);
+            saplingView?.group.removeFromParent();
+            saplingView = new SaplingView(() => 1 - 0.85 * atmosphere.uniforms.stars.value, () => Date.now() + serverOffset);
+            scene.add(saplingView.group);
             postView?.group.removeFromParent();
             postView = new PostView(() => 1 - 0.85 * atmosphere.uniforms.stars.value);
             scene.add(postView.group);
@@ -1453,6 +1459,9 @@ connection = connect({
       case 'crops':
         cropView?.setCrops(msg.crops);
         break;
+      case 'saplings':
+        saplingView?.setSaplings(msg.saplings);
+        break;
       case 'villages': {
         cropView?.setVillages(msg.villages);
         trackMap?.setVillages(msg.villages);
@@ -1760,6 +1769,7 @@ renderer.setAnimationLoop(() => {
   trainView?.frame();
   postView?.frame(camera.position);
   cropView?.frame();
+  saplingView?.frame();
   if (driving) driveFrame();
   if (seated) seatFrame();
   arrows?.frame();

@@ -200,6 +200,9 @@ function then<T>(v: T | Promise<T>, f: (v: T) => void): void | Promise<void> {
 /** How near a car (m, its middle) a player may be to put it on, get in, or take it off. */
 const CAR_REACH_M = 12;
 
+/** How often saplings due are grown (ms). */
+const SAPLING_TICK_MS = 5000;
+
 /** The shovels (any tills ground into farmland). */
 const SHOVELS = new Set<number>([Item.WoodenShovel, Item.StoneShovel, Item.IronShovel]);
 
@@ -1222,6 +1225,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     }
     // (Wheat on what was changed, gone with it: everyone told.)
     if (world.cropsLostTo(result)) toWorld(world, { type: 'crops', crops: world.cropList() });
+    // (And saplings.)
+    if (world.saplingsLostTo(result)) toWorld(world, { type: 'saplings', saplings: world.saplingList() });
   };
   /**
    * A periodic task timed: one over SLOW_MESSAGE_MS is logged ('slow task'), with how many chunks it
@@ -1308,6 +1313,17 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     for (const s of viewers) sendTo(s, msg);
     if (gone) stationViewers.get(world)?.delete(stationKey(o));
   };
+  // Saplings grown into trees, in the worlds someone's in (worlds no one's in grow theirs when next
+  // opened: it goes by when each was planted).
+  const growing = setInterval(timed('saplings', () => {
+    const now = Date.now();
+    for (const world of new Set(clients.values())) {
+      const r = world.growSaplings(now);
+      if (!r) continue;
+      broadcast(world, r);
+      toWorld(world, { type: 'saplings', saplings: world.saplingList() });
+    }
+  }), SAPLING_TICK_MS);
   const stationTicking = setInterval(timed('stations', () => {
     const now = Date.now();
     for (const [world, byKey] of stationViewers) {
@@ -1743,6 +1759,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       }
     clearInterval(pickingUp);
     clearInterval(stationTicking);
+    clearInterval(growing);
     clearInterval(sampling);
     metrics.stop();
   });
@@ -1973,6 +1990,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               send({ type: 'villages', villages: villagesOf(world, clientWorld.get(socket)).told() });
               send({ type: 'camps', camps: outlawsOf(world, clientWorld.get(socket)).told() });
               send({ type: 'crops', crops: world.cropList() });
+              send({ type: 'saplings', saplings: world.saplingList() });
               // (What's dropped last: the last thing told unasked.)
               send({ type: 'drops', drops: [...(dropsOf.get(world)?.list.values() ?? [])] });
             };
@@ -2408,6 +2426,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
 
         case 'till':
         case 'sow':
+        case 'plant':
         case 'harvest': {
           // Farming wheat: tilling (with a shovel), sowing (wheat: in survival, used up), harvesting (ripe: two back).
           if (!greeted) return;
@@ -2430,6 +2449,12 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             const r = world.sow(msg.x, msg.y, msg.z, now);
             if (r !== true) return fail(r);
             inv?.addItem(Item.Wheat, -1);
+          } else if (msg.type === 'plant') {
+            // A sapling (in survival, used up): it grows into a tree (see growSaplings).
+            if (inv && inv.count(msg.item) < 1) return fail('no sapling to plant (dig leaves for one)');
+            const r = world.plant(msg.x, msg.y, msg.z, msg.item, now);
+            if (r !== true) return fail(r);
+            inv?.addItem(msg.item, -1);
           } else {
             const r = world.harvest(msg.x, msg.y, msg.z, now);
             if (r !== true) return fail(r);
@@ -2438,7 +2463,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           }
           if (inv && msg.type !== 'till') send(inv.message());
           send({ type: 'editResult', id: msg.id, ok: true, ...(note ? { note } : {}) });
-          if (msg.type !== 'till') toWorld(world, { type: 'crops', crops: world.cropList() });
+          if (msg.type === 'plant') toWorld(world, { type: 'saplings', saplings: world.saplingList() });
+          else if (msg.type !== 'till') toWorld(world, { type: 'crops', crops: world.cropList() });
           break;
         }
 

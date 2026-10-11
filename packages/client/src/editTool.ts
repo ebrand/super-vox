@@ -22,6 +22,8 @@ import {
   BOAT,
   CAR_ITEM,
   RIPE,
+  PLANTABLE,
+  isSapling,
   TRADE_REACH_M,
   type TradingPost,
   carOfItem,
@@ -750,6 +752,8 @@ export class EditTool {
         if (button === 0 && sown !== null) return this.request({ type: 'harvest', x: point[0], y: point[1], z: point[2] }, 'harvesting');
         if (button === 2 && isShovel(held) && TILLABLE.has(material)) return this.request({ type: 'till', x: point[0], y: point[1], z: point[2], tool: held! }, 'tilling');
         if (button === 2 && held === Item.Wheat && material === Material.Farmland) return this.request({ type: 'sow', x: point[0], y: point[1], z: point[2] }, 'sowing');
+        // (A sapling: planted on grass or dirt, in the block over it.)
+        if (button === 2 && held !== null && isSapling(held) && PLANTABLE.has(material)) return this.request({ type: 'plant', x: point[0], y: point[1], z: point[2], item: held }, 'planting');
       }
       // A trading post's stall in reach: right-click trades.
       // A villager in reach (of a village): right-click trades with it.
@@ -981,6 +985,8 @@ export class EditTool {
           : `aiming at wheat, growing (stage ${sownStage + 1} of ${RIPE + 1})`
       : farm && isShovel(this.materialOf())
         ? `aiming at ${materialName(farm.material)} (right-click: till it, to sow wheat)`
+      : farm && isSapling(this.materialOf() ?? 0) && PLANTABLE.has(farm.material)
+        ? `aiming at ${materialName(farm.material)} (right-click: plant the ${itemName(this.materialOf()!)}; it grows into a tree)`
       : platform
       ? `aiming at ${platform.name} (left-click: take it away; lines: on the map, M)`
       : lever

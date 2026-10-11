@@ -92,6 +92,11 @@ export const Item = {
   Wheat: 1038,
   /** Baked from wheat: food. */
   Bread: 1039,
+  /** Saplings, from leaves dug (see saplings.ts): planted on grass or dirt, each grows into a tree of its kind. */
+  OakSapling: 1040,
+  PineSapling: 1041,
+  JungleSapling: 1042,
+  AcaciaSapling: 1043,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -137,6 +142,10 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.Station]: 'railway station',
   [Item.Wheat]: 'wheat',
   [Item.Bread]: 'bread',
+  [Item.OakSapling]: 'oak sapling',
+  [Item.PineSapling]: 'pine sapling',
+  [Item.JungleSapling]: 'jungle sapling',
+  [Item.AcaciaSapling]: 'acacia sapling',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */

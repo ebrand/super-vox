@@ -2,6 +2,8 @@ import {
   ALL_ITEMS,
   BLOCK_VOLUME,
   Item,
+  SAPLING_CHANCE,
+  SAPLING_OF_LEAVES,
   Material,
   HOTBAR_SLOTS,
   canPlace,
@@ -123,6 +125,12 @@ export class PlayerInventory {
         this.inv.items.set(m, Math.max(0, (this.inv.items.get(m) ?? 0) - d));
         changed = true;
       } else if (d < 0) {
+        // (Leaves dug: now and then, a sapling of their tree, by how much was dug.)
+        const sapling = SAPLING_OF_LEAVES[m];
+        if (sapling !== undefined && this.random() < Math.min(1, (SAPLING_CHANCE * -d) / BLOCK_VOLUME)) {
+          this.inv.items.set(sapling, (this.inv.items.get(sapling) ?? 0) + 1);
+          changed = true;
+        }
         const drop = dropOf(m, tool);
         if (drop === null) continue;
         this.inv.items.set(drop, (this.inv.items.get(drop) ?? 0) - d);

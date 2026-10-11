@@ -3,6 +3,7 @@ import {
   BLOCK_SIZE,
   BLOCKS_PER_AXIS,
   blockIndex,
+  emptyChunk,
   rasterizeVoxels,
   unpackVoxel,
   packVoxel,
@@ -10,6 +11,7 @@ import {
   type Chunk,
 } from './chunk.js';
 import { Material, type MaterialId } from './materials.js';
+import { blockVoxels } from './edit.js';
 import { fractalGrid, hash2, type Octave } from './noise.js';
 import type { VoxelSize } from './units.js';
 import { CHUNK_SIZE } from './world.js';
@@ -402,6 +404,36 @@ function trunkTop(t: Tree): number {
   if (t.kind === TreeKind.Conifer) return t.height * 0.9;
   if (t.kind === TreeKind.Acacia) return t.height - 0.8 * M;
   return t.height * (t.kind === TreeKind.Jungle ? 0.85 : 0.7);
+}
+
+/** The biome whose trees each kind is (see shapeTree), for trees grown from saplings. */
+const KIND_BIOME: Record<TreeKindId, BiomeId> = { [TreeKind.Broadleaf]: Biome.Temperate, [TreeKind.Conifer]: Biome.Boreal, [TreeKind.Jungle]: Biome.Jungle, [TreeKind.Acacia]: Biome.Savanna };
+
+/** A tree of `kind` grown at (x, y, z) (units: its trunk's foot), its size and crown as the world's trees of its kind are, picked by where it is (and `seed`). */
+export function grownTree(kind: TreeKindId, x: number, y: number, z: number, seed: number): Tree {
+  const rnd = (k: number) => hash2(x * 977 + k * 7919 + y, z * 131 + k * 104729, seed);
+  return shapeTree(KIND_BIOME[kind], x, y, z, rnd);
+}
+
+/** A tree's voxels (units: world positions), as plantTrees would put them into empty chunks (its trunk from 1 m under its foot). */
+export function treeVoxels(t: Tree): { x: number; y: number; z: number; size: number; material: MaterialId }[] {
+  const out: { x: number; y: number; z: number; size: number; material: MaterialId }[] = [];
+  const C = CHUNK_SIZE, N = BLOCKS_PER_AXIS, B = BLOCK_SIZE;
+  const cx0 = Math.floor((t.x - TREE_REACH) / C), cx1 = Math.floor((t.x + TREE_REACH) / C);
+  const cz0 = Math.floor((t.z - TREE_REACH) / C), cz1 = Math.floor((t.z + TREE_REACH) / C);
+  const cy0 = Math.floor((t.y - 2 * M) / C), cy1 = Math.floor((t.y + t.height + 4 * M) / C);
+  for (let cy = cy0; cy <= cy1; cy++)
+    for (let cz = cz0; cz <= cz1; cz++)
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const chunk = emptyChunk({ cx, cy, cz });
+        plantTrees(chunk, [t]);
+        chunk.blocks.forEach((block, i) => {
+          if (!block) return;
+          const bx = i % N, bz = Math.floor(i / N) % N, by = Math.floor(i / (N * N));
+          for (const v of blockVoxels(block)) out.push({ x: cx * C + bx * B + v.x, y: cy * C + by * B + v.y, z: cz * C + bz * B + v.z, size: v.size, material: v.material });
+        });
+      }
+  return out;
 }
 
 type Add = { x: number; y: number; z: number; size: number; material: MaterialId };
