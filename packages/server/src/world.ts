@@ -832,21 +832,6 @@ export class World {
     return m !== undefined && m !== Material.Air && !isWater(m);
   }
 
-  /** The natural water (not poured) standing in the column at (x, z) (units), over the ground: its surface (units), or null. */
-  private naturalWaterTop(x: number, z: number): number | null {
-    const B = BLOCK_SIZE, g = this.generator.surfaceHeightAt(x, z);
-    const natural = (y: number) => {
-      const m = this.materialAtUnit(Math.floor(x), Math.floor(y), Math.floor(z));
-      return m !== undefined && isWater(m) && m !== Material.PouredWater;
-    };
-    if (!natural(g + 1)) return null;
-    let y = g + 1;
-    while (natural(y + B)) y += B;
-    // (To the unit: the top block's water may stand short of its top.)
-    while (natural(y + 1)) y++;
-    return y + 1;
-  }
-
   /**
    * Where an aqueduct can start, its head at block (bx, bz): its floor (units: INTAKE_DEPTH_M under
    * the surface of the nearest natural water within INTAKE_REACH_M, that water large enough and not
@@ -854,25 +839,33 @@ export class World {
    */
   aqueductIntake(bx: number, bz: number): { floor: number; surface: number } | string {
     const B = BLOCK_SIZE, M = UNITS_PER_METER, cx = (bx + 0.5) * B, cz = (bz + 0.5) * B;
+    // (The water as it was made, not as it's been changed: read from the world's chunks, each
+    // sample made its chunk on the main thread: a second or more for a head somewhere new.)
+    const step = 2 * M, half = Math.ceil(Math.max(INTAKE_REACH_M, SOURCE_REACH_M) / 2), n = 2 * half + 1;
+    const s = this.generator.surfaceSamples(cx - half * step, cz - half * step, step, n), sea = this.generator.seaLevel;
+    const top = (i: number, j: number): number | null => {
+      const k = i + n * j, h = s.heights[k]!;
+      if (s.water && s.water[k] !== NO_WATER && s.water[k]! > h) return s.water[k]!;
+      return sea !== null && sea !== undefined && h < sea ? sea : null;
+    };
     let best: { d: number; surface: number } | null = null;
-    const r = INTAKE_REACH_M * M, step = 2 * M;
-    for (let dx = -r; dx <= r; dx += step)
-      for (let dz = -r; dz <= r; dz += step) {
-        const d = Math.hypot(dx, dz);
+    const r = INTAKE_REACH_M * M;
+    for (let i = 0; i < n; i++)
+      for (let j = 0; j < n; j++) {
+        const d = Math.hypot((i - half) * step, (j - half) * step);
         if (d > r || (best && d >= best.d)) continue;
-        const top = this.naturalWaterTop(cx + dx, cz + dz);
-        if (top !== null) best = { d, surface: top };
+        const t = top(i, j);
+        if (t !== null) best = { d, surface: t };
       }
     if (!best) return `an aqueduct's head goes within ${INTAKE_REACH_M} m of a lake or river`;
-    const sea = this.generator.seaLevel;
-    if (sea !== null && Math.abs(best.surface - sea) <= B / 2) return "that's the sea: its water's salt (a lake or river, then)";
+    if (sea !== null && sea !== undefined && Math.abs(best.surface - sea) <= B / 2) return "that's the sea: its water's salt (a lake or river, then)";
     let columns = 0;
-    const R = SOURCE_REACH_M * M, S = SOURCE_STEP_M * M;
-    for (let dx = -R; dx <= R; dx += S)
-      for (let dz = -R; dz <= R; dz += S) {
-        if (Math.hypot(dx, dz) > R) continue;
-        const top = this.naturalWaterTop(cx + dx, cz + dz);
-        if (top !== null && Math.abs(top - best.surface) <= M) columns++;
+    const R = SOURCE_REACH_M * M, every = Math.max(1, Math.round((SOURCE_STEP_M * M) / step));
+    for (let i = half % every; i < n; i += every)
+      for (let j = half % every; j < n; j += every) {
+        if (Math.hypot((i - half) * step, (j - half) * step) > R) continue;
+        const t = top(i, j);
+        if (t !== null && Math.abs(t - best.surface) <= M) columns++;
       }
     if (columns < SOURCE_MIN_COLUMNS) return `that water's too small to feed an aqueduct (a bigger lake or river)`;
     return { floor: Math.floor((best.surface - INTAKE_DEPTH_M * M) / B) * B, surface: best.surface };
