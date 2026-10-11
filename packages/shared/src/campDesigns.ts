@@ -50,3 +50,36 @@ export function cottageDesign(): ObjectDesign {
   const voxels = [1, 2, 3].flatMap((stage) => cottageStage(c, stage, () => 0).place).map((p) => ({ x: p.x, y: p.y, z: p.z, size: B, material: p.material }));
   return { id: 'thatched-cottage', name: 'Thatched cottage', size: [7, 7, 6], states: [{ name: 'built', voxels }], item: 0, recipe: null, role: 'cottage' };
 }
+
+/**
+ * The furnace and the stove (roles 'furnace' and 'stove') as they come, to change in the designer: so
+ * a world has them (and their recipes) before anyone's designed one. Each is a metre across, its
+ * front (+z) toward whoever places it, open there on its fire.
+ */
+export function furnaceDesign(): ObjectDesign {
+  const boxes: Box[] = [
+    // A cobblestone box, its fire-hole in the front (coal in it); a chimney at the back.
+    [0, 1, 0, 0.25, 0, 1, Material.Cobblestone],
+    [0, 1, 0.75, 1, 0, 1, Material.Cobblestone],
+    [0, 0.25, 0.25, 0.75, 0, 1, Material.Cobblestone],
+    [0.75, 1, 0.25, 0.75, 0, 1, Material.Cobblestone],
+    [0.25, 0.75, 0.25, 0.75, 0, 0.5, Material.Cobblestone],
+    [0.25, 0.75, 0.25, 0.5, 0.5, 0.75, Material.Coal],
+    [0.25, 0.5, 1, 1.75, 0.25, 0.5, Material.Cobblestone],
+  ];
+  return { id: 'furnace', name: 'Furnace', size: [1, 2, 1], states: [{ name: 'standing', voxels: voxelsOfBoxes(boxes) }], item: 0, recipe: null, role: 'furnace' };
+}
+
+export function stoveDesign(): ObjectDesign {
+  const boxes: Box[] = [
+    // A cobblestone oven (coal in its front), under a plank top with an iron plate in it.
+    [0, 1, 0, 0.25, 0, 1, Material.Cobblestone],
+    [0, 0.25, 0.25, 0.75, 0, 1, Material.Cobblestone],
+    [0.75, 1, 0.25, 0.75, 0, 1, Material.Cobblestone],
+    [0.25, 0.75, 0.25, 0.75, 0, 0.5, Material.Cobblestone],
+    [0.25, 0.75, 0.25, 0.5, 0.5, 0.75, Material.Coal],
+    [0, 1, 0.75, 1, 0, 1, Material.Planks],
+    [0.25, 0.75, 0.75, 1, 0.25, 0.75, Material.DarkMetal],
+  ];
+  return { id: 'stove', name: 'Stove', size: [1, 1, 1], states: [{ name: 'standing', voxels: voxelsOfBoxes(boxes) }], item: 0, recipe: null, role: 'stove' };
+}

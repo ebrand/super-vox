@@ -41,7 +41,8 @@ afterEach(async () => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-async function setup() {
+/** `builtIn`: the library as it comes (no designs of its own; the built-in furnace and stove), and what Ann has, `items`. */
+async function setup(builtIn = false, items?: [number, number][]) {
   const accounts = new MemoryAccountStore();
   const inventories = new MemoryInventoryStore();
   const dir = mkdtempSync(join(tmpdir(), 'stations-'));
@@ -49,14 +50,16 @@ async function setup() {
   const store = new FileChunkStore(dir);
   const world = new World(FLAT_WORLD_16KM, new FlatGenerator(FLAT_WORLD_16KM, defaultFlatGen(4)), { store });
   const auth = new Auth({ googleClientId: 'c', googleClientSecret: 's', sessionSecret: SECRET, adminEmails: [], secureCookies: false }, accounts);
-  const designs = new DesignLibrary(null);
-  designs.put(station('furnace'));
-  designs.put(station('stove'));
+  const designs = new DesignLibrary(null, builtIn);
+  if (!builtIn) {
+    designs.put(station('furnace'));
+    designs.put(station('stove'));
+  }
   app = await buildApp({ catalog: singleWorld(world, undefined, 'default', 24, 'survival'), auth, inventories, miningTimeScale: 0.01, designs });
   const url = (await app.listen({ port: 0, host: '127.0.0.1' })).replace(/^http/, 'ws') + '/ws';
   const ann = await accounts.signIn({ sub: 'g-ann', email: 'ann@x.com', name: 'Ann' });
   await inventories.save(ann.id, 'default@single', {
-    items: new Map([[Item.Furnace, 1], [Item.Stove, 1], [Material.RawIron, 2 * B], [Material.Coal, B], [Item.Pork, 3], [Item.Stick, 4]]),
+    items: new Map(items ?? [[Item.Furnace, 1], [Item.Stove, 1], [Material.RawIron, 2 * B], [Material.Coal, B], [Item.Pork, 3], [Item.Stick, 4]]),
     hotbar: Array(HOTBAR_SLOTS).fill(null),
   });
   const ws = new WebSocket(url, { headers: { cookie: `${SESSION_COOKIE}=${sessionToken(ann.id, Date.now() + 1e6, SECRET)}` } });
@@ -136,5 +139,28 @@ describe('furnaces and stoves in play', () => {
     await until(() => have(Item.Stove) === 1 && have(Item.Pork) === 3);
     expect(world.objectAt(101, 0, 100)).toBeUndefined();
     expect(have(Item.Stick) + have(Item.CookedPork)).toBeGreaterThan(0);
+  }, 20_000);
+
+  it('come with the game: with no designs of its own, a world has the furnace and stove, crafted at a table, placed and used', async () => {
+    const { ws, placed, ask, have, until, world } = await setup(true, [[Item.CraftingTable, 1], [Material.Cobblestone, 14 * B], [Material.Planks, 2 * B], [Material.RawIron, B], [Material.Coal, B]]);
+    expect(await placed(Item.CraftingTable, 99)).toMatchObject({ ok: true });
+    const crafted = async (recipe: string, item: number) => {
+      ws.send(JSON.stringify({ type: 'craft', recipe }));
+      await until(() => have(item) === 1);
+    };
+    await crafted('furnace', Item.Furnace);
+    await crafted('stove', Item.Stove);
+    expect(have(Material.Cobblestone)).toBe(0);
+    expect(have(Material.Planks)).toBe(0);
+    expect(await placed(Item.Furnace, 100)).toMatchObject({ ok: true });
+    expect(await placed(Item.Stove, 101)).toMatchObject({ ok: true });
+    expect(await ask({ type: 'stationOpen', x: 101, y: 0, z: 100 })).toMatchObject({ type: 'station', kind: 'stove', name: 'Stove' });
+    expect(await ask({ type: 'stationOpen', x: 100, y: 0, z: 100 })).toMatchObject({ type: 'station', kind: 'furnace', name: 'Furnace' });
+    expect(await ask({ type: 'stationPut', x: 100, y: 0, z: 100, slot: 'input', item: Material.RawIron, amount: PIECE })).toMatchObject({ state: { input: { item: Material.RawIron, amount: PIECE } } });
+    // Built as the designs that come: the furnace two blocks tall (its chimney), the stove one.
+    expect(world.objectAt(100, 0, 100)).toMatchObject({ kind: 'design', design: 'furnace' });
+    expect(world.objectAt(100, 1, 100)).toMatchObject({ design: 'furnace' });
+    expect(world.objectAt(101, 0, 100)).toMatchObject({ kind: 'design', design: 'stove' });
+    expect(world.objectAt(101, 1, 100)).toBeUndefined();
   }, 20_000);
 });

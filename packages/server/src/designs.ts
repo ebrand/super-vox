@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { FIRST_DESIGN_ITEM, campfireDesign, cottageDesign, leanToDesign, parseDesign, setDesigns, stationDesign, type ObjectDesign } from '@super-vox/shared';
+import { FIRST_DESIGN_ITEM, campfireDesign, cottageDesign, furnaceDesign, leanToDesign, parseDesign, setDesigns, stationDesign, stoveDesign, type ObjectDesign } from '@super-vox/shared';
 
 /** The library as kept on disk: the designs, and the next item number (never reused, so old items don't become new things). */
 interface LibraryFile {
@@ -18,7 +18,7 @@ export class DesignLibrary {
 
   constructor(
     private readonly file: string | null,
-    /** Designs that come with the game (the station's), put in when the library has none in their place. */
+    /** Designs that come with the game (the station, camp pieces, cottage, furnace and stove), put in when the library has none in their place. */
     builtIn = false,
   ) {
     if (file && existsSync(file)) {
@@ -32,7 +32,7 @@ export class DesignLibrary {
     }
     setDesigns(this.designs);
     // (A kept library with no station design: the one that comes, to change in the designer.)
-    for (const d of builtIn ? [stationDesign(), campfireDesign(), leanToDesign(), cottageDesign()] : []) {
+    for (const d of builtIn ? [stationDesign(), campfireDesign(), leanToDesign(), cottageDesign(), furnaceDesign(), stoveDesign()] : []) {
       if (this.designs.some((o) => o.role === d.role || o.id === d.id)) continue;
       const made = this.put(d);
       if (typeof made === 'string') console.warn(`design library: the built-in ${d.name} wouldn't go in: ${made}`);
