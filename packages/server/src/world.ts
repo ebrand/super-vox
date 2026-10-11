@@ -879,6 +879,18 @@ export class World {
     return { floor: Math.floor((best.surface - INTAKE_DEPTH_M * M) / B) * B, surface: best.surface };
   }
 
+  /** Whether there's natural water (a lake, a river, the sea) over block column (bx, bz), as the world was made (kept: aiming asks of the same ones again and again). */
+  private naturallyWet(bx: number, bz: number): boolean {
+    const key = `${bx},${bz}`, kept = this.wetColumns.get(key);
+    if (kept !== undefined) return kept;
+    const B = BLOCK_SIZE, s = this.generator.surfaceSamples((bx + 0.5) * B, (bz + 0.5) * B, 1, 1), h = s.heights[0]!, sea = this.generator.seaLevel;
+    const wet = (!!s.water && s.water[0] !== NO_WATER && s.water[0]! > h) || (sea !== null && sea !== undefined && h < sea);
+    if (this.wetColumns.size >= WET_KEPT) this.wetColumns.delete(this.wetColumns.keys().next().value!);
+    this.wetColumns.set(key, wet);
+    return wet;
+  }
+  private readonly wetColumns = new Map<string, boolean>();
+
   /** The ground's top over a block (units): its natural surface, as railways go by. */
   private groundOver = (bx: number, bz: number) => this.generator.surfaceHeightAt((bx + 0.5) * BLOCK_SIZE, (bz + 0.5) * BLOCK_SIZE);
 
@@ -905,12 +917,16 @@ export class World {
     }
     const plan = planAqueduct(start, ask.to.bx, ask.to.bz, ask.fall, this.groundOver);
     if (typeof plan === 'string') return plan;
+    // Not through a lake, a river or the sea (its channel would be under the water): only its head's by water.
+    const pool = new Set(shape.head.map((c) => `${c.bx},${c.bz}`)), M = UNITS_PER_METER;
+    const wet = plan.cells.slice(1).find((c) => !pool.has(`${c.bx},${c.bz}`) && this.naturallyWet(c.bx, c.bz));
+    if (wet) return `it would run through the water near x ${wet.bx * (BLOCK_SIZE / M)}, z ${wet.bz * (BLOCK_SIZE / M)} m: go round it`;
     shape.cells.push(...plan.cells.slice(1));
     shape.legs.push({ first, last: shape.cells.length - 1, fall: ask.fall });
     // (Its columns: the new run's, and a new aqueduct's head; not what's there already. Its pieces made only when it's built.)
     const columns = aqueductColumns(shape, (p) => ask.aqueduct === null || (p.run && p.first === first));
     // Not through what players (or villages) have built: aqueducts' and railways' own columns aside.
-    const M = UNITS_PER_METER, P = CHUNK_SIZE, Q = BLOCK_SIZE / 4;
+    const P = CHUNK_SIZE, Q = BLOCK_SIZE / 4;
     const ours = new Set([...this.trackList().flatMap((t) => t.columns), ...this.aqueductList().flatMap((a) => [...a.head, ...a.cells, ...a.outlet].map((c) => `${Math.floor((c.bx * BLOCK_SIZE) / P)},${Math.floor((c.bz * BLOCK_SIZE) / P)}`))]);
     const built = new Set(this.protectedColumns().map((c) => `${c.cx},${c.cz}`).filter((k) => !ours.has(k)));
     const hit = columns.find((c) => built.has(`${Math.floor((c.qx * Q) / P)},${Math.floor((c.qz * Q) / P)}`));
@@ -2686,6 +2702,8 @@ export class World {
 
 /** Decoded chunks kept for looking at blocks (mobs, light: see lookedAt), and chunk columns' light tops (see lightTops, 1 KB each). */
 const DECODED_KEPT = 512;
+/** Block columns' natural water kept (see World.naturallyWet). */
+const WET_KEPT = 100_000;
 /** Columns' generated ranges kept (see World.columnRange). */
 const RANGES_KEPT = 8192;
 const LIGHT_TOPS_KEPT = 4096;

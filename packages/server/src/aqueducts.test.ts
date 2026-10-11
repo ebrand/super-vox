@@ -21,10 +21,12 @@ describe('aqueducts in a world', () => {
     if (typeof intake === 'string') throw new Error(intake);
     expect(intake.surface).toBeGreaterThan(127 * B);
     expect(intake.floor).toBeLessThanOrEqual(intake.surface - B);
-    // A segment east, falling 1 in 50.
+    // Not east: the lake's water lies that way, a few metres off (its channel would be under it).
+    expect(w.planAqueductSegment({ aqueduct: null, from: { bx: 6374, bz: 5488 }, to: { bx: 6434, bz: 5488 }, fall: 1 / 50 })).toMatch(/run through the water near x 6388/);
+    // A segment north, falling 1 in 50.
     let told = 0;
     w.onAqueductsChanged = () => void told++;
-    const built = await w.buildAqueductSegment({ aqueduct: null, from: { bx: 6374, bz: 5488 }, to: { bx: 6434, bz: 5488 }, fall: 1 / 50 });
+    const built = await w.buildAqueductSegment({ aqueduct: null, from: { bx: 6374, bz: 5488 }, to: { bx: 6374, bz: 5428 }, fall: 1 / 50 });
     if (typeof built === 'string') throw new Error(built);
     const a = built.aqueduct;
     expect(a.cells).toHaveLength(61);
@@ -35,7 +37,7 @@ describe('aqueducts in a world', () => {
     const mid = a.cells[30]!, cx = mid.bx * B + 8, cz = mid.bz * B + 8;
     expect(w.materialAtUnit(cx, mid.floor - 2, cz)).toBe(Material.Stone);
     expect(w.materialAtUnit(cx, mid.floor + 4, cz)).toBe(Material.Air);
-    expect(w.materialAtUnit(cx, mid.floor + 4, cz - 10)).toBe(Material.Cobblestone);
+    expect(w.materialAtUnit(cx - 10, mid.floor + 4, cz)).toBe(Material.Cobblestone);
     // Its floor broken 30 m along: its water reaches that far.
     const broke = w.applyEdit({ op: 'removeBox', x: mid.bx * B + 4, y: mid.floor - 8, z: mid.bz * B + 4, size: 8 });
     expect(w.aqueductsChangedBy(broke)).toBe(true);
@@ -50,33 +52,36 @@ describe('aqueducts in a world', () => {
     expect(mendedAny).toBe(true);
     expect(w.aqueductList()[0]!.runs).toBe(61);
     // On from its end, then finished: its outlet basin round its end.
-    const on = await w.buildAqueductSegment({ aqueduct: a.id, from: { bx: 0, bz: 0 }, to: { bx: 6434, bz: 5520 }, fall: 1 / 50 });
+    const on = await w.buildAqueductSegment({ aqueduct: a.id, from: { bx: 0, bz: 0 }, to: { bx: 6350, bz: 5404 }, fall: 1 / 50 });
     if (typeof on === 'string') throw new Error(on);
-    expect(on.aqueduct.cells.length).toBe(61 + 32);
+    // (At an angle to the first: their joint whole, its water on round it.)
+    expect(on.aqueduct.cells.length).toBe(61 + 48);
+    expect(on.aqueduct.runs).toBe(109);
     const done = await w.finishAqueduct(a.id);
     if (typeof done === 'string') throw new Error(done);
     expect(done.aqueduct.finished).toBe(true);
     expect(done.aqueduct.outlet).toHaveLength(9);
-    expect(done.aqueduct.runs).toBe(93);
-    expect(await w.buildAqueductSegment({ aqueduct: a.id, from: { bx: 0, bz: 0 }, to: { bx: 6500, bz: 5520 }, fall: 1 / 50 })).toMatch(/finished/);
+    expect(done.aqueduct.runs).toBe(109);
+    expect(await w.buildAqueductSegment({ aqueduct: a.id, from: { bx: 0, bz: 0 }, to: { bx: 6320, bz: 5380 }, fall: 1 / 50 })).toMatch(/finished/);
 
     // The land round its outlet, watered: a block of dirt there tilled and sown grows half again as fast.
     const end = done.aqueduct.cells.at(-1)!, fx = end.bx + 4, fz = end.bz + 4;
     const top = (bx: number, bz: number) => {
-      for (let y = 140; y > 100; y--) {
+      for (let y = 180; y > 100; y--) {
         const m = w.materialAtUnit(bx * B + 8, y * B + 8, bz * B + 8);
         if (m !== undefined && m !== Material.Air) return y;
       }
       throw new Error('no ground');
     };
-    /** A block of `m` put on the ground at (bx, bz), whatever's in its way cleared first: its block y. */
+    /** A block of `m` put on the ground at (bx, bz), whatever's in its way (there, and over it) cleared first: its block y. */
     const lay = (bx: number, bz: number, m: number) => {
       const y = top(bx, bz) + 1;
-      try {
-        w.applyEdit({ op: 'removeBox', x: bx * B, y: y * B, z: bz * B, size: B });
-      } catch {
-        // (Nothing there.)
-      }
+      for (const at of [y, y + 1])
+        try {
+          w.applyEdit({ op: 'removeBox', x: bx * B, y: at * B, z: bz * B, size: B });
+        } catch {
+          // (Nothing there.)
+        }
       w.applyEdit({ op: 'place', x: bx * B, y: y * B, z: bz * B, size: B, material: m });
       return y;
     };

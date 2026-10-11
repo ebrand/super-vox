@@ -37,7 +37,7 @@ async function setup(mode: 'creative' | 'survival') {
     if (!f()) throw new Error(`timed out: ${f.toString().slice(0, 120)}`);
   };
   await until(() => msgs.some((m) => m.type === 'aqueducts'));
-  ws.send(JSON.stringify({ type: 'pose', x: 6380 * M, y: 130 * M, z: 5488 * M, yaw: 0 }));
+  ws.send(JSON.stringify({ type: 'pose', x: 6375 * M, y: 130 * M, z: 5468 * M, yaw: 0 }));
   let id = 0;
   const ask = async (m: Record<string, unknown>) => {
     const asked = ++id;
@@ -49,7 +49,8 @@ async function setup(mode: 'creative' | 'survival') {
   return { ws, ask, aqueducts, until };
 }
 
-const segment = { aqueduct: null, from: { bx: 6374, bz: 5488 }, to: { bx: 6414, bz: 5488 }, fall: 1 / 50 };
+// (North from the lake's shore: east, its water.)
+const segment = { aqueduct: null, from: { bx: 6374, bz: 5488 }, to: { bx: 6374, bz: 5448 }, fall: 1 / 50 };
 
 describe('aqueducts over the connection', () => {
   it('are planned (their cells, the ground, what they take), built (everyone told) and finished, in creative', async () => {
