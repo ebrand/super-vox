@@ -43,7 +43,9 @@ const ROAM_MS = 5 * 60_000;
 const ROAM_M = 250;
 const ROAM_VILLAGE_M = 500;
 /** Places looked at for a camp a second (each samples the ground 25 times); how long (ms) loners who found nowhere wait to look again. */
-const SITES_A_STEP = 4;
+const SITES_A_STEP = 1;
+/** Loners far from players wander in this many turns (a turn a think: each its turn, as far as in that many). */
+const WANDER_TURNS = 10;
 const SITE_REST_MS = 2 * 60_000;
 /** A camp with room gets a newcomer about once in this long (s). */
 const RECRUIT_EVERY_S = 900;
@@ -106,6 +108,8 @@ export class OutlawSim {
   private readonly searches = new SiteSearch<{ x: number; z: number }>(SITES_A_STEP, SITE_REST_MS);
   private next = 1;
   private thinkIn = 0;
+  /** Whose turn it is to wander (see WANDER_TURNS). */
+  private turn = 0;
   private saveIn = SAVE_S;
   private dirty = false;
   private writing: Promise<void> = Promise.resolve();
@@ -200,7 +204,10 @@ export class OutlawSim {
       this.thinkIn = THINK_S;
       this.bring(players);
       lap('bringing');
-      for (const o of this.outlaws.values()) if (o.mob === null) this.wander(o, THINK_S, now);
+      // (A tenth of them each time, ten times as far: they're far from everyone, and each step
+      // looks at the ground.)
+      this.turn = (this.turn + 1) % WANDER_TURNS;
+      for (const o of this.outlaws.values()) if (o.mob === null && o.id % WANDER_TURNS === this.turn) this.wander(o, THINK_S * WANDER_TURNS, now);
       lap('wandering');
       this.found(now);
       lap('founding');
@@ -282,13 +289,23 @@ export class OutlawSim {
   /** A record on, `dt` s of walking: loners toward the nearest other loner (or anywhere), the camp's to its fire (or where their band's gone). */
   private wander(o: Rec, dt: number, now: number): void {
     o.health = Math.min(MOBS.outlaw.health, o.health + HEAL * dt);
+    // Loners join a camp near with room (first: then they head for it).
+    if (o.camp === null) {
+      const c = [...this.camps.values()].find((c) => Math.hypot(c.x - o.x, c.z - o.z) < CAMP_JOIN_M * M && this.membersOf(c) < CAMP_MAX);
+      if (c) {
+        o.camp = c.id;
+        this.dirty = true;
+        this.changed = true;
+      }
+    }
     const home = this.homeOf(o), seed = o.id * 31 + Math.floor(now / 1000);
     if (Math.hypot(o.tx - o.x, o.tz - o.z) < 1 * M) {
       if (home) {
         const to = this.somewhere(home.x, home.z, 8, seed);
         o.tx = to.x;
         o.tz = to.z;
-      } else if (rand(seed) < 0.2) {
+      } else if (rand(seed) < 1 - 0.8 ** dt) {
+        // (One time in five a second, off somewhere.)
         let best: Rec | null = null, bd = DRIFT_M * M;
         for (const p of this.outlaws.values()) {
           if (p === o || p.camp !== null) continue;
@@ -298,15 +315,6 @@ export class OutlawSim {
         const to = best ? this.somewhere(best.x, best.z, 10, seed) : this.somewhere(o.x, o.z, 300, seed);
         o.tx = to.x;
         o.tz = to.z;
-      }
-    }
-    // Loners join a camp near with room.
-    if (o.camp === null) {
-      const c = [...this.camps.values()].find((c) => Math.hypot(c.x - o.x, c.z - o.z) < CAMP_JOIN_M * M && this.membersOf(c) < CAMP_MAX);
-      if (c) {
-        o.camp = c.id;
-        this.dirty = true;
-        this.changed = true;
       }
     }
     const dx = o.tx - o.x, dz = o.tz - o.z, d = Math.hypot(dx, dz);

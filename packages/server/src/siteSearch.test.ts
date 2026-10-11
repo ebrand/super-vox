@@ -56,10 +56,10 @@ describe('looking for somewhere to settle', () => {
       perSecond.push(looked);
     }
     expect(sim.list()).toHaveLength(0);
-    // (Four places a second, 25 samples each; and a few for their wandering.)
-    expect(Math.max(...perSecond)).toBeLessThanOrEqual(4 * 25 + 20 * 10);
+    // (A place a second, 25 samples; and a few for the tenth of them wandering.)
+    expect(Math.max(...perSecond)).toBeLessThanOrEqual(25 + 2 * 10);
     // Still looking, a group at a time, after they've rested: not given up.
-    expect(perSecond.slice(150).some((n) => n >= 4 * 25)).toBe(true);
+    expect(perSecond.slice(150).some((n) => n >= 25)).toBe(true);
   });
 
   it("villages: wanderers who've met but can find nowhere to settle look at the ground only so much a second", () => {
@@ -82,8 +82,8 @@ describe('looking for somewhere to settle', () => {
       perSecond.push(looked);
     }
     expect(sim.list()).toHaveLength(0);
-    // (Three places a second, 81 samples each, some of them looked up before; and a few for their wandering.)
-    expect(Math.max(...perSecond)).toBeLessThanOrEqual(3 * 81 + 30 * 10);
+    // (A place a second, 81 samples, some of them looked up before; and a few for their wandering.)
+    expect(Math.max(...perSecond)).toBeLessThanOrEqual(81 + 30 * 10);
     expect(perSecond.reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
   });
 });

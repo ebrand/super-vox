@@ -133,7 +133,7 @@ const CREW = 2;
 /** Away (the world shut, nobody in it) longer than GAP_MS: caught up with, CATCH_UP_S at a time, at most CATCH_UP_MS of it. */
 const GAP_MS = 5000;
 /** Places looked at for a village a second (each samples the ground 81 times); how long (ms) wanderers who found nowhere wait to look again. */
-const SITES_A_STEP = 3;
+const SITES_A_STEP = 1;
 const SITE_REST_MS = 2 * 60_000;
 const CATCH_UP_S = 60;
 const CATCH_UP_MS = 4 * 3600_000;
