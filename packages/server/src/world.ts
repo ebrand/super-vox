@@ -133,7 +133,12 @@ import {
   SOURCE_MIN_COLUMNS,
   SOURCE_REACH_M,
   SOURCE_STEP_M,
+  aqueductColumns,
+  aqueductCost,
   aqueductPieces,
+  type AqueductColumn,
+  type AqueductShape,
+  type ChannelLeg,
   channelKeys,
   planAqueduct,
   poolCells,
@@ -879,49 +884,53 @@ export class World {
    * aqueductIntake), or one on from an unfinished aqueduct's end; to block `to`, falling `fall`.
    * Its plan, and what building it takes (its pieces; in survival, the stone, by volume), or why not.
    */
-  planAqueductSegment(ask: { aqueduct: number | null; from: { bx: number; bz: number }; to: { bx: number; bz: number }; fall: number }): { plan: AqueductPlan; pieces: ReturnType<typeof aqueductPieces>; head: ChannelCell[]; cost: Map<number, number> } | string {
-    let start: ChannelCell, own: ChannelCell[], head: ChannelCell[] = [];
+  planAqueductSegment(ask: { aqueduct: number | null; from: { bx: number; bz: number }; to: { bx: number; bz: number }; fall: number }): { plan: AqueductPlan; columns: AqueductColumn[]; shape: AqueductShape & { legs: ChannelLeg[] }; cost: Map<number, number> } | string {
+    let start: ChannelCell, shape: AqueductShape & { legs: ChannelLeg[] }, first: number;
     if (ask.aqueduct === null) {
       const intake = this.aqueductIntake(ask.from.bx, ask.from.bz);
       if (typeof intake === 'string') return intake;
       start = { bx: ask.from.bx, bz: ask.from.bz, floor: intake.floor };
-      head = poolCells(start);
-      own = head;
+      shape = { cells: [start], head: poolCells(start), outlet: [], legs: [] };
+      first = 0;
     } else {
       const a = this.aqueductMap().get(ask.aqueduct);
       if (!a) return 'no such aqueduct';
       if (a.finished) return `${a.name} is finished`;
       start = a.cells.at(-1)!;
-      own = [...a.head, ...a.cells];
+      shape = { cells: [...a.cells], head: a.head, outlet: [], legs: [...(a.legs ?? [])] };
+      first = a.cells.length - 1;
     }
     const plan = planAqueduct(start, ask.to.bx, ask.to.bz, ask.fall, this.groundOver);
     if (typeof plan === 'string') return plan;
-    const pieces = aqueductPieces(ask.aqueduct === null ? [...head, ...plan.cells.slice(1)] : plan.cells.slice(1), this.groundOver, own);
+    shape.cells.push(...plan.cells.slice(1));
+    shape.legs.push({ first, last: shape.cells.length - 1, fall: ask.fall });
+    // (Its columns: the new run's, and a new aqueduct's head; not what's there already. Its pieces made only when it's built.)
+    const columns = aqueductColumns(shape, (p) => ask.aqueduct === null || (p.run && p.first === first));
     // Not through what players (or villages) have built: aqueducts' and railways' own columns aside.
-    const M = UNITS_PER_METER, P = CHUNK_SIZE;
+    const M = UNITS_PER_METER, P = CHUNK_SIZE, Q = BLOCK_SIZE / 4;
     const ours = new Set([...this.trackList().flatMap((t) => t.columns), ...this.aqueductList().flatMap((a) => [...a.head, ...a.cells, ...a.outlet].map((c) => `${Math.floor((c.bx * BLOCK_SIZE) / P)},${Math.floor((c.bz * BLOCK_SIZE) / P)}`))]);
     const built = new Set(this.protectedColumns().map((c) => `${c.cx},${c.cz}`).filter((k) => !ours.has(k)));
-    const hit = [...pieces.place, ...pieces.clear].find((p) => built.has(`${Math.floor(p.x / P)},${Math.floor(p.z / P)}`));
-    if (hit) return `it would go through what's been built near x ${Math.round(hit.x / M)}, z ${Math.round(hit.z / M)} m: go round it`;
-    const cost = new Map<number, number>();
-    for (const p of pieces.place) cost.set(p.material, (cost.get(p.material) ?? 0) + p.size ** 3);
-    return { plan, pieces, head, cost };
+    const hit = columns.find((c) => built.has(`${Math.floor((c.qx * Q) / P)},${Math.floor((c.qz * Q) / P)}`));
+    if (hit) return `it would go through what's been built near x ${Math.round((hit.qx * Q) / M)}, z ${Math.round((hit.qz * Q) / M)} m: go round it`;
+    return { plan, columns, shape, cost: aqueductCost(columns, this.groundOver) };
   }
 
   /** Builds a planned segment (see planAqueductSegment): the aqueduct, new or on, and what changed; or why not. */
   buildAqueductSegment(ask: Parameters<World['planAqueductSegment']>[0]): { aqueduct: Aqueduct; results: EditResult[] } | string {
     const planned = this.planAqueductSegment(ask);
     if (typeof planned === 'string') return planned;
-    const cleared = this.buildPieces(planned.pieces.clear, true), placed = this.buildPieces(planned.pieces.place, false);
+    const pieces = aqueductPieces(planned.columns, this.groundOver);
+    const cleared = this.buildPieces(pieces.clear, true), placed = this.buildPieces(pieces.place, false);
     let a: Aqueduct;
     if (ask.aqueduct === null) {
       const ids = this.aqueductList().map((x) => x.id);
       const id = Math.max(0, ...ids) + 1;
-      a = { id, name: `Aqueduct ${id}`, cells: planned.plan.cells, head: planned.head, outlet: [], finished: false, runs: 0 };
+      a = { id, name: `Aqueduct ${id}`, cells: planned.shape.cells, head: planned.shape.head, outlet: [], finished: false, runs: 0, legs: planned.shape.legs };
       this.aqueductMap().set(id, a);
     } else {
       a = this.aqueductMap().get(ask.aqueduct)!;
-      a.cells.push(...planned.plan.cells.slice(1));
+      a.cells = planned.shape.cells;
+      a.legs = planned.shape.legs;
     }
     this.checkAqueduct(a);
     this.saveAqueducts();
@@ -936,16 +945,15 @@ export class World {
     if (a.finished) return `${a.name} is finished already`;
     if (a.cells.length < 2) return 'build some of it first';
     const outlet = poolCells(a.cells.at(-1)!);
-    const pieces = aqueductPieces(outlet, this.groundOver, [...a.head, ...a.cells]);
+    const columns = aqueductColumns({ ...a, outlet }, (p) => !p.run && p.cell === a.cells.length);
+    const pieces = aqueductPieces(columns, this.groundOver);
     const cleared = this.buildPieces(pieces.clear, true), placed = this.buildPieces(pieces.place, false);
     a.outlet = outlet;
     a.finished = true;
     this.checkAqueduct(a);
     this.saveAqueducts();
     this.onAqueductsChanged?.();
-    const cost = new Map<number, number>();
-    for (const p of pieces.place) cost.set(p.material, (cost.get(p.material) ?? 0) + p.size ** 3);
-    return { aqueduct: a, results: [cleared.result, placed.result].filter((r): r is EditResult => r !== null), cost };
+    return { aqueduct: a, results: [cleared.result, placed.result].filter((r): r is EditResult => r !== null), cost: aqueductCost(columns, this.groundOver) };
   }
 
   /**
@@ -980,7 +988,7 @@ export class World {
 
   /** How far an aqueduct's water reaches now (see Aqueduct.runs), from what of it stands. True if that changed. */
   private checkAqueduct(a: Aqueduct): boolean {
-    const keys = channelKeys(a.cells, [...a.head, ...a.outlet]);
+    const keys = channelKeys(a);
     let runs = keys.findIndex((points) => !points.every(([x, y, z]) => this.solidAtUnit(x, y, z)));
     if (runs < 0) runs = a.cells.length;
     if (runs === a.runs) return false;

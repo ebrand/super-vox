@@ -515,7 +515,7 @@ export class TrackMode {
     if (!start || !this.hover) return;
     const current = this.aqPlan && this.aqPlan.key === this.askedKey ? this.aqPlan : null, B = BLOCK_SIZE;
     const pts = current?.plan
-      ? current.plan.cells.map(([bx, bz, floor]) => ({ x: (bx + 0.5) * (B / M), y: floor / M, z: (bz + 0.5) * (B / M) }))
+      ? alongLine(current.plan.cells).map(([x, z, floor]) => ({ x: (x + 0.5) * (B / M), y: floor / M, z: (z + 0.5) * (B / M) }))
       : [{ x: (start.bx + 0.5) * (B / M), y: start.y, z: (start.bz + 0.5) * (B / M) }, { x: this.hover.x / M, y: this.hover.y, z: this.hover.z / M }];
     const colour = current?.error ? BAD : current?.plan ? GOOD : ASKING;
     this.ribbon = new THREE.Mesh(ribbonGeometry(pts, 1.8, colour), this.ribbonMaterial);
@@ -825,4 +825,13 @@ export function ribbonGeometry(pts: readonly { x: number; y: number; z: number }
   g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   g.setIndex(idx);
   return g;
+}
+
+/** A segment's cells (block x, z, floor) put on the line between its ends' middles (as its channel's built: see aqueductColumns), each where its middle is along it. */
+function alongLine(cells: readonly [number, number, number][]): [number, number, number][] {
+  const [x0, z0] = cells[0]!, [x1, z1] = cells.at(-1)!, dx = x1 - x0, dz = z1 - z0, d2 = dx * dx + dz * dz || 1;
+  return cells.map(([x, z, floor]) => {
+    const t = Math.max(0, Math.min(1, ((x - x0) * dx + (z - z0) * dz) / d2));
+    return [x0 + t * dx, z0 + t * dz, floor];
+  });
 }

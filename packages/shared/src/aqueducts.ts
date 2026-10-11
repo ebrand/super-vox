@@ -57,6 +57,15 @@ export interface Aqueduct {
   finished: boolean;
   /** Its water reaches this many of its cells from its head (all of them: running to its end; fewer: broken there). */
   runs: number;
+  /** Its straight runs, a segment each (its channel along the line between their end cells' middles): none for one built before it had them (its channel square round each cell). */
+  legs?: ChannelLeg[];
+}
+
+/** A straight run of an aqueduct's channel: from its cell `first` to its cell `last` (their middles), falling `fall` a block. */
+export interface ChannelLeg {
+  first: number;
+  last: number;
+  fall: number;
 }
 
 /** Whether an aqueduct's water reaches its end (and, finished, its outlet waters the land). */
@@ -103,8 +112,7 @@ export interface AqueductPlan {
 
 /**
  * Plans a segment from `start` (its cell: the head, or an aqueduct's end) to block (bx, bz), its
- * floor falling `fall` per block along it (in whole blocks: a step down each time it's fallen a
- * block's worth), checked against the ground (`groundAt`: the ground's top over a block, units):
+ * floor falling `fall` per block along it (a quarter metre down each time it's fallen that much), checked against the ground (`groundAt`: the ground's top over a block, units):
  * not standing over it higher than AQUEDUCT_MAX_HEIGHT_M, nor cutting into it deeper than
  * AQUEDUCT_MAX_CUT_M. Or why not.
  */
@@ -116,12 +124,13 @@ export function planAqueduct(start: ChannelCell, bx: number, bz: number, fall: n
   if (length > AQUEDUCT_MAX_SEGMENT_M) return `too long: ${Math.round(length)} m (${AQUEDUCT_MAX_SEGMENT_M} m at most a segment)`;
   const line = channelLine(start.bx, start.bz, bx, bz);
   const cells: ChannelCell[] = [start], ground: number[] = [groundAt(start.bx, start.bz)];
-  let maxHeight = 0, heightAt = 0, maxCut = 0, cutAt = 0, run = 0;
+  let maxHeight = 0, heightAt = 0, maxCut = 0, cutAt = 0;
+  const dx = bx - start.bx, dz = bz - start.bz, d2 = dx * dx + dz * dz;
   for (let i = 1; i < line.length; i++) {
-    const [x, z] = line[i]!, [px, pz] = line[i - 1]!;
-    run += Math.hypot(x - px, z - pz);
-    // (Down a block each time it's fallen a block's worth: so many blocks along, at this fall.)
-    const floor = start.floor - Math.floor(run * fall) * B;
+    const [x, z] = line[i]!;
+    // (How far along the line its middle is, blocks: its floor there, as its channel's columns have it, see aqueductColumns.)
+    const run = (Math.max(0, Math.min(1, ((x - start.bx) * dx + (z - start.bz) * dz) / d2)) * Math.sqrt(d2));
+    const floor = runFloor(start.floor, fall, run);
     const g = groundAt(x, z);
     cells.push({ bx: x, bz: z, floor });
     ground.push(g);
@@ -143,101 +152,264 @@ export interface AqueductPiece {
   material: MaterialId;
 }
 
-/** The voxel aqueducts are modelled in (units: 1/4 m), and how much of its footing goes under the ground (units: so it doesn't stand on a ledge). */
+/** The voxel aqueducts are modelled in (units: 1/4 m). */
 const Q = BLOCK_SIZE / 4;
-/** Its walls' thickness and its floor's (units), and how high its walls stand over its floor (units). */
-const WALL = 2 * Q, SLAB = 2 * Q, WALL_TOP = 4 * Q;
+/** Its walls' thickness and its floor's (units), and how high its walls stand over its floor (units); half its channel's width (units). */
+const WALL = 2 * Q, SLAB = 2 * Q, WALL_TOP = 4 * Q, HALF = BLOCK_SIZE / 2;
 /** How high over its floor it's cleared where it cuts into the ground (units). */
 const CLEAR_OVER = 3 * BLOCK_SIZE;
 
+/** A floor `s` blocks along a straight run from one at `floor0` (units), falling `fall` a block: down a quarter metre each time it's fallen that much. */
+export function runFloor(floor0: number, fall: number, s: number): number {
+  return floor0 - Math.floor((s * fall * BLOCK_SIZE) / Q + 1e-9) * Q;
+}
+
+/** An aqueduct's shape: its channel's cells, its pools, and its straight runs (see Aqueduct.legs). */
+export type AqueductShape = Pick<Aqueduct, 'cells' | 'head' | 'outlet'> & { legs?: readonly ChannelLeg[] };
+
 /**
- * What a run of channel cells takes to build, modelled in 1/4 m voxels (merged into 1/2 m and 1 m
- * ones wherever a cube's all one material): a floor 1/2 m thick under the channel, of dressed stone;
- * walls 1/2 m thick each side (round the channel's outline, whichever way it goes), a metre over its
- * floor, cobblestone with a coping of dressed stone; under it all, down to the ground, a solid
- * footing where it's low (AQUEDUCT_FOOTING_M), else piers every AQUEDUCT_PIER_EVERY_M with round
- * arches between them (their rings dressed stone). Where the ground's in its way it's cut: cleared
- * over its outline, from its floor's underside up to CLEAR_OVER over its floor. `own`: channel cells
- * already its (their walls aren't built across the new ones). `keys`: for each cell, points (units)
- * that must stay solid for its water to pass (its floor, and its walls where it has them).
+ * What an aqueduct's channel is made up of: straight runs (a channel HALF each side of a line between
+ * two cells' middles, its floor falling along it), and squares of channel (its pools; and each cell
+ * of an aqueduct built before it had runs, see Aqueduct.legs). `cell`: whose water it is (see wet):
+ * -1 the head's (always), cells.length the outlet's.
  */
-export function aqueductPieces(cells: readonly ChannelCell[], groundAt: (bx: number, bz: number) => number, own: readonly ChannelCell[] = []): { place: AqueductPiece[]; clear: AqueductPiece[]; keys: [number, number, number][][] } {
-  const B = BLOCK_SIZE, M = UNITS_PER_METER, N = B / Q;
-  const channel = new Map<string, ChannelCell>();
-  for (const c of [...own, ...cells]) channel.set(`${c.bx},${c.bz}`, c);
-  const isChannel = (bx: number, bz: number) => channel.has(`${bx},${bz}`);
-  // How far along each cell is (m), and its way (for where along it a voxel is: arches).
-  const along: number[] = [0];
-  for (let i = 1; i < cells.length; i++) along.push(along[i - 1]! + Math.hypot(cells[i]!.bx - cells[i - 1]!.bx, cells[i]!.bz - cells[i - 1]!.bz) * (B / M));
-  const wayOf = (i: number) => {
-    const a = cells[Math.max(0, i - 1)]!, b = cells[Math.min(cells.length - 1, i + 1)]!, d = Math.hypot(b.bx - a.bx, b.bz - a.bz) || 1;
-    return { x: (b.bx - a.bx) / d, z: (b.bz - a.bz) / d };
-  };
-  // Each quarter-metre column of its outline (the channel, and WALL round it): the cell it's
-  // nearest (its floor, and how far along it is, m), and whether it's in the channel.
-  const columns = new Map<string, { qx: number; qz: number; cell: number; s: number; inChannel: boolean }>();
-  cells.forEach((c, i) => {
-    const cx = (c.bx + 0.5) * B, cz = (c.bz + 0.5) * B, way = wayOf(i);
-    for (let qx = c.bx * N - WALL / Q; qx < (c.bx + 1) * N + WALL / Q; qx++)
-      for (let qz = c.bz * N - WALL / Q; qz < (c.bz + 1) * N + WALL / Q; qz++) {
-        const bx = Math.floor(qx / N), bz = Math.floor(qz / N);
-        const inChannel = isChannel(bx, bz);
-        // (Another cell's channel: theirs to say.)
-        if (inChannel && (bx !== c.bx || bz !== c.bz)) continue;
-        const x = (qx + 0.5) * Q, z = (qz + 0.5) * Q, d = Math.hypot(x - cx, z - cz);
-        const k = `${qx},${qz}`, had = columns.get(k);
-        if (had && !inChannel && (had.inChannel || Math.hypot(x - (cells[had.cell]!.bx + 0.5) * B, z - (cells[had.cell]!.bz + 0.5) * B) <= d)) continue;
-        columns.set(k, { qx, qz, cell: i, s: along[i]! + ((x - cx) * way.x + (z - cz) * way.z) / M, inChannel });
-      }
+type Part =
+  | { kind: 'run'; x0: number; z0: number; dx: number; dz: number; len: number; floor0: number; fall: number; s0: number; cells: number[]; ts: number[] }
+  | { kind: 'square'; x0: number; z0: number; x1: number; z1: number; floor: number; cell: number; s0: number; wx: number; wz: number };
+
+function partsOf(a: AqueductShape): Part[] {
+  const B = BLOCK_SIZE, M = UNITS_PER_METER, parts: Part[] = [];
+  const mid = (c: ChannelCell) => [(c.bx + 0.5) * B, (c.bz + 0.5) * B] as const;
+  // How far along each cell is (m): for where its piers go.
+  const inRun = new Map<number, ChannelLeg>();
+  for (const l of a.legs ?? []) for (let i = l.first; i <= l.last; i++) if (i > l.first || l.first === 0) inRun.set(i, l);
+  const along: number[] = [];
+  a.cells.forEach((c, i) => {
+    const l = inRun.get(i);
+    if (i === 0) along.push(0);
+    else if (l && i > l.first) {
+      const [x0, z0] = mid(a.cells[l.first]!), [x1, z1] = mid(a.cells[l.last]!), [x, z] = mid(c), len = Math.hypot(x1 - x0, z1 - z0) || 1;
+      along.push(along[l.first]! + ((x - x0) * (x1 - x0) + (z - z0) * (z1 - z0)) / len / M);
+    } else along.push(along[i - 1]! + Math.hypot(c.bx - a.cells[i - 1]!.bx, c.bz - a.cells[i - 1]!.bz) * (B / M));
   });
-  const solid = new Map<string, MaterialId>(), air = new Set<string>();
-  const put = (qx: number, qy: number, qz: number, m: MaterialId) => solid.set(`${qx},${qy},${qz}`, m);
-  const P = AQUEDUCT_PIER_EVERY_M, PIER_HALF = 0.5, R = (P - 2 * PIER_HALF) / 2;
-  for (const col of columns.values()) {
-    const c = cells[col.cell]!, f = c.floor, slabBottom = f - SLAB, top = col.inChannel ? f : f + WALL_TOP;
-    for (let y = slabBottom; y < top; y += Q) {
-      // (Dressed stone: the channel's floor, and the walls' top course.)
-      const dressed = col.inChannel || y >= f + WALL_TOP - Q;
-      put(col.qx, y / Q, col.qz, dressed ? AQUEDUCT_DRESSED : AQUEDUCT_RUBBLE);
+  const pool = (cells: readonly ChannelCell[], cell: number, s0: number) => {
+    if (!cells.length) return;
+    const xs = cells.map((c) => c.bx), zs = cells.map((c) => c.bz);
+    parts.push({ kind: 'square', x0: Math.min(...xs) * B, z0: Math.min(...zs) * B, x1: (Math.max(...xs) + 1) * B, z1: (Math.max(...zs) + 1) * B, floor: cells[0]!.floor, cell, s0, wx: 1, wz: 0 });
+  };
+  pool(a.head, -1, 0);
+  pool(a.outlet, a.cells.length, along.at(-1) ?? 0);
+  // (Cells of no run: squares, each its way along.)
+  a.cells.forEach((c, i) => {
+    if (inRun.has(i) || (i === 0 && a.head.length)) return;
+    const p = a.cells[Math.max(0, i - 1)]!, n = a.cells[Math.min(a.cells.length - 1, i + 1)]!, d = Math.hypot(n.bx - p.bx, n.bz - p.bz) || 1;
+    parts.push({ kind: 'square', x0: c.bx * B, z0: c.bz * B, x1: (c.bx + 1) * B, z1: (c.bz + 1) * B, floor: c.floor, cell: i, s0: along[i]!, wx: (n.bx - p.bx) / d, wz: (n.bz - p.bz) / d });
+  });
+  for (const l of a.legs ?? []) {
+    const [x0, z0] = mid(a.cells[l.first]!), [x1, z1] = mid(a.cells[l.last]!), len = Math.hypot(x1 - x0, z1 - z0) || 1;
+    const cells: number[] = [], ts: number[] = [];
+    for (let i = l.first; i <= l.last; i++) {
+      const [x, z] = mid(a.cells[i]!);
+      cells.push(i);
+      ts.push(Math.max(0, Math.min(1, ((x - x0) * (x1 - x0) + (z - z0) * (z1 - z0)) / (len * len))));
     }
-    // Cleared: where it goes (whatever's there), and over it where the ground's higher (from its
-    // underside up; a block more than the ground's smooth height, as voxels stand a little over it).
-    const g = groundAt(Math.floor(col.qx / N), Math.floor(col.qz / N));
-    for (let y = slabBottom; y < Math.min(f + CLEAR_OVER, Math.max(f + WALL_TOP, g + B)); y += Q) air.add(`${col.qx},${y / Q},${col.qz}`);
-    // Under it, down to the ground: a footing if it's low; else a pier, or an arch's spandrel over its curve.
-    const under = slabBottom - g;
-    if (under <= 0) continue;
-    const low = under <= AQUEDUCT_FOOTING_M * M;
-    const toPier = Math.abs(col.s - Math.round(col.s / P) * P), mid = Math.abs(col.s - (Math.floor(col.s / P) + 0.5) * P);
-    for (let y = slabBottom - Q; y >= g - Q; y -= Q) {
-      const depth = (slabBottom - y) / M;
-      if (low || toPier <= PIER_HALF) {
-        put(col.qx, y / Q, col.qz, AQUEDUCT_RUBBLE);
-        continue;
-      }
-      // (The arch: open under a half circle between the piers' faces, its crown 1/2 m under the floor.)
-      const curve = 0.5 + R - Math.sqrt(Math.max(0, R * R - mid * mid));
-      if (depth > curve) break;
-      put(col.qx, y / Q, col.qz, depth > curve - Q / M ? AQUEDUCT_DRESSED : AQUEDUCT_RUBBLE);
-    }
+    parts.push({ kind: 'run', x0, z0, dx: x1 - x0, dz: z1 - z0, len, floor0: a.cells[l.first]!.floor, fall: l.fall, s0: along[l.first]!, cells, ts });
   }
-  const keys = channelKeys(cells, own);
-  // (Where it goes is cleared too, whatever's there: then built, as the clearing comes first.)
-  for (const k of solid.keys()) air.add(k);
-  return { place: merged(solid), clear: merged(new Map([...air].map((k) => [k, Material.Air]))), keys };
+  return parts;
+}
+
+/** A quarter-metre column of an aqueduct: its floor (units), whether it's channel (else wall), whose water (see Part), how far along (m), and which part. */
+export interface AqueductColumn {
+  qx: number;
+  qz: number;
+  floor: number;
+  channel: boolean;
+  cell: number;
+  s: number;
+  part: number;
+  /** One of those asked for (else one already there, built again beside them: see aqueductColumns). */
+  mine: boolean;
+}
+
+/** The column at quarter-metre (qx, qz), of `parts`: the part it's nearest the channel of; null if it's further than a wall's thickness from all of them. */
+function columnAt(parts: readonly Part[], qx: number, qz: number): AqueductColumn | null {
+  const B = BLOCK_SIZE, M = UNITS_PER_METER, x = (qx + 0.5) * Q, z = (qz + 0.5) * Q;
+  let best: AqueductColumn | null = null, be = Infinity;
+  parts.forEach((p, k) => {
+    if (p.kind === 'square') {
+      // (Out from a square: the further of across and along, as walls go round it square.)
+      // (Inside one, it's the square's: a pool's water is the pool's, whatever run starts in it.)
+      const inside = x > p.x0 && x < p.x1 && z > p.z0 && z < p.z1;
+      const e = inside ? -BLOCK_SIZE : Math.max(p.x0 - x, x - p.x1, p.z0 - z, z - p.z1, 0);
+      if (e > WALL || e >= be) return;
+      const cx = (p.x0 + p.x1) / 2, cz = (p.z0 + p.z1) / 2;
+      be = e;
+      best = { qx, qz, floor: p.floor, channel: inside, cell: p.cell, s: p.s0 + ((x - cx) * p.wx + (z - cz) * p.wz) / M, part: k, mine: true };
+      return;
+    }
+    const t = Math.max(0, Math.min(1, ((x - p.x0) * p.dx + (z - p.z0) * p.dz) / (p.len * p.len)));
+    const d = Math.hypot(x - (p.x0 + t * p.dx), z - (p.z0 + t * p.dz)), e = d - HALF;
+    if (e > WALL || e >= be) return;
+    be = e;
+    // (Whose water: the cell of the run it's nearest along it.)
+    let lo = 0, hi = p.ts.length - 1;
+    while (hi - lo > 1) {
+      const m = (lo + hi) >> 1;
+      if (p.ts[m]! <= t) lo = m;
+      else hi = m;
+    }
+    const cell = Math.abs(p.ts[hi]! - t) < Math.abs(p.ts[lo]! - t) ? p.cells[hi]! : p.cells[lo]!;
+    best = { qx, qz, floor: runFloor(p.floor0, p.fall, (t * p.len) / B), channel: e <= 0, cell, s: p.s0 + (t * p.len) / M, part: k, mine: true };
+  });
+  return best;
 }
 
 /**
- * What each of `cells` needs standing for its water to pass (points, units): its floor under its
- * middle, and its walls beside it (each side of it that isn't channel: `own`'s cells count as
- * channel too).
+ * An aqueduct's quarter-metre columns (its channel, and its walls round it), of those parts of it
+ * `mine` says are (the rest are there already: a column nearer theirs is theirs); and with them,
+ * not `mine`, the rest of its columns in the same blocks (built again: clearing a block's quarter
+ * metre takes whatever voxel's there, a half or whole metre of the wall beside it too). The
+ * channel's a metre wide, along each straight run's line (not its cells': else, at an angle, it
+ * zig-zags), its floor stepping down a quarter metre at a time; walls 1/2 m thick each side, round
+ * its ends.
  */
-export function channelKeys(cells: readonly ChannelCell[], own: readonly ChannelCell[] = []): [number, number, number][][] {
-  const B = BLOCK_SIZE, channel = new Set([...own, ...cells].map((c) => `${c.bx},${c.bz}`));
-  return cells.map((c) => {
-    const cx = (c.bx + 0.5) * B, cz = (c.bz + 0.5) * B;
-    const out: [number, number, number][] = [[cx, c.floor - Q / 2, cz]];
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) if (!channel.has(`${c.bx + dx},${c.bz + dz}`)) out.push([cx + dx * (B / 2 + Q / 2), c.floor + Q / 2, cz + dz * (B / 2 + Q / 2)]);
+export function aqueductColumns(a: AqueductShape, mine: (part: { cell: number; run: boolean; first: number }) => boolean = () => true): AqueductColumn[] {
+  const parts = partsOf(a), R = HALF + WALL, out: AqueductColumn[] = [];
+  const seen = new Set<number>();
+  const look = (qx: number, qz: number) => {
+    const key = qx * 4_194_304 + qz;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const c = columnAt(parts, qx, qz);
+    if (c && mineOf[c.part]) out.push(c);
+    else seen.delete(key);
+  };
+  const mineOf = parts.map((p) => mine(p.kind === 'run' ? { cell: p.cells.at(-1)!, run: true, first: p.cells[0]! } : { cell: p.cell, run: false, first: p.cell }));
+  parts.forEach((p, k) => {
+    if (!mineOf[k]) return;
+    if (p.kind === 'square') {
+      for (let qx = Math.floor((p.x0 - WALL) / Q); qx < Math.ceil((p.x1 + WALL) / Q); qx++) for (let qz = Math.floor((p.z0 - WALL) / Q); qz < Math.ceil((p.z1 + WALL) / Q); qz++) look(qx, qz);
+      return;
+    }
+    // (Along its line a quarter metre at a time, the squares round each point.)
+    const n = Math.ceil(p.len / Q), r = Math.ceil(R / Q) + 1;
+    for (let i = 0; i <= n; i++) {
+      const cx = Math.floor((p.x0 + (p.dx * i) / n) / Q), cz = Math.floor((p.z0 + (p.dz * i) / n) / Q);
+      for (let qx = cx - r; qx <= cx + r; qx++) for (let qz = cz - r; qz <= cz + r; qz++) look(qx, qz);
+    }
+  });
+  if (mineOf.every(Boolean)) return out;
+  const N = BLOCK_SIZE / Q, blocks = new Set(out.map((c) => `${Math.floor(c.qx / N)},${Math.floor(c.qz / N)}`));
+  for (const b of blocks) {
+    const [bx, bz] = b.split(',').map(Number) as [number, number];
+    for (let qx = bx * N; qx < (bx + 1) * N; qx++)
+      for (let qz = bz * N; qz < (bz + 1) * N; qz++) {
+        const key = qx * 4_194_304 + qz;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const c = columnAt(parts, qx, qz);
+        if (c) out.push({ ...c, mine: false });
+      }
+  }
+  return out;
+}
+
+/** Each column's voxels (quarter-metre y, bottom up): what's built, and from where up it's cleared (see aqueductPieces). */
+function columnVoxels(col: AqueductColumn, groundAt: (bx: number, bz: number) => number, put: (qy: number, m: MaterialId) => void): { clearFrom: number; clearTo: number } {
+  const B = BLOCK_SIZE, M = UNITS_PER_METER, N = B / Q;
+  const f = col.floor, slabBottom = f - SLAB, top = col.channel ? f : f + WALL_TOP;
+  for (let y = slabBottom; y < top; y += Q) {
+    // (Dressed stone: the channel's floor, and the walls' top course.)
+    put(y / Q, col.channel || y >= f + WALL_TOP - Q ? AQUEDUCT_DRESSED : AQUEDUCT_RUBBLE);
+  }
+  // Cleared: where it goes (whatever's there), and over it where the ground's higher (from its
+  // underside up; a block more than the ground's smooth height, as voxels stand a little over it).
+  const g = groundAt(Math.floor(col.qx / N), Math.floor(col.qz / N));
+  const clear = { clearFrom: slabBottom, clearTo: Math.max(top, Math.min(f + CLEAR_OVER, Math.max(f + WALL_TOP, g + B))) };
+  // Under it, down to the ground: a footing if it's low; else a pier, or an arch's spandrel over its curve.
+  const under = slabBottom - g;
+  if (under <= 0) return clear;
+  const P = AQUEDUCT_PIER_EVERY_M, PIER_HALF = 0.5, R = (P - 2 * PIER_HALF) / 2;
+  const low = under <= AQUEDUCT_FOOTING_M * M;
+  const toPier = Math.abs(col.s - Math.round(col.s / P) * P), mid = Math.abs(col.s - (Math.floor(col.s / P) + 0.5) * P);
+  for (let y = slabBottom - Q; y >= g - Q; y -= Q) {
+    const depth = (slabBottom - y) / M;
+    if (low || toPier <= PIER_HALF) {
+      put(y / Q, AQUEDUCT_RUBBLE);
+      continue;
+    }
+    // (The arch: open under a half circle between the piers' faces, its crown 1/2 m under the floor.)
+    const curve = 0.5 + R - Math.sqrt(Math.max(0, R * R - mid * mid));
+    if (depth > curve) break;
+    put(y / Q, depth > curve - Q / M ? AQUEDUCT_DRESSED : AQUEDUCT_RUBBLE);
+  }
+  return clear;
+}
+
+/**
+ * What columns of an aqueduct (see aqueductColumns) take to build, modelled in 1/4 m voxels (merged
+ * into 1/2 m and 1 m ones wherever a cube's all one material): a floor 1/2 m thick under the channel,
+ * of dressed stone; walls a metre over its floor, cobblestone with a coping of dressed stone; under
+ * it all, down to the ground, a solid footing where it's low (AQUEDUCT_FOOTING_M), else piers every
+ * AQUEDUCT_PIER_EVERY_M with round arches between them (their rings dressed stone). Where the ground's
+ * in its way it's cut: cleared over its outline, from its floor's underside up to CLEAR_OVER over
+ * its floor.
+ */
+export function aqueductPieces(columns: readonly AqueductColumn[], groundAt: (bx: number, bz: number) => number): { place: AqueductPiece[]; clear: AqueductPiece[] } {
+  const solid = new Map<string, MaterialId>(), air = new Map<string, MaterialId>();
+  for (const col of columns) {
+    const { clearFrom, clearTo } = columnVoxels(col, groundAt, (qy, m) => solid.set(`${col.qx},${qy},${col.qz}`, m));
+    for (let y = clearFrom; y < clearTo; y += Q) air.set(`${col.qx},${y / Q},${col.qz}`, Material.Air);
+  }
+  // (Where it goes is cleared too, whatever's there: then built, as the clearing comes first.)
+  for (const k of solid.keys()) air.set(k, Material.Air);
+  return { place: merged(solid), clear: merged(air) };
+}
+
+/** What columns of an aqueduct take (units³ of each material): as aqueductPieces would build, without making its pieces; those built again (not `mine`) aside. */
+export function aqueductCost(columns: readonly AqueductColumn[], groundAt: (bx: number, bz: number) => number): Map<MaterialId, number> {
+  const n = new Map<MaterialId, number>();
+  for (const col of columns) if (col.mine) columnVoxels(col, groundAt, (_qy, m) => n.set(m, (n.get(m) ?? 0) + 1));
+  return new Map([...n].map(([m, k]) => [m, k * Q ** 3]));
+}
+
+/** Of an aqueduct's water (see AqueductView): its channel's columns (quarter metres), each with its floor (units), and whether its water's there. */
+export function aqueductWater(a: Aqueduct): { qx: number; qz: number; floor: number }[] {
+  const end = running(a);
+  return aqueductColumns(a)
+    .filter((c) => c.channel && (c.cell === -1 || (c.cell >= a.cells.length ? end : c.cell < a.runs)))
+    .map((c) => ({ qx: c.qx, qz: c.qz, floor: c.floor }));
+}
+
+/**
+ * What each of an aqueduct's cells needs standing for its water to pass (points, units): its floor
+ * under it, and its walls beside it (where there's no channel there). On a straight run: under the
+ * run's line where the cell's middle is along it, and its walls square to the line.
+ */
+export function channelKeys(a: AqueductShape): [number, number, number][][] {
+  const B = BLOCK_SIZE, parts = partsOf(a);
+  const of = (x: number, z: number) => columnAt(parts, Math.floor(x / Q), Math.floor(z / Q));
+  const runOf = new Map<number, Extract<Part, { kind: 'run' }>>();
+  for (const p of parts) if (p.kind === 'run') p.cells.forEach((c, k) => (k > 0 || c === 0) && runOf.set(c, p));
+  const channel = new Set([...a.head, ...a.outlet, ...a.cells].map((c) => `${c.bx},${c.bz}`));
+  return a.cells.map((c, i) => {
+    const run = runOf.get(i), out: [number, number, number][] = [];
+    const key = (x: number, z: number, wall: boolean) => {
+      const col = of(x, z);
+      if (!col || col.channel === wall) return;
+      out.push([(col.qx + 0.5) * Q, wall ? col.floor + Q / 2 : col.floor - Q / 2, (col.qz + 0.5) * Q]);
+    };
+    if (!run) {
+      // (A square of channel: its middle, and its sides that aren't channel.)
+      const cx = (c.bx + 0.5) * B, cz = (c.bz + 0.5) * B;
+      key(cx, cz, false);
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) if (!channel.has(`${c.bx + dx},${c.bz + dz}`)) key(cx + dx * (B / 2 + Q / 2), cz + dz * (B / 2 + Q / 2), true);
+      return out;
+    }
+    const t = run.ts[run.cells.indexOf(i)]!, x = run.x0 + t * run.dx, z = run.z0 + t * run.dz, nx = -run.dz / run.len, nz = run.dx / run.len, w = HALF + WALL / 2;
+    key(x, z, false);
+    key(x + nx * w, z + nz * w, true);
+    key(x - nx * w, z - nz * w, true);
     return out;
   });
 }
