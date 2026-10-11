@@ -248,22 +248,18 @@ Nothing teaches a new player what to do: punch a tree, make planks, a crafting t
 
 ## 39. Aqueducts — L
 
-Like railways, but above ground: a raised channel on arches carrying water from a large water source (a lake, a big river, the sea's edge, if fresh) across country to dry land (deserts, dry grassland, a village far from water).
+Like railways, but above ground: a raised channel carrying water from a large fresh water source (a lake or a big river, high up) across country to dry land, where it waters the ground and the fields. Rules settled 2026-10-11:
 
-- **Builds on:**
-  - Railways: routes drawn on the map (`rail.ts`: a smooth line kept to a gentle grade, built through and over the land), and building them in the world from the route.
-  - Water (`fluid.ts`: poured water is finite and flows; natural water stands still), lakes and rivers (generated), farming, villages, the Object Designer (arch and channel pieces as slots, like the railway station).
-- **Parts:**
-  - **A route on the map:** from a point on a large body of water to its end, falling gently all the way (water must run downhill), drawn and checked like a railway.
-  - **Built above ground:** a channel on arches or piers, high enough to cross valleys and low ground; through or over hills (a cut, a tunnel, or taller arches). The arch and channel pieces could be Object Designer slots, each with many designs.
-  - **Water that keeps flowing:** water in the channel is topped up from its source, so it doesn't run out (unlike a poured bucket); at its end it fills a basin or cistern, and spills onto the land around.
-  - **What it does at the end:** dry land made fertile (grass and farmland near the outflow, wheat growing there); a village in a dry place able to grow; fountains, and later mills (power for item 12?).
-  - **Villages building them:** a prosperous village in a dry place building one from the nearest large water.
-- **Questions:**
-  - Drawn on the map by players (like railways), built by villages, or both?
-  - Should it cost materials (stone or cobblestone by length) in survival, as track costs rails?
-  - Does water flow in it with no one near (the world's water only flows near players today), or is its effect at the end simply kept on while it stands?
-  - Does a broken arch spill the water out, and dry up the end?
+- **Treated as a pipe, not simulated water.** An aqueduct is a route (as a railway line is): its intake, its course, its outlet. While it's whole from end to end it's running: one fact the server keeps, nothing moving between edits (no flow to simulate, no floods). Water is drawn in its channel as a still surface a set depth over its floor (a new water kind, made to look moving by its shader); what it does is at its outlet.
+- **Built by players, on the map** (as the rail view's lines are): a route drawn, checked, then built in the world from it (and, in survival, paid for).
+- **The intake.** The aqueduct's head is built near enough to a natural body of water (a lake or river of at least a given size; not the sea, it's salt): within a short distance of its shore (say 32 m) and with the head's channel floor at least a little below the water's surface (say 1 m). An underground conduit from the water to the head is taken as given (not built or drawn); the head itself is a built piece (a cistern, or a well house), an Object Designer slot.
+- **Falling all the way.** From head to outlet its channel only ever falls, gently (between about 1 in 200 and 1 in 20, to tune): never rising. So routes go round hills or through them, and over valleys on arches.
+- **Built of stone.** On the ground as a channel; cut through rises; on arches or piers over low ground (up to a height); through hills in a tunnel (up to a length). Survival: stone, cobblestone or bricks by the metre (more for arches, by their height). Its pieces (channel, arch, pier, tunnel mouth, head, outlet basin) are Object Designer slots, each with many designs, as cottages and stations are.
+- **A break stops it.** Any piece of it dug or knocked down (or an arch's support gone): everything downstream of the break dries up at once (its water gone past the break), and runs again when the break's mended. No spilling. Only the piece an edit touched is checked again.
+- **The outlet.** It ends in a basin (or a fountain), full while it runs. Buckets can be filled from it, or from its channel anywhere along it, without end.
+- **Watered land.** Around a running outlet (say 24 m): dry ground greens over time (desert sand to sand to dirt to grass; dry grass to meadow), a little at a time; farmland counts as watered and wheat on it grows faster (say half again as fast); saplings take on ground they otherwise wouldn't. Stopped (a break), the land stays as it's become, but fields go back to growing as before.
+- **Later:** villages planning and building them (a dry, prosperous village and a big lake near enough); water wheels on them for power (item 12).
+- **Questions left:** the numbers (how big a source, how near the head, the slopes, the watered radius, the growth rates); whether the outlet can be on a hill (water carried up? no: it only falls); whether aqueducts can branch (one head, several outlets).
 
 ## 41. "Optimize" in the Object Designer — S
 
