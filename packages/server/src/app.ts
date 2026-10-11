@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
+import { posix } from 'node:path';
 import fastifyCookie from '@fastify/cookie';
 import type { Auth, SignedIn } from './auth.js';
 import { NameTakenError, isRole, shownName, type Account, type Role } from './accounts.js';
@@ -267,6 +268,9 @@ export const PLACE_SETTLE_MS = 1500;
 const SLOW_MESSAGE_MS = 100;
 const STALL_MS = 300;
 
+/** The pages only admins may reach (see the onRequest hook in buildApp): the object designer, the mesh editor, the animation designer, the players' page and terraforming. */
+export const ADMIN_PAGES: readonly string[] = ['/designer.html', '/meshes.html', '/animator.html', '/players.html', '/terraform.html'];
+
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
   await app.register(fastifyCookie);
@@ -305,8 +309,23 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
 
   app.get('/api/health', async () => ({ ok: true, protocolVersion: PROTOCOL_VERSION, environment: opts.environment ?? 'development' }));
 
-  // The pages and their bundles, from the same address as /api and /ws (production).
+  // Whether a request may reach the admins' pages (ADMIN_PAGES): as operator() below (on development servers anyone).
+  const tools = async (req: FastifyRequest) => catalog.dev || !!(opts.auth && (await opts.auth.signedIn(req.cookies))?.admin);
+  app.get('/api/access', async (req) => ({ tools: await tools(req) }));
+
+  // The pages and their bundles, from the same address as /api and /ws (production). The admins'
+  // pages: anyone else is sent to the landing page.
   if (opts.clientDir) {
+    app.addHook('onRequest', async (req, reply) => {
+      // (As the file it'd be: %-escapes, dot segments, doubled slashes and case (a Mac's disk) taken out.)
+      let path: string;
+      try {
+        path = posix.normalize(decodeURIComponent(req.url.split(/[?#]/)[0]!)).replace(/\/+/g, '/').toLowerCase();
+      } catch {
+        return reply.code(400).send({ error: 'bad address' });
+      }
+      if (ADMIN_PAGES.includes(path) && !(await tools(req))) return reply.redirect('/?denied=1');
+    });
     await app.register(fastifyStatic, {
       root: opts.clientDir,
       // Bundles have content hashes in their names: cache them for good; pages, briefly.

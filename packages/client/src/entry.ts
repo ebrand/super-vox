@@ -1,4 +1,4 @@
-import './header.js';
+import { showAdminLinks } from './header.js';
 import './fullscreen.js';
 import './envBadge.js';
 import { decodeWorldMap, renderMap } from './worldMap.js';
@@ -219,7 +219,7 @@ async function showAccount(): Promise<void> {
     out.type = 'button';
     out.textContent = 'Sign out';
     out.addEventListener('click', () => {
-      void fetch('/api/auth/logout', { method: 'POST' }).then(() => (void showAccount(), loadWorlds()));
+      void fetch('/api/auth/logout', { method: 'POST' }).then(() => (void showAccount(), void showAdminLinks(), loadWorlds()));
     });
     el.append(who, out);
   } else {
@@ -236,4 +236,6 @@ async function showAccount(): Promise<void> {
   else if (params.get('signin') === 'banned') status("That account has been banned from this server. You can still look around.", 'bad');
 }
 
+// (Sent here from an admins' page: see ADMIN_PAGES on the server.)
+if (new URLSearchParams(location.search).get('denied') === '1') status('That page is only for admins.', 'bad');
 void showAccount();
