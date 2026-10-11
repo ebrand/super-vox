@@ -3,13 +3,14 @@ import { BLOCK_SIZE, BLOCKS_PER_AXIS, blockIndex, type Chunk } from './chunk.js'
 import { Material, type MaterialId } from './materials.js';
 
 /** What a recipe makes, for grouping them (see RECIPE_GROUPS). */
-export type RecipeGroup = 'materials' | 'building' | 'tools' | 'explosives' | 'objects';
+export type RecipeGroup = 'materials' | 'building' | 'tools' | 'armor' | 'explosives' | 'objects';
 
 /** The groups in the order recipes are shown, with their names. */
 export const RECIPE_GROUPS: readonly { group: RecipeGroup; name: string }[] = [
   { group: 'materials', name: 'Materials' },
   { group: 'building', name: 'Building' },
   { group: 'tools', name: 'Tools and weapons' },
+  { group: 'armor', name: 'Armor' },
   { group: 'explosives', name: 'Explosives' },
   { group: 'objects', name: 'Objects' },
 ];
@@ -17,7 +18,7 @@ export const RECIPE_GROUPS: readonly { group: RecipeGroup; name: string }[] = [
 /**
  * Something players can make: `inputs` used up, `output` made. Block amounts are given in blocks
  * here (and kept as volumes, see BLOCK_VOLUME); items are counted. `table`: only within reach of
- * a placed crafting table (TABLE_REACH).
+ * a placed crafting table (TABLE_REACH), or (`station`) of a placed station of that role instead.
  */
 export interface Recipe {
   id: string;
@@ -25,6 +26,7 @@ export interface Recipe {
   inputs: readonly (readonly [ItemId, number])[];
   output: readonly [ItemId, number];
   table: boolean;
+  station?: 'smithing-table';
 }
 
 /** How far (units, Chebyshev) a crafting table can be for recipes that need one: 5 m. */
@@ -55,6 +57,8 @@ export function materialNearIn(chunkAt: (cx: number, cy: number, cz: number) => 
 }
 
 const r = (id: string, group: RecipeGroup, inputs: [ItemId, number][], output: [ItemId, number], table = false): Recipe => ({ id, group, inputs, output, table });
+/** At a smithing table (see Recipe.station). */
+const smithed = (id: string, group: RecipeGroup, inputs: [ItemId, number][], output: [ItemId, number]): Recipe => ({ id, group, inputs, output, table: true, station: 'smithing-table' });
 
 const BUILT_IN: readonly Recipe[] = [
   r('planks', 'materials', [[Material.Wood, 1]], [Material.Planks, 4]),
@@ -97,6 +101,15 @@ const BUILT_IN: readonly Recipe[] = [
   r('c4', 'explosives', [[Material.TNT, 1], [Item.IronIngot, 2], [Material.Coal, 1 / 8]], [Material.C4, 1 / 32], true),
   // (Stone, from cobblestone in a furnace, cut into bricks.)
   r('stone-bricks', 'building', [[Material.Stone, 1]], [Material.StoneBricks, 1], true),
+  // (Armor: leather sewn at a crafting table, iron worked at a smithing table; a piece, as much as it covers.)
+  r('leather-cap', 'armor', [[Item.Leather, 5]], [Item.LeatherHelmet, 1], true),
+  r('leather-tunic', 'armor', [[Item.Leather, 8]], [Item.LeatherTunic, 1], true),
+  r('leather-leggings', 'armor', [[Item.Leather, 7]], [Item.LeatherLeggings, 1], true),
+  r('leather-boots', 'armor', [[Item.Leather, 4]], [Item.LeatherBoots, 1], true),
+  smithed('iron-helmet', 'armor', [[Item.IronIngot, 5]], [Item.IronHelmet, 1]),
+  smithed('iron-chestplate', 'armor', [[Item.IronIngot, 8]], [Item.IronChestplate, 1]),
+  smithed('iron-leggings', 'armor', [[Item.IronIngot, 7]], [Item.IronLeggings, 1]),
+  smithed('iron-boots', 'armor', [[Item.IronIngot, 4]], [Item.IronBoots, 1]),
 ];
 const recipes: Recipe[] = [...BUILT_IN];
 
@@ -118,13 +131,13 @@ export function stored(id: ItemId, n: number): number {
   return isBlock(id) ? n * BLOCK_VOLUME : n;
 }
 
-/** Why `recipe` can't be made from `items` (null if it can). */
+/** Why `recipe` can't be made from `items` (null if it can); `nearTable`: whether what it's made at (a crafting table, or its `station`) is near. */
 export function cannotCraft(recipe: Recipe, items: ReadonlyMap<ItemId, number>, nearTable: boolean): string | null {
   const missing = recipe.inputs
     .filter(([id, n]) => (items.get(id) ?? 0) < stored(id, n))
     .map(([id, n]) => `${formatAmount(id, stored(id, n) - (items.get(id) ?? 0))} more ${itemName(id)}`);
   if (missing.length) return `need ${missing.join(' and ')}`;
-  if (recipe.table && !nearTable) return 'needs a crafting table placed nearby';
+  if (recipe.table && !nearTable) return recipe.station === 'smithing-table' ? 'needs a smithing table placed nearby' : 'needs a crafting table placed nearby';
   return null;
 }
 

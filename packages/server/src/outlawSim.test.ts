@@ -125,7 +125,7 @@ describe('outlaws', () => {
 
   it('camp pieces are designs (built in, to change in the designer: flames only there); a camp is built of the one for it', () => {
     const lib = new DesignLibrary(null, true);
-    expect(lib.list().map((d) => d.role).sort()).toEqual(['campfire', 'cottage', 'furnace', 'lean-to', 'railway-station', 'stove']);
+    expect(lib.list().map((d) => d.role).sort()).toEqual(['anvil', 'campfire', 'cottage', 'furnace', 'lean-to', 'railway-station', 'smithing-table', 'stove']);
     expect(designFor('campfire')?.id).toBe('outlaw-campfire');
     // (Flames: not for objects of their own.)
     expect(parseDesign({ ...campfireDesign(), id: 'lamp', role: undefined, item: 20000 })).toMatch(/flames are only for what the game builds/);

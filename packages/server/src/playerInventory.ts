@@ -2,7 +2,13 @@ import {
   ALL_ITEMS,
   BLOCK_VOLUME,
   Item,
+  ARMOR,
+  ARMOR_SLOTS,
+  DURABILITY,
+  REPAIR_WITH,
   SAPLING_CHANCE,
+  formatAmount,
+  wears,
   SAPLING_OF_LEAVES,
   Material,
   HOTBAR_SLOTS,
@@ -46,6 +52,10 @@ export class PlayerInventory {
     private readonly persist: (inv: Inventory) => Promise<void>,
     private readonly saveDelayMs = 2000,
   ) {
+    // (Saved before there was wear, or armor to wear: none worn, nothing on.)
+    inv.wear ??= new Map();
+    inv.worn = ARMOR_SLOTS.map((_, i) => inv.worn?.[i] ?? null);
+    inv.wornWear = ARMOR_SLOTS.map((_, i) => inv.wornWear?.[i] ?? 0);
     // (Saved before the hotbar grew: the new slots are empty.)
     while (inv.hotbar.length < HOTBAR_SLOTS) inv.hotbar.push(null);
     inv.hotbar.length = HOTBAR_SLOTS;
@@ -171,12 +181,110 @@ export class PlayerInventory {
 
   /** The `inventory` message for the player. */
   message(): Extract<ServerMessage, { type: 'inventory' }> {
+    const survival = this.mode === 'survival';
     return {
       type: 'inventory',
       mode: this.mode,
-      items: this.mode === 'survival' ? [...this.inv.items].filter(([, v]) => v > 0) : [],
+      items: survival ? [...this.inv.items].filter(([, v]) => v > 0) : [],
       hotbar: [...this.inv.hotbar],
+      ...(survival ? { wear: [...this.inv.wear!].filter(([, w]) => w > 0), worn: [...this.inv.worn!], wornWear: [...this.inv.wornWear!] } : {}),
     };
+  }
+
+  /** The armor on, a piece a slot (ARMOR_SLOTS order; null: none), in survival (in creative, none: nothing hurts there). */
+  get worn(): readonly (ItemId | null)[] {
+    return this.mode === 'survival' ? this.inv.worn! : ARMOR_SLOTS.map(() => null);
+  }
+
+  /** How worn the worn one of `item` is (0: new), and how much more it can take. */
+  wearOf(item: ItemId): number {
+    return this.inv.wear!.get(item) ?? 0;
+  }
+
+  /**
+   * Survival: the one of `item` in use worn by a use (see DURABILITY); at its durability it breaks
+   * (one fewer; the next, if any, new). 'broke' if it did, 'worn' if worn, null if it doesn't wear
+   * (or there's none, or it's creative).
+   */
+  wearOut(item: ItemId | null, uses = 1): 'worn' | 'broke' | null {
+    if (this.mode !== 'survival' || item === null || !wears(item) || (this.inv.items.get(item) ?? 0) < 1) return null;
+    const w = this.wearOf(item) + uses;
+    this.changed();
+    if (w < DURABILITY[item]!) {
+      this.inv.wear!.set(item, w);
+      return 'worn';
+    }
+    this.inv.wear!.delete(item);
+    this.addItem(item, -1);
+    return 'broke';
+  }
+
+  /** Survival: each piece of armor on worn by a hit taken; those that break, gone (what broke). */
+  wearArmor(): ItemId[] {
+    if (this.mode !== 'survival') return [];
+    const broke: ItemId[] = [];
+    this.inv.worn!.forEach((item, i) => {
+      if (item === null) return;
+      const w = this.inv.wornWear![i]! + 1;
+      if (w < DURABILITY[item]!) this.inv.wornWear![i] = w;
+      else {
+        broke.push(item);
+        this.inv.worn![i] = null;
+        this.inv.wornWear![i] = 0;
+      }
+    });
+    if (this.inv.worn!.some((w) => w !== null) || broke.length) this.changed();
+    return broke;
+  }
+
+  /**
+   * Survival: puts on a piece of armor from the inventory (the worn one of its kind, if there's one),
+   * in its slot (what was there taken off, back into the inventory). Why not, or null.
+   */
+  putOn(item: ItemId): string | null {
+    if (this.mode !== 'survival') return 'armor is for survival';
+    const a = ARMOR[item];
+    if (!a) return `a ${itemName(item)} isn't armor`;
+    if ((this.inv.items.get(item) ?? 0) < 1) return `no ${itemName(item)} to put on`;
+    const i = ARMOR_SLOTS.indexOf(a.slot);
+    const w = this.wearOf(item);
+    this.inv.wear!.delete(item);
+    this.addItem(item, -1);
+    this.takeOff(i);
+    this.inv.worn![i] = item;
+    this.inv.wornWear![i] = w;
+    this.changed();
+    return null;
+  }
+
+  /** Survival: takes off what's in armor slot `i` (into the inventory, as worn as it is: if one of its kind there's worn too, the more worn is kept). */
+  takeOff(i: number): string | null {
+    if (this.mode !== 'survival') return 'armor is for survival';
+    const item = this.inv.worn![i];
+    if (item === null || item === undefined) return 'nothing on there';
+    const w = this.inv.wornWear![i]!;
+    this.inv.worn![i] = null;
+    this.inv.wornWear![i] = 0;
+    this.addItem(item, 1);
+    if (w > 0) this.inv.wear!.set(item, Math.max(w, this.wearOf(item)));
+    this.changed();
+    return null;
+  }
+
+  /** Survival: mends the worn one of `item` (in the inventory, or on) whole, with what REPAIR_WITH says. Why not, or null. */
+  repair(item: ItemId): string | null {
+    if (this.mode !== 'survival') return 'nothing wears in creative';
+    const cost = REPAIR_WITH[item];
+    if (!cost) return `a ${itemName(item)} can't be mended`;
+    const on = this.inv.worn!.findIndex((w, i) => w === item && this.inv.wornWear![i]! > 0);
+    if (this.wearOf(item) <= 0 && on < 0) return `no worn ${itemName(item)} to mend`;
+    const [what, n] = cost;
+    if ((this.inv.items.get(what) ?? 0) < n) return `mending the ${itemName(item)} takes ${formatAmount(what, n)} ${itemName(what)}`;
+    this.addItem(what, -n);
+    if (this.wearOf(item) > 0) this.inv.wear!.delete(item);
+    else this.inv.wornWear![on] = 0;
+    this.changed();
+    return null;
   }
 
   /** Saves now if anything is waiting to be saved. */
@@ -198,7 +306,9 @@ export class PlayerInventory {
   }
 
   private save(): void {
-    const snapshot: Inventory = { items: new Map(this.inv.items), hotbar: [...this.inv.hotbar] };
+    // (What's worn of what's no longer there: let go.)
+    for (const item of this.inv.wear!.keys()) if ((this.inv.items.get(item) ?? 0) < 1) this.inv.wear!.delete(item);
+    const snapshot: Inventory = { items: new Map(this.inv.items), hotbar: [...this.inv.hotbar], wear: new Map(this.inv.wear), worn: [...this.inv.worn!], wornWear: [...this.inv.wornWear!] };
     // One save at a time, in order.
     this.saving = this.saving.then(() => this.persist(snapshot)).catch(() => {});
   }

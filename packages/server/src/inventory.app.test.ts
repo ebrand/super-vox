@@ -291,6 +291,10 @@ describe('inventories', () => {
       mode: 'survival',
       items: [[Material.Dirt, 16 * B], [Material.Stone, 16 * B], [Material.Wood, 16 * B]],
       hotbar: [Material.Dirt, Material.Stone, Material.Wood, ...Array(HOTBAR_SLOTS - 3).fill(null)],
+      // (Nothing worn yet, nothing on.)
+      wear: [],
+      worn: [null, null, null, null],
+      wornWear: [0, 0, 0, 0],
     });
     // Mining a 1/4 m grass voxel gives that much dirt.
     expect(await p.mine({ op: 'remove', x: 1000, y: -1, z: 1000 })).toMatchObject({ ok: true });

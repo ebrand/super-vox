@@ -171,6 +171,20 @@ const ITEM_ICONS: Readonly<Partial<Record<ItemId, string>>> = {
     ]),
   ),
   [Item.PineSapling]: svg(`<path d="M16 29 L16 20" stroke="${css(DARK_WOOD, 1.3)}" stroke-width="2.2" stroke-linecap="round"/><path d="M16 3 L24 21 L8 21 Z" fill="${css(materialColor(Material.Needles), 1.6)}"${OUTLINE}/>`),
+  // Leather: a hide, stretched.
+  [Item.Leather]: svg(`<path d="M8 6 Q16 9 24 6 L27 12 Q24 16 27 21 L23 27 Q16 24 9 27 L5 21 Q8 16 5 11 Z" fill="${css([0.42, 0.24, 0.12], 1.3)}"${OUTLINE}/>`),
+  // Armor: a cap or helmet, a tunic or chestplate, leggings, boots; brown for leather, grey for iron.
+  ...Object.fromEntries(
+    ([['leather', [0.42, 0.24, 0.12], [Item.LeatherHelmet, Item.LeatherTunic, Item.LeatherLeggings, Item.LeatherBoots]], ['iron', [0.62, 0.64, 0.68], [Item.IronHelmet, Item.IronChestplate, Item.IronLeggings, Item.IronBoots]]] as const).flatMap(([, color, [head, chest, legs, feet]]) => {
+      const f = css(color, 1.3), d = css(color, 0.8);
+      return [
+        [head, svg(`<path d="M6 20 Q6 6 16 6 Q26 6 26 20 L22 20 L22 15 L10 15 L10 20 Z" fill="${f}"${OUTLINE}/><path d="M10 15 L22 15" stroke="${d}" stroke-width="1.4"/>`)],
+        [chest, svg(`<path d="M4 9 L11 5 Q16 9 21 5 L28 9 L25 15 L23 13 L23 27 L9 27 L9 13 L7 15 Z" fill="${f}"${OUTLINE}/><path d="M16 10 L16 26" stroke="${d}" stroke-width="1.2"/>`)],
+        [legs, svg(`<path d="M9 5 L23 5 L24 27 L18 27 L16 13 L14 27 L8 27 Z" fill="${f}"${OUTLINE}/><path d="M9 9 L23 9" stroke="${d}" stroke-width="1.4"/>`)],
+        [feet, svg(`<path d="M5 9 L11 9 L11 21 L15 23 L15 27 L4 27 Z" fill="${f}"${OUTLINE}/><path d="M18 9 L24 9 L24 21 L28 23 L28 27 L17 27 Z" fill="${f}"${OUTLINE}/>`)],
+      ];
+    }),
+  ),
   // Bread: a loaf, scored.
   [Item.Bread]: svg(`<path d="M4 22 Q4 10 16 10 Q28 10 28 22 Z" fill="${css([0.7, 0.42, 0.16], 1.2)}"${OUTLINE}/><path d="M10 15 l3 4 M15 13 l3 4 M20 14 l3 4" stroke="${css([0.95, 0.75, 0.45], 1.2)}" stroke-width="1.4" stroke-linecap="round"/>`),
   [Item.Boat]: svg(

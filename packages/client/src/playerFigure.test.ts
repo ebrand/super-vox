@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { PlayerAct, SPRINT, WALK_SPEED, defaultAnimations, defaultAvatar, poseClip } from '@super-vox/shared';
+import { Item, PlayerAct, SPRINT, WALK_SPEED, defaultAnimations, defaultAvatar, poseClip } from '@super-vox/shared';
 import { FIGURE_HEIGHT, JOINTS, MAN, PlayerFigure, WOMAN_SCALE, figureModel, playerColor, poseFor, type FigureState } from './playerFigure.js';
 import { FigureMotion } from './entities.js';
 
@@ -105,6 +105,41 @@ describe('PlayerFigure', () => {
     expect(colorOf('spine').getHexString()).toBe('ff0000');
     // (A colour alone: a shirt that colour, the rest anyone's.)
     expect(((new PlayerFigure(0x00ff00).joints.get('chest')!.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial).color.getHexString()).toBe('00ff00');
+  });
+});
+
+describe('armor on a figure', () => {
+  const plates = (f: PlayerFigure) => {
+    const out: { joint: string; name: string; color: number }[] = [];
+    for (const [joint, g] of f.joints) for (const c of g.children) if (c.name.endsWith(' armor')) out.push({ joint, name: c.name, color: ((c as THREE.Mesh).material as THREE.MeshBasicMaterial).color.getHex() });
+    return out;
+  };
+  it('puts plates over the pieces each slot covers, a little bigger than they are; leather brown, iron grey; off again', () => {
+    const f = new PlayerFigure(defaultAvatar('ann'));
+    expect(plates(f)).toEqual([]);
+    f.setArmor([Item.IronHelmet, Item.LeatherTunic, null, Item.IronBoots]);
+    const on = plates(f);
+    expect(on.map((p) => p.joint).sort()).toEqual(['ankleL', 'ankleR', 'chest', 'head', 'shoulderL', 'shoulderR', 'spine'].sort());
+    expect(new Set(on.filter((p) => p.name === 'chest armor').map((p) => p.color)).size).toBe(1);
+    expect(on.find((p) => p.name === 'head armor')!.color).not.toBe(on.find((p) => p.name === 'chest armor')!.color);
+    // (Each plate bigger than what it covers.)
+    const head = f.joints.get('head')!;
+    const part = head.children.find((c) => c.name === 'head part') as THREE.Mesh, plate = head.children.find((c) => c.name === 'head armor') as THREE.Mesh;
+    part.geometry.computeBoundingBox();
+    plate.geometry.computeBoundingBox();
+    expect(plate.geometry.boundingBox!.getSize(new THREE.Vector3()).x).toBeGreaterThan(part.geometry.boundingBox!.getSize(new THREE.Vector3()).x);
+    // Dimmed with the rest; red when hurt.
+    f.tint(0.5);
+    expect(((plate.material as THREE.MeshBasicMaterial).color.r)).toBeLessThan(0.5);
+    f.tint(1, true);
+    expect((plate.material as THREE.MeshBasicMaterial).color.getHex()).toBe(0xff3030);
+    // Taken off: gone. Another figure's pieces: fitted again.
+    f.setArmor([null, null, Item.LeatherLeggings, null]);
+    expect(plates(f).map((p) => p.joint).sort()).toEqual(['kneeL', 'kneeR', 'legL', 'legR']);
+    f.setLook({ ...defaultAvatar('ann'), figure: 'woman' });
+    expect(plates(f).map((p) => p.joint).sort()).toEqual(['kneeL', 'kneeR', 'legL', 'legR']);
+    f.setArmor([]);
+    expect(plates(f)).toEqual([]);
   });
 });
 

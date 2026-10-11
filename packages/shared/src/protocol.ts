@@ -163,6 +163,10 @@ export type ClientMessage =
   | { type: 'setHotbar'; hotbar: (number | null)[] }
   /** Survival: throw away `amount` of `item` (stored amounts: blocks by volume, items by count). */
   | { type: 'discard'; item: number; amount: number }
+  /** Survival: a piece of armor put on (into its slot), or what's in an armor slot (ARMOR_SLOTS order) taken off; something worn mended at an anvil nearby (see gear.ts). */
+  | { type: 'putOn'; item: number }
+  | { type: 'takeOff'; slot: number }
+  | { type: 'repair'; item: number }
   /** Where the player is (world units) and faces (radians, 0 = -Z); sent a couple of times a second, not answered. */
   | {
       type: 'pose';
@@ -207,7 +211,8 @@ export type ServerMessage =
    * game mode; in survival, what they have (materials as unit-voxel volumes, see BLOCK_VOLUME;
    * items counted); and their hotbar. Not sent to players who aren't signed in.
    */
-  | { type: 'inventory'; mode: GameMode; items: [number, number][]; hotbar: (number | null)[] }
+  /** A player's inventory (survival: and how worn the worn one of each tool or piece of armor is, and the armor on and how worn: see gear.ts). */
+  | { type: 'inventory'; mode: GameMode; items: [number, number][]; hotbar: (number | null)[]; wear?: [number, number][]; worn?: (number | null)[]; wornWear?: number[] }
   /** The library of designed objects (see designs.ts): after welcome, and whenever an admin changes it. */
   | { type: 'designs'; designs: ObjectDesign[] }
   /** How players' figures move (see animations.ts): sent when it isn't the defaults, and whenever it changes. */
@@ -329,6 +334,8 @@ export interface EntitySnapshot {
   look?: string;
   held?: number;
   swings?: number;
+  /** Players (survival): the armor they have on (ARMOR_SLOTS order; null: none there), when any. */
+  armor?: (number | null)[];
   /** Players: where they look (radians, up +) and what they're doing (PlayerAct flags). */
   pitch?: number;
   act?: number;
@@ -557,6 +564,8 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   ) {
     return { type: 'setHotbar', hotbar: msg.hotbar as (number | null)[] };
   }
+  if ((msg.type === 'putOn' || msg.type === 'repair') && Number.isInteger(msg.item)) return { type: msg.type, item: msg.item as number };
+  if (msg.type === 'takeOff' && Number.isInteger(msg.slot) && (msg.slot as number) >= 0 && (msg.slot as number) < 4) return { type: 'takeOff', slot: msg.slot as number };
   if (msg.type === 'discard' && Number.isInteger(msg.item) && (msg.item as number) >= 0 && (msg.item as number) <= MAX_MATERIAL_ID && Number.isInteger(msg.amount) && (msg.amount as number) > 0) {
     return { type: 'discard', item: msg.item as number, amount: msg.amount as number };
   }

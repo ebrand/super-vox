@@ -111,6 +111,11 @@ const MIGRATIONS: { name: string; sql: string }[] = [
     name: '008_muted',
     sql: `alter table ${SCHEMA}.accounts add column muted_at timestamptz;`,
   },
+  {
+    // Wear (tools, weapons, armor) and the armor on (see Inventory).
+    name: '009_gear',
+    sql: `alter table ${SCHEMA}.inventories add column gear jsonb;`,
+  },
 ];
 
 /** Connects to Postgres (Supabase) and brings the schema (SCHEMA) up to date. */

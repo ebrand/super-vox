@@ -83,3 +83,29 @@ export function stoveDesign(): ObjectDesign {
   ];
   return { id: 'stove', name: 'Stove', size: [1, 1, 1], states: [{ name: 'standing', voxels: voxelsOfBoxes(boxes) }], item: 0, recipe: null, role: 'stove' };
 }
+
+/** The anvil (role 'anvil') as it comes: dark iron, a foot, a waist, and a face with a horn out front (+z). */
+export function anvilDesign(): ObjectDesign {
+  const boxes: Box[] = [
+    [0.25, 0.75, 0, 0.25, 0, 1, Material.DarkMetal],
+    [0.25, 0.75, 0.25, 0.5, 0.25, 0.75, Material.DarkMetal],
+    [0, 1, 0.5, 0.75, 0, 1, Material.DarkMetal],
+    [0.25, 0.75, 0.75, 1, 0, 0.75, Material.DarkMetal],
+    [0.25, 0.75, 0.75, 1, 0.75, 1, Material.LightMetal],
+  ];
+  return { id: 'anvil', name: 'Anvil', size: [1, 1, 1], states: [{ name: 'standing', voxels: voxelsOfBoxes(boxes) }], item: 0, recipe: null, role: 'anvil' };
+}
+
+/** The smithing table (role 'smithing-table') as it comes: a plank bench on legs, an iron plate and tongs on its top. */
+export function smithingTableDesign(): ObjectDesign {
+  const boxes: Box[] = [
+    [0, 0.25, 0, 0.75, 0, 0.25, Material.Wood],
+    [0.75, 1, 0, 0.75, 0, 0.25, Material.Wood],
+    [0, 0.25, 0, 0.75, 0.75, 1, Material.Wood],
+    [0.75, 1, 0, 0.75, 0.75, 1, Material.Wood],
+    [0, 1, 0.5, 0.75, 0, 1, Material.Planks],
+    [0, 1, 0.75, 1, 0, 1, Material.Planks],
+    [0.25, 0.75, 0.75, 1, 0.25, 0.75, Material.DarkMetal],
+  ];
+  return { id: 'smithing-table', name: 'Smithing table', size: [1, 1, 1], states: [{ name: 'standing', voxels: voxelsOfBoxes(boxes) }], item: 0, recipe: null, role: 'smithing-table' };
+}

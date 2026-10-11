@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js';
-import { AVATAR_PARTS, FIGURE_JOINTS, defaultAnimations, defaultAvatar, emptyMeshLibrary, poseClip, poseFigure, type AnimationLibrary, type Avatar, type AvatarPart, type FigureKind, type FigureMesh, type FigurePose as Pose, type FigureState, type MeshLibrary } from '@super-vox/shared';
+import { ARMOR, ARMOR_SLOTS, AVATAR_PARTS, FIGURE_JOINTS, defaultAnimations, defaultAvatar, emptyMeshLibrary, poseClip, poseFigure, type AnimationLibrary, type Avatar, type AvatarPart, type FigureKind, type FigureMesh, type FigurePose as Pose, type FigureState, type MeshLibrary } from '@super-vox/shared';
 import manObj from './models/low-poly-man.obj?raw';
 
 /**
@@ -428,6 +428,12 @@ export class PlayerFigure {
   private kind: FigureKind | null;
   private readonly fixedModel: FigureModel | null;
   private version = meshVersion;
+  /** The armor on (see setArmor): its plates, by joint; what it is; and their materials (leather, iron), tinted with the rest. */
+  private readonly plates: THREE.Mesh[] = [];
+  private armor: readonly (number | null)[] = [];
+  private readonly armorMaterials = { leather: new THREE.MeshBasicMaterial(), iron: new THREE.MeshBasicMaterial() };
+  private brightness = 1;
+  private hurt = false;
 
   /**
    * `look`: how they look (their figure, a man or a woman, and colours), or a colour for their shirt
@@ -489,6 +495,38 @@ export class PlayerFigure {
       this.hairMesh.geometry = model.hair;
     }
     this.version = meshVersion;
+    // (Its armor, fitted to its pieces as they are now.)
+    this.setArmor(this.armor);
+  }
+
+  /**
+   * Wears what's in the armor slots (ARMOR_SLOTS order: head, chest, legs, feet; an armor item or
+   * null): plates over the pieces each covers (a helmet over the head's top, over the chest and
+   * shoulders, the legs, the feet), a little bigger than each piece, brown for leather, grey for iron.
+   */
+  setArmor(worn: readonly (number | null)[]): void {
+    this.armor = [...worn];
+    for (const m of this.plates) {
+      m.removeFromParent();
+      m.geometry.dispose();
+    }
+    this.plates.length = 0;
+    worn.forEach((item, i) => {
+      const a = item !== null ? ARMOR[item] : undefined;
+      if (!a) return;
+      for (const joint of ARMOR_COVERS[ARMOR_SLOTS[i]!]) {
+        const box = (this.meshes.get(joint)!.geometry.boundingBox ?? (this.meshes.get(joint)!.geometry.computeBoundingBox(), this.meshes.get(joint)!.geometry.boundingBox!)).clone();
+        // (A helmet covers the head's top, down to the brow.)
+        if (joint === 'head') box.min.y = box.min.y + (box.max.y - box.min.y) * 0.45;
+        const size = box.getSize(new THREE.Vector3()), at = box.getCenter(new THREE.Vector3());
+        const g = new THREE.BoxGeometry(size.x * 1.14 + 0.012, size.y * 1.06 + 0.01, size.z * 1.14 + 0.012).translate(at.x, at.y, at.z);
+        const plate = new THREE.Mesh(g, this.armorMaterials[a.tier]);
+        plate.name = `${ARMOR_SLOTS[i]} armor`;
+        this.joints.get(joint)!.add(plate);
+        this.plates.push(plate);
+      }
+    });
+    this.tint(this.brightness, this.hurt);
   }
 
   /** How long its strides are next to the man's (its legs: see FigureMotion), and how tall it stands (m). */
@@ -505,12 +543,15 @@ export class PlayerFigure {
 
   /** Drawn `brightness` (0..1) as bright as its colours (see entityBrightness); `hurt`: red all over, a moment. */
   tint(brightness: number, hurt = false): void {
+    this.brightness = brightness;
+    this.hurt = hurt;
     for (const p of AVATAR_PARTS) {
       const m = this.materials[p].color;
       if (hurt) m.setHex(0xff3030);
       else m.copy(this.colors[p]);
       m.multiplyScalar(brightness);
     }
+    for (const tier of ['leather', 'iron'] as const) this.armorMaterials[tier].color.setHex(hurt ? 0xff3030 : ARMOR_COLOR[tier]).multiplyScalar(brightness);
   }
 
   /** The hand a thing is held in (its wrist: right, or left for a bow). */
@@ -534,8 +575,21 @@ export class PlayerFigure {
 
   dispose(): void {
     for (const p of AVATAR_PARTS) this.materials[p].dispose();
+    for (const m of this.plates) m.geometry.dispose();
+    this.armorMaterials.leather.dispose();
+    this.armorMaterials.iron.dispose();
   }
 }
+
+/** The pieces each armor slot covers (see setArmor). */
+const ARMOR_COVERS: Record<(typeof ARMOR_SLOTS)[number], readonly Joint[]> = {
+  head: ['head'],
+  chest: ['chest', 'spine', 'shoulderL', 'shoulderR'],
+  legs: ['legL', 'legR', 'kneeL', 'kneeR'],
+  feet: ['ankleL', 'ankleR'],
+};
+/** Armor's colours (sRGB): tanned leather, worked iron. */
+const ARMOR_COLOR = { leather: 0x7a4a26, iron: 0xa9aeb6 } as const;
 
 const isAvatar = (v: unknown): v is Avatar => typeof v === 'object' && v !== null && !(v instanceof THREE.Color) && AVATAR_PARTS.every((p) => typeof (v as Record<string, unknown>)[p] === 'string') && typeof (v as { figure?: unknown }).figure === 'string';
 

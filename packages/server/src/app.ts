@@ -83,6 +83,8 @@ import {
   placeSeed,
   placedDesign,
   itemName,
+  ARMORED,
+  armorShare,
   objectKindOf,
   usable,
   isBed,
@@ -1296,8 +1298,29 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   /** Hurts a player (if anything can): killed, they come back (see respawn). */
   const harm = (client: WebSocket, p: Player, world: World, damage: number, cause: DeathCause, now: number) => {
     if (!p.vulnerable || damage <= 0) return;
+    // (Armor takes its share of an attack's harm, and is worn by it: see gear.ts.)
+    const inv = gearOf.get(client);
+    if (inv && ARMORED.has(cause) && inv.worn.some((w) => w !== null)) {
+      damage *= 1 - armorShare(inv.worn);
+      const broke = inv.wearArmor();
+      for (const item of broke) tell(client, `your ${itemName(item)} broke`);
+      sendTo(client, inv.message());
+    }
     if (p.vitals.hurt(damage, now)) respawn(client, p, world, cause);
     sendVitals(client, p);
+  };
+  /** What a player has on, for others to draw (none on: nothing said). */
+  const armorOf = (client: WebSocket): { armor?: (number | null)[] } => {
+    const worn = gearOf.get(client)?.worn;
+    return worn && worn.some((w) => w !== null) ? { armor: [...worn] } : {};
+  };
+  /** Each connection's inventory (survival: what it wears and wields; see harm and usedUp). */
+  const gearOf = new Map<WebSocket, PlayerInventory>();
+  /** Tells a connection something, in its chat (an info line). */
+  const tell = (client: WebSocket, text: string) => sendTo(client, { type: 'chat', lines: [{ at: Date.now(), kind: 'info', text }] });
+  /** A tool or weapon used once: worn by it (and, worn out, broken: they're told). */
+  const usedUp = (client: WebSocket, inv: PlayerInventory, item: number | null) => {
+    if (inv.wearOut(item) === 'broke') tell(client, `your ${itemName(item!)} broke`);
   };
   // Furnaces and stoves (see stations.ts): who has each open, by world and origin block, to tell
   // when it changes; and, while anyone has one open, it's brought up to date once a second.
@@ -1358,7 +1381,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const dropTimes = new WeakMap<DroppedItem, number>();
   /** A pig killed (by a player who can be hurt: survival): its pork (1 to 3) dropped where it fell. */
   const porkFrom = (world: World, killer: Player, r: { killed: boolean; kind?: string; at?: { x: number; y: number; z: number } } | undefined) => {
-    if (r?.killed && r.kind === 'pig' && r.at && killer.vulnerable) drop(world, Item.Pork, 1 + Math.floor(Math.random() * 3), r.at.x, r.at.y, r.at.z);
+    if (r?.killed && r.kind === 'pig' && r.at && killer.vulnerable) {
+      drop(world, Item.Pork, 1 + Math.floor(Math.random() * 3), r.at.x, r.at.y, r.at.z);
+      // (And, two times in three, its hide: leather.)
+      if (Math.random() < 2 / 3) drop(world, Item.Leather, 1, r.at.x, r.at.y, r.at.z);
+    }
   };
   // Picked up (survival: those who can be hurt, with an inventory), and gone in time: ten times a second.
   const pickingUp = setInterval(timed('drops', () => {
@@ -1611,7 +1638,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         const entities = [...mobs.near(p.pose!.x, p.pose!.z, VIEW, now), ...sim.near(p.pose!.x, p.pose!.z, VIEW)];
         for (const o of here) {
           if (o.p === p || Math.hypot(deltaX(world.config, p.pose!.x, o.p.pose!.x), o.p.pose!.z - p.pose!.z) > VIEW) continue;
-          entities.push({ id: o.p.id, kind: 'player', x: Math.round(o.p.pose!.x), y: Math.round(o.p.pose!.y - EYE), z: Math.round(o.p.pose!.z), yaw: o.p.pose!.yaw, name: o.p.name ?? 'guest', ...(o.p.look ? { look: o.p.look } : {}), ...(o.p.held !== null ? { held: o.p.held } : {}), ...(o.p.swings ? { swings: o.p.swings } : {}), ...(o.p.pitch ? { pitch: o.p.pitch } : {}), ...(o.p.act ? { act: o.p.act } : {}) });
+          entities.push({ id: o.p.id, kind: 'player', x: Math.round(o.p.pose!.x), y: Math.round(o.p.pose!.y - EYE), z: Math.round(o.p.pose!.z), yaw: o.p.pose!.yaw, name: o.p.name ?? 'guest', ...(o.p.look ? { look: o.p.look } : {}), ...(o.p.held !== null ? { held: o.p.held } : {}), ...(o.p.swings ? { swings: o.p.swings } : {}), ...(o.p.pitch ? { pitch: o.p.pitch } : {}), ...(o.p.act ? { act: o.p.act } : {}), ...armorOf(o.s) });
         }
         sendTo(s, { type: 'entities', entities });
       }
@@ -1841,6 +1868,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       letGo = true;
       const inv = inventory;
       inventory = null;
+      gearOf.delete(socket);
       await inv?.flush();
       if (keepKey) await saving.get(keepKey);
     };
@@ -1879,6 +1907,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     };
     socket.on('close', () => {
       answered.delete(socket);
+      gearOf.delete(socket);
       stopViewing();
       queue.close();
       void keep();
@@ -2064,6 +2093,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
                     }),
                   ),
                 );
+                gearOf.set(socket, inventory);
                 send(inventory.message());
                 // (With a radio: what's been said by radio here lately.)
                 if (inventory.carries(Item.Radio)) send({ type: 'chat', lines: chat.history(worldName), history: true });
@@ -2229,7 +2259,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           metrics.totals.edits++;
           players.get(socket)!.edits++;
           send({ type: 'editResult', id: msg.id, ok: true });
-          if (inventory?.apply(result.change, tool)) send(inventory.message());
+          if (inventory?.apply(result.change, tool)) {
+            // (A tool that dug something: worn by it.)
+            if (tool !== null && [...result.change.values()].some((d) => d < 0)) usedUp(socket, inventory, tool);
+            send(inventory.message());
+          }
           broadcast(world, result);
           break;
         }
@@ -2444,6 +2478,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             const r = world.till(msg.x, msg.y, msg.z);
             if (typeof r === 'string') return fail(r);
             for (const e of r) broadcast(world, e);
+            if (inv) {
+              usedUp(socket, inv, msg.tool);
+              send(inv.message());
+            }
           } else if (msg.type === 'sow') {
             if (inv && inv.count(Item.Wheat) < 1) return fail('no wheat to sow (dig grass for some, or buy it at a trading post)');
             const r = world.sow(msg.x, msg.y, msg.z, now);
@@ -2741,6 +2779,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (!flights) arrowsOf.set(world, (flights = new ArrowFlights(world)));
           const arrow = flights.shoot(p.id, msg.x, msg.y, msg.z, [msg.dx, msg.dy, msg.dz], Math.max(0, Math.min(1, msg.charge)), now);
           toWorld(world, { type: 'arrow', arrow });
+          // (The bow: worn by a shot.)
+          if (inventory?.mode === 'survival') {
+            usedUp(socket, inventory, Item.Bow);
+            send(inventory.message());
+          }
           break;
         }
 
@@ -2757,11 +2800,18 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           // A villager: hurt (if in reach), and their village remembers.
           if (msg.target >= VILLAGER_ENTITY) {
             const sim = villageSims.get(world), v = sim?.villagerOf(msg.target);
-            if (sim && v && Math.hypot(v.x - p.pose.x, v.y + 0.9 * UNITS_PER_METER - p.pose.y, v.z - p.pose.z) <= (ATTACK_REACH + 1.5) * UNITS_PER_METER)
+            if (sim && v && Math.hypot(v.x - p.pose.x, v.y + 0.9 * UNITS_PER_METER - p.pose.y, v.z - p.pose.z) <= (ATTACK_REACH + 1.5) * UNITS_PER_METER) {
               sim.hurtVillager(msg.target, attackDamage(weapon), { x: p.pose.x, z: p.pose.z }, p.account, now);
+              if (inventory) usedUp(socket, inventory, weapon);
+            }
             break;
           }
           const r = mobManagers.get(world)?.attack(msg.target, p.pose.x, p.pose.y, p.pose.z, attackDamage(weapon), ATTACK_REACH + 1, now);
+          // (A sword that hit: worn by it.)
+          if (r?.hit && inventory && weapon !== null) {
+            usedUp(socket, inventory, weapon);
+            send(inventory.message());
+          }
           // A pig killed: its pork (1 to 3) dropped where it fell, to be picked up; an outlaw, villages near forgive a little.
           porkFrom(world, p, r);
           killedOutlaw(world, p, r);
@@ -2824,7 +2874,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           const pose = players.get(socket)?.pose;
           const recipe = recipeById(msg.recipe);
           // (A crafting table: the built-in object, the design that's the crafting table, or one placed as a block before tables were objects.)
-          const nearTable = !!recipe?.table && !!pose && (world.stationNear('crafting-table', pose.x, pose.y, pose.z, TABLE_REACH) || world.materialNear(pose.x, pose.y, pose.z, TABLE_REACH, Material.CraftingTable));
+          // (Iron armor: a smithing table instead.)
+          const nearTable = !!recipe?.table && !!pose && (recipe.station ? world.stationNear(recipe.station, pose.x, pose.y, pose.z, TABLE_REACH) : world.stationNear('crafting-table', pose.x, pose.y, pose.z, TABLE_REACH) || world.materialNear(pose.x, pose.y, pose.z, TABLE_REACH, Material.CraftingTable));
           const why = inventory.craft(msg.recipe, nearTable);
           if (why) send({ type: 'error', code: 'craft', message: why });
           else send(inventory.message());
@@ -2841,6 +2892,23 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         case 'discard': {
           if (!inventory) return;
           const why = inventory.discard(msg.item, msg.amount);
+          if (why) send({ type: 'error', code: 'craft', message: why });
+          else send(inventory.message());
+          break;
+        }
+
+        case 'putOn':
+        case 'takeOff':
+        case 'repair': {
+          // Armor on and off; mending what's worn, at an anvil within reach (see gear.ts).
+          if (!inventory) return;
+          let why: string | null;
+          if (msg.type === 'putOn') why = inventory.putOn(msg.item);
+          else if (msg.type === 'takeOff') why = inventory.takeOff(msg.slot);
+          else {
+            const pose = players.get(socket)?.pose;
+            why = pose && world.stationNear('anvil', pose.x, pose.y, pose.z, TABLE_REACH) ? inventory.repair(msg.item) : 'mending is done at an anvil: place one nearby';
+          }
           if (why) send({ type: 'error', code: 'craft', message: why });
           else send(inventory.message());
           break;

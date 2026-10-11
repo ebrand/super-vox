@@ -2,11 +2,30 @@ import type pg from 'pg';
 import { HOTBAR_SLOTS, STARTER_KIT, starterHotbar, type MaterialId, type SavedVitals } from '@super-vox/shared';
 import { SCHEMA } from './db.js';
 
-/** A player's things in one world: how much of each material (unit-voxel volumes) and their hotbar. */
+/**
+ * A player's things in one world: how much of each material (unit-voxel volumes) and their
+ * hotbar; how worn the worn one of each tool, weapon or piece of armor is (see gear.ts; the rest
+ * of a kind are new); and the armor they have on (a piece a slot, ARMOR_SLOTS order) and how worn
+ * each is. (Absent: none worn, nothing on: as kept before there was wear.)
+ */
 export interface Inventory {
   items: Map<MaterialId, number>;
   hotbar: (MaterialId | null)[];
+  wear?: Map<MaterialId, number>;
+  worn?: (MaterialId | null)[];
+  wornWear?: number[];
 }
+
+/** What of an inventory isn't its items and hotbar, as kept (see Inventory). */
+interface Gear {
+  wear: [number, number][];
+  worn: (number | null)[];
+  wornWear: number[];
+}
+
+const gearOf = (inv: Inventory): Gear => ({ wear: [...(inv.wear ?? [])].filter(([, w]) => w > 0), worn: [...(inv.worn ?? [])], wornWear: [...(inv.wornWear ?? [])] });
+const withGear = (inv: Inventory, g: Partial<Gear> | null): Inventory =>
+  g ? { ...inv, wear: new Map((g.wear ?? []).filter(([, w]) => w > 0)), worn: g.worn ?? [], wornWear: g.wornWear ?? [] } : inv;
 
 /** A new survival player's inventory. */
 export function starterInventory(): Inventory {
@@ -40,7 +59,7 @@ export interface InventoryStore {
   saveState(accountId: string, world: string, state: PlayerState): Promise<void>;
 }
 
-const copy = (inv: Inventory): Inventory => ({ items: new Map(inv.items), hotbar: [...inv.hotbar] });
+const copy = (inv: Inventory): Inventory => withGear({ items: new Map(inv.items), hotbar: [...inv.hotbar] }, gearOf(inv));
 
 export class MemoryInventoryStore implements InventoryStore {
   private readonly saved = new Map<string, Inventory>();
@@ -80,21 +99,21 @@ export class PgInventoryStore implements InventoryStore {
   constructor(private readonly pool: pg.Pool) {}
 
   async load(accountId: string, world: string): Promise<Inventory | null> {
-    const { rows } = await this.pool.query<{ items: [number, number][]; hotbar: (number | null)[] }>(
-      `select items, hotbar from ${SCHEMA}.inventories where account_id = $1 and world = $2`,
+    const { rows } = await this.pool.query<{ items: [number, number][]; hotbar: (number | null)[]; gear: Partial<Gear> | null }>(
+      `select items, hotbar, gear from ${SCHEMA}.inventories where account_id = $1 and world = $2`,
       [accountId, world],
     );
     const r = rows[0];
     if (!r) return null;
     const hotbar = Array.from({ length: HOTBAR_SLOTS }, (_, i) => r.hotbar[i] ?? null);
-    return { items: new Map(r.items.filter(([, v]) => v > 0)), hotbar };
+    return withGear({ items: new Map(r.items.filter(([, v]) => v > 0)), hotbar }, r.gear);
   }
 
   async save(accountId: string, world: string, inventory: Inventory): Promise<void> {
     await this.pool.query(
-      `insert into ${SCHEMA}.inventories (account_id, world, items, hotbar) values ($1, $2, $3, $4)
-       on conflict (account_id, world) do update set items = excluded.items, hotbar = excluded.hotbar, updated_at = now()`,
-      [accountId, world, JSON.stringify([...inventory.items].filter(([, v]) => v > 0)), JSON.stringify(inventory.hotbar)],
+      `insert into ${SCHEMA}.inventories (account_id, world, items, hotbar, gear) values ($1, $2, $3, $4, $5)
+       on conflict (account_id, world) do update set items = excluded.items, hotbar = excluded.hotbar, gear = excluded.gear, updated_at = now()`,
+      [accountId, world, JSON.stringify([...inventory.items].filter(([, v]) => v > 0)), JSON.stringify(inventory.hotbar), JSON.stringify(gearOf(inventory))],
     );
   }
 

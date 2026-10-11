@@ -97,6 +97,17 @@ export const Item = {
   PineSapling: 1041,
   JungleSapling: 1042,
   AcaciaSapling: 1043,
+  /** From pigs (see the server's drops): what leather armor is made of. */
+  Leather: 1044,
+  /** Armor (see gear.ts): worn, a piece a slot, each taking a share of the harm done. */
+  LeatherHelmet: 1045,
+  LeatherTunic: 1046,
+  LeatherLeggings: 1047,
+  LeatherBoots: 1048,
+  IronHelmet: 1049,
+  IronChestplate: 1050,
+  IronLeggings: 1051,
+  IronBoots: 1052,
 } as const;
 export type ItemId = number;
 export const FIRST_ITEM = 1000;
@@ -146,6 +157,15 @@ const ITEM_NAMES: Record<number, string> = {
   [Item.PineSapling]: 'pine sapling',
   [Item.JungleSapling]: 'jungle sapling',
   [Item.AcaciaSapling]: 'acacia sapling',
+  [Item.Leather]: 'leather',
+  [Item.LeatherHelmet]: 'leather cap',
+  [Item.LeatherTunic]: 'leather tunic',
+  [Item.LeatherLeggings]: 'leather leggings',
+  [Item.LeatherBoots]: 'leather boots',
+  [Item.IronHelmet]: 'iron helmet',
+  [Item.IronChestplate]: 'iron chestplate',
+  [Item.IronLeggings]: 'iron leggings',
+  [Item.IronBoots]: 'iron boots',
 };
 
 /** Items in play only once a design stands in for them (see STATIONS): not among the built-in ones. */

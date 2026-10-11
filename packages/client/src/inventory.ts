@@ -1,5 +1,6 @@
 import {
   ALL_ITEMS,
+  BLOCK_VOLUME,
   HOTBAR_SLOTS,
   Item,
   RECIPES,
@@ -36,10 +37,18 @@ import {
   type MaterialId,
   type Recipe,
   type ServerMessage,
+  ARMOR,
+  ARMOR_SLOTS,
+  DURABILITY,
+  REPAIR_WITH,
+  isArmor,
 } from '@super-vox/shared';
 import { TABLE_SLOTS, addToTable, available, couldMake, describeEntry, fillFor, matchRecipes, onTable, timesAvailable, type Table } from './crafting.js';
 import { iconSvg } from './icons.js';
 import { materialColor } from './materials.js';
+
+/** What a recipe that needs a table is made at, for people. */
+const stationName = (r: Recipe) => (r.station === 'smithing-table' ? 'smithing table' : 'crafting table');
 
 type InventoryMessage = Extract<ServerMessage, { type: 'inventory' }>;
 type StationMessage = Extract<ServerMessage, { type: 'station' }>;
@@ -131,6 +140,10 @@ export class InventoryUi {
   mode: GameMode = 'creative';
   private items = new Map<MaterialId, number>();
   private hotbar: (MaterialId | null)[] = creativeHotbar();
+  /** Survival: how worn the worn one of each tool or piece of armor is; the armor on (ARMOR_SLOTS order) and how worn each is (see gear.ts). */
+  private wear = new Map<ItemId, number>();
+  private worn: (ItemId | null)[] = ARMOR_SLOTS.map(() => null);
+  private wornWear: number[] = ARMOR_SLOTS.map(() => 0);
   private selected = 0;
   private tab: Tab = 'inventory';
   private table: Table = [];
@@ -176,6 +189,10 @@ export class InventoryUi {
     ) => void = () => {},
     /** Eat one of a food (survival; the server says if not). */
     private readonly onEat: (item: ItemId) => void = () => {},
+    /** Armor put on, or what's in an armor slot taken off; something worn mended (at an anvil). */
+    private readonly onGear: (act: { putOn: ItemId } | { takeOff: number } | { repair: ItemId }) => void = () => {},
+    /** Whether a placed station of a role (an anvil, a smithing table) is within reach. */
+    private readonly nearStation: (role: 'anvil' | 'smithing-table') => boolean = () => false,
   ) {
     this.bar = document.createElement('div');
     this.bar.id = 'hotbar';
@@ -237,11 +254,19 @@ export class InventoryUi {
     this.render();
   }
 
+  /** The armor on (survival: ARMOR_SLOTS order; null: none there). */
+  get wornArmor(): readonly (ItemId | null)[] {
+    return this.worn;
+  }
+
   update(msg: InventoryMessage): void {
     this.note.textContent = '';
     this.mode = msg.mode;
     this.items = new Map(msg.items);
     this.hotbar = Array.from({ length: HOTBAR_SLOTS }, (_, i) => msg.hotbar[i] ?? null);
+    this.wear = new Map(msg.wear ?? []);
+    this.worn = ARMOR_SLOTS.map((_, i) => msg.worn?.[i] ?? null);
+    this.wornWear = ARMOR_SLOTS.map((_, i) => msg.wornWear?.[i] ?? 0);
     if (this.mode === 'creative') this.tab = 'inventory';
     // (What's on the table can't be more than there is now.)
     this.table = this.table.map(([id, n]) => [id, Math.min(n, this.has(id))] as const).filter(([, n]) => n > 0);
@@ -383,7 +408,8 @@ export class InventoryUi {
    * Whether a crafting table is placed within reach (the server's rule too). Until one is, crafting
    * is just combining things, and the recipes that need one wait.
    */
-  private hasTable(): boolean {
+  private hasTable(recipe?: Recipe): boolean {
+    if (recipe?.station) return this.mode === 'creative' || this.nearStation(recipe.station);
     return this.mode === 'creative' || this.nearTable();
   }
 
@@ -438,11 +464,11 @@ export class InventoryUi {
     const matches = matchRecipes(this.table);
     const match = matches.find((m) => m.recipe.id === this.chosen) ?? (matches.length === 1 ? matches[0] : undefined);
     if (!match) return this.say(matches.length ? 'choose what to make' : 'that makes nothing');
-    if (match.recipe.table && !this.hasTable()) return this.say('that needs a crafting table placed nearby');
+    if (match.recipe.table && !this.hasTable(match.recipe)) return this.say(`that needs a ${stationName(match.recipe)} placed nearby`);
     for (let i = 0; i < match.times; i++) this.onCraft(match.recipe.id);
     this.table = [];
     this.chosen = null;
-    this.say(`making ${describeEntry(match.recipe.output[0], match.recipe.output[1] * match.times)}${match.recipe.table ? ' (at a crafting table)' : ''}`);
+    this.say(`making ${describeEntry(match.recipe.output[0], match.recipe.output[1] * match.times)}${match.recipe.table ? ` (at a ${stationName(match.recipe)})` : ''}`);
     this.render();
   }
 
@@ -484,6 +510,7 @@ export class InventoryUi {
     const key = document.createElement('i');
     key.textContent = String((i + 1) % 10);
     slot.append(this.swatch(m, m === null ? '' : this.amountText(m).replace(' m³', '')), key);
+    if (m !== null) this.wearBar(slot, m, this.wear.get(m) ?? 0);
     slot.addEventListener('click', () => this.select(i));
     if (m !== null) this.draggable(slot, `slot:${i}`);
     this.dropTarget(slot, (what) => {
@@ -856,6 +883,8 @@ export class InventoryUi {
     });
     tools.append(search, sort);
     if (this.mode === 'survival') tools.append(this.bin());
+    const out: HTMLElement[] = [tools];
+    if (this.mode === 'survival') out.push(this.armorRow());
     const grid = document.createElement('div');
     grid.className = 'grid';
     const listed = this.listed();
@@ -871,20 +900,36 @@ export class InventoryUi {
         count.className = 'count';
         count.textContent = this.amountText(m);
         card.append(this.swatch(m, ''), label, count);
+        this.wearBar(card.firstElementChild as HTMLElement, m, this.wear.get(m) ?? 0);
         card.title = 'click: into the selected hotbar slot · shift-click: into a free one · or drag it (out of the window: throw it away)';
         card.addEventListener('click', (e) => this.toSlot(m, e.shiftKey ? this.freeSlot() : this.selected));
         this.draggable(card, `item:${m}`);
-        // Food: eaten from here too.
-        if (this.mode !== 'survival' || !isFood(m)) return card;
+        // Food: eaten from here too; armor put on; what's worn, mended at an anvil.
+        if (this.mode !== 'survival') return card;
+        const acts: HTMLButtonElement[] = [];
+        const act = (text: string, title: string, f: () => void) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'eat';
+          b.textContent = text;
+          b.title = title;
+          b.addEventListener('click', f);
+          acts.push(b);
+        };
+        if (isFood(m)) act('Eat', `eat one ${itemName(m)}`, () => this.onEat(m));
+        if (isArmor(m)) act('Put on', `wear the ${itemName(m)} (on your ${ARMOR[m]!.slot})`, () => this.onGear({ putOn: m }));
+        const mend = (this.wear.get(m) ?? 0) > 0 && REPAIR_WITH[m] && this.nearStation('anvil');
+        if (mend) {
+          const [what, n] = REPAIR_WITH[m]!;
+          act('Mend', `mend the worn ${itemName(m)} with ${describeEntry(what, isBlock(what) ? n / BLOCK_VOLUME : n)}`, () => this.onGear({ repair: m }));
+        }
+        if (!acts.length) return card;
         const wrap = document.createElement('div');
         wrap.className = 'itemwrap';
-        const eat = document.createElement('button');
-        eat.type = 'button';
-        eat.className = 'eat';
-        eat.textContent = 'Eat';
-        eat.title = `eat one ${itemName(m)}`;
-        eat.addEventListener('click', () => this.onEat(m));
-        wrap.append(card, eat);
+        const box = document.createElement('div');
+        box.className = 'acts';
+        box.append(...acts);
+        wrap.append(card, box);
         return wrap;
       }),
     );
@@ -894,7 +939,48 @@ export class InventoryUi {
       none.textContent = this.search ? 'Nothing by that name.' : 'Nothing yet: mine something.';
       grid.append(none);
     }
-    return [tools, grid];
+    out.push(grid);
+    return out;
+  }
+
+  /** The armor on (survival): a slot for each place, what's there and how worn; click takes it off (or, at an anvil, mends it if worn). */
+  private armorRow(): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'armor';
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = 'Wearing';
+    row.append(label);
+    ARMOR_SLOTS.forEach((place, i) => {
+      const item = this.worn[i] ?? null, w = this.wornWear[i] ?? 0;
+      const slot = document.createElement('button');
+      slot.type = 'button';
+      slot.className = 'slot' + (item === null ? ' empty' : '');
+      slot.append(this.swatch(item, ''));
+      if (item !== null) this.wearBar(slot, item, w);
+      const name = document.createElement('i');
+      name.textContent = place;
+      slot.append(name);
+      const mend = item !== null && w > 0 && this.nearStation('anvil');
+      slot.title = item === null ? `nothing on your ${place}: put armor on from below` : `${itemName(item)}${w > 0 ? ` (${Math.round(100 * (1 - w / DURABILITY[item]!))}% left)` : ''} · click: ${mend ? 'mend it (at the anvil)' : 'take it off'}`;
+      if (item !== null) slot.addEventListener('click', () => this.onGear(mend ? { repair: item } : { takeOff: i }));
+      row.append(slot);
+    });
+    return row;
+  }
+
+  /** A bar along the bottom of `el` showing how much of a worn `item` is left (none for what isn't worn). */
+  private wearBar(el: HTMLElement, item: ItemId, wear: number): void {
+    const n = DURABILITY[item];
+    if (!n || wear <= 0 || this.mode !== 'survival') return;
+    const left = Math.max(0, 1 - wear / n);
+    const bar = document.createElement('div');
+    bar.className = 'wear';
+    const fill = document.createElement('b');
+    fill.style.width = `${Math.round(left * 100)}%`;
+    fill.style.background = left > 0.5 ? '#3fb950' : left > 0.2 ? '#d29922' : '#f85149';
+    bar.append(fill);
+    el.append(bar);
   }
 
   /** The bin: drop something on it, then say yes, and it's thrown away (all of it). */
@@ -1011,8 +1097,9 @@ export class InventoryUi {
         label.textContent = itemName(out);
         const count = document.createElement('div');
         count.className = 'count';
-        count.textContent = `${n * m.times}${isBlock(out) ? ' m³' : ''}` + (m.recipe.table && !hasTable ? ' · needs a crafting table' : '');
-        if (m.recipe.table && !hasTable) card.classList.add('used');
+        const here = !m.recipe.table || (m.recipe.station ? this.hasTable(m.recipe) : hasTable);
+        count.textContent = `${n * m.times}${isBlock(out) ? ' m³' : ''}` + (here ? '' : ` · needs a ${stationName(m.recipe)}`);
+        if (!here) card.classList.add('used');
         card.append(this.swatch(out, ''), label, count);
         card.addEventListener('click', () => {
           this.chosen = m.recipe.id;
@@ -1027,7 +1114,7 @@ export class InventoryUi {
       make.className = 'primary';
       make.textContent = 'Make';
       const chosenMatch = matches.find((m) => m.recipe.id === chosen);
-      make.disabled = !chosenMatch || (chosenMatch.recipe.table && !hasTable);
+      make.disabled = !chosenMatch || (chosenMatch.recipe.table && !this.hasTable(chosenMatch.recipe));
       make.addEventListener('click', () => this.make());
       actions.append(make);
       result.append(actions);
@@ -1099,8 +1186,8 @@ export class InventoryUi {
       const list = document.createElement('div');
       list.className = 'recipe-list';
       for (const recipe of recipes) {
-        // (Those needing a crafting table wait for one.)
-        const times = recipe.table && !hasTable ? 0 : timesAvailable(recipe, this.items);
+        // (Those needing a crafting table (or a smithing table) wait for one.)
+        const times = recipe.table && !(recipe.station ? this.hasTable(recipe) : hasTable) ? 0 : timesAvailable(recipe, this.items);
         const row = document.createElement('div');
         row.className = 'recipe-row' + (times ? '' : ' cant');
         const [made, n] = recipe.output;
@@ -1111,7 +1198,7 @@ export class InventoryUi {
         label.textContent = `${itemName(made)} × ${n}${isBlock(made) ? ' m³' : ''}`;
         const where = document.createElement('div');
         where.className = 'where';
-        where.textContent = recipe.table ? (hasTable ? 'at a crafting table' : 'needs a crafting table placed nearby') : 'anywhere';
+        where.textContent = recipe.table ? (this.hasTable(recipe) ? `at a ${stationName(recipe)}` : `needs a ${stationName(recipe)} placed nearby`) : 'anywhere';
         what.append(this.swatch(made, ''), label, where);
         const needs = document.createElement('div');
         needs.className = 'needs';
@@ -1133,7 +1220,7 @@ export class InventoryUi {
           b.title = times ? '' : (cannotCraft(recipe, this.items, hasTable) ?? '');
           b.addEventListener('click', () => {
             for (let i = 0; i < count; i++) this.onCraft(recipe.id);
-            this.say(`making ${describeEntry(made, n * count)}${recipe.table ? ' (at a crafting table)' : ''}`);
+            this.say(`making ${describeEntry(made, n * count)}${recipe.table ? ` (at a ${stationName(recipe)})` : ''}`);
           });
           return b;
         };
@@ -1152,16 +1239,16 @@ export class InventoryUi {
     const b = document.createElement('button');
     b.type = 'button';
     // (A table placed near is the server's to judge in the end; it's worked out here to show.)
-    const why = cannotCraft(recipe, this.items, this.hasTable());
+    const why = cannotCraft(recipe, this.items, this.hasTable(recipe));
     b.className = 'recipe' + (why ? ' cant' : '');
     const [out, n] = recipe.output;
     const text = document.createElement('div');
     text.className = 'label';
-    text.textContent = `${recipe.inputs.map(([id, k]) => describeEntry(id, k)).join(' + ')} → ${describeEntry(out, n)}` + (recipe.table ? ' · needs a crafting table' : '');
+    text.textContent = `${recipe.inputs.map(([id, k]) => describeEntry(id, k)).join(' + ')} → ${describeEntry(out, n)}` + (recipe.table ? ` · needs a ${stationName(recipe)}` : '');
     b.append(this.swatch(out, ''), text);
     b.title = why ?? 'put it on the table';
     b.addEventListener('click', () => {
-      if (recipe.table && !this.hasTable()) return this.say('that needs a crafting table placed nearby');
+      if (recipe.table && !this.hasTable(recipe)) return this.say(`that needs a ${stationName(recipe)} placed nearby`);
       const filled = fillFor(recipe, this.items);
       if (typeof filled === 'string') return this.say(filled);
       this.table = filled;

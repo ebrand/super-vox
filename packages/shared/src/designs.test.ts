@@ -233,7 +233,7 @@ describe('placing designs', () => {
     expect(ALL_ITEMS).not.toContain(Item.Stove);
     expect(itemName(Item.Furnace)).toBe('furnace');
     expect(recipeById('furnace')).toEqual({ id: 'furnace', group: 'building', inputs: [[Material.Cobblestone, 8]], output: [Item.Furnace, 1], table: true });
-    expect(recipeById('anvil')).toBeUndefined(); // (no metal yet)
+    expect(recipeById('anvil')).toEqual({ id: 'anvil', group: 'building', inputs: [[Item.IronIngot, 6]], output: [Item.Anvil, 1], table: true });
     const o: PlacedObject = { kind: 'design', design: 'my-furnace', state: 0, x: 100, y: 0, z: 100, facing: 'n', open: false, span: [2, 1, 1] };
     expect(objectItem(o)).toBe(Item.Furnace);
     expect(stationAmong([o], 'furnace', 100 * 16, 8, 100 * 16, 80)).toBe(true);

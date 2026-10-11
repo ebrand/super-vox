@@ -110,9 +110,10 @@ describe('arrows in play', () => {
       expect(manager!.get(pig.id)).toBeUndefined();
       // On the ground 5 m off (and more: knocked back); walked up to, picked up.
       const lying = () => msgs.filter((m): m is Extract<ServerMessage, { type: 'drops' }> => m.type === 'drops').at(-1)?.drops ?? [];
-      await until(() => lying().length === 1);
-      const dropped = lying()[0]!;
-      expect(dropped.item).toBe(Item.Pork);
+      // (Its pork; and, two times in three, its hide, as leather.)
+      await until(() => lying().some((d) => d.item === Item.Pork));
+      expect(lying().every((d) => d.item === Item.Pork || d.item === Item.Leather)).toBe(true);
+      const dropped = lying().find((d) => d.item === Item.Pork)!;
       expect(pork()).toBe(0);
       ws.send(JSON.stringify({ type: 'pose', x: dropped.x, y: dropped.y + 26, z: dropped.z, yaw: 0 }));
       await until(() => pork() > 0);

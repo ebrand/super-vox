@@ -83,8 +83,8 @@ export const STATIONS: readonly { role: DesignRole; name: string; item: ItemId; 
   { role: 'crafting-table', name: 'crafting table', item: Item.CraftingTable, use: 'making what needs a crafting table', recipe: null },
   { role: 'furnace', name: 'furnace', item: Item.Furnace, use: 'smelting raw iron into ingots (right-click it)', recipe: { inputs: [[Material.Cobblestone, 8]], table: true } },
   { role: 'stove', name: 'stove', item: Item.Stove, use: 'cooking pork (right-click it)', recipe: { inputs: [[Material.Cobblestone, 6], [Material.Planks, 2]], table: true } },
-  { role: 'anvil', name: 'anvil', item: Item.Anvil, use: 'repairing and naming (coming with metals)', recipe: null },
-  { role: 'smithing-table', name: 'smithing table', item: Item.SmithingTable, use: 'metal tools and armour (coming with metals)', recipe: null },
+  { role: 'anvil', name: 'anvil', item: Item.Anvil, use: 'mending worn tools, weapons and armor (each with one of what it\'s made of)', recipe: { inputs: [[Item.IronIngot, 6]], table: true } },
+  { role: 'smithing-table', name: 'smithing table', item: Item.SmithingTable, use: 'making iron armor', recipe: { inputs: [[Material.Planks, 4], [Item.IronIngot, 2]], table: true } },
   { role: 'bed', name: 'bed', item: Item.Bed, use: 'coming back to after dying (right-click it to make it yours)', recipe: { inputs: [[Material.Planks, 6]], table: true } },
   // (Not placed like the rest: put in the water, and ridden; see boats.ts.)
   { role: 'railway-station', name: 'railway station', item: Item.Station, use: 'how stations look (beside straight track, its x out from the track, its z along it: right-click track with a station to build one)', recipe: null },

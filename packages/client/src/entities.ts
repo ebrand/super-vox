@@ -162,6 +162,7 @@ export class EntityView {
         const made: Tracked = { ...this.make(e), from: e, to: e, at: now, hurtUntil: e.hurt ? now + 300 : 0, brightness: 1, litAt: -Infinity, swungAt: -Infinity };
         this.tracked.set(e.id, made);
         this.hold(made, e.held);
+        if (e.armor) made.figure?.setArmor(e.armor);
         continue;
       }
       // A player's hand: what's in it now; swung, if they've swung since. Their name and look, if changed.
@@ -181,6 +182,8 @@ export class EntityView {
           if (t.tag) t.group.add(t.tag);
         }
         this.hold(t, e.held);
+        // (Their armor, if what they've on has changed.)
+        if (t.figure && String(e.armor ?? '') !== String(t.to.armor ?? '')) t.figure.setArmor(e.armor ?? []);
         if ((e.swings ?? 0) > (t.to.swings ?? 0)) t.swungAt = now;
       }
       // From wherever it's drawn now to the new snapshot.

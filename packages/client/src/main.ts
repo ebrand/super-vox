@@ -253,6 +253,14 @@ const inventoryUi = new InventoryUi(
     else connection?.send({ type: 'stationPut', ...at, slot: act.put, item: act.item, amount: act.amount });
   },
   (item) => connection?.send({ type: 'eat', item }),
+  // Armor on and off; mending at an anvil (see gear.ts).
+  (act) => connection?.send('putOn' in act ? { type: 'putOn', item: act.putOn } : 'takeOff' in act ? { type: 'takeOff', slot: act.takeOff } : { type: 'repair', item: act.repair }),
+  // (An anvil or smithing table placed near: from the objects here, as the server works it out.)
+  (role) => {
+    const p = camera.position;
+    const wrap = world?.wrapX ? world.widthUnits / BLOCK_SIZE : null;
+    return stationAmong(placedObjects, role, p.x * UNITS_PER_METER, p.y * UNITS_PER_METER, p.z * UNITS_PER_METER, TABLE_REACH, wrap);
+  },
 );
 // The wheel steps through the hotbar (while it's there: players who can build).
 controls.onWheel = (deltaY) => {
@@ -1080,6 +1088,7 @@ connection = connect({
           scene.add(figure.root);
           const motion = new FigureMotion(performance.now());
           motion.strideScale = figure.strideScale;
+          figure.setArmor(inventoryUi.wornArmor);
           selfFigure = { figure, motion, handMaterial: new THREE.MeshBasicMaterial({ vertexColors: true }), held: null, hand: null };
           localBirds = new LocalBirds({ topAt: (x, z, y) => (chunks ? columnTop(chunks, x, z, y) : null), brightness });
           // Animals about: grazing, wandering, running off (their models load the first time).
@@ -1414,6 +1423,8 @@ connection = connect({
         break;
       case 'inventory':
         inventoryUi.update(msg);
+        // (What we have on: on our figure too, as others see us.)
+        selfFigure?.figure.setArmor(msg.worn ?? []);
         updateHud();
         break;
       case 'chat':

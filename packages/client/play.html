@@ -208,7 +208,15 @@
       #inventory .tslot.over, #inventory .table.over { outline: 2px solid #58a6ff; }
       #inventory .itemwrap { position: relative; display: flex; }
       #inventory .itemwrap > .item { flex: 1; }
-      #inventory .itemwrap .eat { position: absolute; right: 6px; bottom: 6px; background: #238636; color: #fff; border: 0; border-radius: 4px; padding: 2px 8px; font: 600 11px system-ui, sans-serif; cursor: pointer; }
+      #inventory .itemwrap .acts { position: absolute; right: 6px; bottom: 6px; display: flex; gap: 4px; }
+      .wear { position: absolute; left: 4px; right: 4px; bottom: 3px; height: 3px; background: rgba(0,0,0,0.6); border-radius: 2px; pointer-events: none; }
+      .wear b { display: block; height: 100%; border-radius: 2px; }
+      #inventory .armor { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; }
+      #inventory .armor .label { font: 600 11px system-ui, sans-serif; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; margin-right: 4px; }
+      #inventory .armor .slot { position: relative; width: 46px; height: 46px; border: 2px solid rgba(255,255,255,0.18); border-radius: 6px; padding: 3px; background: none; cursor: pointer; box-sizing: content-box; }
+      #inventory .armor .slot.empty .swatch { opacity: 0.35; }
+      #inventory .armor .slot i { position: absolute; left: 4px; top: 1px; font: 600 9px system-ui, sans-serif; font-style: normal; color: rgba(255,255,255,0.7); text-shadow: 0 1px 2px #000; }
+      #inventory .itemwrap .eat { position: static; background: #238636; color: #fff; border: 0; border-radius: 4px; padding: 2px 8px; font: 600 11px system-ui, sans-serif; cursor: pointer; }
       #inventory .itemwrap .eat:hover { background: #2ea043; }
       #inventory .could { text-align: center; color: #8b949e; font-size: 12px; min-height: 1.4em; margin: 8px 0; }
       #inventory .result { display: flex; gap: 8px; justify-content: center; align-items: center; flex-wrap: wrap; min-height: 84px; } /* (room kept: what's below doesn't move as it fills) */
