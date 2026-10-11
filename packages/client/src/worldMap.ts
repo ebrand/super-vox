@@ -1,4 +1,4 @@
-import { BLOCK_SIZE, UNITS_PER_METER, type ClimateGrid } from '@super-vox/shared';
+import { BLOCK_SIZE, Material, UNITS_PER_METER, type ClimateGrid } from '@super-vox/shared';
 import { materialColor, materialName } from './materials.js';
 import { climateTintColors } from './tintColors.js';
 import { TILE, detailTiles, fitView, niceLength, pan, screenToWorld, zoomAt, type MapView, type MapWorld } from './mapView.js';
@@ -15,6 +15,14 @@ export interface MapData {
   materials: Uint8Array;
   /** Optional colour per sample (linear RGB triples) overriding its material's; NaN: the material's. */
   colors?: Float32Array;
+  /** The ground's own height per sample (or the water's over it), under trees too: what contours follow (absent: from servers before it, `heights` then). */
+  ground?: Int16Array;
+}
+
+/** How far apart contour lines are drawn (m) on a map `step` units a pixel: close enough to read, not so close they run together; every fifth one bolder. */
+export function contourInterval(step: number): number {
+  const m = step / UNITS_PER_METER;
+  return m <= 1 ? 1 : m <= 3 ? 2 : m <= 8 ? 5 : m <= 20 ? 10 : 25;
 }
 
 export function decodeWorldMap(buf: ArrayBuffer): MapData {
@@ -22,10 +30,14 @@ export function decodeWorldMap(buf: ArrayBuffer): MapData {
   const cols = v.getUint16(0, true), rows = v.getUint16(2, true), step = v.getUint32(4, true);
   const sea = v.getInt32(8, true);
   const n = cols * rows;
-  if (buf.byteLength !== 12 + n * 3) throw new Error(`map is ${buf.byteLength} bytes, expected ${12 + n * 3}`);
+  // (With the ground's own heights after the rest, or without: as servers before them send it.)
+  const withGround = buf.byteLength === 12 + n * 5;
+  if (!withGround && buf.byteLength !== 12 + n * 3) throw new Error(`map is ${buf.byteLength} bytes, expected ${12 + n * 5}`);
   const heights = new Int16Array(n);
   for (let i = 0; i < n; i++) heights[i] = v.getInt16(12 + i * 2, true);
-  return { cols, rows, step, seaLevel: sea === -(2 ** 31) ? null : sea, heights, materials: new Uint8Array(buf, 12 + n * 2, n).slice() };
+  const ground = withGround ? new Int16Array(n) : undefined;
+  if (ground) for (let i = 0; i < n; i++) ground[i] = v.getInt16(12 + n * 3 + i * 2, true);
+  return { cols, rows, step, seaLevel: sea === -(2 ** 31) ? null : sea, heights, materials: new Uint8Array(buf, 12 + n * 2, n).slice(), ...(ground ? { ground } : {}) };
 }
 
 // These mirror what the game draws: voxelMaterial.ts's sun and lighting, three.js's
@@ -54,9 +66,15 @@ export function mapColor(material: number, normal: readonly [number, number, num
   return base.map((c, k) => SEA_OPACITY * SEA_RGB[k]! + (1 - SEA_OPACITY) * c) as [number, number, number];
 }
 
-/** RGBA pixels for the whole map, row-major, one pixel per sample. */
-export function renderMap(map: MapData): Uint8ClampedArray<ArrayBuffer> {
+/**
+ * RGBA pixels for the whole map, row-major, one pixel per sample; with `contours`, lines where the
+ * ground crosses each contourInterval (darker, every fifth), not across water.
+ */
+export function renderMap(map: MapData, contours = false): Uint8ClampedArray<ArrayBuffer> {
   const { cols, rows, step, heights, materials, seaLevel, colors } = map;
+  const ground = map.ground ?? heights, gap = contourInterval(step) * UNITS_PER_METER;
+  const band = (i: number, j: number) => Math.floor(ground[Math.max(0, Math.min(cols - 1, i)) + cols * Math.max(0, Math.min(rows - 1, j))]! / gap);
+  const isWater = (k: number) => materials[k] === Material.Water || (seaLevel !== null && heights[k]! < seaLevel);
   const px = new Uint8ClampedArray(cols * rows * 4);
   const h = (i: number, j: number) => heights[Math.max(0, Math.min(cols - 1, i)) + cols * Math.max(0, Math.min(rows - 1, j))]!;
   for (let j = 0; j < rows; j++) {
@@ -68,6 +86,17 @@ export function renderMap(map: MapData): Uint8ClampedArray<ArrayBuffer> {
       const k = i + cols * j;
       const own = colors && !Number.isNaN(colors[k * 3]!) ? ([colors[k * 3]!, colors[k * 3 + 1]!, colors[k * 3 + 2]!] as const) : undefined;
       const c = mapColor(materials[k]!, [-dx / len, 1 / len, -dz / len], seaLevel !== null && heights[k]! < seaLevel, own);
+      // A contour: here, where the ground's in a lower band than its neighbour east or south (so each line's a pixel wide, on its low side).
+      if (contours && !isWater(k)) {
+        const b = band(i, j), e = band(i + 1, j), s2 = band(i, j + 1);
+        if (b < e || b < s2) {
+          const crossed = Math.max(e, s2), major = crossed % 5 === 0;
+          const k2 = major ? 0.45 : 0.72;
+          c[0] *= k2;
+          c[1] *= k2;
+          c[2] *= k2;
+        }
+      }
       px.set([c[0] * 255, c[1] * 255, c[2] * 255, 255], k * 4);
     }
   }
@@ -102,6 +131,15 @@ const MAX_FETCHES = 4;
  * shows the position, height and surface under the cursor; ⌘-clicking (Ctrl-clicking; without
  * dragging) asks to teleport there, where travel is allowed (see canTravel).
  */
+const CONTOURS_KEY = 'super-vox.map.contours';
+const readContours = () => {
+  try {
+    return localStorage.getItem(CONTOURS_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+
 export class WorldMapOverlay {
   private readonly root: HTMLDivElement;
   private readonly canvas: HTMLCanvasElement;
@@ -163,6 +201,7 @@ export class WorldMapOverlay {
       '<div class="bar"><button type="button" class="mode">3D view</button>' +
       `<label class="height" hidden>height × <input type="range" min="1" max="12" step="0.5" value="${DEFAULT_EXAGGERATION}"><span>${DEFAULT_EXAGGERATION}</span></label>` +
       '<label class="miniature" hidden><input type="checkbox" checked> miniature</label>' +
+      '<label class="contours"><input type="checkbox"> contours</label>' +
       // TEMPORARY (cave map): see drawCaves.
       '<label class="caves" hidden><input type="checkbox" checked> caves</label></div>' +
       '<div class="frame"><canvas class="marks"></canvas></div><div class="info">loading map…</div>';
@@ -235,8 +274,22 @@ export class WorldMapOverlay {
     this.cavesControl = this.root.querySelector('label.caves')!;
     const cavesBox = this.cavesControl.querySelector('input')!;
     cavesBox.addEventListener('change', () => this.update());
+    // Contours (remembered): every picture painted again with them, or without.
+    const contoursBox = this.root.querySelector<HTMLInputElement>('label.contours input')!;
+    contoursBox.checked = this.contours = readContours();
+    contoursBox.addEventListener('change', () => {
+      this.contours = contoursBox.checked;
+      try {
+        localStorage.setItem(CONTOURS_KEY, this.contours ? '1' : '0');
+      } catch {
+        // (Not kept: it's on for now.)
+      }
+      if (this.map) this.paint(this.map, this.base);
+      for (const t of this.tiles.values()) this.paint(t.map, t.image);
+      this.update();
+    });
     // Keys typed on the controls stay with them (not the game).
-    for (const el of [slider, mini, cavesBox, this.modeButton]) el.addEventListener('keydown', (e) => e.stopPropagation());
+    for (const el of [slider, mini, cavesBox, contoursBox, this.modeButton]) el.addEventListener('keydown', (e) => e.stopPropagation());
   }
 
   /**
@@ -484,11 +537,14 @@ export class WorldMapOverlay {
     for (const t of this.tiles.values()) this.paint(t.map, t.image);
   }
 
+  /** Whether the map's drawn with contour lines (see renderMap). */
+  private contours = false;
+
   private paint(map: MapData & { x0?: number; z0?: number }, image: HTMLCanvasElement): void {
     if (this.climate && !map.colors) map.colors = climateTintColors(map, this.climate);
     image.width = map.cols;
     image.height = map.rows;
-    image.getContext('2d')!.putImageData(new ImageData(renderMap(map), map.cols, map.rows), 0, 0);
+    image.getContext('2d')!.putImageData(new ImageData(renderMap(map, this.contours), map.cols, map.rows), 0, 0);
   }
 
   private async load(): Promise<void> {
@@ -558,14 +614,14 @@ export class WorldMapOverlay {
   }
 
   /** World position, height, and material under the mouse (from the sharpest picture there), or null outside the world. */
-  private at(e: MouseEvent): { x: number; z: number; height: number; material: number } | null {
+  private at(e: MouseEvent): { x: number; z: number; height: number; material: number; ground: number } | null {
     const r = this.canvas.getBoundingClientRect();
     const [x, z] = screenToWorld(this.currentView(), r.width, r.height, e.clientX - r.left, e.clientY - r.top);
     return this.sample(x, z);
   }
 
   /** The map at (x, z) (units): the cell there (its middle), its height and surface; null off the world, or before the map's come. */
-  private sample(x: number, z: number): { x: number; z: number; height: number; material: number } | null {
+  private sample(x: number, z: number): { x: number; z: number; height: number; material: number; ground: number } | null {
     const m = this.map;
     if (!m) return null;
     if (this.world.wrapX) x = mod(x, this.world.width);
@@ -574,11 +630,11 @@ export class WorldMapOverlay {
       const i = Math.floor((x - p.x0) / p.map.step), j = Math.floor((z - p.z0) / p.map.step);
       if (i < 0 || j < 0 || i >= p.map.cols || j >= p.map.rows) continue;
       const k = i + p.map.cols * j;
-      return { x: p.x0 + (i + 0.5) * p.map.step, z: p.z0 + (j + 0.5) * p.map.step, height: p.map.heights[k]!, material: p.map.materials[k]! };
+      return { x: p.x0 + (i + 0.5) * p.map.step, z: p.z0 + (j + 0.5) * p.map.step, height: p.map.heights[k]!, material: p.map.materials[k]!, ground: (p.map.ground ?? p.map.heights)[k]! };
     }
     const i = Math.min(m.cols - 1, Math.floor(x / m.step)), j = Math.min(m.rows - 1, Math.floor(z / m.step));
     const k = i + m.cols * j;
-    return { x: (i + 0.5) * m.step, z: (j + 0.5) * m.step, height: m.heights[k]!, material: m.materials[k]! };
+    return { x: (i + 0.5) * m.step, z: (j + 0.5) * m.step, height: m.heights[k]!, material: m.materials[k]!, ground: (m.ground ?? m.heights)[k]! };
   }
 
   /** The view moved to (x, z) (units), close enough in to see a village (`across` units across the narrower side). */
@@ -602,7 +658,7 @@ export class WorldMapOverlay {
     return this.canTravel ? h : h.replace(', ⌘-click to go there', '');
   }
 
-  private showInfo(p: { x: number; z: number; height: number; material: number } | null, hint = this.hint(false)): void {
+  private showInfo(p: { x: number; z: number; height: number; material: number; ground?: number } | null, hint = this.hint(false)): void {
     if (!this.map) return;
     if (!p) {
       this.info.textContent = hint;
@@ -611,7 +667,9 @@ export class WorldMapOverlay {
     const m = (u: number) => (u / UNITS_PER_METER).toFixed(0);
     const sea = this.map.seaLevel;
     const under = sea !== null && p.height < sea ? ` · ${m(sea - p.height)} m under the sea` : '';
-    this.info.textContent = `x ${m(p.x)} m, z ${m(p.z)} m · ground ${m(p.height)} m · ${materialName(p.material)}${under}${this.canTravel ? ' · ⌘-click to go there' : ''}`;
+    // (The ground's own height, under trees; over a lake or river, its surface's.)
+    const g = p.ground ?? p.height, level = p.material === Material.Water ? `water at ${m(g)} m` : `ground ${m(g)} m`;
+    this.info.textContent = `x ${m(p.x)} m, z ${m(p.z)} m · ${level} · ${materialName(p.material)}${under}${this.canTravel ? ' · ⌘-click to go there' : ''}`;
   }
 }
 

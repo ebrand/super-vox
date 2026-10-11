@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { Material } from '@super-vox/shared';
 import { materialColor } from './materials.js';
-import { decodeWorldMap, linearToSrgb, mapColor, renderMap, travelClick, type MapData } from './worldMap.js';
+import { contourInterval, decodeWorldMap, linearToSrgb, mapColor, renderMap, travelClick, type MapData } from './worldMap.js';
 
 describe('map colours', () => {
   it('converts linear to sRGB like three.js (GPU constants; within rounding of its JS helper)', () => {
@@ -52,6 +52,42 @@ describe('world map data', () => {
     v.setInt32(8, -(2 ** 31), true);
     expect(decodeWorldMap(buf).seaLevel).toBeNull();
     expect(() => decodeWorldMap(buf.slice(0, 20))).toThrow();
+  });
+
+  it("decodes the ground's own heights after the rest, when they're sent", () => {
+    const n = 6;
+    const buf = new ArrayBuffer(12 + n * 5);
+    const v = new DataView(buf);
+    v.setUint16(0, 3, true); v.setUint16(2, 2, true); v.setUint32(4, 1000, true); v.setInt32(8, 0, true);
+    map.heights.forEach((h, i) => v.setInt16(12 + i * 2, h, true));
+    new Uint8Array(buf, 12 + n * 2).set(map.materials);
+    for (let i = 0; i < n; i++) v.setInt16(12 + n * 3 + i * 2, i * 10, true);
+    expect(Array.from(decodeWorldMap(buf).ground!)).toEqual([0, 10, 20, 30, 40, 50]);
+  });
+
+  it('draws contours where the ground crosses each interval (from its own height, not tree tops), not over water', () => {
+    // A slope rising a metre a column, 40 columns, 1 m a pixel (contours every metre: every fifth bolder).
+    const cols = 40, rows = 3, step = 16;
+    const ground = new Int16Array(cols * rows), heights = new Int16Array(cols * rows), materials = new Uint8Array(cols * rows).fill(Material.Grass);
+    for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+      ground[i + cols * j] = i * 16 + 8;
+      // (Trees over column 10: tall, their tops no contour.)
+      heights[i + cols * j] = i === 10 ? 400 : i * 16 + 8;
+    }
+    const slope: MapData = { cols, rows, step, seaLevel: null, heights, materials, ground };
+    expect(contourInterval(step)).toBe(1);
+    const plain = renderMap(slope), lined = renderMap(slope, true);
+    const darker = (i: number) => lined[(i + cols) * 4]! < plain[(i + cols) * 4]!;
+    // Every column's on the low side of a crossing (a metre a column): all lined; every fifth darker still.
+    expect(Array.from({ length: cols - 1 }, (_, i) => darker(i)).every(Boolean)).toBe(true);
+    const shade = (i: number) => lined[(i + cols) * 4]! / plain[(i + cols) * 4]!;
+    expect(shade(4)).toBeLessThan(shade(5)); // (column 4 to 5 crosses 5 m: bold)
+    // Water: no lines.
+    const wet: MapData = { ...slope, materials: new Uint8Array(cols * rows).fill(Material.Water) };
+    expect(Array.from(renderMap(wet, true))).toEqual(Array.from(renderMap(wet)));
+    // Coarse maps: contours further apart.
+    expect([contourInterval(16 * 16), contourInterval(64 * 16)]).toEqual([10, 25]);
+    expect(contourInterval(4 * 16)).toBe(5);
   });
 
   it('renders one opaque pixel per sample, with water only below sea level', () => {

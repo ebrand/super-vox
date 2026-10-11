@@ -162,10 +162,12 @@ describe('world map', () => {
     const cols = v.getUint16(0, true), rows = v.getUint16(2, true), step = v.getUint32(4, true);
     expect([cols, rows, step]).toEqual([256, 256, 1000]);
     expect(v.getInt32(8, true)).toBe(-(2 ** 31)); // flat test world: no sea
-    expect(buf.byteLength).toBe(12 + cols * rows * 3);
+    // (Heights, materials, and the ground's own heights after them.)
+    expect(buf.byteLength).toBe(12 + cols * rows * 5);
     // Flat world at resolution 4: ground top at y = 0, grass on top.
     expect(v.getInt16(12, true)).toBe(0);
     expect(buf[12 + cols * rows * 2]).toBe(3);
+    expect(v.getInt16(12 + cols * rows * 3, true)).toBe(0);
   });
 
   it('rejects silly sizes', async () => {

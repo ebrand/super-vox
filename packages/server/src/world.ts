@@ -211,6 +211,8 @@ export interface WorldMap {
   seaLevel: number | null;
   heights: Int16Array;
   materials: Uint8Array;
+  /** The ground's own height (or the water's over it), under trees: for contours (sent after the rest). */
+  ground?: Int16Array;
 }
 
 /**
@@ -220,7 +222,7 @@ export interface WorldMap {
  */
 export function encodeWorldMap(m: WorldMap): Uint8Array {
   const n = m.cols * m.rows;
-  const buf = new Uint8Array(12 + n * 3);
+  const buf = new Uint8Array(12 + n * (m.ground ? 5 : 3));
   const v = new DataView(buf.buffer);
   v.setUint16(0, m.cols, true);
   v.setUint16(2, m.rows, true);
@@ -228,6 +230,7 @@ export function encodeWorldMap(m: WorldMap): Uint8Array {
   v.setInt32(8, m.seaLevel ?? -(2 ** 31), true);
   for (let i = 0; i < n; i++) v.setInt16(12 + i * 2, m.heights[i]!, true);
   buf.set(m.materials, 12 + n * 2);
+  if (m.ground) for (let i = 0; i < n; i++) v.setInt16(12 + n * 3 + i * 2, m.ground[i]!, true);
   return buf;
 }
 
