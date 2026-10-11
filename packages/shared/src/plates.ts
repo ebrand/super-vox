@@ -388,6 +388,12 @@ export function validatePlateTerrain(c: PlateTerrainConfig): void {
 
 /** Coarse grid cell (units): 32 m. Heights between cells are interpolated. */
 export const PLATE_CELL = 512;
+/**
+ * A lake's shore (see surface), in how much of a lake a place is: just over the level for SHORE_FLAT
+ * beyond its edge, then let down to the ground's own height over SHORE_RAMP more.
+ */
+const SHORE_FLAT = 0.12;
+const SHORE_RAMP = 0.25;
 const M = 16; // units per metre
 /** Largest small-scale roughness (units), on the highest ground; the least, on low ground. */
 const DETAIL_MAX = 6 * M;
@@ -630,6 +636,8 @@ export class PlateHeights implements HeightSource {
   private readonly beachHeight: number;
   /** Noise varying beaches along a coast. */
   private readonly beachNoise: Octave[];
+  /** Lakes' shores wander (see surface): not along the grid's cell edges. */
+  private readonly shoreNoise: Octave[];
   /** Climate per grid cell: sea-level temperature (degrees C) and moisture (0..1); null without biomes. */
   readonly temperature: Float32Array | null;
   readonly moisture: Float32Array | null;
@@ -1658,6 +1666,7 @@ export class PlateHeights implements HeightSource {
     this.rockVariety = config.rockVariety / 100;
     // Beaches come and go along a coast over a few hundred metres.
     this.beachNoise = octaves(config.terrainSeed * 7919 + 13, [8192, 4096, 2048]);
+    this.shoreNoise = octaves(config.terrainSeed * 7919 + 59, [1024, 512, 256], 0.6);
     // The snow line wanders at every scale from ~1 km down to 16 m.
     this.snowNoise = octaves(config.terrainSeed * 7919 + 37, [16384, 8192, 4096, 2048, 1024, 512, 256], 0.65);
     this.snowWander = (config.snowFractal / 100) * SNOW_FRACTAL_MAX;
@@ -1819,7 +1828,7 @@ export class PlateHeights implements HeightSource {
             top = r.water;
           }
           if (lakes) {
-            // A lake fills its basin up to its level, around its cells and a cell beyond.
+            // A lake's level: the highest of its cell's and its neighbours'.
             const c = Math.floor(x / PLATE_CELL), r = Math.floor(z / PLATE_CELL);
             const cell = c * 1_000_003 + r;
             if (cell !== lakeCell) {
@@ -1835,7 +1844,20 @@ export class PlateHeights implements HeightSource {
               }
             }
             const level = lakeLevel;
-            if (!Number.isNaN(level) && heights[k]! < level) top = Math.max(top ?? -Infinity, level);
+            if (!Number.isNaN(level) && heights[k]! < level) {
+              // Whether this is the lake or its shore: how much of a lake it is (its cells blended
+              // between their middles, as the ground is), against a line that wanders. The lake
+              // (water up to its level) where it's more; its shore where it's less, the ground
+              // there raised to just over the level, then let down to what it was outward. So water
+              // never stands beside lower ground: there's always a bank (no wall of water).
+              const shore = this.lakeness(x, z) - (0.5 + 0.3 * fractalAt(this.shoreNoise, x, z));
+              if (shore >= 0) top = Math.max(top ?? -Infinity, level);
+              else if (top === null && shore > -SHORE_RAMP - SHORE_FLAT) {
+                // (Not across a river's channel: it runs out of the lake through its bank.)
+                const bank = level + 1, f = Math.min(1, (shore + SHORE_RAMP + SHORE_FLAT) / SHORE_RAMP);
+                heights[k] = Math.round(heights[k]! + (bank - heights[k]!) * f);
+              }
+            }
           }
           if (top !== null && top > heights[k]! && top > this.seaLevel) {
             water ??= new Int32Array(w * d).fill(NO_WATER);
@@ -1855,6 +1877,24 @@ export class PlateHeights implements HeightSource {
     }
     this.lastSurface = { key, heights, water };
     return this.lastSurface;
+  }
+
+  /**
+   * How much of a lake (x, z) (units) is: 1 among lake cells, 0 well away from them, between
+   * them blended from the four cells' middles around it (as the ground is, see interpolate).
+   */
+  private lakeness(x: number, z: number): number {
+    const h = this.hydrology!;
+    const fx = x / PLATE_CELL - 0.5, fz = z / PLATE_CELL - 0.5;
+    const c0 = Math.floor(fx), r0 = Math.floor(fz), tx = fx - c0, tz = fz - r0;
+    const lake = (c: number, r: number) => {
+      if (this.wrap) c = ((c % this.cols) + this.cols) % this.cols;
+      if (c < 0 || c >= this.cols || r < 0 || r >= this.rows) return 0;
+      return Number.isNaN(h.lakeLevel[c + this.cols * r]!) ? 0 : 1;
+    };
+    const a = lake(c0, r0) + (lake(c0 + 1, r0) - lake(c0, r0)) * tx;
+    const b = lake(c0, r0 + 1) + (lake(c0 + 1, r0 + 1) - lake(c0, r0 + 1)) * tx;
+    return a + (b - a) * tz;
   }
 
   /** The polar ice's surface over samples (units; -Infinity where there's none), or null if none is near. */

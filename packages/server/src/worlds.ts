@@ -136,7 +136,7 @@ export interface WorldCatalog {
 }
 
 /** Bumped when what the disk cache holds changes form. */
-const CACHE_FORMAT = 4;
+const CACHE_FORMAT = 5; // (5: lakes' shores banked, not walled: see PlateHeights.surface)
 
 /**
  * Which version of a world's terrain a disk cache holds: its settings and terraforming, and (so
