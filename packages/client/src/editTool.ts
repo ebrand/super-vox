@@ -1005,7 +1005,7 @@ export class EditTool {
           ? `aiming at ${sizeLabel(this.target.size)} of ${materialName(this.targetMaterial)}${this.mode === 'hybrid' ? ' (click: light it, then stand back)' : ''}`
           : `aiming at a ${sizeLabel(this.target.size)} voxel${this.needsPickaxe()}`;
     const held = this.materialOf();
-    if (this.mode === 'track') return `mode: track (Tab: ${cycleText(this.bigBoxes)}) · laying railways, seen from above · Tab: on${msg}`;
+    if (this.mode === 'track') return `mode: track (Tab: ${cycleText(this.bigBoxes)}) · laying railways and aqueducts, seen from above · Tab: on${msg}`;
     if (this.mode === 'explore') return `mode: explore (Tab: ${cycleText(this.bigBoxes)}) · just looking round: nothing in hand · Tab: back to the tools${msg}`;
     if (this.mode === 'build') {
       const b = this.builder;

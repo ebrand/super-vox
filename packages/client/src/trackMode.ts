@@ -1,6 +1,13 @@
 import * as THREE from 'three';
 import {
+  AQUEDUCT_FALLS,
+  AQUEDUCT_MAX_CUT_M,
+  AQUEDUCT_MAX_HEIGHT_M,
+  BLOCK_SIZE,
+  INTAKE_REACH_M,
   DESIGN_SPEEDS,
+  formatBlocks,
+  itemName,
   JOIN_M,
   MAX_CUT_M,
   MAX_FILL_M,
@@ -11,6 +18,8 @@ import {
   freeEnds,
   radiusFor,
   segmentLine,
+  type Aqueduct,
+  type ServerMessage,
   type Track,
   type TrackPlan,
 } from '@super-vox/shared';
@@ -29,6 +38,23 @@ export interface TrackAsk {
   lay: boolean;
 }
 
+/** An aqueduct's segment asked of the server (see the aqueduct message), or one finished. */
+export interface AqueductAsk {
+  type: 'aqueduct';
+  id: number;
+  aqueduct: number | null;
+  from: { bx: number; bz: number };
+  to: { bx: number; bz: number };
+  fall: number;
+  build: boolean;
+}
+export interface AqueductFinishAsk {
+  type: 'aqueductFinish';
+  id: number;
+  aqueduct: number;
+}
+type AqueductPlanMessage = Extract<ServerMessage, { type: 'aqueductPlan' }>;
+
 export interface TrackModeHooks {
   scene: THREE.Scene;
   /** The game's camera: its field of view and shape (and, where it is, where we stand). */
@@ -37,7 +63,7 @@ export interface TrackModeHooks {
   yaw: () => number;
   /** Whether there's ground at a point (metres): undefined where nothing's known yet. Asked for afresh each time it's needed. */
   solid: () => (x: number, y: number, z: number) => boolean | undefined;
-  send: (msg: TrackAsk) => void;
+  send: (msg: TrackAsk | AqueductAsk | AqueductFinishAsk) => void;
   /** Whether we may lay track here, and whether it's survival (track near where we stand only). */
   canBuild: () => boolean;
   survival: () => boolean;
@@ -47,7 +73,7 @@ export interface TrackModeHooks {
   exit: () => void;
 }
 
-type Tool = 'straight' | 'curve';
+type Tool = 'straight' | 'curve' | 'aqueduct';
 /** Where a segment starts (units; y metres): a track's free end (its heading out), or anywhere (no heading). */
 interface Start {
   x: number;
@@ -60,10 +86,15 @@ interface Start {
 const GOOD = new THREE.Color(0x3fb950), SLOWER = new THREE.Color(0xf0b429), BAD = new THREE.Color(0xff5c5c), ASKING = new THREE.Color(0xd0d7de);
 /** Laid track, from above. */
 const LAID = new THREE.Color(0x79c0ff);
+/** Aqueducts built, from above: running (blue-green), broken (amber) from where their water stops. */
+const CHANNEL = new THREE.Color(0x3fc8c8), DRY = new THREE.Color(0xd29922);
 const END_COLOUR = 0xffd23f, START_COLOUR = 0x3fb950;
 const HELP =
   "Click a track's end (a yellow post) to go on from it, a point along a track to branch from it (curve: 2), or anywhere to start a straight; click again to lay it. " +
   'Right-click or Esc: stop. 1 straight, 2 curve, [ ] design speed. Drag: move · right-drag: turn · wheel: nearer, further · WASD: move · Tab: on.';
+const AQUEDUCT_HELP =
+  `Aqueduct (3): click within ${INTAKE_REACH_M} m of a lake or river to start its head there (or an aqueduct's end, a cyan post, to go on from it); click again to build to there. ` +
+  'It only falls: [ ] how steeply. F (or Finish): its outlet basin at its end. Right-click or Esc: stop.';
 
 /**
  * Track mode (Tab, see EditTool): laying railways seen from above, as a building game does. The
@@ -86,6 +117,12 @@ export class TrackMode {
   private distance = 80;
   private tool: Tool = 'straight';
   private speed: number = DESIGN_SPEEDS[2];
+  /** Aqueducts: how steeply the next segment falls; the world's built ones; where the segment aimed starts (a new head's block, or an aqueduct's end), and its plan. */
+  private fall: number = AQUEDUCT_FALLS[2];
+  private aqueducts: readonly Aqueduct[] = [];
+  private aqStart: { aqueduct: number | null; bx: number; bz: number; y: number } | null = null;
+  private aqPlan: { key: string; plan: AqueductPlanMessage['plan'] | null; error: string } | null = null;
+  private readonly aqLaid = new THREE.Group();
   private start: Start | null = null;
   /** Where the mouse is (client pixels), and the ground under it (units; y metres). */
   private mouse: { x: number; y: number } | null = null;
@@ -96,7 +133,7 @@ export class TrackMode {
   private askedKey = '';
   private askedAt = 0;
   private answered = true;
-  private pending: TrackAsk | null = null;
+  private pending: TrackAsk | AqueductAsk | null = null;
   private plan: { key: string; plan: TrackPlan | null; error: string } | null = null;
   private laying = false;
   private note = '';
@@ -116,10 +153,11 @@ export class TrackMode {
   private readonly endMaterial = new THREE.MeshBasicMaterial({ color: END_COLOUR, depthTest: false, transparent: true, opacity: 0.9 });
   private readonly startMaterial = new THREE.MeshBasicMaterial({ color: START_COLOUR, depthTest: false, transparent: true, opacity: 0.95 });
   private readonly startPost = new THREE.Mesh(this.postGeometry, this.startMaterial);
+  private readonly aqEndMaterial = new THREE.MeshBasicMaterial({ color: 0x3fc8c8, depthTest: false, transparent: true, opacity: 0.9 });
 
   constructor(private readonly hooks: TrackModeHooks) {
     this.view = new THREE.PerspectiveCamera(hooks.camera.fov, hooks.camera.aspect, hooks.camera.near, hooks.camera.far);
-    this.group.add(this.laid, this.posts, this.startPost);
+    this.group.add(this.laid, this.aqLaid, this.posts, this.startPost);
     this.group.visible = false;
     this.group.renderOrder = 20;
     this.startPost.visible = false;
@@ -130,16 +168,19 @@ export class TrackMode {
     this.overlay.hidden = true;
     this.overlay.innerHTML =
       '<div class="track-panel">' +
-      '<div class="track-row"><b>Track</b> <button type="button" data-tool="straight">Straight (1)</button> <button type="button" data-tool="curve">Curve (2)</button></div>' +
-      `<div class="track-row">Design speed ${DESIGN_SPEEDS.map((s) => `<button type="button" data-speed="${s}">${s}</button>`).join(' ')} km/h</div>` +
+      '<div class="track-row"><b>Track</b> <button type="button" data-tool="straight">Straight (1)</button> <button type="button" data-tool="curve">Curve (2)</button> <b>Water</b> <button type="button" data-tool="aqueduct">Aqueduct (3)</button></div>' +
+      `<div class="track-row" data-for="track">Design speed ${DESIGN_SPEEDS.map((s) => `<button type="button" data-speed="${s}">${s}</button>`).join(' ')} km/h</div>` +
+      `<div class="track-row" data-for="aqueduct">Falls 1 in ${AQUEDUCT_FALLS.map((f) => `<button type="button" data-fall="${f}">${Math.round(1 / f)}</button>`).join(' ')} <button type="button" data-finish>Finish (F)</button></div>` +
       '<div class="track-stats"></div><canvas class="track-profile" width="320" height="90"></canvas>' +
-      `<div class="track-help">${HELP}</div></div>`;
+      `<div class="track-help" data-for="track">${HELP}</div><div class="track-help" data-for="aqueduct">${AQUEDUCT_HELP}</div></div>`;
     document.body.append(this.overlay);
     this.stats = this.overlay.querySelector('.track-stats')!;
     this.graph = this.overlay.querySelector('.track-profile')!;
     const panel = this.overlay.querySelector('.track-panel') as HTMLElement;
     for (const b of panel.querySelectorAll<HTMLButtonElement>('button[data-tool]')) b.onclick = () => this.setTool(b.dataset.tool as Tool);
     for (const b of panel.querySelectorAll<HTMLButtonElement>('button[data-speed]')) b.onclick = () => this.setSpeed(Number(b.dataset.speed));
+    for (const b of panel.querySelectorAll<HTMLButtonElement>('button[data-fall]')) b.onclick = () => this.setFall(Number(b.dataset.fall));
+    panel.querySelector<HTMLButtonElement>('button[data-finish]')!.onclick = () => this.finish();
     // (The panel's own clicks aren't the ground's.)
     for (const type of ['pointerdown', 'pointermove', 'pointerup', 'wheel', 'contextmenu'] as const) panel.addEventListener(type, (e) => e.stopPropagation());
     this.overlay.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -181,8 +222,10 @@ export class TrackMode {
       this.place();
     } else {
       this.start = null;
+      this.aqStart = null;
       this.hover = null;
       this.plan = null;
+      this.aqPlan = null;
       this.clearRibbon();
     }
     this.show();
@@ -225,6 +268,60 @@ export class TrackMode {
         this.plan = { key: this.askedKey, plan: msg.plan ?? null, error: msg.error ?? 'not laid' };
       }
     } else this.plan = { key: this.askedKey, plan: msg.plan ?? null, error: msg.error ?? '' };
+    if (this.pending) {
+      const next = this.pending;
+      this.pending = null;
+      this.sendAsk(next);
+    }
+    this.show();
+  }
+
+  /** The world's aqueducts: drawn from above (blue-green as far as their water runs, amber past a break), their unfinished ends posts to go on from. */
+  setAqueducts(aqueducts: readonly Aqueduct[]): void {
+    this.aqueducts = aqueducts;
+    for (const m of this.aqLaid.children) (m as THREE.Mesh).geometry?.dispose();
+    this.aqLaid.clear();
+    const B = BLOCK_SIZE;
+    for (const a of aqueducts) {
+      const pts = a.cells.map((c) => ({ x: (c.bx + 0.5) * (B / M), y: c.floor / M, z: (c.bz + 0.5) * (B / M) }));
+      for (const [part, colour] of [[pts.slice(0, Math.max(1, a.runs)), CHANNEL], [pts.slice(Math.max(0, a.runs - 1)), DRY]] as const) {
+        if (part.length < 2) continue;
+        const m = new THREE.Mesh(ribbonGeometry(part, 1.4, colour), this.laidMaterial);
+        m.renderOrder = 19;
+        this.aqLaid.add(m);
+      }
+      if (!a.finished && pts.length) {
+        const post = new THREE.Mesh(this.postGeometry, this.aqEndMaterial);
+        post.position.set(pts.at(-1)!.x, pts.at(-1)!.y, pts.at(-1)!.z);
+        post.renderOrder = 21;
+        this.aqLaid.add(post);
+      }
+    }
+  }
+
+  /** The server's plan for an aqueduct segment asked (only the last asked counts); built, or finished. */
+  aqueductPlanned(msg: AqueductPlanMessage): void {
+    if (msg.id !== this.asked) return;
+    this.answered = true;
+    if (this.laying) {
+      this.laying = false;
+      if (msg.built !== undefined && msg.plan) {
+        // Built: go on from its end.
+        const end = msg.plan.cells.at(-1)!;
+        this.aqStart = { aqueduct: msg.built, bx: end[0], bz: end[1], y: end[2] / M };
+        this.aqPlan = null;
+        this.askedKey = '';
+        this.note = `built ${Math.round(msg.plan.length)} m: go on from its end, F to finish it, or right-click to stop`;
+      } else if (msg.built !== undefined) {
+        this.note = 'finished: its outlet basin built';
+        this.aqStart = null;
+        this.aqPlan = null;
+        this.askedKey = '';
+      } else {
+        this.note = '';
+        this.aqPlan = { key: this.askedKey, plan: msg.plan ?? null, error: msg.error ?? 'not built' };
+      }
+    } else this.aqPlan = { key: this.askedKey, plan: msg.plan ?? null, error: msg.error ?? '' };
     if (this.pending) {
       const next = this.pending;
       this.pending = null;
@@ -320,6 +417,7 @@ export class TrackMode {
   private aim(): void {
     const g = this.mouse && this.pick(this.mouse.x, this.mouse.y);
     this.hover = g ? { x: g.x * M, z: g.z * M, y: g.y } : null;
+    if (this.tool === 'aqueduct') return this.aimAqueduct();
     // (Near a free end, with nothing started: that end's where it'd start.)
     const near = !this.start && this.hover ? this.endNear(this.hover.x, this.hover.z) : null;
     this.endMaterial.opacity = near ? 1 : 0.85;
@@ -339,7 +437,41 @@ export class TrackMode {
     this.drawRibbon();
   }
 
-  private sendAsk(ask: TrackAsk): void {
+  /** The block under a point (units). */
+  private blockOf(x: number, z: number): { bx: number; bz: number } {
+    return { bx: Math.floor(x / BLOCK_SIZE), bz: Math.floor(z / BLOCK_SIZE) };
+  }
+
+  /** An unfinished aqueduct's end near a point (units), if one's within JOIN_M. */
+  private aqueductEndNear(x: number, z: number): { aqueduct: number; bx: number; bz: number; y: number } | null {
+    let best: { aqueduct: number; bx: number; bz: number; y: number } | null = null, d = JOIN_M * M;
+    for (const a of this.aqueducts) {
+      const e = a.cells.at(-1);
+      if (a.finished || !e) continue;
+      const de = Math.hypot((e.bx + 0.5) * BLOCK_SIZE - x, (e.bz + 0.5) * BLOCK_SIZE - z);
+      if (de < d) (d = de), (best = { aqueduct: a.id, bx: e.bx, bz: e.bz, y: e.floor / M });
+    }
+    return best;
+  }
+
+  /** An aqueduct's segment aimed: asked of the server (as the mouse moves), its plan drawn. */
+  private aimAqueduct(): void {
+    if (!this.aqStart || !this.hover) {
+      this.clearRibbon();
+      return;
+    }
+    const to = this.blockOf(this.hover.x, this.hover.z);
+    const ask: AqueductAsk = { type: 'aqueduct', id: 0, aqueduct: this.aqStart.aqueduct, from: { bx: this.aqStart.bx, bz: this.aqStart.bz }, to, fall: this.fall, build: false };
+    const key = keyOf(ask);
+    if (key === this.askedKey || (this.pending && keyOf(this.pending) === key)) return this.drawRibbon();
+    if (!this.laying) {
+      if (!this.answered && performance.now() - this.askedAt < 1500) this.pending = ask;
+      else this.sendAsk(ask);
+    }
+    this.drawRibbon();
+  }
+
+  private sendAsk(ask: TrackAsk | AqueductAsk): void {
     ask.id = ++this.asked;
     this.askedKey = keyOf(ask);
     this.askedAt = performance.now();
@@ -350,6 +482,7 @@ export class TrackMode {
   /** The segment being aimed: the plan's line (coloured by speed, or red: why not), or (asked, not yet answered) the line as it'd go. */
   private drawRibbon(): void {
     this.clearRibbon();
+    if (this.tool === 'aqueduct') return this.drawAqueductRibbon();
     const start = this.start;
     if (!start || !this.hover) return;
     const current = this.plan && this.plan.key === this.askedKey ? this.plan : null;
@@ -376,14 +509,32 @@ export class TrackMode {
     this.startPost.position.set(start.x / M, start.y, start.z / M);
   }
 
+  /** The aqueduct segment aimed: its plan's channel (green; red: why not), or (not yet answered) a line straight to the aim. */
+  private drawAqueductRibbon(): void {
+    const start = this.aqStart;
+    if (!start || !this.hover) return;
+    const current = this.aqPlan && this.aqPlan.key === this.askedKey ? this.aqPlan : null, B = BLOCK_SIZE;
+    const pts = current?.plan
+      ? current.plan.cells.map(([bx, bz, floor]) => ({ x: (bx + 0.5) * (B / M), y: floor / M, z: (bz + 0.5) * (B / M) }))
+      : [{ x: (start.bx + 0.5) * (B / M), y: start.y, z: (start.bz + 0.5) * (B / M) }, { x: this.hover.x / M, y: this.hover.y, z: this.hover.z / M }];
+    const colour = current?.error ? BAD : current?.plan ? GOOD : ASKING;
+    this.ribbon = new THREE.Mesh(ribbonGeometry(pts, 1.8, colour), this.ribbonMaterial);
+    this.ribbon.renderOrder = 20;
+    this.group.add(this.ribbon);
+    this.startPost.visible = true;
+    this.startPost.position.set(pts[0]!.x, pts[0]!.y, pts[0]!.z);
+  }
+
   private clearRibbon(): void {
     if (this.ribbon) {
       this.ribbon.geometry.dispose();
       this.ribbon.removeFromParent();
       this.ribbon = null;
     }
-    this.startPost.visible = !!this.start;
-    if (this.start) this.startPost.position.set(this.start.x / M, this.start.y, this.start.z / M);
+    const aq = this.tool === 'aqueduct' ? this.aqStart : null;
+    this.startPost.visible = aq ? true : !!this.start && this.tool !== 'aqueduct';
+    if (aq) this.startPost.position.set((aq.bx + 0.5) * (BLOCK_SIZE / M), aq.y, (aq.bz + 0.5) * (BLOCK_SIZE / M));
+    else if (this.start) this.startPost.position.set(this.start.x / M, this.start.y, this.start.z / M);
   }
 
   private pointerDown(e: PointerEvent): void {
@@ -434,6 +585,7 @@ export class TrackMode {
   private click(): void {
     this.aim();
     if (!this.hover) return;
+    if (this.tool === 'aqueduct') return this.clickAqueduct();
     if (!this.start) {
       // From a track's end (its way, its height), or from here (a straight).
       const end = this.endNear(this.hover.x, this.hover.z);
@@ -460,8 +612,54 @@ export class TrackMode {
     this.show();
   }
 
+  /** An aqueduct: the first click starts it (a head here, or on from an end near); the next, if it's planned as aimed and can be, builds to there. */
+  private clickAqueduct(): void {
+    const hover = this.hover!;
+    if (!this.aqStart) {
+      const end = this.aqueductEndNear(hover.x, hover.z);
+      this.aqStart = end ?? { aqueduct: null, ...this.blockOf(hover.x, hover.z), y: hover.y };
+      this.note = end ? '' : 'a new aqueduct: its head here (it must be near a lake or river)';
+      this.aqPlan = null;
+      this.askedKey = '';
+      this.aim();
+      this.show();
+      return;
+    }
+    const current = this.aqPlan && this.aqPlan.key === this.askedKey ? this.aqPlan : null;
+    if (!current?.plan || current.error || this.laying) return;
+    if (!this.hooks.canBuild()) {
+      this.note = "you can't build here";
+      return this.show();
+    }
+    const ask: AqueductAsk = { type: 'aqueduct', id: 0, aqueduct: this.aqStart.aqueduct, from: { bx: this.aqStart.bx, bz: this.aqStart.bz }, to: this.blockOf(hover.x, hover.z), fall: this.fall, build: true };
+    this.pending = null;
+    this.laying = true;
+    this.note = 'building…';
+    this.sendAsk(ask);
+    this.show();
+  }
+
+  /** Finishes the aqueduct being built (its outlet basin at its end). */
+  private finish(): void {
+    const id = this.aqStart?.aqueduct;
+    if (this.tool !== 'aqueduct' || id === null || id === undefined || this.laying) {
+      this.note = 'build an aqueduct first, then finish it';
+      return this.show();
+    }
+    this.pending = null;
+    this.laying = true;
+    this.note = 'finishing…';
+    this.asked++;
+    this.askedKey = '';
+    this.answered = false;
+    this.hooks.send({ type: 'aqueductFinish', id: this.asked, aqueduct: id });
+    this.show();
+  }
+
   /** Nothing being laid: nothing started. */
   private stop(): void {
+    this.aqStart = null;
+    this.aqPlan = null;
     this.start = null;
     this.plan = null;
     this.askedKey = '';
@@ -472,6 +670,12 @@ export class TrackMode {
 
   private setTool(tool: Tool): void {
     this.tool = tool;
+    this.askedKey = '';
+    this.show();
+  }
+
+  private setFall(fall: number): void {
+    this.fall = fall;
     this.askedKey = '';
     this.show();
   }
@@ -495,9 +699,18 @@ export class TrackMode {
       return take();
     }
     if (e.repeat) return;
-    if (e.code === 'Digit1' || e.code === 'Digit2') {
+    if (e.code === 'Digit1' || e.code === 'Digit2' || e.code === 'Digit3') {
       take();
-      return this.setTool(e.code === 'Digit1' ? 'straight' : 'curve');
+      return this.setTool(e.code === 'Digit1' ? 'straight' : e.code === 'Digit2' ? 'curve' : 'aqueduct');
+    }
+    if (e.code === 'KeyF' && this.tool === 'aqueduct') {
+      take();
+      return this.finish();
+    }
+    if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && this.tool === 'aqueduct') {
+      take();
+      const i = AQUEDUCT_FALLS.indexOf(this.fall as (typeof AQUEDUCT_FALLS)[number]) + (e.code === 'BracketLeft' ? -1 : 1);
+      return this.setFall(AQUEDUCT_FALLS[Math.max(0, Math.min(AQUEDUCT_FALLS.length - 1, i))]!);
     }
     if (e.code === 'BracketLeft' || e.code === 'BracketRight') {
       take();
@@ -506,13 +719,16 @@ export class TrackMode {
     }
     if (e.code === 'Escape') {
       take();
-      if (this.start) this.stop();
+      if (this.start || this.aqStart) this.stop();
       else this.hooks.exit();
     }
   }
 
   private show(): void {
     for (const b of this.overlay.querySelectorAll<HTMLButtonElement>('button[data-tool]')) b.classList.toggle('on', b.dataset.tool === this.tool);
+    const aqueduct = this.tool === 'aqueduct';
+    for (const el of this.overlay.querySelectorAll<HTMLElement>('[data-for]')) el.hidden = (el.dataset.for === 'aqueduct') !== aqueduct;
+    if (aqueduct) return this.showAqueduct();
     for (const b of this.overlay.querySelectorAll<HTMLButtonElement>('button[data-speed]')) b.classList.toggle('on', Number(b.dataset.speed) === this.speed);
     const current = this.plan && this.plan.key === this.askedKey ? this.plan : null;
     const p = current?.plan ?? null;
@@ -530,6 +746,32 @@ export class TrackMode {
     this.stats.textContent = lines.join('\n');
     this.stats.classList.toggle('bad', !!current?.error);
     this.drawProfile(p);
+  }
+
+  /** The aqueduct tool's panel: what the segment aimed takes, or why it can't be. */
+  private showAqueduct(): void {
+    for (const b of this.overlay.querySelectorAll<HTMLButtonElement>('button[data-fall]')) b.classList.toggle('on', Number(b.dataset.fall) === this.fall);
+    const current = this.aqPlan && this.aqPlan.key === this.askedKey ? this.aqPlan : null, p = current?.plan ?? null;
+    const lines: string[] = [];
+    if (!this.aqStart) lines.push(this.aqueducts.some((a) => !a.finished) ? "Start: by a lake or river (its head), or an aqueduct's end (cyan)." : 'Start: click by a lake or river: its head goes there.');
+    else if (!current) lines.push('working it out…');
+    if (p) {
+      lines.push(`${Math.round(p.length)} m · falls 1 in ${Math.round(1 / p.fall)} · up to ${p.maxHeight.toFixed(1)} m over the ground (${AQUEDUCT_MAX_HEIGHT_M} at most) · cut ${p.maxCut.toFixed(1)} m (${AQUEDUCT_MAX_CUT_M} at most)`);
+      if (p.cost.length) lines.push(`takes ${p.cost.map(([m, v]) => `${formatBlocks(v)} m³ ${itemName(m)}`).join(', ')} (in survival)`);
+    }
+    if (current?.error) lines.push(`✗ ${current.error}`);
+    if (this.note) lines.push(this.note);
+    this.stats.textContent = lines.join('\n');
+    this.stats.classList.toggle('bad', !!current?.error);
+    // (Its profile: the ground under it, and its floor.)
+    if (p) {
+      let s = 0;
+      const prof = p.cells.map((c, i) => {
+        if (i) s += Math.hypot(c[0] - p.cells[i - 1]![0], c[1] - p.cells[i - 1]![1]) * (BLOCK_SIZE / M);
+        return { s, y: c[2] / M, ground: p.ground[i]! / M };
+      });
+      this.drawProfile({ profile: prof } as unknown as TrackPlan);
+    } else this.drawProfile(null);
   }
 
   /** The profile: the ground (brown) and the track (light), how high along how far. */
@@ -560,7 +802,7 @@ export class TrackMode {
   }
 }
 
-const keyOf = (a: TrackAsk) => `${a.from.x},${a.from.z},${a.heading},${a.to.x},${a.to.z},${a.curve},${a.speed}`;
+const keyOf = (a: TrackAsk | AqueductAsk) => (a.type === 'track' ? `${a.from.x},${a.from.z},${a.heading},${a.to.x},${a.to.z},${a.curve},${a.speed}` : `aq ${a.aqueduct},${a.from.bx},${a.from.bz},${a.to.bx},${a.to.bz},${a.fall}`);
 
 /** A flat strip `width` m wide along points (metres), a little over them, in one colour. */
 export function ribbonGeometry(pts: readonly { x: number; y: number; z: number }[], width: number, colour: THREE.Color): THREE.BufferGeometry {

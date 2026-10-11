@@ -10,6 +10,7 @@ import { TrainView } from './trainView.js';
 import { PostView } from './postView.js';
 import { CropView } from './cropView.js';
 import { SaplingView } from './saplingView.js';
+import { AqueductView } from './aqueductView.js';
 import { LinesPanel } from './linesPanel.js';
 import { PlacesPanel, type Place } from './placesPanel.js';
 import { CAB_EYE, SEAT_EYES } from './trainModels.js';
@@ -506,6 +507,8 @@ let postView: PostView | null = null;
 let cropView: CropView | null = null;
 /** Players' saplings (see SaplingView). */
 let saplingView: SaplingView | null = null;
+/** Aqueducts' water (see AqueductView). */
+let aqueductView: AqueductView | null = null;
 /** Railway lines, on the map (see LinesPanel). */
 let linesPanel: LinesPanel | null = null;
 /** Places on the map (see PlacesPanel): the world's villages, outlaw camps and trading posts, as last told. */
@@ -920,6 +923,10 @@ connection = connect({
             saplingView?.group.removeFromParent();
             saplingView = new SaplingView(() => 1 - 0.85 * atmosphere.uniforms.stars.value, () => Date.now() + serverOffset);
             scene.add(saplingView.group);
+            aqueductView?.dispose();
+            aqueductView?.group.removeFromParent();
+            aqueductView = new AqueductView(voxelWater);
+            scene.add(aqueductView.group);
             postView?.group.removeFromParent();
             postView = new PostView(() => 1 - 0.85 * atmosphere.uniforms.stars.value);
             scene.add(postView.group);
@@ -1448,6 +1455,10 @@ connection = connect({
         // (Stations: drawn as the design standing in for them, if there's one now.)
         trainView?.designsChanged();
         break;
+      case 'aqueducts':
+        aqueductView?.set(msg.aqueducts);
+        trackMode?.setAqueducts(msg.aqueducts);
+        break;
       case 'tracks':
         trackView?.setTracks(msg.tracks);
         trainView?.setTracks(msg.tracks);
@@ -1499,6 +1510,9 @@ connection = connect({
         break;
       case 'trackPlan':
         trackMode?.planned(msg);
+        break;
+      case 'aqueductPlan':
+        trackMode?.aqueductPlanned(msg);
         break;
       case 'boats':
         boatList = msg.boats;
