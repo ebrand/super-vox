@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import { chunkWithoutWater, decodeChunk, decodeTile, isWater } from '@super-vox/shared';
-import { mergeFaces, packQuads, visibleFaces, waterQuads, type MeshBuffers } from './mesher.js';
+import { chunkWithoutGlass, glassQuads, mergeFaces, packQuads, visibleFaces, waterQuads, type MeshBuffers } from './mesher.js';
 import { lightFields, type LightInput } from './skyLight.js';
 import { meshTile } from './tileMesher.js';
 import { grassTops } from './grassTops.js';
@@ -22,6 +22,8 @@ export interface MeshResponse {
   buffers: MeshBuffers | null;
   /** Chunks only: the water surfaces (see waterQuads), or null for none. */
   water?: MeshBuffers | null;
+  /** Chunks only: glass's faces (see glassQuads, drawn see-through), or null for none. */
+  glass?: MeshBuffers | null;
   /** Chunks only: whether any of it is in shade (below full sky light) or lit by torches. */
   shaded?: boolean;
   /** Chunks only: where grass blades grow (see grassTops), or null for nowhere. */
@@ -40,7 +42,7 @@ self.onmessage = (ev: MessageEvent<MeshRequest>) => {
   const t0 = performance.now();
   const reply = (res: Omit<MeshResponse, 'id' | 'ms'>) => {
     const msg: MeshResponse = { id: req.id, ms: performance.now() - t0, ...res };
-    const transfer = [res.buffers, res.water].flatMap((b) => (b ? [b.positions.buffer, b.faces.buffer, ...(b.shade ? [b.shade.buffer] : [])] : []));
+    const transfer = [res.buffers, res.water, res.glass].flatMap((b) => (b ? [b.positions.buffer, b.faces.buffer, ...(b.shade ? [b.shade.buffer] : [])] : []));
     if (res.grass) transfer.push(res.grass.buffer);
     self.postMessage(msg, transfer);
   };
@@ -59,13 +61,16 @@ self.onmessage = (ev: MessageEvent<MeshRequest>) => {
     }
     const chunk = decodeChunk(req.center);
     const neighbors = req.neighbors.map((n) => (n ? decodeChunk(n) : null));
-    // Terrain without its water (so the bottom shows through), then the water's surfaces.
+    // Terrain without its water and glass (so what's behind them shows through), then the water's
+    // surfaces, then the glass's faces.
     const light = req.light ? lightFields(req.light) : null;
-    const faces = visibleFaces(chunkWithoutWater(chunk), neighbors.map((n) => n && chunkWithoutWater(n)), true, light);
+    const dry = chunkWithoutWater(chunk), dryAround = neighbors.map((n) => n && chunkWithoutWater(n));
+    const faces = visibleFaces(chunkWithoutGlass(dry), dryAround.map((n) => n && chunkWithoutGlass(n)), true, light);
     const quads = mergeFaces(faces);
     const water = waterQuads(chunk, neighbors);
+    const glass = glassQuads(dry, dryAround, light);
     const buffers = quads.length ? packQuads(quads) : null;
-    reply({ buffers, water: water.length ? packQuads(water) : null, shaded: !!buffers?.shade, grass: grassTops(faces, chunk) });
+    reply({ buffers, water: water.length ? packQuads(water) : null, glass: glass.length ? packQuads(glass) : null, shaded: !!buffers?.shade, grass: grassTops(faces, chunk) });
   } catch (err) {
     reply({ buffers: null, error: String(err) });
   }

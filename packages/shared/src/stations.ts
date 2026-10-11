@@ -44,10 +44,14 @@ export function emptyStation(now: number): StationState {
 /** An eighth of a block (a 1/2 m voxel): blocks are smelted and burnt in pieces this size. */
 const PIECE = BLOCK_VOLUME / 8;
 
-/** What each station makes: from `unit` of `input` (volume, or a count), one `output`, taking `seconds`. */
-export const STATION_RECIPES: Readonly<Record<StationKind, readonly { input: ItemId; unit: number; output: ItemId; seconds: number }[]>> = {
+/** What each station makes: from `unit` of `input` (volume, or a count), `amount` of `output` (default one; blocks by volume), taking `seconds`. */
+export const STATION_RECIPES: Readonly<Record<StationKind, readonly { input: ItemId; unit: number; output: ItemId; amount?: number; seconds: number }[]>> = {
   // (A block of raw iron: 8 ingots.)
   furnace: [
+    // (Blocks into blocks, a piece at a time: sand melts into glass, cobblestone bakes back into stone.)
+    { input: Material.Sand, unit: PIECE, output: Material.Glass, amount: PIECE, seconds: 8 },
+    { input: Material.DesertSand, unit: PIECE, output: Material.Glass, amount: PIECE, seconds: 8 },
+    { input: Material.Cobblestone, unit: PIECE, output: Material.Stone, amount: PIECE, seconds: 8 },
     { input: Material.RawIron, unit: PIECE, output: Item.IronIngot, seconds: 10 },
     // (Coins: a piece of raw copper or gold makes one.)
     { input: Material.RawCopper, unit: PIECE, output: Item.CopperCoin, seconds: 6 },
@@ -78,7 +82,7 @@ export function refusePut(kind: StationKind, s: StationState, slot: StationSlot,
   if (slot === 'output') return "nothing goes in the output: it's where things come out";
   const name = kind === 'furnace' ? 'a furnace' : 'a stove';
   if (slot === 'fuel' && !FUELS[item]) return `that doesn't burn: coal, wood, planks or sticks`;
-  if (slot === 'input' && !stationRecipe(kind, item)) return kind === 'furnace' ? `${name} smelts raw iron` : `${name} cooks pork`;
+  if (slot === 'input' && !stationRecipe(kind, item)) return kind === 'furnace' ? `${name} smelts raw iron, copper and gold, sand (into glass) and cobblestone (into stone)` : `${name} cooks pork`;
   const there = s[slot];
   if (there && there.item !== item) return `there's something else in it: take that out first`;
   return null;
@@ -88,7 +92,7 @@ export function refusePut(kind: StationKind, s: StationState, slot: StationSlot,
 function canMake(kind: StationKind, s: StationState): boolean {
   const r = s.input && stationRecipe(kind, s.input.item);
   if (!r || s.input!.amount < r.unit) return false;
-  return !s.output || (s.output.item === r.output && s.output.amount < STATION_OUTPUT_MAX);
+  return !s.output || (s.output.item === r.output && s.output.amount < STATION_OUTPUT_MAX * (r.amount ?? 1));
 }
 
 /** Whether it's working now (making something, with fuel burning or to burn). */
@@ -141,7 +145,8 @@ export function advance(kind: StationKind, s: StationState, now: number): boolea
       s.progress = 0;
       s.input!.amount -= r.unit;
       if (s.input!.amount <= 0) s.input = null;
-      s.output = s.output ? { ...s.output, amount: s.output.amount + 1 } : { item: r.output, amount: 1 };
+      const made = r.amount ?? 1;
+      s.output = s.output ? { ...s.output, amount: s.output.amount + made } : { item: r.output, amount: made };
     }
   }
   return changed;

@@ -152,6 +152,29 @@ export const VOXEL_SHADING_GLSL = /* glsl */ `
  * fragment shader and fade out with distance to avoid moire. Lit by the sun and by sky and ground
  * light (less in occluded corners), and hazed by the atmosphere.
  */
+const glassOf = new WeakMap<THREE.ShaderMaterial, THREE.ShaderMaterial>();
+
+/**
+ * Glass's material: `material` (see createVoxelMaterial) drawn see-through, sharing its uniforms
+ * (so it's lit, hazed and exposed as the ground is, and changes with it), its panes faint.
+ */
+export function glassMaterialOf(material: THREE.ShaderMaterial): THREE.ShaderMaterial {
+  let glass = glassOf.get(material);
+  if (!glass) {
+    glass = new THREE.ShaderMaterial({
+      defines: { ...material.defines, GLASS: 1 },
+      uniforms: material.uniforms,
+      vertexShader: material.vertexShader,
+      fragmentShader: material.fragmentShader,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    glassOf.set(material, glass);
+  }
+  return glass;
+}
+
 export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMaterial & {
   setTint(tint: Tint | null): void;
   setGrassWind(wind: { x: number; z: number }, dt: number): void;
@@ -306,7 +329,12 @@ export function createVoxelMaterial(atmosphere: Atmosphere): THREE.ShaderMateria
           vec2 km = gridLines(g, 1000.0, 2.5);
           rgb = mix(rgb, vec3(1.0, 0.86, 0.35), 0.6 * max(km.x, km.y));
         }
-        gl_FragColor = vec4(applyHaze(rgb, vWorld), treePass > 1.5 ? treeAlpha : 1.0);
+        float alpha = treePass > 1.5 ? treeAlpha : 1.0;
+        #ifdef GLASS
+        // Glass (its own pass, see glassMaterialOf): faint panes, their voxels' edges stronger, as frames.
+        alpha = mix(0.3, 0.8, line);
+        #endif
+        gl_FragColor = vec4(applyHaze(rgb, vWorld), alpha);
         #include <colorspace_fragment>
       }
     `,

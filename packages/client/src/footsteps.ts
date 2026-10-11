@@ -13,6 +13,8 @@ export type Surface = 'soft' | 'hard' | 'wood' | 'sand' | 'gravel' | 'snow' | 'w
 const SURFACES: Partial<Record<MaterialId, Surface>> = {
   [Material.Stone]: 'hard',
   [Material.Cobblestone]: 'hard',
+  [Material.StoneBricks]: 'hard',
+  [Material.Glass]: 'hard',
   [Material.DarkStone]: 'hard',
   [Material.PaleStone]: 'hard',
   [Material.MossyStone]: 'hard',

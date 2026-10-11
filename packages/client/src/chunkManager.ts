@@ -21,6 +21,7 @@ import type { ColumnCoord } from './lod.js';
 import { overlaps, staleToRetire, type Footprint } from './coverage.js';
 import { createPackedMesh, disposePackedMesh, meshGpuBytes, meshQuads } from './meshFactory.js';
 import { WATER_LAYER } from './water.js';
+import { glassMaterialOf } from './voxelMaterial.js';
 import { DIRS } from './mesher.js';
 import type { MeshWorkerPool } from './workerPool.js';
 import { BOX, aroundIndex, type LightInput } from './skyLight.js';
@@ -138,6 +139,11 @@ export class ChunkManager {
     private readonly onChange: () => void,
     private readonly maxColumnsInFlight = MAX_COLUMNS_IN_FLIGHT,
   ) {}
+
+  /** Glass's material: the ground's, see-through (see glassMaterialOf); the ground's itself if it isn't a voxel material. */
+  private glassMaterial(): THREE.Material {
+    return this.material instanceof THREE.ShaderMaterial ? glassMaterialOf(this.material) : this.material;
+  }
 
   get stats(): ChunkStats {
     let triangles = 0, gpuBytes = 0, meshed = 0;
@@ -816,6 +822,12 @@ export class ChunkManager {
           water.layers.set(WATER_LAYER);
           water.renderOrder = 4; // before the far sea, which it hides
           group.add(water);
+        }
+        if (res.glass) {
+          // (See-through, after what's solid; drawn from both sides.)
+          const glass = createPackedMesh(res.glass, origin, this.glassMaterial(), `glass ${key}`);
+          glass.renderOrder = 5;
+          group.add(glass);
         }
         this.setMesh(key, group.children.length ? group : null, mask, res.shaded);
         this.onGrass?.(key, origin, res.grass ?? null);

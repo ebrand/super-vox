@@ -72,6 +72,9 @@ export const Material = {
   /** Tilled ground: a field's (see villages.ts; crops grow on it), and a cottage roof's straw. */
   Farmland: 56,
   Thatch: 57,
+  /** Made in a furnace (see stations.ts): glass from sand (see-through, as water is: see the client's glass pass), and stone bricks crafted from stone. */
+  Glass: 58,
+  StoneBricks: 59,
 } as const;
 
 /** Light (0..15, as the sky's: see the client's skyLight) given by blocks with any of these in them. */
@@ -149,6 +152,8 @@ const MATERIAL_NAMES: Record<number, string> = {
   [Material.RawGold]: 'raw gold',
   [Material.Farmland]: 'farmland',
   [Material.Thatch]: 'thatch',
+  [Material.Glass]: 'glass',
+  [Material.StoneBricks]: 'stone bricks',
 };
 
 

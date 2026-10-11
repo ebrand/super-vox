@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { BLOCK_VOLUME, Item } from './items.js';
 import { Material } from './materials.js';
-import { RECIPES } from './recipes.js';
+import { RECIPES, describeRecipe } from './recipes.js';
+import { PLACEABLE } from './items.js';
+import { tntEquivalent } from './explosives.js';
 import { STATION_OUTPUT_MAX, advance, emptyStation, isStationState, put, refusePut, stationPiece, stationWorking, take } from './stations.js';
 import { FOODS } from './survival.js';
 import { attackDamage } from './mobs.js';
-import { SWORDS, TOOLS, canHarvest } from './tools.js';
+import { SWORDS, TOOLS, canHarvest, dropOf } from './tools.js';
 
 const PIECE = BLOCK_VOLUME / 8;
 const s = (seconds: number) => seconds * 1000;
@@ -96,6 +98,55 @@ describe('furnaces and stoves', () => {
     expect(stationPiece('furnace', 'fuel', Material.Coal)).toBe(PIECE);
     expect(stationPiece('stove', 'input', Item.Pork)).toBe(1);
     expect(isStationState({ fuel: 3 })).toBe(false);
+  });
+});
+
+describe('furnaces: blocks into blocks', () => {
+  it('melt sand (either kind) into glass and bake cobblestone back into stone, a piece at a time', () => {
+    const f = emptyStation(0);
+    put(f, 'input', Material.Sand, BLOCK_VOLUME);
+    put(f, 'fuel', Material.Coal, PIECE);
+    // 8 s a piece: a block in 64 s, on one piece of coal (80 s).
+    advance('furnace', f, s(64));
+    expect(f.output).toEqual({ item: Material.Glass, amount: BLOCK_VOLUME });
+    expect(f.input).toBeNull();
+    const d = emptyStation(0);
+    put(d, 'input', Material.DesertSand, 2 * PIECE);
+    put(d, 'fuel', Material.Coal, PIECE);
+    advance('furnace', d, s(16));
+    expect(d.output).toEqual({ item: Material.Glass, amount: 2 * PIECE });
+    const c = emptyStation(0);
+    put(c, 'input', Material.Cobblestone, PIECE);
+    put(c, 'fuel', Material.Planks, 2 * PIECE);
+    advance('furnace', c, s(8));
+    expect(c.output).toEqual({ item: Material.Stone, amount: PIECE });
+    // (Not on a stove; and the furnace says what it takes.)
+    expect(refusePut('stove', emptyStation(0), 'input', Material.Sand)).toMatch(/cooks pork/);
+    expect(refusePut('furnace', emptyStation(0), 'input', Material.Dirt)).toMatch(/sand \(into glass\)/);
+  });
+
+  it('stop when 64 blocks\' worth of pieces (not 64 pieces) are waiting', () => {
+    const f = emptyStation(0);
+    put(f, 'input', Material.Sand, 70 * BLOCK_VOLUME);
+    put(f, 'fuel', Material.Coal, 64 * BLOCK_VOLUME);
+    advance('furnace', f, s(1_000_000));
+    expect(f.output).toEqual({ item: Material.Glass, amount: STATION_OUTPUT_MAX * PIECE });
+  });
+});
+
+describe('recipes for what had none', () => {
+  it('C4 from TNT, iron and coal (a 1/32 block, stronger than the TNT that went in); stone bricks from stone', () => {
+    const c4 = RECIPES.find((r) => r.id === 'c4')!;
+    expect(c4).toMatchObject({ output: [Material.C4, 1 / 32], table: true });
+    expect(describeRecipe(c4)).toBe('1 TNT + 2 iron ingot + 1/8 coal → 1/32 C4');
+    expect(tntEquivalent(Material.C4, BLOCK_VOLUME / 32)).toBeGreaterThan(tntEquivalent(Material.TNT, BLOCK_VOLUME));
+    const bricks = RECIPES.find((r) => r.id === 'stone-bricks')!;
+    expect(bricks).toMatchObject({ inputs: [[Material.Stone, 1]], output: [Material.StoneBricks, 1], table: true });
+    // Both placeable (and glass), and minable for themselves: bricks with a pickaxe, glass by hand.
+    for (const m of [Material.Glass, Material.StoneBricks, Material.C4]) expect(PLACEABLE).toContain(m);
+    expect(dropOf(Material.Glass)).toBe(Material.Glass);
+    expect(dropOf(Material.StoneBricks)).toBeNull();
+    expect(dropOf(Material.StoneBricks, Item.StonePickaxe)).toBe(Material.StoneBricks);
   });
 });
 

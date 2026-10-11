@@ -54,6 +54,9 @@ const COLORS: Record<number, readonly [number, number, number]> = {
   [Material.RawGold]: [0.8, 0.64, 0.22],
   [Material.Farmland]: [0.26, 0.17, 0.1],
   [Material.Thatch]: [0.72, 0.6, 0.3],
+  // (Glass: drawn see-through, in its own pass; tinted faintly blue-green.)
+  [Material.Glass]: [0.62, 0.8, 0.82],
+  [Material.StoneBricks]: [0.42, 0.41, 0.4],
   [Material.TorchWood]: [0.3, 0.18, 0.08],
   // (Drawn at full brightness, whatever the light: see voxelMaterial.)
   [Material.TorchFlame]: [1.0, 0.62, 0.18],
@@ -112,6 +115,8 @@ const NAMES: Record<number, string> = {
   [Material.RawGold]: 'raw gold',
   [Material.Farmland]: 'farmland',
   [Material.Thatch]: 'thatch',
+  [Material.Glass]: 'glass',
+  [Material.StoneBricks]: 'stone bricks',
   [Material.TorchWood]: 'torch',
   [Material.TorchFlame]: 'torch',
   ...Object.fromEntries(Array.from({ length: MAX_FLOW }, (_, l) => [Material.Water + 1 + l, `flowing water (${l + 1})`])),

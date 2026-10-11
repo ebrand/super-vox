@@ -188,6 +188,8 @@ export const DESIGN_MATERIALS: readonly MaterialId[] = [
   Material.Wood,
   Material.Cobblestone,
   Material.Stone,
+  Material.StoneBricks,
+  Material.Glass,
   Material.DarkMetal,
   Material.LightMetal,
   Material.Dirt,

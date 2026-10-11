@@ -147,8 +147,8 @@ export function summarizeChunk(bytes: Uint8Array): 'air' | 'solid' | 'mixed' {
 }
 
 /** Reads just the coordinates from an encoded chunk without decoding it. */
-/** Uniform blocks of these let light through, like water: leaves (and partial blocks, which are never uniform). */
-const SEE_THROUGH = new Set<number>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves]);
+/** Uniform blocks of these let light through, like water: leaves and glass (and partial blocks, which are never uniform). */
+const SEE_THROUGH = new Set<number>([Material.Leaves, Material.Needles, Material.JungleLeaves, Material.AcaciaLeaves, Material.Glass]);
 
 /** Whether a whole block of `material` stops light (see chunkOpacity). */
 export function blocksLight(material: number): boolean {

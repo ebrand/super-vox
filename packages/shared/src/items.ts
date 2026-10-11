@@ -175,6 +175,8 @@ export const PLACEABLE: readonly MaterialId[] = [
   Material.Tundra,
   Material.Planks,
   Material.Cobblestone,
+  Material.StoneBricks,
+  Material.Glass,
   Material.Gravel,
   Material.DarkStone,
   Material.PaleStone,

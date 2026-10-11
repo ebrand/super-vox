@@ -21,7 +21,7 @@ import {
   type Block,
   type Chunk,
 } from '@super-vox/shared';
-import { DIRS, MAX_MESH_MATERIAL, QUAD_INDEX_PATTERN, mergeFaces, packQuads, quadIndices, visibleFaces, waterQuads, type Neighbors, type Quad } from './mesher.js';
+import { DIRS, MAX_MESH_MATERIAL, QUAD_INDEX_PATTERN, chunkWithoutGlass, glassQuads, mergeFaces, packQuads, quadIndices, visibleFaces, waterQuads, type Neighbors, type Quad } from './mesher.js';
 
 function rng(seed: number): () => number {
   let s = seed >>> 0;
@@ -181,6 +181,43 @@ describe('visibleFaces', () => {
       expect(raw.area).toBe(expected.size); // no overlapping faces
     });
   }
+});
+
+describe('glass', () => {
+  it("isn't in the solid pass (what's behind it shows), and has a pass of its own: its faces against air, not against glass or solid ground", () => {
+    const G = Material.Glass, S = Material.Stone;
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    // Two panes side by side, on a stone block.
+    chunk.blocks[blockIndex(3, 1, 3)] = { kind: 'uniform', size: 16, material: G };
+    chunk.blocks[blockIndex(4, 1, 3)] = { kind: 'uniform', size: 16, material: G };
+    chunk.blocks[blockIndex(3, 0, 3)] = { kind: 'uniform', size: 16, material: S };
+    const solid = visibleFaces(chunkWithoutGlass(chunk), NO_NEIGHBORS);
+    expect(solid.every((f) => f.material === S)).toBe(true);
+    expect(solid).toHaveLength(6); // (the stone's top shows: the glass doesn't hide it)
+    const glass = glassQuads(chunk, NO_NEIGHBORS);
+    expect(glass.every((f) => f.material === G)).toBe(true);
+    // Merged across the two panes: top, the two long sides, the two ends; the bottom over stone
+    // drawn only under the pane that's over air.
+    const area = (dir: number) => glass.filter((f) => f.dir === dir).reduce((n, f) => n + f.du * f.dv, 0);
+    expect(area(2)).toBe(2 * 256);
+    expect(area(3)).toBe(256);
+    expect(area(0) + area(1)).toBe(2 * 256);
+    expect(area(4) + area(5)).toBe(4 * 256);
+    // A chunk with no glass: unchanged, and nothing in the glass pass.
+    const plain = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    plain.blocks[0] = { kind: 'uniform', size: 16, material: S };
+    expect(chunkWithoutGlass(plain)).toBe(plain);
+    expect(glassQuads(plain, NO_NEIGHBORS)).toEqual([]);
+  });
+
+  it('a partial block keeps what isn\'t glass in the solid pass', () => {
+    const chunk = emptyChunk({ cx: 0, cy: 0, cz: 0 });
+    chunk.blocks[blockIndex(1, 1, 1)] = { kind: 'grid', size: 8, materials: Uint16Array.from([Material.Glass, Material.Glass, Material.Glass, Material.Glass, Material.Planks, Material.Planks, Material.Planks, Material.Planks]) };
+    const solid = visibleFaces(chunkWithoutGlass(chunk), NO_NEIGHBORS);
+    expect(solid.length).toBeGreaterThan(0);
+    expect(solid.every((f) => f.material === Material.Planks)).toBe(true);
+    expect(glassQuads(chunk, NO_NEIGHBORS).every((f) => f.material === Material.Glass)).toBe(true);
+  });
 });
 
 describe('ambient occlusion', () => {

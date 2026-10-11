@@ -41,7 +41,7 @@ const GROUNDS = [Material.Grass, Material.Meadow, Material.JungleFloor, Material
 
 /** Which tool mines each material faster (anything not listed: none does). */
 const TOOL_FOR: Readonly<Partial<Record<MaterialId, ToolKind>>> = {
-  ...Object.fromEntries([Material.Stone, Material.Cobblestone, Material.CoalOre, Material.IronOre, Material.Ice, Material.DarkStone, Material.PaleStone, Material.MossyStone, Material.Sandstone, Material.Shale, Material.Limestone, Material.Granite, Material.Basalt, Material.CopperOre, Material.GoldOre].map((m) => [m, 'pickaxe'])),
+  ...Object.fromEntries([Material.Stone, Material.Cobblestone, Material.StoneBricks, Material.CoalOre, Material.IronOre, Material.Ice, Material.DarkStone, Material.PaleStone, Material.MossyStone, Material.Sandstone, Material.Shale, Material.Limestone, Material.Granite, Material.Basalt, Material.CopperOre, Material.GoldOre].map((m) => [m, 'pickaxe'])),
   ...Object.fromEntries([Material.Wood, Material.Planks, Material.CraftingTable, Material.FenceWood, Material.GateWood, Material.DoorWood].map((m) => [m, 'axe'])),
   ...Object.fromEntries([Material.Dirt, ...GROUNDS, Material.Sand, Material.DesertSand, Material.Snow, Material.Gravel].map((m) => [m, 'shovel'])),
 };
@@ -50,6 +50,7 @@ const TOOL_FOR: Readonly<Partial<Record<MaterialId, ToolKind>>> = {
 const PICKAXE_TIER: Readonly<Partial<Record<MaterialId, number>>> = {
   [Material.Stone]: 1,
   [Material.Cobblestone]: 1,
+  [Material.StoneBricks]: 1,
   [Material.CoalOre]: 1,
   [Material.IronOre]: 2,
   [Material.DarkStone]: 1,

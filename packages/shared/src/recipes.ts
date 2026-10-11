@@ -93,6 +93,10 @@ const BUILT_IN: readonly Recipe[] = [
   r('bread', 'materials', [[Item.Wheat, 3]], [Item.Bread, 1]),
   r('torches', 'building', [[Material.Coal, 1 / 8], [Item.Stick, 1]], [Item.Torch, 4]),
   r('tnt', 'explosives', [[Material.Sand, 4], [Material.Planks, 1]], [Material.TNT, 1], true),
+  // (C4: late, and dear, as it's far stronger for its size: a 1/32 block of it blows as about 1.3 blocks of TNT.)
+  r('c4', 'explosives', [[Material.TNT, 1], [Item.IronIngot, 2], [Material.Coal, 1 / 8]], [Material.C4, 1 / 32], true),
+  // (Stone, from cobblestone in a furnace, cut into bricks.)
+  r('stone-bricks', 'building', [[Material.Stone, 1]], [Material.StoneBricks, 1], true),
 ];
 const recipes: Recipe[] = [...BUILT_IN];
 
@@ -137,8 +141,8 @@ export function craft(recipe: Recipe, items: Map<ItemId, number>): void {
 
 /** "2 planks + 1 stick → 1 wooden sword" */
 export function describeRecipe(recipe: Recipe): string {
-  // (Parts of a block in eighths: "1/8 coal".)
-  const amount = (n: number) => (Number.isInteger(n) || !Number.isInteger(n * 8) ? String(n) : `${n * 8}/8`);
+  // (Parts of a block as fractions: "1/8 coal", "1/32 C4".)
+  const amount = (n: number) => (Number.isInteger(n) ? String(n) : Number.isInteger(n * 8) ? `${n * 8}/8` : Number.isInteger(1 / n) ? `1/${1 / n}` : String(n));
   const part = ([id, n]: readonly [ItemId, number]) => `${amount(n)} ${itemName(id)}`;
   return `${recipe.inputs.map(part).join(' + ')} → ${part(recipe.output)}`;
 }

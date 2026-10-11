@@ -37,6 +37,9 @@ export const HARDNESS: Partial<Record<MaterialId, number>> = {
   [Material.DoorWood]: 1.5,
   [Material.Wood]: 2,
   [Material.Cobblestone]: 2.5,
+  [Material.StoneBricks]: 3,
+  // (Glass comes away easily, and whole.)
+  [Material.Glass]: 0.5,
   [Material.Stone]: 3,
   [Material.Gravel]: 0.6,
   [Material.DarkStone]: 3,

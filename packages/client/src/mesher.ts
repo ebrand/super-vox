@@ -391,6 +391,60 @@ export function waterQuads(chunk: Chunk, neighbors: Neighbors): Quad[] {
   return mergeFaces(faces);
 }
 
+const glassless = new WeakMap<Exclude<Block, null>, Block>();
+
+/** The block without its glass (the same object if it has none). */
+function withoutGlass(block: Block): Block {
+  if (!block) return null;
+  const hit = glassless.get(block);
+  if (hit !== undefined) return hit;
+  const G = Material.Glass;
+  let out: Block = block;
+  if (block.kind === 'uniform') {
+    if (block.material === G) out = null;
+  } else if (block.kind === 'grid') {
+    if (block.materials.includes(G)) {
+      const materials = block.materials.map((m) => (m === G ? 0 : m));
+      out = materials.some((m) => m !== 0) ? { kind: 'grid', size: block.size, materials } : null;
+    }
+  } else if (block.materials.includes(G)) {
+    const keep = [...block.materials.keys()].filter((i) => block.materials[i] !== G);
+    out = keep.length === 0 ? null : { kind: 'voxels', packed: Uint16Array.from(keep, (i) => block.packed[i]!), materials: Uint16Array.from(keep, (i) => block.materials[i]!) };
+  }
+  glassless.set(block, out);
+  return out;
+}
+
+const hasGlass = (b: Block) => !!b && (b.kind === 'uniform' ? b.material === Material.Glass : b.materials.includes(Material.Glass));
+
+/** The chunk without glass (the same object if it has none): what the solid pass draws, so what's behind glass shows. */
+export function chunkWithoutGlass(chunk: Chunk): Chunk {
+  if (!chunk.blocks.some(hasGlass)) return chunk;
+  return { cx: chunk.cx, cy: chunk.cy, cz: chunk.cz, blocks: chunk.blocks.map(withoutGlass) };
+}
+
+/**
+ * Glass's faces (drawn see-through, in a pass of their own): where a chunk's glass meets air or
+ * water, or anything that isn't solid (glass against glass, or against solid ground, draws
+ * nothing), lit as the solid faces are. `chunk` and `neighbors` without their water.
+ */
+export function glassQuads(chunk: Chunk, neighbors: Neighbors, light?: LightFields | null): Quad[] {
+  const glassy = chunk.blocks.map(hasGlass);
+  if (!glassy.includes(true)) return [];
+  // Only blocks with glass, and those next to them (which can hide its faces), matter.
+  const blocks = chunk.blocks.map((b, i) => {
+    if (glassy[i]) return b;
+    const x = i % BLOCKS_PER_AXIS, z = Math.floor(i / BLOCKS_PER_AXIS) % BLOCKS_PER_AXIS, y = Math.floor(i / (BLOCKS_PER_AXIS * BLOCKS_PER_AXIS));
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] as const) {
+      const nx = x + dx, ny = y + dy, nz = z + dz;
+      if (nx < 0 || ny < 0 || nz < 0 || nx >= BLOCKS_PER_AXIS || ny >= BLOCKS_PER_AXIS || nz >= BLOCKS_PER_AXIS) continue;
+      if (glassy[blockIndex(nx, ny, nz)]) return b;
+    }
+    return null;
+  });
+  return mergeFaces(visibleFaces({ ...chunk, blocks }, neighbors, false, light).filter((q) => q.material === Material.Glass));
+}
+
 function gcd(a: number, b: number): number {
   while (b) [a, b] = [b, a % b];
   return a;
