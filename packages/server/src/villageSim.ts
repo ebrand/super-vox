@@ -341,8 +341,15 @@ export class VillageSim {
     this.threats = threats;
     this.hits.length = 0;
     // (Back after a while with nobody here: what would have happened meanwhile, roughly.)
+    let t0 = performance.now();
+    const lap = (k: keyof VillageSim['spent']) => {
+      const t = performance.now();
+      this.spent[k] += t - t0;
+      t0 = t;
+    };
     if (this.at !== null && now - this.at > GAP_MS) this.catchUp(this.at, now);
     this.at = now;
+    lap('catchingUp');
     for (const p of this.walkers.values()) {
       if (!this.detailed(p)) continue;
       // (On a train: where their seat is.)
@@ -358,23 +365,33 @@ export class VillageSim {
       }
       this.walk(p, dt);
     }
+    lap('walking');
     this.thinkIn -= dt;
     if (this.thinkIn <= 0) {
       this.thinkIn = THINK_S;
       this.watch(players);
       this.bring(players, now);
+      lap('bringing');
       for (const p of this.walkers.values()) if (this.detailed(p)) this.think(p, now, night);
+      lap('thinking');
       for (const v of this.villages.values()) {
         if (!this.watched.has(v.id)) this.coarse(v, THINK_S, now);
         this.gather(v, THINK_S);
         this.grow(v, now);
       }
+      lap('growing');
       this.found(now);
+      lap('founding');
       this.freight(now);
+      lap('freighting');
     }
     this.saveIn -= dt;
     if ((this.dirty || this.changed) && this.saveIn <= 0) this.persist();
+    lap('saving');
   }
+
+  /** Time spent (ms, all told) in each part of a step: for finding what's slow (see the 'slow task' log). */
+  readonly spent = { catchingUp: 0, walking: 0, bringing: 0, thinking: 0, growing: 0, founding: 0, freighting: 0, saving: 0 };
 
   /** Kept now. */
   persist(): void {

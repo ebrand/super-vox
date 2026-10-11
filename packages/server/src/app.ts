@@ -1251,7 +1251,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         t.mobsBurning += m.spent.burning;
         t.mobsSpawning += m.spent.spawning;
       }
-      return t;
+      // (The villages' and outlaws' parts, and the rest of the mobs' tick: see VillageSim.spent, OutlawSim.spent, tickSpent.)
+      const more: Record<string, number> = {};
+      const add = (prefix: string, spent: Record<string, number>) => {
+        for (const [k, v] of Object.entries(spent)) more[prefix + k[0]!.toUpperCase() + k.slice(1)] = (more[prefix + k[0]!.toUpperCase() + k.slice(1)] ?? 0) + v;
+      };
+      for (const v of villageSims.values()) add('villages', v.spent);
+      for (const o of outlawSims.values()) add('outlaws', o.spent);
+      add('tick', tickSpent);
+      return { ...t, ...more };
     };
     const before = work();
     try {
@@ -1259,7 +1267,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     } finally {
       const ms = performance.now() - t0;
       if (ms >= SLOW_MESSAGE_MS) {
-        const after = work(), cost = Object.fromEntries(Object.entries(after).map(([k, v]) => [k, Math.round(v - before[k as keyof typeof before])]));
+        const after = work() as Record<string, number>, was = before as Record<string, number>;
+        const cost = Object.fromEntries(Object.entries(after).map(([k, v]) => [k, Math.round(v - (was[k] ?? 0))]).filter(([k, v]) => v || !(k as string).match(/^(villages|outlaws|tick)/)));
         app.log.warn({ task, ms: Math.round(ms), ...cost }, 'slow task');
       }
     }
@@ -1583,8 +1592,16 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const v = villageSims.get(world)?.villageAt(x, z);
     return v ? `that's ${v.name}'s land: leave it be` : null;
   };
+  /** Time spent (ms, all told) in each part of the mobs' tick: for finding what's slow (see the 'slow task' log). */
+  const tickSpent = { opening: 0, outlaws: 0, telling: 0, villages: 0, hitting: 0, mobs: 0, players: 0 };
   const mobbing = setInterval(timed('mobs', () => {
     const now = Date.now();
+    let t0 = performance.now();
+    const lap = (k: keyof typeof tickSpent) => {
+      const t = performance.now();
+      tickSpent[k] += t - t0;
+      t0 = t;
+    };
     const byWorld = new Map<World, WebSocket[]>();
     for (const [client, w] of clients) byWorld.set(w, [...(byWorld.get(w) ?? []), client]);
     for (const [world, sockets] of byWorld) {
@@ -1598,17 +1615,22 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       const at = here.map(({ p }) => ({ x: p.pose!.x, z: p.pose!.z }));
       // Outlaws: creatures near players, records further off (see OutlawSim).
       const outlaws = outlawsOf(world, sockets[0] ? clientWorld.get(sockets[0]) : undefined);
+      lap('opening');
       outlaws.step(0.1, now, at, mobs);
+      lap('outlaws');
       if (outlaws.changed) {
         outlaws.changed = false;
         toWorld(world, { type: 'camps', camps: outlaws.told() });
       }
+      lap('telling');
       // Villagers: what's after their village (outlaws; players it's a grudge against), and their hits back.
       const threats = [
         ...mobs.ofKind('outlaw').map((m) => ({ id: m.id, x: m.x, z: m.z, outlaw: true, vulnerable: true })),
         ...here.map(({ p }) => ({ id: p.id, x: p.pose!.x, z: p.pose!.z, outlaw: false, vulnerable: p.vulnerable, ...(p.account ? { account: p.account } : {}) })),
       ];
+      lap('opening');
       sim.step(0.1, now, at, night, threats);
+      lap('villages');
       for (const h of sim.hits) {
         if (h.outlaw) mobs.hurt(h.target, h.damage, h.from.x, h.from.z, now);
         else {
@@ -1616,6 +1638,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
           if (e) harm(e.s, e.p, world, h.damage, 'villager', now);
         }
       }
+      lap('hitting');
       for (const hit of mobs.step(0.1, now, [...targets, ...sim.targets()], night)) {
         if (hit.player >= VILLAGER_ENTITY) {
           const by = mobs.get(hit.by);
@@ -1633,10 +1656,12 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         const aim: [number, number, number] = [t.x - by.x, t.y + 1.2 * UNITS_PER_METER - from[1] + d * 0.08, t.z - by.z];
         toWorld(world, { type: 'arrow', arrow: flights.shoot(by.id, ...from, aim, 0.85, now) });
       }
+      lap('mobs');
       if (sim.changed) {
         sim.changed = false;
         toWorld(world, { type: 'villages', villages: sim.told() });
       }
+      lap('telling');
       for (const { s, p } of here) {
         // Breath, food, healing (see Vitals): the eye under water or not.
         if (p.vulnerable) {
@@ -1653,6 +1678,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         }
         sendTo(s, { type: 'entities', entities });
       }
+      lap('players');
     }
   }), 100);
   // A stall (the main thread busy, everything waiting) of more than STALL_MS is logged: with the

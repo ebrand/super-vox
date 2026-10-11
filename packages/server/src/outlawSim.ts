@@ -183,17 +183,31 @@ export class OutlawSim {
         this.dirty = true;
       } else if (near(o, OUTLAW_NEAR_M)) o.mob = mobs.addOutlaw(o, this.homeOf(o), now).id;
     }
+    let t0 = performance.now();
+    const lap = (k: keyof OutlawSim['spent']) => {
+      const t = performance.now();
+      this.spent[k] += t - t0;
+      t0 = t;
+    };
     this.thinkIn -= dt;
     if (this.thinkIn <= 0) {
       this.thinkIn = THINK_S;
       this.bring(players);
+      lap('bringing');
       for (const o of this.outlaws.values()) if (o.mob === null) this.wander(o, THINK_S, now);
+      lap('wandering');
       this.found(now);
+      lap('founding');
       for (const c of this.camps.values()) this.keep(c, now);
+      lap('keeping');
     }
     this.saveIn -= dt;
     if (this.dirty && this.saveIn <= 0) this.persist();
+    lap('saving');
   }
+
+  /** Time spent (ms, all told) in each part of a think: for finding what's slow (see the 'slow task' log). */
+  readonly spent = { bringing: 0, wandering: 0, founding: 0, keeping: 0, saving: 0 };
 
   /** Where an outlaw keeps about: their band's roaming, or their camp; a loner, nowhere. */
   private homeOf(o: Outlaw): { x: number; z: number } | null {
