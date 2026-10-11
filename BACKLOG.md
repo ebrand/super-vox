@@ -265,6 +265,14 @@ Like railways, but above ground: a raised channel on arches carrying water from 
   - Does water flow in it with no one near (the world's water only flows near players today), or is its effect at the end simply kept on while it stands?
   - Does a broken arch spill the water out, and dry up the end?
 
+## 41. "Optimize" in the Object Designer — S
+
+A button that redraws a design with as few voxels as possible without changing how it looks: wherever eight voxels of one material fill a cube on the grid of the next size up (eight 1/4 m voxels filling a 1/2 m cell, eight 1/2 m filling a 1 m one), they become that one bigger voxel, repeated up the sizes. Fewer voxels draw and send faster (and designs have a voxel limit).
+
+- **Builds on:** the designer's voxels (`designEditor.ts`: voxels on their own grids, any size 1/16–1 m), its undo (one Optimize is one undo step).
+- **Parts:** merging per state; a note of how many voxels it saved ("1,204 → 311 voxels"); never across materials, never off the bigger voxel's grid (so the look is exactly the same).
+- **Questions:** also merge into non-cubic boxes (a design's voxels are cubes today)? Optimize on save automatically, or only when pressed?
+
 ## Design rules (from engineering advice, to keep to as systems are added)
 
 - **Keep the voxel compact.** A cell is a 1-byte block id (a global palette of up to 256) plus a byte of light; water's level is part of the block id; structural stress is worked out when needed, not stored. New per-cell state (temperature, fire, moisture) goes in sparse per-chunk maps holding only the cells that have it, never as a new array for every cell.
