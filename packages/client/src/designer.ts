@@ -930,8 +930,10 @@ for (const m of DESIGN_MATERIALS) {
 }
 
 const nameEl = $<HTMLInputElement>('name');
-nameEl.oninput = () => editor.set((d) => (d.name = nameEl.value));
-nameEl.onchange = () => renderLibrary();
+nameEl.oninput = () => {
+  editor.set((d) => (d.name = nameEl.value));
+  edited();
+};
 const sizeEls = (['x', 'y', 'z'] as const).map((a) => $<HTMLSelectElement>(`size-${a}`));
 for (const el of sizeEls) {
   for (let n = 1; n <= DESIGN_MAX_BLOCKS; n++) el.append(new Option(String(n), String(n)));
@@ -1022,17 +1024,23 @@ const craftableEl = $<HTMLInputElement>('craftable'), countEl = $<HTMLInputEleme
 const recipeRows = $('recipe-rows');
 craftableEl.onchange = () => {
   editor.set((d) => (d.recipe = craftableEl.checked ? { inputs: [[Material.Planks, 1]], count: 1, table: true } : null));
-  renderPanels();
+  edited();
 };
-countEl.onchange = () => editor.set((d) => d.recipe && (d.recipe.count = Math.max(1, Math.min(64, Math.round(Number(countEl.value)) || 1))));
-tableEl.onchange = () => editor.set((d) => d.recipe && (d.recipe.table = tableEl.checked));
+countEl.onchange = () => {
+  editor.set((d) => d.recipe && (d.recipe.count = Math.max(1, Math.min(64, Math.round(Number(countEl.value)) || 1))));
+  edited();
+};
+tableEl.onchange = () => {
+  editor.set((d) => d.recipe && (d.recipe.table = tableEl.checked));
+  edited();
+};
 $('add-input').onclick = () => {
   editor.set((d) => {
     if (!d.recipe || d.recipe.inputs.length >= DESIGN_MAX_INPUTS) return;
     const free = ingredients().find((id) => !d.recipe!.inputs.some(([i]) => i === id));
     if (free !== undefined) d.recipe.inputs.push([free, 1]);
   });
-  renderPanels();
+  edited();
 };
 
 /** What recipes can take: anything players can have, but water (and not this object). */
@@ -1068,20 +1076,26 @@ function renderRecipe(): void {
     row.className = 'row';
     const sel = document.createElement('select');
     for (const i of ingredients()) sel.append(new Option(`${itemName(i)}${isBlock(i) ? ' (m³)' : ''}`, String(i), false, i === id));
-    sel.onchange = () => editor.set((d) => (d.recipe!.inputs[k]![0] = Number(sel.value)));
+    sel.onchange = () => {
+      editor.set((d) => (d.recipe!.inputs[k]![0] = Number(sel.value)));
+      edited();
+    };
     const amount = document.createElement('input');
     amount.type = 'number';
     amount.min = '1';
     amount.max = '64';
     amount.value = String(n);
-    amount.onchange = () => editor.set((d) => (d.recipe!.inputs[k]![1] = Math.max(1, Math.min(64, Math.round(Number(amount.value)) || 1))));
+    amount.onchange = () => {
+      editor.set((d) => (d.recipe!.inputs[k]![1] = Math.max(1, Math.min(64, Math.round(Number(amount.value)) || 1))));
+      edited();
+    };
     const rm = document.createElement('button');
     rm.textContent = '✕';
     rm.title = 'Take it out';
     rm.disabled = r.inputs.length < 2;
     rm.onclick = () => {
       editor.set((d) => d.recipe!.inputs.splice(k, 1));
-      renderPanels();
+      edited();
     };
     row.append(sel, amount, rm);
     recipeRows.append(row);
@@ -1113,7 +1127,10 @@ function renderStates(): void {
         changed(true);
       }
     };
-    name.onchange = () => editor.renameState(i, name.value.trim() || s.name);
+    name.onchange = () => {
+      editor.renameState(i, name.value.trim() || s.name);
+      edited();
+    };
     const count = document.createElement('span');
     count.className = 'note';
     count.textContent = String(s.voxels.length);
@@ -1150,9 +1167,19 @@ function renderPanels(): void {
   renderRecipe();
   const total = editor.draft.states.reduce((n, s) => n + s.voxels.length, 0);
   $('stats').textContent = `${editor.voxels.length} voxels in this state (at most ${DESIGN_MAX_VOXELS}), ${total} in all` + (editor.draft.id ? ` · id ${editor.draft.id}` : ' · not saved yet');
-  ($('save') as HTMLButtonElement).disabled = !canEdit;
+  // (Save: only with something to save; a design not saved yet always has.)
+  const unsaved = editor.dirty || !editor.draft.id, saveEl = $('save') as HTMLButtonElement;
+  saveEl.disabled = !canEdit || !unsaved;
+  saveEl.textContent = !canEdit || unsaved ? 'Save' : 'Saved';
+  saveEl.title = !canEdit ? 'only admins can save' : unsaved ? 'unsaved changes' : 'no changes since it was saved';
   ($('delete') as HTMLButtonElement).disabled = !canEdit || !editor.draft.id;
   ($('delete') as HTMLButtonElement).textContent = armed?.what === 'delete' && armed.until > performance.now() ? 'Really delete?' : 'Delete';
+}
+
+/** After a change to what isn't drawn (its name, its recipe): the panels and the library (whether it's saved, undo). */
+function edited(): void {
+  renderPanels();
+  renderLibrary();
 }
 
 /** After a change: redraw what it touched (`all`: the panels too). */

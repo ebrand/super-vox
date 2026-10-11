@@ -56,11 +56,30 @@ export class DesignEditor {
   selection: Region | null = null;
   private readonly undos: string[] = [];
   private redos: string[] = [];
-  /** Changed since it was saved (or opened). */
-  dirty = false;
+  /** The draft as it was saved (or opened), to tell whether it's changed since; null: changed, whatever it's like (an import, say). */
+  private clean: string | null;
+  private dirtyAt = -1;
+  private wasDirty = false;
 
   constructor(draft: Draft = newDraft()) {
     this.draft = copy(draft);
+    this.clean = JSON.stringify(this.draft);
+  }
+
+  /** Changed since it was saved (or opened): not as it was then (undone back to that, it isn't). */
+  get dirty(): boolean {
+    if (this.clean === null) return true;
+    if (this.dirtyAt !== this.version) {
+      this.dirtyAt = this.version;
+      this.wasDirty = JSON.stringify(this.draft) !== this.clean;
+    }
+    return this.wasDirty;
+  }
+
+  /** True: to be saved, as it is now; false: as it is now is saved. */
+  set dirty(v: boolean) {
+    this.clean = v ? null : JSON.stringify(this.draft);
+    this.dirtyAt = -1;
   }
 
   get voxels(): readonly BlockVoxel[] {
@@ -463,7 +482,6 @@ export class DesignEditor {
     this.draft = draft;
     this.state = state;
     this.selection = selection;
-    this.dirty = true;
   }
 
   private change(f: () => void): void {
@@ -472,7 +490,6 @@ export class DesignEditor {
     if (this.undos.length > 200) this.undos.shift();
     this.redos = [];
     f();
-    this.dirty = true;
   }
 }
 

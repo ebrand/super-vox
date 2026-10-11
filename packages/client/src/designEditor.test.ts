@@ -5,6 +5,33 @@ import { DesignEditor, aimSurface, cellsIn, clipRegion, draftOf, placeAgainst, r
 const P = Material.Planks, S = Material.Stone;
 
 describe('DesignEditor', () => {
+  it('knows whether it has changed since it was saved or opened: undone back to that, it has not', () => {
+    const e = new DesignEditor();
+    expect(e.dirty).toBe(false);
+    e.place({ x: 0, y: 0, z: 0, size: 8, material: P });
+    expect(e.dirty).toBe(true);
+    e.undo();
+    expect(e.dirty).toBe(false);
+    e.redo();
+    expect(e.dirty).toBe(true);
+    e.saved('box');
+    expect(e.dirty).toBe(false);
+    e.set((d) => (d.name = 'Box 2'));
+    expect(e.dirty).toBe(true);
+    e.set((d) => (d.name = 'New object'));
+    expect(e.dirty).toBe(false);
+    // Changed back by hand, too (painted and painted back).
+    e.paint(0, S);
+    expect(e.dirty).toBe(true);
+    e.paint(0, P);
+    expect(e.dirty).toBe(false);
+    // Forced (an import): changed whatever it's like, till saved.
+    e.dirty = true;
+    expect(e.dirty).toBe(true);
+    e.saved('box');
+    expect(e.dirty).toBe(false);
+  });
+
   it('places voxels by the rules: inside the box, on their own grid, not overlapping', () => {
     const e = new DesignEditor();
     expect(e.place({ x: 0, y: 0, z: 0, size: 8, material: P })).toBeNull();
