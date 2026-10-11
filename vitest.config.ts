@@ -11,5 +11,7 @@ export default defineConfig({
     // Some terrain tests build whole worlds (about 4 s each alone); with the suite running in
     // parallel on a busy machine, 5 s (the default) isn't enough room.
     testTimeout: 20_000,
+    // (So a test can collect garbage: that a world closed is let go of, see worldsLetGo.app.test.ts.)
+    execArgv: ['--expose-gc'],
   },
 });

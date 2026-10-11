@@ -1758,29 +1758,38 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   // terrain caches go (here and on the worker threads, about a gigabyte a busy world). One with
   // water still to flow or TNT still to go off stays open. Each opens again when next asked for,
   // as it was (its edits are saved as they're made).
+  /**
+   * What's kept for each world (its villages, outlaws, mobs, drops, arrows, trains' saving, ...),
+   * let go of for those no longer open and nobody's on: closed idle, reshaped, regenerated, replaced
+   * by a sync, deleted. (Kept, each held its World, and with it the world's terrain and caches, for
+   * good: a world closed idle wasn't let go of, and every stroke terraforming one kept another copy.)
+   * How many it let go of.
+   */
+  const letGoOfClosed = (): number => {
+    const live = new Set<World>([...catalog.openWorlds().map((o) => o.world), ...clients.values()]);
+    const gone = new Set<World>();
+    for (const map of [villageSims, villageNames, outlawSims, mobManagers, stationViewers, explosivesOf, dropsOf, arrowsOf, trainsSaved] as Map<World, unknown>[])
+      for (const w of map.keys()) if (!live.has(w)) gone.add(w);
+    for (const world of gone) {
+      villageSims.get(world)?.persist();
+      // (Its outlaws as records again: their creatures go with the mobs.)
+      outlawSims.get(world)?.persist();
+      for (const map of [villageSims, villageNames, outlawSims, mobManagers, stationViewers, explosivesOf, dropsOf, arrowsOf, trainsSaved] as Map<World, unknown>[]) map.delete(world);
+    }
+    return gone.size;
+  };
   const closingIdle = catalog.closeIdle
     ? setInterval(timed('closing idle worlds', () => {
         const busy = new Set<World>(clients.values());
         for (const [world, explosives] of explosivesOf) if (explosives.count > 0) busy.add(world);
         const closing = catalog.closeIdle!((w) => busy.has(w) || w.waterPending > 0, opts.idleWorldMs ?? IDLE_WORLD_MS);
-        for (const closed of closing) {
-          app.log.info({ world: closed.name, idleMinutes: Math.round(closed.idleMs / 6_000) / 10 }, 'closed an idle world');
-          for (const world of closed.worlds) {
-            villageSims.get(world)?.persist();
-            villageSims.delete(world);
-            villageNames.delete(world);
-            // (Its outlaws as records again: their creatures go with the mobs.)
-            outlawSims.get(world)?.persist();
-            outlawSims.delete(world);
-            mobManagers.delete(world);
-            stationViewers.delete(world);
-            explosivesOf.delete(world);
-          }
-        }
+        for (const closed of closing) app.log.info({ world: closed.name, idleMinutes: Math.round(closed.idleMs / 6_000) / 10 }, 'closed an idle world');
+        const gone = letGoOfClosed();
+        if (gone) app.log.info({ worlds: gone }, 'let go of closed worlds');
         // What they held goes soon (once what was still finishing with them has), not whenever an
         // idle server next allocates enough to collect garbage: meanwhile it's memory in use, and
         // charged for. Only with node --expose-gc.
-        if (closing.length) setTimeout(timed('collecting garbage', collectGarbage), 3000).unref();
+        if (closing.length || gone) setTimeout(timed('collecting garbage', collectGarbage), 3000).unref();
       }), Math.min(60_000, Math.max(1000, (opts.idleWorldMs ?? IDLE_WORLD_MS) / 4)))
     : null;
   // Connections still there (see HEARTBEAT_MS): whether each has answered since it was last pinged.
