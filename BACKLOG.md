@@ -246,7 +246,10 @@ Nothing teaches a new player what to do: punch a tree, make planks, a crafting t
 - **Your own map markers:** pins with names on the map (M), kept per account and world.
 - **Touch controls:** the game has none, so it can't be played on a phone or tablet.
 
-## 39. Aqueducts — L
+## 39. Aqueducts — L (first cut done 2026-10-11: see below)
+
+**Built so far** (5dadaf5, 647a4f4, 7242ef2): in track mode (3), a head clicked within 32 m of a lake or river (its floor 1 m under the water's surface; not the sea; the water big enough); segments aimed, planned (profile, cost) and built, falling 1 in 200, 100, 50 or 20; of 1/4 m stone (a dressed floor, 1/2 m walls with a coping, piers every 6 m with round arches where it's over 2 m up, cut through rises to 12 m; at most 24 m up); a head cistern and (F: finish) an outlet basin; its water drawn as far as the first break; survival pays the cobblestone and stone by volume. Round a running outlet (24 m): wheat 1.5x as fast, sand takes saplings, dry ground greens. **Still to do:** tunnels (for cuts over 12 m), buckets filled from it, its pieces as Object Designer slots, branching (one head, several outlets), villages building them, water wheels.
+
 
 Like railways, but above ground: a raised channel carrying water from a large fresh water source (a lake or a big river, high up) across country to dry land, where it waters the ground and the fields. Rules settled 2026-10-11:
 
