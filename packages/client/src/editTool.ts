@@ -23,6 +23,7 @@ import {
   CAR_ITEM,
   RIPE,
   PLANTABLE,
+  WATERED_PLANTABLE,
   isSapling,
   TRADE_REACH_M,
   type TradingPost,
@@ -753,7 +754,8 @@ export class EditTool {
         if (button === 2 && isShovel(held) && TILLABLE.has(material)) return this.request({ type: 'till', x: point[0], y: point[1], z: point[2], tool: held! }, 'tilling');
         if (button === 2 && held === Item.Wheat && material === Material.Farmland) return this.request({ type: 'sow', x: point[0], y: point[1], z: point[2] }, 'sowing');
         // (A sapling: planted on grass or dirt, in the block over it.)
-        if (button === 2 && held !== null && isSapling(held) && PLANTABLE.has(material)) return this.request({ type: 'plant', x: point[0], y: point[1], z: point[2], item: held }, 'planting');
+        // (On sand too: where an aqueduct's outlet waters it, the server says.)
+        if (button === 2 && held !== null && isSapling(held) && (PLANTABLE.has(material) || WATERED_PLANTABLE.has(material))) return this.request({ type: 'plant', x: point[0], y: point[1], z: point[2], item: held }, 'planting');
       }
       // A trading post's stall in reach: right-click trades.
       // A villager in reach (of a village): right-click trades with it.
@@ -836,7 +838,9 @@ export class EditTool {
   private farmTarget(): { point: [number, number, number]; block: [number, number, number]; material: MaterialId } | null {
     if (!this.hit || !this.target || this.targetMaterial === null || this.hit.normal[1] <= 0) return null;
     const m = this.targetMaterial;
-    if (m !== Material.Farmland && !TILLABLE.has(m)) return null;
+    // (Sand too, with a sapling in hand: it may be watered.)
+    const held = this.materialOf();
+    if (m !== Material.Farmland && !TILLABLE.has(m) && !(held !== null && isSapling(held) && WATERED_PLANTABLE.has(m))) return null;
     const t = this.target, h = t.size / 2, B = BLOCK_SIZE;
     const point: [number, number, number] = [Math.floor(t.x + h), Math.floor(t.y + h), Math.floor(t.z + h)];
     return { point, block: [Math.floor(point[0] / B), Math.floor(point[1] / B), Math.floor(point[2] / B)], material: m };

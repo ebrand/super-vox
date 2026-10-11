@@ -232,7 +232,7 @@ export type ServerMessage =
   /** An aqueduct segment's plan (its cells: block x, z, floor; the ground under each, units; what it takes: stone by volume), or why not; `built`: the aqueduct it's now part of. */
   | { type: 'aqueductPlan'; id: number; error?: string; built?: number; plan?: { cells: [number, number, number][]; ground: number[]; length: number; maxHeight: number; maxCut: number; fall: number; cost: [number, number][] } }
   /** Players' wheat (see World.crops): each farmland block sown (block x, y, z) and when (ms, by the server's clock), on joining and whenever it changes. */
-  | { type: 'crops'; crops: [number, number, number, number][] }
+  | { type: 'crops'; crops: [number, number, number, number, number?][] }
   /** Players' saplings (see World.saplings): each one's block (x, y, z), its item and when it was planted (ms, by the server's clock), on joining and whenever they change. */
   | { type: 'saplings'; saplings: [number, number, number, number, number][] }
   /** The world's villages (see Village), on joining and whenever one changes. */

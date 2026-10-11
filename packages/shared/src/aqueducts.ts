@@ -292,3 +292,30 @@ export function poolCells(at: ChannelCell): ChannelCell[] {
   for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) out.push({ bx: at.bx + dx, bz: at.bz + dz, floor: at.floor });
   return out;
 }
+
+/** A finished, running aqueduct's outlet waters the land this near it (m): wheat there grows WATERED_GROWTH times as fast, sand takes saplings, and dry ground greens (see GREENER). */
+export const WATERED_M = 24;
+export const WATERED_GROWTH = 1.5;
+/** What watered ground becomes, a step at a time: desert sand to sand to dirt to grass; dry grass to meadow. */
+export const GREENER: Readonly<Partial<Record<MaterialId, MaterialId>>> = {
+  [Material.DesertSand]: Material.Sand,
+  [Material.Sand]: Material.Dirt,
+  [Material.Dirt]: Material.Grass,
+  [Material.DryGrass]: Material.Meadow,
+};
+/** Saplings take on these too, where watered (see PLANTABLE for anywhere). */
+export const WATERED_PLANTABLE: ReadonlySet<MaterialId> = new Set<MaterialId>([Material.Sand, Material.DesertSand]);
+
+/** Where watered land's watered from: each finished, running aqueduct's outlet's middle (units: x, z). */
+export function wateringOutlets(aqueducts: readonly Aqueduct[]): { x: number; z: number }[] {
+  return aqueducts.filter((a) => a.finished && running(a) && a.outlet.length).map((a) => {
+    const n = a.outlet.length;
+    return { x: (a.outlet.reduce((s, c) => s + c.bx, 0) / n + 0.5) * BLOCK_SIZE, z: (a.outlet.reduce((s, c) => s + c.bz, 0) / n + 0.5) * BLOCK_SIZE };
+  });
+}
+
+/** Whether (x, z) (units) is watered by one of `outlets` (see wateringOutlets). */
+export function watered(outlets: readonly { x: number; z: number }[], x: number, z: number): boolean {
+  const r = WATERED_M * UNITS_PER_METER;
+  return outlets.some((o) => Math.hypot(o.x - x, o.z - z) <= r);
+}

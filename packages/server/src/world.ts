@@ -122,6 +122,12 @@ import {
   MIN_RADIUS_M,
   SAMPLE_M,
   CROP_STAGE_MS,
+  GREENER,
+  WATERED_GROWTH,
+  WATERED_M,
+  WATERED_PLANTABLE,
+  watered,
+  wateringOutlets,
   INTAKE_DEPTH_M,
   INTAKE_REACH_M,
   SOURCE_MIN_COLUMNS,
@@ -946,6 +952,36 @@ export class World {
     return { aqueduct: a, results: [cleared.result, placed.result].filter((r): r is EditResult => r !== null), cost };
   }
 
+  /**
+   * Watered land greens (see GREENER): round each finished, running aqueduct's outlet, `n` places
+   * picked at random (`random`) within WATERED_M, the top block of the ground there turned a step
+   * greener (desert sand to sand, sand to dirt, dirt to grass, dry grass to meadow), its shape kept.
+   * What changed (null: nothing).
+   */
+  greenWatered(n: number, random: () => number = Math.random): EditResult | null {
+    const B = BLOCK_SIZE, M = UNITS_PER_METER, writes: { bx: number; by: number; bz: number; block: Block }[] = [];
+    for (const o of wateringOutlets(this.aqueductList()))
+      for (let i = 0; i < n; i++) {
+        const a = random() * Math.PI * 2, r = Math.sqrt(random()) * WATERED_M * M;
+        const bx = Math.floor((o.x + Math.cos(a) * r) / B), bz = Math.floor((o.z + Math.sin(a) * r) / B);
+        // (The ground's top block there: down from over its natural height, the first solid one.)
+        let by = Math.floor(this.generator.surfaceHeightAt((bx + 0.5) * B, (bz + 0.5) * B) / B) + 3;
+        let block: Block | undefined;
+        for (let k = 0; k < 8; k++, by--) {
+          block = this.blockAt(bx, by, bz);
+          if (block === undefined) break;
+          if (block !== null && !blockVoxels(block).every((v) => isWater(v.material))) break;
+        }
+        if (!block) continue;
+        // (Nothing over it but air: it's the ground's top, open to the sky.)
+        if (this.blockAt(bx, by + 1, bz) !== null) continue;
+        const voxels = blockVoxels(block);
+        if (!voxels.some((v) => GREENER[v.material] !== undefined)) continue;
+        writes.push({ bx, by, bz, block: blockFromVoxels(voxels.map((v) => ({ ...v, material: GREENER[v.material] ?? v.material }))) });
+      }
+    return writes.length ? this.writeBlocks(writes) : null;
+  }
+
   /** How far an aqueduct's water reaches now (see Aqueduct.runs), from what of it stands. True if that changed. */
   private checkAqueduct(a: Aqueduct): boolean {
     const keys = channelKeys(a.cells, [...a.head, ...a.outlet]);
@@ -1060,8 +1096,9 @@ export class World {
   }
 
   /** The wheat sown (block x, y, z of its farmland; when), but where its farmland's gone or something's on it: let go. */
-  cropList(): [number, number, number, number][] {
-    const out: [number, number, number, number][] = [];
+  cropList(): [number, number, number, number, number?][] {
+    const out: [number, number, number, number, number?][] = [];
+    const outlets = wateringOutlets(this.aqueductList());
     let pruned = false;
     for (const [k, sown] of this.cropMap()) {
       const [bx, by, bz] = k.split(',').map(Number) as [number, number, number];
@@ -1070,7 +1107,8 @@ export class World {
         pruned = true;
         continue;
       }
-      out.push([bx, by, bz, sown]);
+      // (Watered by an aqueduct: how much faster it grows.)
+      out.push(watered(outlets, (bx + 0.5) * BLOCK_SIZE, (bz + 0.5) * BLOCK_SIZE) ? [bx, by, bz, sown, WATERED_GROWTH] : [bx, by, bz, sown]);
     }
     if (pruned) this.store?.saveCrops?.(Object.fromEntries(this.cropMap()));
     return out;
@@ -1107,7 +1145,8 @@ export class World {
   harvest(x: number, y: number, z: number, now: number): true | string {
     const B = BLOCK_SIZE, k = `${Math.floor(x / B)},${Math.floor(y / B)},${Math.floor(z / B)}`, sown = this.cropMap().get(k);
     if (sown === undefined) return 'nothing sown there';
-    if (cropStage(sown, now) < RIPE) return `not ripe yet (another ${Math.ceil((sown + CROP_STAGE_MS * RIPE - now) / 60_000)} min)`;
+    const rate = watered(wateringOutlets(this.aqueductList()), x, z) ? WATERED_GROWTH : 1;
+    if (cropStage(sown, now, rate) < RIPE) return `not ripe yet (another ${Math.ceil((sown + (CROP_STAGE_MS * RIPE) / rate - now) / 60_000)} min)`;
     this.cropMap().delete(k);
     this.store?.saveCrops?.(Object.fromEntries(this.cropMap()));
     return true;
@@ -1127,7 +1166,8 @@ export class World {
   /** Whether a sapling can stand in block (bx, by, bz): it's empty, and over grass or dirt. */
   private saplingRoom(bx: number, by: number, bz: number): boolean {
     const below = this.blockMaterial(bx, by - 1, bz);
-    return this.blockAt(bx, by, bz) === null && below !== undefined && PLANTABLE.has(below);
+    // (On sand: one planted where an aqueduct watered it; it stays, if the water stops.)
+    return this.blockAt(bx, by, bz) === null && below !== undefined && (PLANTABLE.has(below) || WATERED_PLANTABLE.has(below));
   }
 
   /**
@@ -1172,7 +1212,8 @@ export class World {
     if (TREE_OF_SAPLING[item] === undefined) return "that isn't a sapling";
     const B = BLOCK_SIZE, bx = Math.floor(x / B), by = Math.floor(y / B) + 1, bz = Math.floor(z / B);
     const ground = this.blockMaterial(bx, by - 1, bz);
-    if (ground === undefined || !PLANTABLE.has(ground)) return 'saplings are planted on grass or dirt';
+    const wet = ground !== undefined && WATERED_PLANTABLE.has(ground) && watered(wateringOutlets(this.aqueductList()), x, z);
+    if (ground === undefined || !(PLANTABLE.has(ground) || wet)) return WATERED_PLANTABLE.has(ground ?? -1) ? "sand takes a sapling only where an aqueduct's outlet waters it" : 'saplings are planted on grass or dirt';
     if (this.blockAt(bx, by, bz) !== null) return "there's something in the way";
     const k = `${bx},${by},${bz}`;
     if (this.saplingMap().has(k)) return "there's one planted there already";

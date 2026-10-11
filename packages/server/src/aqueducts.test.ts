@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Material, WORLD_SHAPES, defaultPlateTerrain, defaultVoxelize } from '@super-vox/shared';
+import { CROP_STAGE_MS, GREENER, Item, Material, RIPE, WATERED_GROWTH, WORLD_SHAPES, defaultPlateTerrain, defaultVoxelize } from '@super-vox/shared';
 import { World } from './world.js';
 import { generatorFor, worldConfigOf } from './worldFile.js';
 
@@ -59,5 +59,54 @@ describe('aqueducts in a world', () => {
     expect(done.aqueduct.outlet).toHaveLength(9);
     expect(done.aqueduct.runs).toBe(93);
     expect(w.buildAqueductSegment({ aqueduct: a.id, from: { bx: 0, bz: 0 }, to: { bx: 6500, bz: 5520 }, fall: 1 / 50 })).toMatch(/finished/);
+
+    // The land round its outlet, watered: a block of dirt there tilled and sown grows half again as fast.
+    const end = done.aqueduct.cells.at(-1)!, fx = end.bx + 4, fz = end.bz + 4;
+    const top = (bx: number, bz: number) => {
+      for (let y = 140; y > 100; y--) {
+        const m = w.materialAtUnit(bx * B + 8, y * B + 8, bz * B + 8);
+        if (m !== undefined && m !== Material.Air) return y;
+      }
+      throw new Error('no ground');
+    };
+    /** A block of `m` put on the ground at (bx, bz), whatever's in its way cleared first: its block y. */
+    const lay = (bx: number, bz: number, m: number) => {
+      const y = top(bx, bz) + 1;
+      try {
+        w.applyEdit({ op: 'removeBox', x: bx * B, y: y * B, z: bz * B, size: B });
+      } catch {
+        // (Nothing there.)
+      }
+      w.applyEdit({ op: 'place', x: bx * B, y: y * B, z: bz * B, size: B, material: m });
+      return y;
+    };
+    const fy = lay(fx, fz, Material.Dirt);
+    expect(Array.isArray(w.till(fx * B + 8, fy * B + 8, fz * B + 8))).toBe(true);
+    expect(w.sow(fx * B + 8, fy * B + 8, fz * B + 8, 1000)).toBe(true);
+    expect(w.cropList().find(([x, , z]) => x === fx && z === fz)?.[4]).toBe(WATERED_GROWTH);
+    const ripe = 1000 + (CROP_STAGE_MS * RIPE) / WATERED_GROWTH;
+    expect(w.harvest(fx * B + 8, fy * B + 8, fz * B + 8, ripe - 60_000)).toMatch(/not ripe/);
+    expect(w.harvest(fx * B + 8, fy * B + 8, fz * B + 8, ripe)).toBe(true);
+    // Sand there takes a sapling; sand far off doesn't.
+    const sy = lay(fx + 2, fz, Material.Sand);
+    expect(w.plant((fx + 2) * B + 8, sy * B + 8, fz * B + 8, Item.OakSapling, 0)).toBe(true);
+    const ay = lay(fx + 60, fz, Material.Sand);
+    expect(w.plant((fx + 60) * B + 8, ay * B + 8, fz * B + 8, Item.OakSapling, 0)).toMatch(/only where an aqueduct's outlet waters it/);
+    // The ground round it greens, a step at a time.
+    let greened = 0;
+    let seed = 1;
+    const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let i = 0; i < 40; i++) {
+      const g = w.greenWatered(10, random);
+      if (g) greened += g.changes.length;
+    }
+    expect(greened).toBeGreaterThan(0);
+    expect(GREENER[Material.Sand]).toBe(Material.Dirt);
+    // Broken: the wheat sown since grows as anywhere.
+    w.sow(fx * B + 8, fy * B + 8, fz * B + 8, 2000);
+    const cut = done.aqueduct.cells[10]!;
+    const broke2 = w.applyEdit({ op: 'removeBox', x: cut.bx * B + 4, y: cut.floor - 8, z: cut.bz * B + 4, size: 8 });
+    expect(w.aqueductsChangedBy(broke2)).toBe(true);
+    expect(w.cropList().find(([x, , z]) => x === fx && z === fz)?.[4]).toBeUndefined();
   }, 120_000);
 });

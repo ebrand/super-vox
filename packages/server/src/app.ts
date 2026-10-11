@@ -203,8 +203,10 @@ function then<T>(v: T | Promise<T>, f: (v: T) => void): void | Promise<void> {
 /** How near a car (m, its middle) a player may be to put it on, get in, or take it off. */
 const CAR_REACH_M = 12;
 
-/** How often saplings due are grown (ms). */
+/** How often saplings due are grown (ms); every so many of those, this many places round each running aqueduct's outlet green a step (see World.greenWatered). */
 const SAPLING_TICK_MS = 5000;
+const GREEN_EVERY_TICKS = 6;
+const GREEN_PER_OUTLET = 3;
 
 /** The shovels (any tills ground into farmland). */
 const SHOVELS = new Set<number>([Item.WoodenShovel, Item.StoneShovel, Item.IronShovel]);
@@ -1341,13 +1343,19 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   };
   // Saplings grown into trees, in the worlds someone's in (worlds no one's in grow theirs when next
   // opened: it goes by when each was planted).
+  let greenTicks = 0;
   const growing = setInterval(timed('saplings', () => {
     const now = Date.now();
+    // (And, now and then, the land round aqueducts' outlets greening: see World.greenWatered.)
+    const greening = ++greenTicks % GREEN_EVERY_TICKS === 0;
     for (const world of new Set(clients.values())) {
       const r = world.growSaplings(now);
-      if (!r) continue;
-      broadcast(world, r);
-      toWorld(world, { type: 'saplings', saplings: world.saplingList() });
+      if (r) {
+        broadcast(world, r);
+        toWorld(world, { type: 'saplings', saplings: world.saplingList() });
+      }
+      const g = greening ? world.greenWatered(GREEN_PER_OUTLET) : null;
+      if (g) broadcast(world, g);
     }
   }), SAPLING_TICK_MS);
   const stationTicking = setInterval(timed('stations', () => {
@@ -2017,7 +2025,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               world.onBoatsChanged ??= () => toWorld(world, { type: 'boats', boats: world.boatList() });
               send({ type: 'tracks', tracks: world.trackList() });
               world.onTracksChanged ??= () => toWorld(world, { type: 'tracks', tracks: world.trackList() });
-              world.onAqueductsChanged ??= () => toWorld(world, { type: 'aqueducts', aqueducts: world.aqueductList() });
+              world.onAqueductsChanged ??= () => {
+                toWorld(world, { type: 'aqueducts', aqueducts: world.aqueductList() });
+                // (Wheat near an outlet grows faster while it runs: everyone told how fast now.)
+                toWorld(world, { type: 'crops', crops: world.cropList() });
+              };
               send({ type: 'trains', trains: world.trains.list(), at: Date.now(), switches: world.trains.switches(), stations: world.trains.stationList(), lines: world.trains.lineList() });
               send({ type: 'posts', posts: world.tradingPosts(clientWorld.get(socket) ?? catalog.defaultName) });
               send({ type: 'villages', villages: villagesOf(world, clientWorld.get(socket)).told() });

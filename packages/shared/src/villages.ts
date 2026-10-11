@@ -183,9 +183,9 @@ export function wallStage(cx: number, cz: number, section: number, ground: (bx: 
   return { clear, place };
 }
 
-/** A field's block's wheat: its stage (see CROP_STAGE_MS), or -1 if nothing's sown there. */
-export function cropStage(sown: number, now: number): number {
-  return sown ? Math.max(0, Math.min(RIPE, Math.floor((now - sown) / CROP_STAGE_MS))) : -1;
+/** A field's block's wheat: its stage (see CROP_STAGE_MS; `rate` times as fast where watered, see WATERED_GROWTH), or -1 if nothing's sown there. */
+export function cropStage(sown: number, now: number, rate = 1): number {
+  return sown ? Math.max(0, Math.min(RIPE, Math.floor(((now - sown) * rate) / CROP_STAGE_MS))) : -1;
 }
 
 /** A piece of a building (units: its least corner, its size), of a material (air: cleared). */
