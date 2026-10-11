@@ -209,8 +209,10 @@ describe('survival needs', () => {
     p.ws.send(JSON.stringify({ type: 'attack', target: pig.id, weapon: Item.StoneSword }));
     // Dropped where it fell (on the ground: y 0), 2 m off and more (it was knocked back): not picked up yet.
     const lying = () => (p.msgs.filter((m): m is Extract<ServerMessage, { type: 'drops' }> => m.type === 'drops').at(-1)?.drops ?? []);
-    await p.until(() => lying().length === 1);
-    const dropped = lying()[0]!;
+    // (Its pork; and, two times in three, its hide, as leather.)
+    await p.until(() => lying().some((d) => d.item === Item.Pork));
+    expect(lying().every((d) => d.item === Item.Pork || d.item === Item.Leather)).toBe(true);
+    const dropped = lying().find((d) => d.item === Item.Pork)!;
     expect(dropped).toMatchObject({ item: Item.Pork, y: 0 });
     expect(dropped.amount).toBeGreaterThanOrEqual(1);
     expect(dropped.amount).toBeLessThanOrEqual(3);

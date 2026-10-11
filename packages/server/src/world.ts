@@ -122,6 +122,18 @@ import {
   MIN_RADIUS_M,
   SAMPLE_M,
   CROP_STAGE_MS,
+  INTAKE_DEPTH_M,
+  INTAKE_REACH_M,
+  SOURCE_MIN_COLUMNS,
+  SOURCE_REACH_M,
+  SOURCE_STEP_M,
+  aqueductPieces,
+  channelKeys,
+  planAqueduct,
+  poolCells,
+  type Aqueduct,
+  type AqueductPlan,
+  type ChannelCell,
   PLANTABLE,
   TREE_OF_SAPLING,
   grownTree,
@@ -782,6 +794,182 @@ export class World {
 
   boatList(): Boat[] {
     return [...this.boats.values()];
+  }
+
+  // --- Aqueducts (see aqueducts.ts): built a segment at a time from a head near natural water, finished with an outlet.
+  private aqueducts: Map<number, Aqueduct> | null = null;
+  /** Told when one's built, extended, finished, or broken or mended (to tell everyone). */
+  onAqueductsChanged?: () => void;
+
+  private aqueductMap(): Map<number, Aqueduct> {
+    if (this.aqueducts) return this.aqueducts;
+    this.aqueducts = new Map();
+    const kept = this.store?.loadAqueducts?.() as { aqueducts?: Aqueduct[] } | null | undefined;
+    for (const a of kept?.aqueducts ?? []) if (a && Number.isInteger(a.id) && Array.isArray(a.cells)) this.aqueducts.set(a.id, { ...a, head: a.head ?? [], outlet: a.outlet ?? [] });
+    return this.aqueducts;
+  }
+
+  private saveAqueducts(): void {
+    this.store?.saveAqueducts?.({ aqueducts: [...this.aqueductMap().values()] });
+  }
+
+  aqueductList(): Aqueduct[] {
+    return [...this.aqueductMap().values()];
+  }
+
+  /** Whether a point (units) is solid (not air, not water): what's built stands. */
+  private solidAtUnit(x: number, y: number, z: number): boolean {
+    const m = this.materialAtUnit(Math.floor(x), Math.floor(y), Math.floor(z));
+    return m !== undefined && m !== Material.Air && !isWater(m);
+  }
+
+  /** The natural water (not poured) standing in the column at (x, z) (units), over the ground: its surface (units), or null. */
+  private naturalWaterTop(x: number, z: number): number | null {
+    const B = BLOCK_SIZE, g = this.generator.surfaceHeightAt(x, z);
+    const natural = (y: number) => {
+      const m = this.materialAtUnit(Math.floor(x), Math.floor(y), Math.floor(z));
+      return m !== undefined && isWater(m) && m !== Material.PouredWater;
+    };
+    if (!natural(g + 1)) return null;
+    let y = g + 1;
+    while (natural(y + B)) y += B;
+    // (To the unit: the top block's water may stand short of its top.)
+    while (natural(y + 1)) y++;
+    return y + 1;
+  }
+
+  /**
+   * Where an aqueduct can start, its head at block (bx, bz): its floor (units: INTAKE_DEPTH_M under
+   * the surface of the nearest natural water within INTAKE_REACH_M, that water large enough and not
+   * the sea), or why not.
+   */
+  aqueductIntake(bx: number, bz: number): { floor: number; surface: number } | string {
+    const B = BLOCK_SIZE, M = UNITS_PER_METER, cx = (bx + 0.5) * B, cz = (bz + 0.5) * B;
+    let best: { d: number; surface: number } | null = null;
+    const r = INTAKE_REACH_M * M, step = 2 * M;
+    for (let dx = -r; dx <= r; dx += step)
+      for (let dz = -r; dz <= r; dz += step) {
+        const d = Math.hypot(dx, dz);
+        if (d > r || (best && d >= best.d)) continue;
+        const top = this.naturalWaterTop(cx + dx, cz + dz);
+        if (top !== null) best = { d, surface: top };
+      }
+    if (!best) return `an aqueduct's head goes within ${INTAKE_REACH_M} m of a lake or river`;
+    const sea = this.generator.seaLevel;
+    if (sea !== null && Math.abs(best.surface - sea) <= B / 2) return "that's the sea: its water's salt (a lake or river, then)";
+    let columns = 0;
+    const R = SOURCE_REACH_M * M, S = SOURCE_STEP_M * M;
+    for (let dx = -R; dx <= R; dx += S)
+      for (let dz = -R; dz <= R; dz += S) {
+        if (Math.hypot(dx, dz) > R) continue;
+        const top = this.naturalWaterTop(cx + dx, cz + dz);
+        if (top !== null && Math.abs(top - best.surface) <= M) columns++;
+      }
+    if (columns < SOURCE_MIN_COLUMNS) return `that water's too small to feed an aqueduct (a bigger lake or river)`;
+    return { floor: Math.floor((best.surface - INTAKE_DEPTH_M * M) / B) * B, surface: best.surface };
+  }
+
+  /** The ground's top over a block (units): its natural surface, as railways go by. */
+  private groundOver = (bx: number, bz: number) => this.generator.surfaceHeightAt((bx + 0.5) * BLOCK_SIZE, (bz + 0.5) * BLOCK_SIZE);
+
+  /**
+   * A segment planned: a new aqueduct's first (`aqueduct` null: its head at block `from`, see
+   * aqueductIntake), or one on from an unfinished aqueduct's end; to block `to`, falling `fall`.
+   * Its plan, and what building it takes (its pieces; in survival, the stone, by volume), or why not.
+   */
+  planAqueductSegment(ask: { aqueduct: number | null; from: { bx: number; bz: number }; to: { bx: number; bz: number }; fall: number }): { plan: AqueductPlan; pieces: ReturnType<typeof aqueductPieces>; head: ChannelCell[]; cost: Map<number, number> } | string {
+    let start: ChannelCell, own: ChannelCell[], head: ChannelCell[] = [];
+    if (ask.aqueduct === null) {
+      const intake = this.aqueductIntake(ask.from.bx, ask.from.bz);
+      if (typeof intake === 'string') return intake;
+      start = { bx: ask.from.bx, bz: ask.from.bz, floor: intake.floor };
+      head = poolCells(start);
+      own = head;
+    } else {
+      const a = this.aqueductMap().get(ask.aqueduct);
+      if (!a) return 'no such aqueduct';
+      if (a.finished) return `${a.name} is finished`;
+      start = a.cells.at(-1)!;
+      own = [...a.head, ...a.cells];
+    }
+    const plan = planAqueduct(start, ask.to.bx, ask.to.bz, ask.fall, this.groundOver);
+    if (typeof plan === 'string') return plan;
+    const pieces = aqueductPieces(ask.aqueduct === null ? [...head, ...plan.cells.slice(1)] : plan.cells.slice(1), this.groundOver, own);
+    // Not through what players (or villages) have built: aqueducts' and railways' own columns aside.
+    const M = UNITS_PER_METER, P = CHUNK_SIZE;
+    const ours = new Set([...this.trackList().flatMap((t) => t.columns), ...this.aqueductList().flatMap((a) => [...a.head, ...a.cells, ...a.outlet].map((c) => `${Math.floor((c.bx * BLOCK_SIZE) / P)},${Math.floor((c.bz * BLOCK_SIZE) / P)}`))]);
+    const built = new Set(this.protectedColumns().map((c) => `${c.cx},${c.cz}`).filter((k) => !ours.has(k)));
+    const hit = [...pieces.place, ...pieces.clear].find((p) => built.has(`${Math.floor(p.x / P)},${Math.floor(p.z / P)}`));
+    if (hit) return `it would go through what's been built near x ${Math.round(hit.x / M)}, z ${Math.round(hit.z / M)} m: go round it`;
+    const cost = new Map<number, number>();
+    for (const p of pieces.place) cost.set(p.material, (cost.get(p.material) ?? 0) + p.size ** 3);
+    return { plan, pieces, head, cost };
+  }
+
+  /** Builds a planned segment (see planAqueductSegment): the aqueduct, new or on, and what changed; or why not. */
+  buildAqueductSegment(ask: Parameters<World['planAqueductSegment']>[0]): { aqueduct: Aqueduct; results: EditResult[] } | string {
+    const planned = this.planAqueductSegment(ask);
+    if (typeof planned === 'string') return planned;
+    const cleared = this.buildPieces(planned.pieces.clear, true), placed = this.buildPieces(planned.pieces.place, false);
+    let a: Aqueduct;
+    if (ask.aqueduct === null) {
+      const ids = this.aqueductList().map((x) => x.id);
+      const id = Math.max(0, ...ids) + 1;
+      a = { id, name: `Aqueduct ${id}`, cells: planned.plan.cells, head: planned.head, outlet: [], finished: false, runs: 0 };
+      this.aqueductMap().set(id, a);
+    } else {
+      a = this.aqueductMap().get(ask.aqueduct)!;
+      a.cells.push(...planned.plan.cells.slice(1));
+    }
+    this.checkAqueduct(a);
+    this.saveAqueducts();
+    this.onAqueductsChanged?.();
+    return { aqueduct: a, results: [cleared.result, placed.result].filter((r): r is EditResult => r !== null) };
+  }
+
+  /** Finishes an aqueduct: its outlet basin built round its end; or why not. */
+  finishAqueduct(id: number): { aqueduct: Aqueduct; results: EditResult[]; cost: Map<number, number> } | string {
+    const a = this.aqueductMap().get(id);
+    if (!a) return 'no such aqueduct';
+    if (a.finished) return `${a.name} is finished already`;
+    if (a.cells.length < 2) return 'build some of it first';
+    const outlet = poolCells(a.cells.at(-1)!);
+    const pieces = aqueductPieces(outlet, this.groundOver, [...a.head, ...a.cells]);
+    const cleared = this.buildPieces(pieces.clear, true), placed = this.buildPieces(pieces.place, false);
+    a.outlet = outlet;
+    a.finished = true;
+    this.checkAqueduct(a);
+    this.saveAqueducts();
+    this.onAqueductsChanged?.();
+    const cost = new Map<number, number>();
+    for (const p of pieces.place) cost.set(p.material, (cost.get(p.material) ?? 0) + p.size ** 3);
+    return { aqueduct: a, results: [cleared.result, placed.result].filter((r): r is EditResult => r !== null), cost };
+  }
+
+  /** How far an aqueduct's water reaches now (see Aqueduct.runs), from what of it stands. True if that changed. */
+  private checkAqueduct(a: Aqueduct): boolean {
+    const keys = channelKeys(a.cells, [...a.head, ...a.outlet]);
+    let runs = keys.findIndex((points) => !points.every(([x, y, z]) => this.solidAtUnit(x, y, z)));
+    if (runs < 0) runs = a.cells.length;
+    if (runs === a.runs) return false;
+    a.runs = runs;
+    return true;
+  }
+
+  /** Whether an edit has broken (or mended) any aqueduct: those it touched checked again; true if any's water reaches less (or more) far. */
+  aqueductsChangedBy(result: EditResult): boolean {
+    if (!this.aqueductMap().size || !result.changes.length) return false;
+    const P = CHUNK_SIZE / BLOCK_SIZE, chunks = new Set(result.changes.map(({ coord: c }) => `${c.cx},${c.cz}`));
+    let changed = false;
+    for (const a of this.aqueductMap().values()) {
+      if (!a.cells.some((c) => chunks.has(`${Math.floor(c.bx / P)},${Math.floor(c.bz / P)}`))) continue;
+      if (this.checkAqueduct(a)) changed = true;
+    }
+    if (changed) {
+      this.saveAqueducts();
+      this.onAqueductsChanged?.();
+    }
+    return changed;
   }
 
   // --- Railways (see rail.ts): track laid a segment at a time (a segment's start this near a free track end joins it).

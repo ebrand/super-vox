@@ -17,6 +17,9 @@ export interface ChunkStore {
   /** The world's laid track (see Track). */
   loadTracks?(): Track[];
   saveTracks?(tracks: Track[]): void;
+  /** The world's aqueducts (see World.aqueducts), as kept: unchecked. */
+  loadAqueducts?(): unknown;
+  saveAqueducts?(aqueducts: unknown): void;
   /** The world's trains (see TrainYard), as they were left: as kept, unchecked (the yard checks). */
   loadTrains?(): unknown;
   saveTrains?(trains: unknown): void;
@@ -38,6 +41,7 @@ const OBJECTS = 'objects.json';
 const STATIONS = 'stations.json';
 const BOATS = 'boats.json';
 const TRACKS = 'tracks.json';
+const AQUEDUCTS = 'aqueducts.json';
 const TRAINS = 'trains.json';
 const VILLAGES = 'villages.json';
 const OUTLAWS = 'outlaws.json';
@@ -115,6 +119,16 @@ export class FileChunkStore implements ChunkStore {
 
   saveTracks(tracks: Track[]): void {
     this.write(TRACKS, JSON.stringify(tracks));
+  }
+
+  /** The aqueducts, in aqueducts.json beside the chunks. */
+  loadAqueducts(): unknown {
+    const path = join(this.dir, AQUEDUCTS);
+    return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as unknown) : null;
+  }
+
+  saveAqueducts(aqueducts: unknown): void {
+    this.write(AQUEDUCTS, JSON.stringify(aqueducts));
   }
 
   /** The trains, in trains.json beside the chunks. */

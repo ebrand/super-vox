@@ -20,6 +20,7 @@ import { isDesignOffset, type ObjectDesign } from './designs.js';
 import type { Boat } from './boats.js';
 import type { ArrowShot } from './arrows.js';
 import type { DroppedItem } from './drops.js';
+import type { Aqueduct } from './aqueducts.js';
 import type { BuildOp } from './shapes.js';
 import type { EntityKind } from './mobs.js';
 import type { StationKind, StationState } from './stations.js';
@@ -27,7 +28,7 @@ import { UNITS_PER_METER } from './units.js';
 import { CHUNK_SIZE, type WorldConfig } from './world.js';
 
 /** Bumped whenever a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 58;
+export const PROTOCOL_VERSION = 59;
 
 export type ClientMessage =
   /** Something said (or a command: see readChat), to be heard by the world (or one player). */
@@ -69,6 +70,13 @@ export type ClientMessage =
   | { type: 'switchThrow'; id: number; node: string }
   /** A segment of track (see SegmentAsk: units) for a design speed (km/h): planned (see trackPlan), or (`lay`) laid. */
   | { type: 'track'; id: number; from: { x: number; z: number }; heading: number | null; to: { x: number; z: number }; curve: boolean; speed: number; lay: boolean }
+  /**
+   * An aqueduct's segment (see aqueducts.ts): planned (for the aqueduct tool to show) or built; a new
+   * aqueduct's first (`aqueduct` null: its head at block `from`), or on from one's end; to block `to`,
+   * falling `fall`. Or one finished (its outlet built at its end).
+   */
+  | { type: 'aqueduct'; id: number; aqueduct: number | null; from: { bx: number; bz: number }; to: { bx: number; bz: number }; fall: number; build: boolean }
+  | { type: 'aqueductFinish'; id: number; aqueduct: number }
   | {
       type: 'hello';
       protocolVersion: number;
@@ -221,6 +229,8 @@ export type ServerMessage =
   | { type: 'meshes'; library: MeshLibrary }
   /** A segment as it'd be laid (see the track message): what it'd take, its line and profile; or why not; `laid`: it has been. */
   | { type: 'trackPlan'; id: number; error?: string; laid?: boolean; plan?: TrackPlan }
+  /** An aqueduct segment's plan (its cells: block x, z, floor; the ground under each, units; what it takes: stone by volume), or why not; `built`: the aqueduct it's now part of. */
+  | { type: 'aqueductPlan'; id: number; error?: string; built?: number; plan?: { cells: [number, number, number][]; ground: number[]; length: number; maxHeight: number; maxCut: number; fall: number; cost: [number, number][] } }
   /** Players' wheat (see World.crops): each farmland block sown (block x, y, z) and when (ms, by the server's clock), on joining and whenever it changes. */
   | { type: 'crops'; crops: [number, number, number, number][] }
   /** Players' saplings (see World.saplings): each one's block (x, y, z), its item and when it was planted (ms, by the server's clock), on joining and whenever they change. */
@@ -237,6 +247,8 @@ export type ServerMessage =
   | { type: 'trains'; trains: Train[]; at: number; switches: Record<string, 0 | 1>; stations: Station[]; lines: Line[] }
   /** The world's laid track (see Track), on joining and whenever more's laid. */
   | { type: 'tracks'; tracks: Track[] }
+  /** The world's aqueducts (see aqueducts.ts), on joining and whenever one changes. */
+  | { type: 'aqueducts'; aqueducts: Aqueduct[] }
   /** Chat (see ChatLine): what's said, as it is; `history`: the world's last lines, on joining. */
   | { type: 'chat'; lines: ChatLine[]; history?: boolean }
   /**
@@ -511,6 +523,10 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
   if (msg.type === 'switchThrow' && isId(msg.id) && typeof msg.node === 'string' && /^-?\d+,-?\d+$/.test(msg.node)) return { type: 'switchThrow', id: msg.id as number, node: msg.node };
   // (Track: a segment's ends; checked by the server too, see planSegment.)
   const isXZ = (v: unknown): v is { x: number; z: number } => typeof v === 'object' && v !== null && Number.isFinite((v as { x: unknown }).x) && Number.isFinite((v as { z: unknown }).z);
+  const isBlockXZ = (v: unknown): v is { bx: number; bz: number } => typeof v === 'object' && v !== null && Number.isInteger((v as { bx?: unknown }).bx) && Number.isInteger((v as { bz?: unknown }).bz);
+  if (msg.type === 'aqueduct' && isId(msg.id) && (msg.aqueduct === null || isId(msg.aqueduct)) && isBlockXZ(msg.from) && isBlockXZ(msg.to) && Number.isFinite(msg.fall) && typeof msg.build === 'boolean')
+    return { type: 'aqueduct', id: msg.id as number, aqueduct: msg.aqueduct as number | null, from: { bx: msg.from.bx, bz: msg.from.bz }, to: { bx: msg.to.bx, bz: msg.to.bz }, fall: msg.fall as number, build: msg.build };
+  if (msg.type === 'aqueductFinish' && isId(msg.id) && isId(msg.aqueduct)) return { type: 'aqueductFinish', id: msg.id as number, aqueduct: msg.aqueduct as number };
   if (msg.type === 'track' && isId(msg.id) && typeof msg.lay === 'boolean' && typeof msg.curve === 'boolean' && isXZ(msg.from) && isXZ(msg.to) && (msg.heading === null || Number.isFinite(msg.heading)) && Number.isFinite(msg.speed))
     return { type: 'track', id: msg.id as number, from: { x: msg.from.x, z: msg.from.z }, heading: msg.heading as number | null, to: { x: msg.to.x, z: msg.to.z }, curve: msg.curve, speed: msg.speed as number, lay: msg.lay };
   if (msg.type === 'placeObject' && isId(msg.id) && isInt32(msg.item) && isInt32(msg.x) && isInt32(msg.y) && isInt32(msg.z) && isFacing(msg.facing)) {

@@ -62,6 +62,7 @@ import {
   carOfItem,
   type CarKind,
   TRACK_REACH_M,
+  formatBlocks,
   type TrackPlan,
   RATE_COUNT,
   RATE_MS,
@@ -1229,6 +1230,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (world.cropsLostTo(result)) toWorld(world, { type: 'crops', crops: world.cropList() });
     // (And saplings.)
     if (world.saplingsLostTo(result)) toWorld(world, { type: 'saplings', saplings: world.saplingList() });
+    // (Aqueducts it broke or mended: their water runs less or more far; everyone told, by onAqueductsChanged.)
+    world.aqueductsChangedBy(result);
   };
   /**
    * A periodic task timed: one over SLOW_MESSAGE_MS is logged ('slow task'), with how many chunks it
@@ -2014,12 +2017,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               world.onBoatsChanged ??= () => toWorld(world, { type: 'boats', boats: world.boatList() });
               send({ type: 'tracks', tracks: world.trackList() });
               world.onTracksChanged ??= () => toWorld(world, { type: 'tracks', tracks: world.trackList() });
+              world.onAqueductsChanged ??= () => toWorld(world, { type: 'aqueducts', aqueducts: world.aqueductList() });
               send({ type: 'trains', trains: world.trains.list(), at: Date.now(), switches: world.trains.switches(), stations: world.trains.stationList(), lines: world.trains.lineList() });
               send({ type: 'posts', posts: world.tradingPosts(clientWorld.get(socket) ?? catalog.defaultName) });
               send({ type: 'villages', villages: villagesOf(world, clientWorld.get(socket)).told() });
               send({ type: 'camps', camps: outlawsOf(world, clientWorld.get(socket)).told() });
               send({ type: 'crops', crops: world.cropList() });
               send({ type: 'saplings', saplings: world.saplingList() });
+              send({ type: 'aqueducts', aqueducts: world.aqueductList() });
               // (What's dropped last: the last thing told unasked.)
               send({ type: 'drops', drops: [...(dropsOf.get(world)?.list.values() ?? [])] });
             };
@@ -2974,6 +2979,75 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
               app.log.error(err, 'laying track failed');
               send({ type: 'trackPlan', id, plan, error: 'laying it went wrong: try again' });
             });
+          break;
+        }
+
+        case 'aqueduct':
+        case 'aqueductFinish': {
+          // An aqueduct (see aqueducts.ts): a segment planned or built, or one finished; builders only; survival: paid for in stone, near where you stand.
+          if (!greeted) break;
+          const reply = (r: Omit<Extract<ServerMessage, { type: 'aqueductPlan' }>, 'type' | 'id'>) => send({ type: 'aqueductPlan', id: msg.id, ...r });
+          const survival = catalog.play(clientWorld.get(socket))?.mode === 'survival', M = UNITS_PER_METER;
+          const pay = (cost: Map<number, number>): string | null => {
+            if (!survival || !inventory) return null;
+            const short = [...cost].filter(([m, v]) => inventory!.count(m) < v);
+            if (short.length) return `it takes ${short.map(([m, v]) => `${formatBlocks(v)} m³ of ${itemName(m)}`).join(' and ')}, and you've ${short.map(([m]) => `${formatBlocks(inventory!.count(m))} m³`).join(' and ')}`;
+            return null;
+          };
+          const take = (cost: Map<number, number>) => {
+            if (!survival || !inventory) return;
+            for (const [m, v] of cost) inventory.apply(new Map([[m, v]]));
+            send(inventory.message());
+          };
+          if ((msg.type === 'aqueductFinish' || msg.build) && !canEdit()) {
+            reply({ error: cantBuild() });
+            break;
+          }
+          if (msg.type === 'aqueductFinish') {
+            const done = world.finishAqueduct(msg.aqueduct);
+            if (typeof done === 'string') reply({ error: done });
+            else {
+              for (const r of done.results) broadcast(world, r);
+              take(done.cost);
+              reply({ built: done.aqueduct.id });
+            }
+            break;
+          }
+          const ask = { aqueduct: msg.aqueduct, from: msg.from, to: msg.to, fall: msg.fall };
+          const planned = world.planAqueductSegment(ask);
+          if (typeof planned === 'string') {
+            reply({ error: planned });
+            break;
+          }
+          const plan = {
+            cells: planned.plan.cells.map((c) => [c.bx, c.bz, c.floor] as [number, number, number]),
+            ground: planned.plan.ground.map((g) => Math.round(g)),
+            length: Math.round(planned.plan.length * 10) / 10, maxHeight: Math.round(planned.plan.maxHeight * 10) / 10, maxCut: Math.round(planned.plan.maxCut * 10) / 10, fall: planned.plan.fall,
+            cost: [...planned.cost],
+          };
+          // (Survival: near where you stand, both ends.)
+          const pose = players.get(socket)?.pose, ends = [planned.plan.cells[0]!, planned.plan.cells.at(-1)!];
+          if (survival && (!pose || ends.some((c) => Math.hypot((c.bx + 0.5) * BLOCK_SIZE - pose.x, (c.bz + 0.5) * BLOCK_SIZE - pose.z) > TRACK_REACH_M * M))) {
+            reply({ error: `in survival, aqueducts are built within ${TRACK_REACH_M} m of where you stand: walk nearer`, plan });
+            break;
+          }
+          if (!msg.build) {
+            reply({ plan });
+            break;
+          }
+          const short = pay(planned.cost);
+          if (short) {
+            reply({ error: short, plan });
+            break;
+          }
+          const built = world.buildAqueductSegment(ask);
+          if (typeof built === 'string') {
+            reply({ error: built, plan });
+            break;
+          }
+          for (const r of built.results) broadcast(world, r);
+          take(planned.cost);
+          reply({ built: built.aqueduct.id, plan });
           break;
         }
 
