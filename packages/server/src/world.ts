@@ -503,12 +503,15 @@ export class World {
     const resolved = resolveChunk(this.config, { cx, cy: 0, cz });
     if (!resolved || (!this.remote && !this.disk)) return this.columnRange(cx, cz);
     const { cx: x, cz: z } = resolved;
+    const kept = this.generatedRanges.get(`${x},${z}`);
+    if (kept) return this.withEdits(x, z, kept);
     return this.share(`k:${x},${z}`, async () => {
       let range = this.disk ? await this.disk.column<ColumnRange>(x, z) : null;
       if (!range) {
         range = this.remote ? await this.remote.column(x, z) : this.generator.columnRange(x, z);
         this.disk?.putColumn(x, z, range);
       }
+      this.keepRange(`${x},${z}`, range);
       return range;
     }).then((range) => this.withEdits(x, z, range));
   }
@@ -916,10 +919,18 @@ export class World {
   }
 
   /** Builds a planned segment (see planAqueductSegment): the aqueduct, new or on, and what changed; or why not. */
-  buildAqueductSegment(ask: Parameters<World['planAqueductSegment']>[0]): { aqueduct: Aqueduct; results: EditResult[] } | string {
+  async buildAqueductSegment(ask: Parameters<World['planAqueductSegment']>[0]): Promise<{ aqueduct: Aqueduct; results: EditResult[] } | string> {
     const planned = this.planAqueductSegment(ask);
     if (typeof planned === 'string') return planned;
     const pieces = aqueductPieces(planned.columns, this.groundOver);
+    // (Its chunks made first, without holding the server up; then, if it's not been built on meanwhile, built.)
+    const was = this.aqueductMap().get(ask.aqueduct ?? -1)?.cells.length;
+    await this.chunksMadeFor([pieces.clear, pieces.place]);
+    if (ask.aqueduct !== null) {
+      const now = this.aqueductMap().get(ask.aqueduct);
+      if (!now || now.finished || now.cells.length !== was) return "it's been built on meanwhile: aim again";
+    }
+    // (Cleared and built together: water let into what's cleared, between, would stay in the channel.)
     const cleared = this.buildPieces(pieces.clear, true), placed = this.buildPieces(pieces.place, false);
     let a: Aqueduct;
     if (ask.aqueduct === null) {
@@ -939,14 +950,16 @@ export class World {
   }
 
   /** Finishes an aqueduct: its outlet basin built round its end; or why not. */
-  finishAqueduct(id: number): { aqueduct: Aqueduct; results: EditResult[]; cost: Map<number, number> } | string {
+  async finishAqueduct(id: number): Promise<{ aqueduct: Aqueduct; results: EditResult[]; cost: Map<number, number> } | string> {
     const a = this.aqueductMap().get(id);
     if (!a) return 'no such aqueduct';
     if (a.finished) return `${a.name} is finished already`;
     if (a.cells.length < 2) return 'build some of it first';
-    const outlet = poolCells(a.cells.at(-1)!);
+    const outlet = poolCells(a.cells.at(-1)!), was = a.cells.length;
     const columns = aqueductColumns({ ...a, outlet }, (p) => !p.run && p.cell === a.cells.length);
     const pieces = aqueductPieces(columns, this.groundOver);
+    await this.chunksMadeFor([pieces.clear, pieces.place]);
+    if (a.finished || a.cells.length !== was || this.aqueductMap().get(id) !== a) return "it's been built on meanwhile: try again";
     const cleared = this.buildPieces(pieces.clear, true), placed = this.buildPieces(pieces.place, false);
     a.outlet = outlet;
     a.finished = true;
@@ -1054,12 +1067,7 @@ export class World {
    * another thread, or the disk), then the edits. What changed (to tell everyone).
    */
   async buildWorks(clear: readonly EarthPiece[], place: readonly EarthPiece[]): Promise<EditResult[]> {
-    const C = CHUNK_SIZE, chunks = new Map<string, ChunkCoord>();
-    for (const p of [...clear, ...place]) {
-      const coord = { cx: Math.floor(p.x / C), cy: Math.floor(p.y / C), cz: Math.floor(p.z / C) };
-      chunks.set(chunkKey(coord), coord);
-    }
-    await Promise.all([...chunks.values()].map((c) => Promise.resolve(this.encodedChunk(c)).catch(() => null)));
+    await this.chunksMadeFor([clear, place]);
     const out: EditResult[] = [];
     if (clear.length) {
       const r = this.buildPieces(clear, true).result;
@@ -1070,6 +1078,35 @@ export class World {
       if (r) out.push(r);
     }
     return out;
+  }
+
+  /**
+   * The chunks pieces are in, made (off the main thread where there's another thread, or from the
+   * disk), and their columns' ranges; then decoded, one at a time with a pause between (others'
+   * messages answered meanwhile): so building them holds the server up as little as it can. Their
+   * neighbours made too: water, after an edit, looks at what's beside it.
+   */
+  private async chunksMadeFor(lists: readonly (readonly { x: number; y: number; z: number }[])[]): Promise<void> {
+    const C = CHUNK_SIZE, chunks = new Map<string, ChunkCoord>(), beside = new Map<string, ChunkCoord>(), columns = new Map<string, [number, number]>();
+    for (const list of lists)
+      for (const p of list) {
+        const coord = { cx: Math.floor(p.x / C), cy: Math.floor(p.y / C), cz: Math.floor(p.z / C) };
+        chunks.set(chunkKey(coord), coord);
+        columns.set(`${coord.cx},${coord.cz}`, [coord.cx, coord.cz]);
+      }
+    for (const c of chunks.values())
+      for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] as const) {
+        const n = resolveChunk(this.config, { cx: c.cx + dx, cy: c.cy + dy, cz: c.cz + dz });
+        if (n && !chunks.has(chunkKey(n))) beside.set(chunkKey(n), n);
+      }
+    await Promise.all([
+      ...[...chunks.values(), ...beside.values()].map((c) => Promise.resolve(this.encodedChunk(c)).catch(() => null)),
+      ...[...columns.values()].map(([cx, cz]) => Promise.resolve(this.columnRangeOf(cx, cz)).catch(() => null)),
+    ]);
+    for (const c of chunks.values()) {
+      this.lookedAt(c.cx, c.cy, c.cz);
+      await new Promise((r) => setImmediate(r));
+    }
   }
 
   /** Players' wheat: each farmland block sown ("bx,by,bz"), and when (ms). */
@@ -1602,6 +1639,8 @@ export class World {
   };
 
   private commit(chunks: Chunk[]): EditResult {
+    // (What they were: decoded already, if they've been looked at.)
+    const before = chunks.map((c) => this.decoded.get(chunkKey(c)) ?? this.current({ cx: c.cx, cy: c.cy, cz: c.cz }));
     for (const c of chunks) {
       this.decoded.delete(chunkKey(c));
       this.lightTops.delete(`${c.cx},${c.cz}`);
@@ -1612,7 +1651,6 @@ export class World {
       const k = `${c.cx},${c.cz}`;
       if (!columns.has(k)) columns.set(k, { cx: c.cx, cz: c.cz, before: this.columnRange(c.cx, c.cz) });
     }
-    const before = chunks.map((c) => this.current({ cx: c.cx, cy: c.cy, cz: c.cz }));
     const change = volumeChange(before, chunks);
     const changes = chunks.map((chunk) => {
       this.recordEdited(chunk);
@@ -1926,7 +1964,8 @@ export class World {
       const key = chunkKey(resolved);
       let chunk = next.get(key);
       if (!chunk) {
-        const cur = this.current(resolved);
+        // (Decoded already, if it's been looked at: see lookedAt.)
+        const cur = this.decoded.get(key) ?? this.current(resolved);
         chunk = { cx: cur.cx, cy: cur.cy, cz: cur.cz, blocks: cur.blocks.slice() };
         next.set(key, chunk);
       }
@@ -2524,10 +2563,23 @@ export class World {
   columnRange(cx: number, cz: number): ColumnRange | null {
     const resolved = resolveChunk(this.config, { cx, cy: 0, cz });
     if (!resolved) return null;
-    const t0 = performance.now(), range = this.generator.columnRange(resolved.cx, resolved.cz);
-    this.mainThread.columnRanges++;
-    this.mainThread.rangesMs += performance.now() - t0;
+    const key = `${resolved.cx},${resolved.cz}`;
+    let range = this.generatedRanges.get(key);
+    if (!range) {
+      const t0 = performance.now();
+      range = this.generator.columnRange(resolved.cx, resolved.cz);
+      this.mainThread.columnRanges++;
+      this.mainThread.rangesMs += performance.now() - t0;
+      this.keepRange(key, range);
+    }
     return this.withEdits(resolved.cx, resolved.cz, range);
+  }
+
+  /** Columns' generated ranges, as worked out (they never change: an edit's commit asks for each twice). */
+  private readonly generatedRanges = new Map<string, ColumnRange>();
+  private keepRange(key: string, range: ColumnRange): void {
+    if (this.generatedRanges.size >= RANGES_KEPT) this.generatedRanges.delete(this.generatedRanges.keys().next().value!);
+    this.generatedRanges.set(key, range);
   }
 
   /** A generated column's range, widened over its edited chunks. */
@@ -2634,6 +2686,8 @@ export class World {
 
 /** Decoded chunks kept for looking at blocks (mobs, light: see lookedAt), and chunk columns' light tops (see lightTops, 1 KB each). */
 const DECODED_KEPT = 512;
+/** Columns' generated ranges kept (see World.columnRange). */
+const RANGES_KEPT = 8192;
 const LIGHT_TOPS_KEPT = 4096;
 
 /** Zoomed-in maps kept (see encodedMapArea): each up to 768 KB. */

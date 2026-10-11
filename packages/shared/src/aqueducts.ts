@@ -356,14 +356,69 @@ function columnVoxels(col: AqueductColumn, groundAt: (bx: number, bz: number) =>
  * its floor.
  */
 export function aqueductPieces(columns: readonly AqueductColumn[], groundAt: (bx: number, bz: number) => number): { place: AqueductPiece[]; clear: AqueductPiece[] } {
-  const solid = new Map<string, MaterialId>(), air = new Map<string, MaterialId>();
+  const solid = new VoxelBlocks(), air = new VoxelBlocks();
   for (const col of columns) {
-    const { clearFrom, clearTo } = columnVoxels(col, groundAt, (qy, m) => solid.set(`${col.qx},${qy},${col.qz}`, m));
-    for (let y = clearFrom; y < clearTo; y += Q) air.set(`${col.qx},${y / Q},${col.qz}`, Material.Air);
+    const { clearFrom, clearTo } = columnVoxels(col, groundAt, (qy, m) => solid.set(col.qx, qy, col.qz, m));
+    for (let y = clearFrom; y < clearTo; y += Q) air.set(col.qx, y / Q, col.qz, Material.Air);
   }
   // (Where it goes is cleared too, whatever's there: then built, as the clearing comes first.)
-  for (const k of solid.keys()) air.set(k, Material.Air);
-  return { place: merged(solid), clear: merged(air) };
+  solid.each((qx, qy, qz) => air.set(qx, qy, qz, Material.Air));
+  return { place: solid.merged(), clear: air.merged() };
+}
+
+/** Quarter-metre voxels, a block's (4 by 4 by 4) to an array (its material + 1; 0 for none). */
+class VoxelBlocks {
+  private readonly blocks = new Map<number, { bx: number; by: number; bz: number; m: Uint16Array }>();
+
+  set(qx: number, qy: number, qz: number, material: MaterialId): void {
+    const bx = Math.floor(qx / 4), by = Math.floor(qy / 4), bz = Math.floor(qz / 4);
+    // (A block's key: x and z to 2^18 blocks (262 km), y within ±2^15.)
+    const key = ((bx + 131_072) * 65_536 + (by + 32_768)) * 262_144 + (bz + 131_072);
+    let b = this.blocks.get(key);
+    if (!b) this.blocks.set(key, (b = { bx, by, bz, m: new Uint16Array(64) }));
+    b.m[qx - bx * 4 + 4 * (qz - bz * 4 + 4 * (qy - by * 4))] = material + 1;
+  }
+
+  each(f: (qx: number, qy: number, qz: number) => void): void {
+    for (const b of this.blocks.values())
+      for (let i = 0; i < 64; i++) if (b.m[i]) f(b.bx * 4 + (i & 3), b.by * 4 + (i >> 4), b.bz * 4 + ((i >> 2) & 3));
+  }
+
+  /** As pieces: a block's, merged into one 1 m voxel if all one material; else each 1/2 m octant that is; else as they are. */
+  merged(): AqueductPiece[] {
+    const B = BLOCK_SIZE, out: AqueductPiece[] = [];
+    for (const { bx, by, bz, m } of this.blocks.values()) {
+      const at = (x: number, y: number, z: number) => m[x + 4 * (z + 4 * y)]!;
+      /** The one material (+1) all of a cube (quarters x0.., `n` a side) is, or 0. */
+      const all = (x0: number, y0: number, z0: number, n: number): number => {
+        const v = at(x0, y0, z0);
+        if (!v) return 0;
+        for (let y = y0; y < y0 + n; y++) for (let z = z0; z < z0 + n; z++) for (let x = x0; x < x0 + n; x++) if (at(x, y, z) !== v) return 0;
+        return v;
+      };
+      const whole = all(0, 0, 0, 4);
+      if (whole) {
+        out.push({ x: bx * B, y: by * B, z: bz * B, size: B, material: whole - 1 });
+        continue;
+      }
+      for (let oy = 0; oy < 4; oy += 2)
+        for (let oz = 0; oz < 4; oz += 2)
+          for (let ox = 0; ox < 4; ox += 2) {
+            const half = all(ox, oy, oz, 2);
+            if (half) {
+              out.push({ x: bx * B + ox * Q, y: by * B + oy * Q, z: bz * B + oz * Q, size: 2 * Q, material: half - 1 });
+              continue;
+            }
+            for (let y = oy; y < oy + 2; y++)
+              for (let z = oz; z < oz + 2; z++)
+                for (let x = ox; x < ox + 2; x++) {
+                  const v = at(x, y, z);
+                  if (v) out.push({ x: bx * B + x * Q, y: by * B + y * Q, z: bz * B + z * Q, size: Q, material: v - 1 });
+                }
+          }
+    }
+    return out;
+  }
 }
 
 /** What columns of an aqueduct take (units³ of each material): as aqueductPieces would build, without making its pieces; those built again (not `mine`) aside. */
@@ -412,50 +467,6 @@ export function channelKeys(a: AqueductShape): [number, number, number][][] {
     key(x - nx * w, z - nz * w, true);
     return out;
   });
-}
-
-/** Quarter-metre voxels ("qx,qy,qz" → material) as pieces: a block's, merged into one 1 m voxel if all one material; else each 1/2 m octant that is; else as they are. */
-function merged(voxels: ReadonlyMap<string, MaterialId>): AqueductPiece[] {
-  const B = BLOCK_SIZE, N = B / Q, H = N / 2;
-  const blocks = new Map<string, Map<string, MaterialId>>();
-  for (const [k, m] of voxels) {
-    const [qx, qy, qz] = k.split(',').map(Number) as [number, number, number];
-    const bk = `${Math.floor(qx / N)},${Math.floor(qy / N)},${Math.floor(qz / N)}`;
-    (blocks.get(bk) ?? blocks.set(bk, new Map()).get(bk)!).set(k, m);
-  }
-  const out: AqueductPiece[] = [];
-  for (const [bk, inside] of blocks) {
-    const [bx, by, bz] = bk.split(',').map(Number) as [number, number, number];
-    const at = (x: number, y: number, z: number) => inside.get(`${bx * N + x},${by * N + y},${bz * N + z}`);
-    /** The one material all of a cube (quarters x0.., `n` a side) is, or null. */
-    const all = (x0: number, y0: number, z0: number, n: number): MaterialId | null => {
-      const m = at(x0, y0, z0);
-      if (m === undefined) return null;
-      for (let y = y0; y < y0 + n; y++) for (let z = z0; z < z0 + n; z++) for (let x = x0; x < x0 + n; x++) if (at(x, y, z) !== m) return null;
-      return m;
-    };
-    const whole = all(0, 0, 0, N);
-    if (whole !== null) {
-      out.push({ x: bx * B, y: by * B, z: bz * B, size: B, material: whole });
-      continue;
-    }
-    for (let oy = 0; oy < N; oy += H)
-      for (let oz = 0; oz < N; oz += H)
-        for (let ox = 0; ox < N; ox += H) {
-          const half = all(ox, oy, oz, H);
-          if (half !== null) {
-            out.push({ x: bx * B + ox * Q, y: by * B + oy * Q, z: bz * B + oz * Q, size: H * Q, material: half });
-            continue;
-          }
-          for (let y = oy; y < oy + H; y++)
-            for (let z = oz; z < oz + H; z++)
-              for (let x = ox; x < ox + H; x++) {
-                const m = at(x, y, z);
-                if (m !== undefined) out.push({ x: bx * B + x * Q, y: by * B + y * Q, z: bz * B + z * Q, size: Q, material: m });
-              }
-        }
-  }
-  return out;
 }
 
 /** A pool at an aqueduct's head (its cistern) or a finished one's end (its outlet basin): 3 by 3 channel cells round `at`, at its floor. */

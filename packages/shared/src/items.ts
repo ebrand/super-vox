@@ -263,24 +263,29 @@ export function creativeHotbar(): (MaterialId | null)[] {
 }
 
 /** Volume (unit voxels) of each material in a chunk. */
-export function chunkVolumes(chunk: Chunk, into = new Map<MaterialId, number>()): Map<MaterialId, number> {
+export function chunkVolumes(chunk: Chunk, into = new Map<MaterialId, number>(), other?: Chunk): Map<MaterialId, number> {
   const add = (m: MaterialId, v: number) => {
     if (m !== Material.Air) into.set(m, (into.get(m) ?? 0) + v);
   };
-  for (const b of chunk.blocks) {
-    if (!b) continue;
+  chunk.blocks.forEach((b, k) => {
+    // (The same block as `other`'s there: no change to count.)
+    if (!b || (other && other.blocks[k] === b)) return;
     if (b.kind === 'uniform') add(b.material, BLOCK_VOLUME);
     else if (b.kind === 'grid') for (const m of b.materials) add(m, voxelVolume(b.size));
     else for (let i = 0; i < b.packed.length; i++) add(b.materials[i]!, voxelVolume(unpackVoxel(b.packed[i]!).size));
-  }
+  });
   return into;
 }
 
-/** How much of each material changed (after minus before; zeros left out). */
+/** How much of each material changed (after minus before; zeros left out). Chunks paired by place (`before[i]` is `after[i]` as it was), only their blocks that differ counted. */
 export function volumeChange(before: readonly Chunk[], after: readonly Chunk[]): Map<MaterialId, number> {
   const a = new Map<MaterialId, number>(), b = new Map<MaterialId, number>();
-  for (const c of after) chunkVolumes(c, a);
-  for (const c of before) chunkVolumes(c, b);
+  const paired = (i: number) => {
+    const x = before[i], y = after[i];
+    return before.length === after.length && x && y && x.cx === y.cx && x.cy === y.cy && x.cz === y.cz && x.blocks.length === y.blocks.length;
+  };
+  after.forEach((c, i) => chunkVolumes(c, a, paired(i) ? before[i] : undefined));
+  before.forEach((c, i) => chunkVolumes(c, b, paired(i) ? after[i] : undefined));
   const out = new Map<MaterialId, number>();
   for (const m of new Set([...a.keys(), ...b.keys()])) {
     const d = (a.get(m) ?? 0) - (b.get(m) ?? 0);

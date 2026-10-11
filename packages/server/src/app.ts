@@ -3042,13 +3042,19 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             break;
           }
           if (msg.type === 'aqueductFinish') {
-            const done = world.finishAqueduct(msg.aqueduct);
-            if (typeof done === 'string') reply({ error: done });
-            else {
-              for (const r of done.results) broadcast(world, r);
-              take(done.cost);
-              reply({ built: done.aqueduct.id });
-            }
+            const here = world;
+            void here
+              .finishAqueduct(msg.aqueduct)
+              .then((done) => {
+                if (typeof done === 'string') return reply({ error: done });
+                for (const r of done.results) broadcast(here, r);
+                take(done.cost);
+                reply({ built: done.aqueduct.id });
+              })
+              .catch((err: unknown) => {
+                app.log.error(err, 'finishing an aqueduct failed');
+                reply({ error: 'finishing it went wrong: try again' });
+              });
             break;
           }
           const ask = { aqueduct: msg.aqueduct, from: msg.from, to: msg.to, fall: msg.fall };
@@ -3078,14 +3084,29 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
             reply({ error: short, plan });
             break;
           }
-          const built = world.buildAqueductSegment(ask);
-          if (typeof built === 'string') {
-            reply({ error: built, plan });
-            break;
-          }
-          for (const r of built.results) broadcast(world, r);
+          // (Its stone taken now, given back if it's not built: not paid for twice meanwhile.)
           take(planned.cost);
-          reply({ built: built.aqueduct.id, plan });
+          const here = world, inv = inventory;
+          const refund = () => {
+            if (!survival || !inv) return;
+            for (const [m, v] of planned.cost) inv.addItem(m, v);
+            send(inv.message());
+          };
+          void here
+            .buildAqueductSegment(ask)
+            .then((built) => {
+              if (typeof built === 'string') {
+                refund();
+                return reply({ error: built, plan });
+              }
+              for (const r of built.results) broadcast(here, r);
+              reply({ built: built.aqueduct.id, plan });
+            })
+            .catch((err: unknown) => {
+              refund();
+              app.log.error(err, 'building an aqueduct failed');
+              reply({ error: 'building it went wrong: try again', plan });
+            });
           break;
         }
 

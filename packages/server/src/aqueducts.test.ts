@@ -13,7 +13,7 @@ function lakeWorld(): World {
 }
 
 describe('aqueducts in a world', () => {
-  it('start by a lake (its floor under the water), run while whole, stop at a break, run again mended, and are finished with an outlet', () => {
+  it('start by a lake (its floor under the water), run while whole, stop at a break, run again mended, and are finished with an outlet', async () => {
     const w = lakeWorld();
     // By the sea: its water's salt, no head there.
     expect(w.aqueductIntake(6000, 3000)).toMatch(/the sea/);
@@ -24,7 +24,7 @@ describe('aqueducts in a world', () => {
     // A segment east, falling 1 in 50.
     let told = 0;
     w.onAqueductsChanged = () => void told++;
-    const built = w.buildAqueductSegment({ aqueduct: null, from: { bx: 6374, bz: 5488 }, to: { bx: 6434, bz: 5488 }, fall: 1 / 50 });
+    const built = await w.buildAqueductSegment({ aqueduct: null, from: { bx: 6374, bz: 5488 }, to: { bx: 6434, bz: 5488 }, fall: 1 / 50 });
     if (typeof built === 'string') throw new Error(built);
     const a = built.aqueduct;
     expect(a.cells).toHaveLength(61);
@@ -50,15 +50,15 @@ describe('aqueducts in a world', () => {
     expect(mendedAny).toBe(true);
     expect(w.aqueductList()[0]!.runs).toBe(61);
     // On from its end, then finished: its outlet basin round its end.
-    const on = w.buildAqueductSegment({ aqueduct: a.id, from: { bx: 0, bz: 0 }, to: { bx: 6434, bz: 5520 }, fall: 1 / 50 });
+    const on = await w.buildAqueductSegment({ aqueduct: a.id, from: { bx: 0, bz: 0 }, to: { bx: 6434, bz: 5520 }, fall: 1 / 50 });
     if (typeof on === 'string') throw new Error(on);
     expect(on.aqueduct.cells.length).toBe(61 + 32);
-    const done = w.finishAqueduct(a.id);
+    const done = await w.finishAqueduct(a.id);
     if (typeof done === 'string') throw new Error(done);
     expect(done.aqueduct.finished).toBe(true);
     expect(done.aqueduct.outlet).toHaveLength(9);
     expect(done.aqueduct.runs).toBe(93);
-    expect(w.buildAqueductSegment({ aqueduct: a.id, from: { bx: 0, bz: 0 }, to: { bx: 6500, bz: 5520 }, fall: 1 / 50 })).toMatch(/finished/);
+    expect(await w.buildAqueductSegment({ aqueduct: a.id, from: { bx: 0, bz: 0 }, to: { bx: 6500, bz: 5520 }, fall: 1 / 50 })).toMatch(/finished/);
 
     // The land round its outlet, watered: a block of dirt there tilled and sown grows half again as fast.
     const end = done.aqueduct.cells.at(-1)!, fx = end.bx + 4, fz = end.bz + 4;
