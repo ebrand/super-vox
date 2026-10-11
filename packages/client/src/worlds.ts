@@ -51,6 +51,8 @@ interface WorldInfo {
 interface PlayerInfo {
   id: number;
   world: string;
+  /** Their account's name (as they go by), if signed in. */
+  name: string | null;
   connectedAt: number;
   tolerance: number | null;
   pose: { x: number; y: number; z: number; yaw: number; at: number } | null;
@@ -207,6 +209,11 @@ async function showMap(world: string): Promise<void> {
   shownMap = { world, map };
 }
 
+/** How a player's shown: their account's name, or (not signed in) a guest by their connection's number. */
+function playerName(p: PlayerInfo): string {
+  return p.name ?? `guest #${p.id}`;
+}
+
 function drawPlayers(players: PlayerInfo[]): void {
   const dpr = window.devicePixelRatio || 1;
   const w = marks.clientWidth, h = marks.clientHeight;
@@ -233,9 +240,14 @@ function drawPlayers(players: PlayerInfo[]): void {
     g.closePath();
     g.fill();
     g.stroke();
-    g.fillStyle = '#fff';
+    // (Outlined: readable over snow and sand as well as sea.)
     g.font = '11px system-ui';
-    g.fillText(`#${p.id}`, x + 8, z - 6);
+    g.lineJoin = 'round';
+    g.lineWidth = 3;
+    g.strokeStyle = 'rgba(0, 0, 0, 0.75)';
+    g.strokeText(playerName(p), x + 8, z - 6);
+    g.fillStyle = '#fff';
+    g.fillText(playerName(p), x + 8, z - 6);
   }
 }
 
@@ -369,12 +381,12 @@ function render(d: Dashboard): void {
   drawPlayers(d.players);
 
   $('players').innerHTML = d.players.length
-    ? '<tr><th class="num">#</th><th>World</th><th class="num">Position (m)</th><th>Facing</th><th class="num">Connected</th><th class="num">Chunks</th><th class="num">Tiles</th><th class="num">Edits</th><th class="num">Sent</th><th class="num">Seen</th></tr>' +
+    ? '<tr><th>Player</th><th>World</th><th class="num">Position (m)</th><th>Facing</th><th class="num">Connected</th><th class="num">Chunks</th><th class="num">Tiles</th><th class="num">Edits</th><th class="num">Sent</th><th class="num">Seen</th></tr>' +
       d.players
         .map((p) => {
           const pos = p.pose ? [p.pose.x, p.pose.y, p.pose.z].map((v) => (v / UNITS_PER_METER).toFixed(0)).join(', ') : '–';
           return (
-            `<tr><td class="num">${p.id}</td><td>${esc(p.world)}${p.tolerance !== null ? ` <span class="badge">tol ${p.tolerance}/16</span>` : ''}</td>` +
+            `<tr><td title="connection #${p.id}">${esc(playerName(p))}</td><td>${esc(p.world)}${p.tolerance !== null ? ` <span class="badge">tol ${p.tolerance}/16</span>` : ''}</td>` +
             `<td class="num">${pos}</td><td>${p.pose ? compass(p.pose.yaw) : '–'}</td><td class="num">${formatDuration(d.now - p.connectedAt)}</td>` +
             `<td class="num">${p.chunks}</td><td class="num">${p.tiles}</td><td class="num">${p.edits}</td><td class="num">${formatBytes(p.bytesOut)}</td>` +
             `<td class="num">${p.pose ? `${formatDuration(d.now - p.pose.at)} ago` : 'never'}</td></tr>`
