@@ -66,11 +66,16 @@ export function mapColor(material: number, normal: readonly [number, number, num
   return base.map((c, k) => SEA_OPACITY * SEA_RGB[k]! + (1 - SEA_OPACITY) * c) as [number, number, number];
 }
 
+/** How red the land at or over a lake's level is drawn (see renderMap's `above`). */
+const ABOVE_RED = [0.85, 0.12, 0.1] as const, ABOVE_ALPHA = 0.45;
+
 /**
  * RGBA pixels for the whole map, row-major, one pixel per sample; with `contours`, lines where the
- * ground crosses each contourInterval (darker, every fifth), not across water.
+ * ground crosses each contourInterval (darker, every fifth), not across water; with `above` (a
+ * height, units: a lake's level), the land at that height or higher tinted red (what an aqueduct
+ * from it can't reach, as it only falls).
  */
-export function renderMap(map: MapData, contours = false): Uint8ClampedArray<ArrayBuffer> {
+export function renderMap(map: MapData, contours = false, above: number | null = null): Uint8ClampedArray<ArrayBuffer> {
   const { cols, rows, step, heights, materials, seaLevel, colors } = map;
   const ground = map.ground ?? heights, gap = contourInterval(step) * UNITS_PER_METER;
   const band = (i: number, j: number) => Math.floor(ground[Math.max(0, Math.min(cols - 1, i)) + cols * Math.max(0, Math.min(rows - 1, j))]! / gap);
@@ -97,6 +102,7 @@ export function renderMap(map: MapData, contours = false): Uint8ClampedArray<Arr
           c[2] *= k2;
         }
       }
+      if (above !== null && !isWater(k) && ground[k]! >= above) for (let n = 0; n < 3; n++) c[n] = c[n]! * (1 - ABOVE_ALPHA) + ABOVE_RED[n]! * ABOVE_ALPHA;
       px.set([c[0] * 255, c[1] * 255, c[2] * 255, 255], k * 4);
     }
   }
@@ -239,6 +245,12 @@ export class WorldMapOverlay {
         const [x2] = screenToWorld(v, r.width, r.height, e.clientX - r.left + 1, e.clientY - r.top);
         const W = this.world.width;
         if (this.clicked({ x: this.world.wrapX ? mod(x, W) : x, z }, Math.abs(x2 - x))) return this.update();
+      }
+      // A plain click on water: the land at or over its level shown (red); anywhere else, not.
+      if (d && !d.moved && e.button === 0 && this.isOpen && !travelClick(e) && !this.in3d && e.target === this.canvas) {
+        const p = this.at(e);
+        this.setLakeLevel(p && p.material === Material.Water ? p.ground : null);
+        return;
       }
       if (!d || d.moved || e.button !== 0 || !this.isOpen || !this.canTravel || !travelClick(e)) return;
       const p = this.at(e);
@@ -539,12 +551,31 @@ export class WorldMapOverlay {
 
   /** Whether the map's drawn with contour lines (see renderMap). */
   private contours = false;
+  /** A lake's (or river's) level clicked (units), the land at or over it drawn red (see renderMap's `above`); null: none. */
+  private lakeLevel: number | null = null;
+
+  /** Lets go of a lake's level shown (see setLakeLevel): true if there was one (Esc does this before closing the map). */
+  clearLakeLevel(): boolean {
+    if (this.lakeLevel === null) return false;
+    this.setLakeLevel(null);
+    return true;
+  }
+
+  /** Shows (a level, units) or clears (null) what's at or over a lake's level: every picture painted again. */
+  private setLakeLevel(level: number | null): void {
+    if (level === this.lakeLevel) return;
+    this.lakeLevel = level;
+    if (this.map) this.paint(this.map, this.base);
+    for (const t of this.tiles.values()) this.paint(t.map, t.image);
+    this.showInfo(null);
+    this.update();
+  }
 
   private paint(map: MapData & { x0?: number; z0?: number }, image: HTMLCanvasElement): void {
     if (this.climate && !map.colors) map.colors = climateTintColors(map, this.climate);
     image.width = map.cols;
     image.height = map.rows;
-    image.getContext('2d')!.putImageData(new ImageData(renderMap(map, this.contours), map.cols, map.rows), 0, 0);
+    image.getContext('2d')!.putImageData(new ImageData(renderMap(map, this.contours, this.lakeLevel), map.cols, map.rows), 0, 0);
   }
 
   private async load(): Promise<void> {
@@ -660,8 +691,9 @@ export class WorldMapOverlay {
 
   private showInfo(p: { x: number; z: number; height: number; material: number; ground?: number } | null, hint = this.hint(false)): void {
     if (!this.map) return;
+    const lake = this.lakeLevel === null ? '' : `red: at or over the lake's level, ${(this.lakeLevel / UNITS_PER_METER).toFixed(0)} m (an aqueduct from it only falls: it runs through the rest) · click elsewhere or Esc to clear · `;
     if (!p) {
-      this.info.textContent = hint;
+      this.info.textContent = lake + hint;
       return;
     }
     const m = (u: number) => (u / UNITS_PER_METER).toFixed(0);
@@ -669,7 +701,8 @@ export class WorldMapOverlay {
     const under = sea !== null && p.height < sea ? ` · ${m(sea - p.height)} m under the sea` : '';
     // (The ground's own height, under trees; over a lake or river, its surface's.)
     const g = p.ground ?? p.height, level = p.material === Material.Water ? `water at ${m(g)} m` : `ground ${m(g)} m`;
-    this.info.textContent = `x ${m(p.x)} m, z ${m(p.z)} m · ${level} · ${materialName(p.material)}${under}${this.canTravel ? ' · ⌘-click to go there' : ''}`;
+    const vsLake = this.lakeLevel === null || p.material === Material.Water ? '' : ` · ${g >= this.lakeLevel ? `${m(g - this.lakeLevel)} m over` : `${m(this.lakeLevel - g)} m under`} the lake`;
+    this.info.textContent = `x ${m(p.x)} m, z ${m(p.z)} m · ${level}${vsLake} · ${materialName(p.material)}${under}${this.canTravel ? ' · ⌘-click to go there' : ''}${p.material === Material.Water ? ' · click: what it can reach' : ''}`;
   }
 }
 

@@ -961,7 +961,10 @@ connection = connect({
             if (typingIn(e) && e.code !== 'Escape') return;
             if (e.code === 'KeyM' || (e.code === 'Escape' && worldMap?.isOpen)) {
               if (e.code === 'KeyM' && !worldMap!.isOpen && controls.pointerLocked) freeMouse();
-              if (e.code === 'Escape') worldMap!.close();
+              // (Esc: a lake's level shown let go first; again, the map closes.)
+              if (e.code === 'Escape') {
+                if (!worldMap!.clearLakeLevel()) worldMap!.close();
+              }
               else worldMap!.toggle();
               return;
             }

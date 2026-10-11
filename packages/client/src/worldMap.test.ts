@@ -90,6 +90,17 @@ describe('world map data', () => {
     expect(contourInterval(4 * 16)).toBe(5);
   });
 
+  it("tints the land at or over a lake's level red (from the ground's own height), not the water", () => {
+    const cols = 4, rows = 1;
+    const ground = Int16Array.of(100, 200, 300, 200), heights = Int16Array.of(100, 900, 300, 200);
+    const materials = Uint8Array.of(Material.Grass, Material.Grass, Material.Grass, Material.Water);
+    const m: MapData = { cols, rows, step: 16, seaLevel: null, heights, materials, ground };
+    const plain = renderMap(m), red = renderMap(m, false, 200);
+    const tinted = (i: number) => red[i * 4]! > plain[i * 4]! && red[i * 4 + 1]! < plain[i * 4 + 1]!;
+    // Under the level: as it is; at it (under trees too) and over it: red; the water itself: as it is.
+    expect([0, 1, 2, 3].map(tinted)).toEqual([false, true, true, false]);
+  });
+
   it('renders one opaque pixel per sample, with water only below sea level', () => {
     const px = renderMap(map);
     expect(px.length).toBe(6 * 4);
