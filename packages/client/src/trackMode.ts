@@ -56,7 +56,10 @@ export interface AqueductFinishAsk {
 type AqueductPlanMessage = Extract<ServerMessage, { type: 'aqueductPlan' }>;
 
 export interface TrackModeHooks {
-  scene: THREE.Scene;
+  /** Where its marks go: drawn where things are in the world (moved, on a round world, to the copy of it we're in: see shift). */
+  scene: THREE.Object3D;
+  /** How far (metres, east) what's drawn where it is in the world is moved, on a round world: the copy of it we're in. */
+  shift?: () => number;
   /** The game's camera: its field of view and shape (and, where it is, where we stand). */
   camera: THREE.PerspectiveCamera;
   /** Which way we face (radians, as the camera's yaw). */
@@ -416,7 +419,8 @@ export class TrackMode {
   /** The ground under the mouse; the segment to it shown, and planned. */
   private aim(): void {
     const g = this.mouse && this.pick(this.mouse.x, this.mouse.y);
-    this.hover = g ? { x: g.x * M, z: g.z * M, y: g.y } : null;
+    // (Where in the world: on a round world we may be a copy of it or more away, see hooks.shift.)
+    this.hover = g ? { x: (g.x - (this.hooks.shift?.() ?? 0)) * M, z: g.z * M, y: g.y } : null;
     if (this.tool === 'aqueduct') return this.aimAqueduct();
     // (Near a free end, with nothing started: that end's where it'd start.)
     const near = !this.start && this.hover ? this.endNear(this.hover.x, this.hover.z) : null;

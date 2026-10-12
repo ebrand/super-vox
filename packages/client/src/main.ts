@@ -158,6 +158,20 @@ scene.add(createSky(atmosphere));
 /** The weather (see weatherView.ts), once the world says what its weather is. */
 const weatherView = new WeatherView(atmosphere);
 scene.add(weatherView.group);
+/**
+ * What's drawn where it is in the world (tracks, trains, aqueducts' water, crops, saplings, posts,
+ * track mode's marks): on a round world, moved to the copy of it we're in (the client keeps going
+ * past the seam, and the ground's drawn where we are: see ChunkManager.copiesOf), else it was all a
+ * world away once we'd gone round.
+ */
+const placed = new THREE.Group();
+scene.add(placed);
+/** How far `placed` is moved (metres): a whole number of the world's widths. */
+const placedShift = (): number => {
+  if (!world?.wrapX) return 0;
+  const W = world.widthUnits / UNITS_PER_METER, x = trackMode?.active ? trackMode.view.position.x : camera.position.x;
+  return Math.round((x - W / 2) / W) * W;
+};
 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, view * 1.5);
 const controls = new FlyControls(camera, renderer.domElement);
@@ -903,7 +917,8 @@ connection = connect({
             placesPanel = new PlacesPanel(worldMap, () => ({ x: normalizeX(w, camera.position.x * UNITS_PER_METER), z: camera.position.z * UNITS_PER_METER }), w.wrapX ? w.widthUnits : null);
             showPlaces();
             trackMode ??= new TrackMode({
-              scene,
+              scene: placed,
+              shift: placedShift,
               camera,
               yaw: () => controls.yaw,
               solid: () => trackSolid(),
@@ -919,23 +934,23 @@ connection = connect({
             });
             cropView?.group.removeFromParent();
             cropView = new CropView(() => 1 - 0.85 * atmosphere.uniforms.stars.value, () => Date.now() + serverOffset);
-            scene.add(cropView.group);
+            placed.add(cropView.group);
             saplingView?.group.removeFromParent();
             saplingView = new SaplingView(() => 1 - 0.85 * atmosphere.uniforms.stars.value, () => Date.now() + serverOffset);
-            scene.add(saplingView.group);
+            placed.add(saplingView.group);
             aqueductView?.dispose();
             aqueductView?.group.removeFromParent();
             aqueductView = new AqueductView(voxelWater);
-            scene.add(aqueductView.group);
+            placed.add(aqueductView.group);
             postView?.group.removeFromParent();
             postView = new PostView(() => 1 - 0.85 * atmosphere.uniforms.stars.value);
-            scene.add(postView.group);
+            placed.add(postView.group);
             trainView?.group.removeFromParent();
             trainView = new TrainView(() => 1 - 0.85 * atmosphere.uniforms.stars.value, () => Date.now() + serverOffset);
-            scene.add(trainView.group);
+            placed.add(trainView.group);
             trackView?.group.removeFromParent();
             trackView = new TrackView(() => 1 - 0.85 * atmosphere.uniforms.stars.value);
-            scene.add(trackView.group);
+            placed.add(trackView.group);
           }
           // Survival: you walk (see survivalMovement); the map can't take you anywhere.
           survivalMovement = msg.mode === 'survival' && msg.canEdit;
@@ -1785,6 +1800,7 @@ renderer.setAnimationLoop(() => {
   lastFrame = frameStart;
   trackVelocity(frameStart);
   trackMode?.frame(frameDt);
+  placed.position.x = placedShift();
   chunks?.setViewY((trackMode?.active ? trackMode.view.position.y : camera.position.y) * UNITS_PER_METER);
   updateLod();
   if (!paused) editTool?.update();
