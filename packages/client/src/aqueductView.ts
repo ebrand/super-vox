@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BLOCK_SIZE, CHANNEL_WATER, Material, UNITS_PER_METER, aqueductWater, type Aqueduct } from '@super-vox/shared';
+import { AQUEDUCT_FOOTING_M, AQUEDUCT_PIER_EVERY_M, BLOCK_SIZE, CHANNEL_WATER, CHUNK_SIZE, Material, UNITS_PER_METER, aqueductWater, type Aqueduct, type ChannelCell } from '@super-vox/shared';
 import { createPackedMesh, disposePackedMesh } from './meshFactory.js';
 import { packQuads, type Quad } from './mesher.js';
 import { WATER_LAYER } from './water.js';
@@ -17,15 +17,29 @@ const TILE = 2048 * UNITS_PER_METER;
 export class AqueductView {
   readonly group = new THREE.Group();
   private key = '';
+  /** Its stone far off (see farMesh), a mesh a chunk column, by column: shown where the column isn't drawn as voxels. */
+  private readonly far = new THREE.Group();
+  private readonly farColumns = new Map<string, { cx: number; cz: number; mesh: THREE.Mesh }>();
 
-  constructor(private readonly material: THREE.Material) {}
+  /** `material`: its water's; `stone`: the ground's, for its stone far off (none: not drawn far off). */
+  constructor(
+    private readonly material: THREE.Material,
+    private readonly stone: THREE.Material | null = null,
+  ) {
+    this.group.add(this.far);
+  }
 
   set(aqueducts: readonly Aqueduct[]): void {
-    const key = aqueducts.map((a) => `${a.id}:${a.cells.length}:${a.runs}:${a.finished}:${a.legs?.length ?? 0}`).join(' ');
+    const key = aqueducts.map((a) => `${a.id}:${a.cells.length}:${a.runs}:${a.finished}:${a.legs?.length ?? 0}:${a.ground?.length ?? 0}`).join(' ');
     if (key === this.key) return;
     this.key = key;
-    for (const m of [...this.group.children]) disposePackedMesh(m);
+    for (const m of [...this.group.children]) if (m !== this.far) disposePackedMesh(m);
     this.group.clear();
+    this.group.add(this.far);
+    for (const { mesh } of this.farColumns.values()) disposePackedMesh(mesh);
+    this.far.clear();
+    this.farColumns.clear();
+    if (this.stone) for (const a of aqueducts) this.addFar(a, this.stone);
     for (const a of aqueducts) {
       const tiles = new Map<string, WaterColumn[]>();
       for (const c of aqueductWater(a)) {
@@ -39,10 +53,86 @@ export class AqueductView {
     }
   }
 
+  /**
+   * Its stone far off shown where the ground's not drawn as voxel chunks there (`drawn`: whether
+   * chunk column (cx, cz) is, as the chunks are kept: on a round world, `shift` columns over from
+   * where it is in the world, the copy we're in).
+   */
+  showFar(drawn: (cx: number, cz: number) => boolean, shift = 0): void {
+    for (const c of this.farColumns.values()) c.mesh.visible = !drawn(c.cx + shift, c.cz);
+  }
+
+  /** An aqueduct's stone far off, a mesh for each chunk column it's in (see farMesh). */
+  private addFar(a: Aqueduct, material: THREE.Material): void {
+    if (!a.ground || a.ground.length !== a.cells.length) return;
+    const B = BLOCK_SIZE, M = UNITS_PER_METER, P = CHUNK_SIZE / B;
+    // How far along each cell is (m): for where its piers go.
+    const along: number[] = [];
+    a.cells.forEach((c, i) => along.push(i ? along[i - 1]! + Math.hypot(c.bx - a.cells[i - 1]!.bx, c.bz - a.cells[i - 1]!.bz) * (B / M) : 0));
+    const byColumn = new Map<string, number[]>();
+    a.cells.forEach((c, i) => {
+      const k = `${Math.floor(c.bx / P)},${Math.floor(c.bz / P)}`;
+      (byColumn.get(k) ?? byColumn.set(k, []).get(k)!).push(i);
+    });
+    for (const [k, idx] of byColumn) {
+      const mesh = farMesh(idx.map((i) => ({ cell: a.cells[i]!, ground: a.ground![i]!, along: along[i]! })), material, `aqueduct ${a.id} far ${k}`);
+      if (!mesh) continue;
+      const [cx, cz] = k.split(',').map(Number) as [number, number];
+      const key = `${a.id} ${k}`;
+      this.farColumns.set(key, { cx, cz, mesh });
+      this.far.add(mesh);
+    }
+  }
+
   dispose(): void {
-    for (const m of [...this.group.children]) disposePackedMesh(m);
+    for (const m of [...this.group.children]) if (m !== this.far) disposePackedMesh(m);
+    for (const { mesh } of this.farColumns.values()) disposePackedMesh(mesh);
+    this.farColumns.clear();
+    this.far.clear();
     this.group.clear();
   }
+}
+
+/**
+ * An aqueduct's stone as seen far off (where its chunks aren't drawn as voxels, only the land's low
+ * detail, which has nothing built in it): over each cell a body 2 m across (its floor and walls, to
+ * under its water: that's drawn on it), and under it, down to the ground, a solid footing where it's
+ * low; else piers every AQUEDUCT_PIER_EVERY_M and a band under the body (its arches' tops). Boxes,
+ * of the ground's own material (lit and faded as it is).
+ */
+export function farMesh(cells: readonly { cell: ChannelCell; ground: number; along: number }[], material: THREE.Material, name: string): THREE.Mesh | null {
+  if (!cells.length) return null;
+  const B = BLOCK_SIZE, M = UNITS_PER_METER, SLAB = B / 2, BAND = B;
+  let ox = Infinity, oz = Infinity, oy = Infinity;
+  for (const { cell, ground } of cells) (ox = Math.min(ox, cell.bx * B - B)), (oz = Math.min(oz, cell.bz * B - B)), (oy = Math.min(oy, Math.min(ground, cell.floor) - 2 * B));
+  const quads: Quad[] = [];
+  /** A box (units, from the mesh's origin) of `m`: its six faces. */
+  const box = (x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, m: number, top = m) => {
+    if (x1 <= x0 || y1 <= y0 || z1 <= z0) return;
+    const f = (q: Omit<Quad, 'material' | 'size'>, mat: number) => quads.push({ ...q, material: mat, size: B });
+    f({ dir: 0, plane: x1, u: y0, v: z0, du: y1 - y0, dv: z1 - z0 }, m);
+    f({ dir: 1, plane: x0, u: y0, v: z0, du: y1 - y0, dv: z1 - z0 }, m);
+    f({ dir: 2, plane: y1, u: z0, v: x0, du: z1 - z0, dv: x1 - x0 }, top);
+    f({ dir: 3, plane: y0, u: z0, v: x0, du: z1 - z0, dv: x1 - x0 }, m);
+    f({ dir: 4, plane: z1, u: x0, v: y0, du: x1 - x0, dv: y1 - y0 }, m);
+    f({ dir: 5, plane: z0, u: x0, v: y0, du: x1 - x0, dv: y1 - y0 }, m);
+  };
+  for (const { cell, ground, along } of cells) {
+    const x0 = cell.bx * B - B / 2 - ox, z0 = cell.bz * B - B / 2 - oz, x1 = x0 + 2 * B, z1 = z0 + 2 * B;
+    const under = cell.floor - SLAB, top = cell.floor + CHANNEL_WATER / 2;
+    box(x0, under - oy, z0, x1, top - oy, z1, Material.Cobblestone, Material.Stone);
+    const high = under - ground;
+    if (high <= 0) continue;
+    if (high <= AQUEDUCT_FOOTING_M * M) box(x0, ground - oy, z0, x1, under - oy, z1, Material.Cobblestone);
+    else {
+      // (A pier where one falls in this cell; the band under the body everywhere.)
+      const P = AQUEDUCT_PIER_EVERY_M, step = B / M;
+      if (Math.floor((along + step) / P) > Math.floor(along / P) || along === 0) box(x0, ground - oy, z0, x1, under - oy, z1, Material.Cobblestone);
+      else box(x0, Math.max(ground, under - BAND) - oy, z0, x1, under - oy, z1, Material.Stone);
+    }
+  }
+  const mesh = createPackedMesh(packQuads(quads), { x: ox, y: oy, z: oz }, material, name);
+  return mesh;
 }
 
 /** A quarter-metre column of channel water (see aqueductWater). */

@@ -59,6 +59,8 @@ export interface Aqueduct {
   runs: number;
   /** Its straight runs, a segment each (its channel along the line between their end cells' middles): none for one built before it had them (its channel square round each cell). */
   legs?: ChannelLeg[];
+  /** The natural ground's top under each of its cells (units), as told players (for drawing it far off: see AqueductView). */
+  ground?: number[];
 }
 
 /** A straight run of an aqueduct's channel: from its cell `first` to its cell `last` (their middles), falling `fall` a block. */

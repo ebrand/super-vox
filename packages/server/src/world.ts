@@ -855,6 +855,9 @@ export class World {
   }
 
   aqueductList(): Aqueduct[] {
+    // (With the ground under each cell, for drawing them far off: worked out once, as the world was made.)
+    for (const a of this.aqueductMap().values())
+      if (a.ground?.length !== a.cells.length) a.ground = a.cells.map((c, i) => a.ground?.[i] ?? Math.round(this.groundOver(c.bx, c.bz)));
     return [...this.aqueductMap().values()];
   }
 

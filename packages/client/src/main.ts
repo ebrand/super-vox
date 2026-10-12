@@ -166,6 +166,8 @@ scene.add(weatherView.group);
  */
 const placed = new THREE.Group();
 scene.add(placed);
+/** Frames drawn (for what's looked at only now and then). */
+let farFrames = 0;
 /** How far `placed` is moved (metres): a whole number of the world's widths. */
 const placedShift = (): number => {
   if (!world?.wrapX) return 0;
@@ -940,7 +942,7 @@ connection = connect({
             placed.add(saplingView.group);
             aqueductView?.dispose();
             aqueductView?.group.removeFromParent();
-            aqueductView = new AqueductView(voxelWater);
+            aqueductView = new AqueductView(voxelWater, material);
             placed.add(aqueductView.group);
             postView?.group.removeFromParent();
             postView = new PostView(() => 1 - 0.85 * atmosphere.uniforms.stars.value);
@@ -1801,6 +1803,11 @@ renderer.setAnimationLoop(() => {
   trackVelocity(frameStart);
   trackMode?.frame(frameDt);
   placed.position.x = placedShift();
+  // (Aqueducts' stone far off, where their chunks aren't drawn as voxels: looked at now and then.)
+  if (aqueductView && chunks && ++farFrames % 15 === 0) {
+    const c = chunks;
+    aqueductView.showFar((cx, cz) => c.drawnColumn(cx, cz), Math.round((placedShift() * UNITS_PER_METER) / CHUNK_SIZE));
+  }
   chunks?.setViewY((trackMode?.active ? trackMode.view.position.y : camera.position.y) * UNITS_PER_METER);
   updateLod();
   if (!paused) editTool?.update();
