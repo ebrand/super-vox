@@ -1513,7 +1513,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       {
         config: world.config,
         terrainAt: (x, z) => world.terrainAt(x, z),
-        blockGroundLow: (bx, bz) => world.blockGroundLow(bx, bz),
+        blockGround: (bx, bz) => world.blockGround(bx, bz),
         buildWorks: (c, p) => world.buildWorks(c, p),
         editedNear: (x, z, r) => world.editedNear(x, z, r),
         occupied: (x, z, r) => world.tradingPosts(seed).some((t) => Math.hypot(t.x - x, t.z - z) < r),

@@ -1122,13 +1122,14 @@ export class World {
   /**
    * Pieces cleared then placed (a village's cottage stage, its field: see villages.ts) without
    * holding the server up: the chunks they're in made first (off the main thread where there's
-   * another thread, or the disk), then the edits. What changed (to tell everyone).
+   * another thread, or the disk), then the edits, cleared exactly (see buildPieces' `cut`). What
+   * changed (to tell everyone).
    */
   async buildWorks(clear: readonly EarthPiece[], place: readonly EarthPiece[]): Promise<EditResult[]> {
     await this.chunksMadeFor([clear, place]);
     const out: EditResult[] = [];
     if (clear.length) {
-      const r = this.buildPieces(clear, true).result;
+      const r = this.buildPieces(clear, true, true).result;
       if (r) out.push(r);
     }
     if (place.length) {
@@ -1374,12 +1375,12 @@ export class World {
     };
   }
 
-  /** The natural ground's lowest point across block column (bx, bz) (units): sampled 4 by 4 over it. */
-  blockGroundLow(bx: number, bz: number): number {
+  /** The natural ground's lowest and highest points across block column (bx, bz) (units): sampled 4 by 4 over it. */
+  blockGround(bx: number, bz: number): { low: number; high: number } {
     const B = BLOCK_SIZE, s = this.generator.surfaceSamples(bx * B, bz * B, 5, 4);
-    let low = Infinity;
-    for (const h of s.heights) low = Math.min(low, h);
-    return low;
+    let low = Infinity, high = -Infinity;
+    for (const h of s.heights) (low = Math.min(low, h)), (high = Math.max(high, h));
+    return { low, high };
   }
 
   /** Whether players have built (edited) within `r` units of (x, z): their chunk columns. */
@@ -2234,7 +2235,7 @@ export class World {
   }
 
   /** As build, of pieces each with its own size and material (Extrude's copies: see extrudePieces). */
-  buildPieces(pieces: readonly BuildPiece[], clear: boolean): { result: EditResult | null; count: number; blocks: BuildChange[] } {
+  buildPieces(pieces: readonly BuildPiece[], clear: boolean, cut = false): { result: EditResult | null; count: number; blocks: BuildChange[] } {
     const B = BLOCK_SIZE;
     const byBlock = new Map<string, { bx: number; by: number; bz: number; cells: BlockVoxel[] }>();
     for (const c of pieces) {
@@ -2271,11 +2272,28 @@ export class World {
         for (let y = v.y; y < v.y + v.size; y++) for (let z = v.z; z < v.z + v.size; z++) for (let x = v.x; x < v.x + v.size; x++) if (m[x + B * (z + B * y)]) return true;
         return false;
       };
-      let next: BlockVoxel[];
+      let next: BlockVoxel[], gone = 0;
       if (clear) {
         for (const c of g.cells) mark(c, taken);
-        next = voxels.filter((v) => isWater(v.material) || !touches(v, taken));
-        count += voxels.length - next.length;
+        // (`cut`: one partly cleared cut in eighths, down to what's all cleared or not at all, the rest
+        // kept (a cottage sat on the ground to the quarter metre); else it goes whole, as a shape clears.)
+        const all = (v: { x: number; y: number; z: number; size: number }) => {
+          for (let y = v.y; y < v.y + v.size; y++) for (let z = v.z; z < v.z + v.size; z++) for (let x = v.x; x < v.x + v.size; x++) if (!taken[x + B * (z + B * y)]) return false;
+          return true;
+        };
+        const keep = (v: BlockVoxel, out: BlockVoxel[]): void => {
+          if (!touches(v, taken)) return void out.push(v);
+          if (all(v) || v.size <= 1) return;
+          const h = v.size / 2;
+          for (let dy = 0; dy < v.size; dy += h) for (let dz = 0; dz < v.size; dz += h) for (let dx = 0; dx < v.size; dx += h) keep({ x: v.x + dx, y: v.y + dy, z: v.z + dz, size: h, material: v.material }, out);
+        };
+        next = [];
+        for (const v of voxels) {
+          if (isWater(v.material) || !touches(v, taken)) next.push(v);
+          else if (cut) (gone++, keep(v, next));
+          else gone++;
+        }
+        count += gone;
       } else {
         for (const v of voxels) if (!isWater(v.material)) mark(v, taken);
         const added: BlockVoxel[] = [];
@@ -2289,7 +2307,7 @@ export class World {
         // (Water where they went: gone, as placing a voxel does.)
         next = [...voxels.filter((v) => !isWater(v.material) || !touches(v, taken)), ...added];
       }
-      if (next.length === voxels.length && clear) continue;
+      if (clear && !gone) continue;
       const after = blockFromVoxels(next);
       writes.push({ bx: g.bx, by: g.by, bz: g.bz, block: after });
       changes.push({ bx: g.bx, by: g.by, bz: g.bz, before, after });

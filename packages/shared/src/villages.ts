@@ -270,48 +270,53 @@ const VILLAGER_NAMES = ['Agnes', 'Bertil', 'Clem', 'Dora', 'Eamon', 'Freya', 'Gi
 export const villageName = (n: number) => VILLAGE_NAMES[n % VILLAGE_NAMES.length]! + (n >= VILLAGE_NAMES.length ? ` ${Math.floor(n / VILLAGE_NAMES.length) + 1}` : '');
 export const villagerName = (n: number) => VILLAGER_NAMES[n % VILLAGER_NAMES.length]! + (n >= VILLAGER_NAMES.length ? ` ${Math.floor(n / VILLAGER_NAMES.length) + 1}` : '');
 
+/** Pieces (units) filling column (x, z) (a block across) from `y0` to `y1` (whole quarter metres), each on its own grid: quarters, halves, then blocks. */
+function columnPieces(x: number, z: number, y0: number, y1: number, material: MaterialId): VillagePiece[] {
+  const B = BLOCK_SIZE, out: VillagePiece[] = [];
+  for (let y = y0; y < y1; ) {
+    const size = y % B === 0 && y + B <= y1 ? B : y % (B / 2) === 0 && y + B / 2 <= y1 ? B / 2 : B / 4;
+    for (let dx = 0; dx < B; dx += size) for (let dz = 0; dz < B; dz += size) out.push({ x: x * B + dx, y, z: z * B + dz, size, material });
+    y += size;
+  }
+  return out;
+}
+
 /**
  * A cottage built of a design (see Cottage.design): its voxels (its first state's) turned so its
- * front (+z) is the door's side, its lowest voxels (lowered a block at a time, should the design
- * not start at its bottom) in the block at the highest point of the ground under it (Cottage.floor -
- * 1: the first block of air there); and under what it stands on (each column whose lowest voxel is
- * within a block of its lowest: not the eaves), cobblestone down to the ground, up to that voxel
- * (else a design standing on nothing in its bottom layer was built in the air).
- * Its site cleared first (and a block round it); its pieces in the order they go, a block's worth
- * at a time: from the bottom up. `ground`: the ground's top at a column (its first block of air).
+ * front (+z) is the door's side, its bottom on the ground's lowest point under it (to the quarter
+ * metre, down), the ground over that in its footprint dug away (it sits in it, uphill: no footing).
+ * A voxel that's then off its own grid is cut in smaller ones that are on theirs.
+ * Its site cleared first (its footprint from its bottom up; round it, a block, over the ground);
+ * its pieces in the order they go, a block's worth at a time: from the bottom up. `ground`: the
+ * ground's lowest and highest points (units) across a block column.
  */
-export function designedCottage(c: Cottage, design: ObjectDesign, ground: (bx: number, bz: number) => number): { clear: VillagePiece[]; groups: VillagePiece[][] } {
-  const B = BLOCK_SIZE, y0 = c.floor - 1, turned = designVoxels(design, 0, DOOR_FACING[c.door]);
-  // (Down by whole blocks, so every voxel stays on its own grid.)
-  const drop = turned.length ? Math.floor(Math.min(...turned.map((v) => v.y)) / B) * B : 0;
-  const voxels = turned.map((v) => ({ ...v, y: v.y - drop }));
-  const h = design.size[1], clear: VillagePiece[] = [];
+export function designedCottage(c: Cottage, design: ObjectDesign, ground: (bx: number, bz: number) => { low: number; high: number }): { clear: VillagePiece[]; groups: VillagePiece[][] } {
+  const B = BLOCK_SIZE, Q = B / 4, voxels = designVoxels(design, 0, DOOR_FACING[c.door]);
+  let low = Infinity;
+  for (let x = c.bx; x < c.bx + c.w; x++) for (let z = c.bz; z < c.bz + c.d; z++) low = Math.min(low, ground(x, z).low);
+  const bottom = Math.floor(low / Q) * Q, lift = bottom - (voxels.length ? Math.min(...voxels.map((v) => v.y)) : 0);
+  const top = bottom + design.size[1] * B + B, clear: VillagePiece[] = [];
   for (let x = c.bx - 1; x <= c.bx + c.w; x++)
-    for (let z = c.bz - 1; z <= c.bz + c.d; z++) for (let y = Math.min(ground(x, z), y0); y < y0 + h + 1; y++) clear.push({ x: x * B, y: y * B, z: z * B, size: B, material: Material.Air });
-  const cells = new Map<string, { y: number; i: number; pieces: VillagePiece[] }>(), lowest = new Map<string, number>();
-  voxels.forEach((v, i) => {
-    const wx = c.bx * B + v.x, wy = y0 * B + v.y, wz = c.bz * B + v.z, k = `${Math.floor(wx / B)},${Math.floor(wy / B)},${Math.floor(wz / B)}`;
-    const col = `${Math.floor(wx / B)},${Math.floor(wz / B)}`;
-    lowest.set(col, Math.min(lowest.get(col) ?? Infinity, v.y));
-    const cell = cells.get(k) ?? cells.set(k, { y: Math.floor(wy / B), i, pieces: [] }).get(k)!;
-    cell.pieces.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material });
-  });
-  const groups: { y: number; i: number; pieces: VillagePiece[] }[] = [];
-  const base = Math.min(...lowest.values());
-  for (const [k, low] of lowest) {
-    if (low >= base + B) continue;
-    const [x, z] = k.split(',').map(Number) as [number, number];
-    for (let y = ground(x, z); y < y0; y++) groups.push({ y, i: -1, pieces: [{ x: x * B, y: y * B, z: z * B, size: B, material: Material.Cobblestone }] });
-    // (Within the block, up to its lowest voxel: half and quarter metres.)
-    const pieces: VillagePiece[] = [];
-    for (let u = 0; u < low; ) {
-      const size = u % (B / 2) === 0 && u + B / 2 <= low ? B / 2 : B / 4;
-      for (let dx = 0; dx < B; dx += size) for (let dz = 0; dz < B; dz += size) pieces.push({ x: x * B + dx, y: y0 * B + u, z: z * B + dz, size, material: Material.Cobblestone });
-      u += size;
+    for (let z = c.bz - 1; z <= c.bz + c.d; z++) {
+      const inside = x >= c.bx && x < c.bx + c.w && z >= c.bz && z < c.bz + c.d;
+      // (Round it: what's over the ground there, trees and the like.)
+      const from = inside ? bottom : Math.max(bottom, Math.ceil(ground(x, z).high / B) * B);
+      clear.push(...columnPieces(x, z, from, Math.max(from, top), Material.Air));
     }
-    if (pieces.length) groups.push({ y: y0, i: -1, pieces });
-  }
-  groups.push(...cells.values());
-  groups.sort((a, b) => a.y - b.y || a.i - b.i);
+  const cells = new Map<string, { y: number; i: number; pieces: VillagePiece[] }>();
+  voxels.forEach((v, i) => {
+    const wx = c.bx * B + v.x, wy = v.y + lift, wz = c.bz * B + v.z;
+    // (Off its grid, lifted by quarter metres: in the biggest pieces that are on theirs.)
+    let g = v.size;
+    while (g > 1 && wy % g) g /= 2;
+    for (let dx = 0; dx < v.size; dx += g)
+      for (let dy = 0; dy < v.size; dy += g)
+        for (let dz = 0; dz < v.size; dz += g) {
+          const px = wx + dx, py = wy + dy, pz = wz + dz, k = `${Math.floor(px / B)},${Math.floor(py / B)},${Math.floor(pz / B)}`;
+          const cell = cells.get(k) ?? cells.set(k, { y: Math.floor(py / B), i, pieces: [] }).get(k)!;
+          cell.pieces.push({ x: px, y: py, z: pz, size: g, material: v.material });
+        }
+  });
+  const groups = [...cells.values()].sort((a, b) => a.y - b.y || a.i - b.i);
   return { clear, groups: groups.map((g) => g.pieces) };
 }

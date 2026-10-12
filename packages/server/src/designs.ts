@@ -1,10 +1,16 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { FIRST_DESIGN_ITEM, anvilDesign, campfireDesign, cottageDesign, furnaceDesign, smithingTableDesign, leanToDesign, parseDesign, setDesigns, stationDesign, stoveDesign, type ObjectDesign } from '@super-vox/shared';
+import { FIRST_DESIGN_ITEM, anvilDesign, campfireDesign, cottageDesign, oldCottageDesign, furnaceDesign, smithingTableDesign, leanToDesign, parseDesign, setDesigns, stationDesign, stoveDesign, type ObjectDesign } from '@super-vox/shared';
 
 /** The library as kept on disk: the designs, and the next item number (never reused, so old items don't become new things). */
 interface LibraryFile {
   designs: unknown[];
   nextItem: number;
+}
+
+/** Whether two designs' first states are the same voxels (in any order). */
+function sameVoxels(a: ObjectDesign, b: ObjectDesign): boolean {
+  const key = (d: ObjectDesign) => (d.states[0]?.voxels ?? []).map((v) => `${v.x},${v.y},${v.z},${v.size},${v.material}`).sort().join(';');
+  return key(a) === key(b);
 }
 
 /**
@@ -29,6 +35,14 @@ export class DesignLibrary {
         else this.designs.push(parsed);
       }
       this.nextItem = Math.max(raw.nextItem ?? FIRST_DESIGN_ITEM, ...this.designs.map((d) => d.item + 1));
+    }
+    // (The thatched cottage as it first came, in 1 m blocks, never changed: the one that comes now.)
+    const old = this.designs.find((d) => d.id === 'thatched-cottage');
+    const now = builtIn && old && sameVoxels(old, oldCottageDesign()) ? parseDesign({ ...cottageDesign(), item: old.item }) : null;
+    if (typeof now === 'string') console.warn(`design library: the new thatched cottage wouldn't go in: ${now}`);
+    else if (now) {
+      this.designs = this.designs.map((d) => (d === old ? now : d));
+      this.save();
     }
     setDesigns(this.designs);
     // (A kept library with no station design: the one that comes, to change in the designer.)

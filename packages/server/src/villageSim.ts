@@ -89,8 +89,8 @@ const WHEAT_PER_NEWCOMER = 12;
 export interface VillageWorld {
   config: { widthUnits: number; depthUnits: number };
   terrainAt(x: number, z: number): { h: number; water: boolean; tree: boolean; land: boolean };
-  /** The ground's lowest point across a block column (units; see World.blockGroundLow): else terrainAt's, 4 by 4 over it. */
-  blockGroundLow?(bx: number, bz: number): number;
+  /** The ground's lowest and highest points across a block column (units; see World.blockGround): else terrainAt's, 4 by 4 over it. */
+  blockGround?(bx: number, bz: number): { low: number; high: number };
   buildWorks(clear: readonly VillagePiece[], place: readonly VillagePiece[]): Promise<EditResult[]>;
   editedNear(x: number, z: number, r: number): boolean;
   /** Something else there (a trading post): no village within `r` units. */
@@ -260,7 +260,7 @@ export class VillageSim {
   /** Ground looked up, by 4 m square (it doesn't change: it's the ground as generated). */
   private readonly ground = new Map<string, { h: number; ok: boolean; tree: boolean }>();
   /** The ground under block columns (see blockGround). */
-  private readonly blocks = new Map<string, number>();
+  private readonly blocks = new Map<string, { low: number; high: number }>();
   /** Wanderers met looking for somewhere to found a village (see found). */
   private readonly searches = new SiteSearch<{ x: number; z: number }>(SITES_A_STEP, SITE_REST_MS);
 
@@ -344,18 +344,25 @@ export class VillageSim {
   }
 
   /**
-   * The ground under a block column (block y): the block its lowest point is in (the first with air
-   * anywhere in it: on a slope, part-filled), looked at across the block (groundAt's one height a
-   * 4 m square is for walking: building on it, a footing stopped short of the ground downhill).
+   * The ground across a block column (units): its lowest and highest points, looked at over the
+   * block (groundAt's one height a 4 m square is for walking: building on it, a footing stopped
+   * short of the ground downhill).
    */
-  private blockGround(bx: number, bz: number): number {
+  private blockGround(bx: number, bz: number): { low: number; high: number } {
     const k = `${bx},${bz}`;
     let g = this.blocks.get(k);
-    if (g === undefined) {
+    if (!g) {
       if (this.blocks.size > 50_000) this.blocks.clear();
-      let low = this.world.blockGroundLow?.(bx, bz) ?? Infinity;
-      if (!this.world.blockGroundLow) for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) low = Math.min(low, this.world.terrainAt(bx * B + i * 5, bz * B + j * 5).h);
-      this.blocks.set(k, (g = Math.floor(low / B)));
+      g = this.world.blockGround?.(bx, bz);
+      if (!g) {
+        g = { low: Infinity, high: -Infinity };
+        for (let i = 0; i < 4; i++)
+          for (let j = 0; j < 4; j++) {
+            const h = this.world.terrainAt(bx * B + i * 5, bz * B + j * 5).h;
+            (g.low = Math.min(g.low, h)), (g.high = Math.max(g.high, h));
+          }
+      }
+      this.blocks.set(k, g);
     }
     return g;
   }
@@ -1001,8 +1008,8 @@ export class VillageSim {
       );
   }
 
-  /** The ground's top at a block column (block y). */
-  private top = (bx: number, bz: number) => this.blockGround(bx, bz);
+  /** The ground's top at a block column (block y): the block its lowest point is in (on a slope, part-filled). */
+  private top = (bx: number, bz: number) => Math.floor(this.blockGround(bx, bz).low / B);
 
   /** What a village is building now: a cottage going up; else (it's WALL_AT) the next section of its wall; else nothing. */
   private job(v: Village): Job | null {
@@ -1014,7 +1021,7 @@ export class VillageSim {
       let st = this.stages.get(key);
       if (!st) {
         if (design) {
-          const { clear, groups } = designedCottage(c, design, this.top);
+          const { clear, groups } = designedCottage(c, design, (bx, bz) => this.blockGround(bx, bz));
           st = { clear, pieces: groups };
         } else {
           const { clear, place } = cottageStage(c, c.stage + 1, this.top);

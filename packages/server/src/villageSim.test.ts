@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { cottageDesign, designedCottage, BLOCK_VOLUME, CROP_STAGE_MS, FORGIVE_MS, FOUNDERS, HURT_GRUDGE_MS, Item, KILL_GRUDGE_MS, START_COINS, VILLAGER_DAMAGE, VILLAGER_ENTITY, VILLAGER_HEALTH, villageOffers, GATES, Material, RIPE, UNITS_PER_METER, WALL_AT, WALL_M, WALL_SECTIONS, cottageStage, cropStage, inGate, villagePlot, wallStage, VILLAGER_SEAT, type Station, type VillagePiece } from '@super-vox/shared';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { cottageDesign, oldCottageDesign, parseDesign, designedCottage, BLOCK_VOLUME, CROP_STAGE_MS, FORGIVE_MS, FOUNDERS, HURT_GRUDGE_MS, Item, KILL_GRUDGE_MS, START_COINS, VILLAGER_DAMAGE, VILLAGER_ENTITY, VILLAGER_HEALTH, villageOffers, GATES, Material, RIPE, UNITS_PER_METER, WALL_AT, WALL_M, WALL_SECTIONS, cottageStage, cropStage, inGate, villagePlot, wallStage, VILLAGER_SEAT, type Station, type VillagePiece } from '@super-vox/shared';
 import { VillageSim, type VillageWorld } from './villageSim.js';
 import { DesignLibrary } from './designs.js';
 import { TrainYard } from './trainYard.js';
@@ -413,7 +416,7 @@ describe('walking round cottages', () => {
 
 describe('cottages of designs', () => {
 
-  it('on a hillside (the ground known a 4 m square at a time, for walking): its footing down to the ground under each block, wherever in the block it is lowest', async () => {
+  it('on a hillside (the ground known a 4 m square at a time, for walking): built sitting on the ground at its lowest point under it (as it is, not as the 4 m squares have it), no footing', async () => {
     new DesignLibrary(null, true);
     // (Rising an eighth of a metre a metre eastward, in whole units, as the generator's heights are.)
     const h = (x: number) => 10 * M + Math.floor((x - 7990 * M) / 8);
@@ -427,27 +430,20 @@ describe('cottages of designs', () => {
     let now = await run(sim, 5, T0, here);
     const c = () => sim.list()[0]!.cottages[0]!;
     expect(c().design).toBe('thatched-cottage');
-    for (let i = 0; i < 20 && c().stage < 3; i++) now = await run(sim, 60, now, here);
-    const { bx, bz, w: cw, d: cd, stage } = c();
+    for (let i = 0; i < 30 && c().stage < 3; i++) now = await run(sim, 60, now, here);
+    const { bx, bz, stage } = c();
     expect(stage).toBe(3);
-    const B = 16, solid = built.flatMap((b) => b.place);
-    const col = (x: number, z: number) => solid.filter((p) => Math.floor(p.x / B) === x && Math.floor(p.z / B) === z);
-    const lowest = (x: number, z: number) => Math.min(...col(x, z).filter((p) => p.material !== Material.Cobblestone).map((p) => p.y));
-    let base = Infinity;
-    for (let x = bx; x < bx + cw; x++) for (let z = bz; z < bz + cd; z++) base = Math.min(base, lowest(x, z));
-    let checked = 0;
-    for (let x = bx; x < bx + cw; x++)
-      for (let z = bz; z < bz + cd; z++) {
-        // (What it stands on; not its eaves.)
-        const top = lowest(x, z);
-        if (top >= base + B) continue;
-        // (The block its lowest ground is in: part of it air, where the ground's lowest: its west edge.)
-        const air = Math.floor(h(x * B) / B), mine = col(x, z);
-        // Something in every quarter metre from there up to what it stands on.
-        for (let y = air * B; y < top; y += 4) expect(mine.some((p) => p.x === x * B && y >= p.y && y < p.y + p.size), `block ${x},${z} at ${y / B} m (ground ${h(x * B) / B})`).toBe(true);
-        checked++;
-      }
-    expect(checked).toBeGreaterThanOrEqual(20);
+    // (Its own pieces: it may have more cottages since.)
+    const solid = built.flatMap((b) => b.place).filter((p) => p.material !== Material.Farmland && p.x >= (bx - 1) * 16 && p.x < (bx + c().w + 1) * 16 && p.z >= (bz - 1) * 16 && p.z < (bz + c().d + 1) * 16);
+    expect(solid.length).toBeGreaterThan(1000);
+    expect(solid.some((p) => p.material === Material.Cobblestone)).toBe(false);
+    // Its bottom: the ground's lowest under it (its west edge), to the quarter metre down.
+    expect(Math.min(...solid.map((p) => p.y))).toBe(Math.floor(h(bx * 16) / 4) * 4);
+    // The ground over that in its footprint dug away (up hill, its east side: a metre of it).
+    const clear = built.flatMap((b) => b.clear);
+    const cleared = (x: number, y: number, z: number) => clear.some((p) => p.x <= x && x < p.x + p.size && p.z <= z && z < p.z + p.size && p.y <= y && y < p.y + p.size);
+    const east = (bx + c().w) * 16 - 1;
+    for (let y = Math.min(...solid.map((p) => p.y)); y < h(east); y += 4) expect(cleared(east, y, bz * 16 + 8)).toBe(true);
   });
 
   it("a village's cottages are its designs (one of them each, turned to face the middle), built a block's worth at a time from the bottom, from its stock", async () => {
@@ -501,55 +497,68 @@ describe('cottages of designs', () => {
     expect(used).toEqual(new Set(['thatched-cottage', 'hut']));
   });
 
-  it('on sloping ground: its floor level, cobblestone under it down to the ground; first of all, before what stands on it', () => {
+  it('on sloping ground: its bottom on the lowest point under it (to the quarter metre), the ground over that dug out of its footprint, no footing; every piece on its grid; from the bottom up', () => {
     const d = { ...cottageDesign(), item: 20001 };
     const c = { bx: 100, bz: 200, w: 7, d: 6, door: 2 as const, floor: 13, stage: 0, work: 0 };
-    // (The ground falls away eastward: its top at 12 at the west, 6 blocks lower at the east.)
-    const ground = (bx: number) => 12 - Math.max(0, Math.min(6, bx - 100));
-    const { groups } = designedCottage(c, d, ground);
-    const flat = groups.flat(), under = flat.filter((p) => p.y < 12 * 16);
-    expect(under.every((p) => p.material === Material.Cobblestone)).toBe(true);
-    // Under its east edge (x 105): from the ground (top 7) up to the floor's block (12): five blocks.
-    expect(under.filter((p) => p.x === 105 * 16 && p.z === 202 * 16).map((p) => p.y / 16).sort((a, b) => a - b)).toEqual([7, 8, 9, 10, 11]);
-    // Bottom up: nothing before something under it.
-    const ys = groups.map((g) => Math.min(...g.map((p) => p.y)));
+    // (The ground falls away eastward, 0.7 m a metre: its lowest under the house, under its east column (106), 12 m - 6 * 0.7 - 0.7 = 7.1 m.)
+    const at = (x: number) => 12 * M - Math.max(0, Math.min(8 * M, (x - 100 * M) * 0.7));
+    const ground = (bx: number) => ({ low: at((bx + 1) * M), high: at(bx * M) });
+    const { clear, groups } = designedCottage(c, d, ground);
+    const flat = groups.flat(), bottom = Math.floor(at(107 * M) / 4) * 4;
+    expect(bottom).toBe(Math.floor((7.1 * M) / 4) * 4);
+    expect(Math.min(...flat.map((p) => p.y))).toBe(bottom);
+    expect(flat.some((p) => p.material === Material.Cobblestone)).toBe(false);
+    // Every piece on its own grid (lifted by quarter metres, blocks cut smaller), none overlapping.
+    for (const p of [...flat, ...clear]) expect([p.x % p.size, p.y % p.size, p.z % p.size]).toEqual([0, 0, 0]);
+    const seen = new Set<string>();
+    for (const p of flat)
+      for (let x = 0; x < p.size; x += 4) for (let y = 0; y < p.size; y += 4) for (let z = 0; z < p.size; z += 4) {
+        const k = `${p.x + x},${p.y + y},${p.z + z}`;
+        expect(seen.has(k)).toBe(false);
+        seen.add(k);
+      }
+    // Its footprint cleared from its bottom up, all of it (up hill, the ground over it: 4.9 m of it at the west).
+    for (let x = 100; x < 107; x++)
+      for (let z = 200; z < 206; z++)
+        for (let y = bottom; y < at(x * M); y += 4) expect(clear.some((p) => p.x <= x * 16 && x * 16 < p.x + p.size && p.z <= z * 16 && z * 16 < p.z + p.size && p.y <= y && y < p.y + p.size), `${x},${z} at ${y}`).toBe(true);
+    // Round it, the ground left (only what's over it cleared).
+    expect(clear.some((p) => p.x === 99 * 16 && p.y < Math.ceil(at(99 * M) / 16) * 16)).toBe(false);
+    // Bottom up, a block's worth at a time: no row before one under it.
+    const ys = groups.map((g) => Math.floor(Math.min(...g.map((p) => p.y)) / 16));
     expect(ys).toEqual([...ys].sort((a, b) => a - b));
-    // (Its thatch, the design's, at its top; its door the design's front: the +z side, here.)
     expect(flat.some((p) => p.material === Material.Thatch)).toBe(true);
   });
 
-  it("a design that doesn't start at its bottom (its lowest voxels 1.5 m up, its floor narrower than its eaves): lowered onto the ground, cobblestone under all it stands on up to it, nothing under its eaves", () => {
+  it("a design that doesn't start at its bottom (its lowest voxels 1.5 m up): lowered onto the ground", () => {
     const base = { ...cottageDesign(), item: 20002 };
-    // (The thatched cottage, 1.5 m up: as a design drawn over a lower course it never filled.)
-    const d = { ...base, size: [7, 8, 6] as [number, number, number], states: [{ name: 'built', voxels: base.states[0]!.voxels.map((v) => ({ ...v, y: v.y + 24 })) }] };
+    const d = { ...base, size: [7, 9, 6] as [number, number, number], states: [{ name: 'built', voxels: base.states[0]!.voxels.map((v) => ({ ...v, y: v.y + 24 })) }] };
     const c = { bx: 100, bz: 200, w: 7, d: 6, door: 2 as const, floor: 13, stage: 0, work: 0 };
-    const { groups } = designedCottage(c, d, () => 12);
+    const { groups } = designedCottage(c, d, () => ({ low: 12 * M + 6, high: 12 * M + 6 }));
     const flat = groups.flat();
-    // Its lowest voxel in the floor's block (12), not 1.5 m over it.
-    const own = flat.filter((p) => p.material !== Material.Cobblestone);
-    expect(Math.min(...own.map((p) => p.y))).toBeLessThan(13 * 16);
-    // Under each column it stands on, stone up to its lowest voxel: no gap.
-    const cols = new Map<string, number>();
-    for (const p of own) {
-      const k = `${Math.floor(p.x / 16)},${Math.floor(p.z / 16)}`;
-      cols.set(k, Math.min(cols.get(k) ?? Infinity, p.y));
+    expect(Math.min(...flat.map((p) => p.y))).toBe(12 * M + 4);
+    // (All of it: as many quarter metres as the design has.)
+    const volume = (vs: readonly { size: number }[]) => vs.reduce((n, v) => n + v.size ** 3, 0);
+    expect(volume(flat)).toBe(volume(base.states[0]!.voxels));
+  });
+
+  it('the thatched cottage that comes: in quarter metres, its door open in its front, valid; a library holding the old one (1 m blocks, unchanged) has it replaced, a changed one kept', () => {
+    const d = cottageDesign();
+    expect(parseDesign({ ...d, item: 20003 })).not.toBeTypeOf('string');
+    expect(d.states[0]!.voxels.some((v) => v.size === 4)).toBe(true);
+    expect(new Set(d.states[0]!.voxels.map((v) => v.material))).toEqual(new Set([Material.Planks, Material.Wood, Material.Glass, Material.Thatch, Material.StoneBricks, Material.Coal]));
+    // (The doorway: air 2 m up in the middle of the front wall (z 5.25..5.5 m, x 3..4 m).)
+    const at = (x: number, y: number, z: number) => d.states[0]!.voxels.find((v) => x >= v.x && x < v.x + v.size && y >= v.y && y < v.y + v.size && z >= v.z && z < v.z + v.size);
+    expect(at(3.5 * 16, 1 * 16, 5.4 * 16)).toBeUndefined();
+    expect(at(2.4 * 16, 1.6 * 16, 5.4 * 16)?.material).toBe(Material.Planks);
+    const dir = mkdtempSync(join(tmpdir(), 'designs-')), file = join(dir, 'designs.json');
+    for (const [kept, replaced] of [[oldCottageDesign(), true], [{ ...oldCottageDesign(), states: [{ name: 'built', voxels: oldCottageDesign().states[0]!.voxels.slice(1) }] }, false]] as const) {
+      writeFileSync(file, JSON.stringify({ designs: [{ ...kept, item: 20500 }], nextItem: 20501 }));
+      const lib = new DesignLibrary(file, true), now = lib.get('thatched-cottage')!;
+      expect(now.item).toBe(20500);
+      expect(now.states[0]!.voxels.length).toBe(replaced ? d.states[0]!.voxels.length : kept.states[0]!.voxels.length);
+      // (Kept so: opened again, the same.)
+      expect(new DesignLibrary(file, true).get('thatched-cottage')!.states[0]!.voxels.length).toBe(now.states[0]!.voxels.length);
     }
-    const lowestAll = Math.min(...cols.values());
-    for (const [k, low] of cols) {
-      const [x, z] = k.split(',').map(Number) as [number, number];
-      const stone = flat.filter((p) => p.material === Material.Cobblestone && Math.floor(p.x / 16) === x && Math.floor(p.z / 16) === z);
-      if (low >= lowestAll + 16) {
-        // (Its eaves: nothing under them.)
-        expect(stone).toHaveLength(0);
-        continue;
-      }
-      // Filled from the ground's top (block 12) to its lowest voxel, every quarter metre of it, the whole column across.
-      for (let y = 12 * 16; y < low; y += 4)
-        for (let dx = 0; dx < 16; dx += 4)
-          for (let dz = 0; dz < 16; dz += 4) {
-            const px = x * 16 + dx, pz = z * 16 + dz;
-            expect(stone.some((p) => px >= p.x && px < p.x + p.size && pz >= p.z && pz < p.z + p.size && y >= p.y && y < p.y + p.size)).toBe(true);
-          }
-    }
+    rmSync(dir, { recursive: true });
   });
 });
