@@ -55,6 +55,10 @@ export interface AqueductFinishAsk {
 }
 type AqueductPlanMessage = Extract<ServerMessage, { type: 'aqueductPlan' }>;
 
+/** Ends' posts: how tall (m), and how near one on screen (px) a click is taken to be on it. */
+const POST_M = 5;
+const POST_PICK_PX = 24;
+
 export interface TrackModeHooks {
   /** Where its marks go: drawn where things are in the world (moved, on a round world, to the copy of it we're in: see shift). */
   scene: THREE.Object3D;
@@ -152,7 +156,7 @@ export class TrackMode {
   /** Laid track, drawn over everything (under trees, it can't be seen from above). */
   private readonly laid = new THREE.Group();
   private readonly laidMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
-  private readonly postGeometry = new THREE.CylinderGeometry(0.25, 0.25, 5, 8).translate(0, 2.5, 0);
+  private readonly postGeometry = new THREE.CylinderGeometry(0.25, 0.25, POST_M, 8).translate(0, POST_M / 2, 0);
   private readonly endMaterial = new THREE.MeshBasicMaterial({ color: END_COLOUR, depthTest: false, transparent: true, opacity: 0.9 });
   private readonly startMaterial = new THREE.MeshBasicMaterial({ color: START_COLOUR, depthTest: false, transparent: true, opacity: 0.95 });
   private readonly startPost = new THREE.Mesh(this.postGeometry, this.startMaterial);
@@ -588,12 +592,18 @@ export class TrackMode {
 
   private click(): void {
     this.aim();
-    if (!this.hover) return;
+    // (An end's post clicked: that end, whatever ground's behind it, or none.)
+    if (this.tool === 'aqueduct' && !this.aqStart) {
+      const end = this.postClicked(this.aqueducts.filter((a) => !a.finished && a.cells.length).map((a) => ({ end: { aqueduct: a.id, bx: a.cells.at(-1)!.bx, bz: a.cells.at(-1)!.bz, y: a.cells.at(-1)!.floor / M } })), (c) => ({ x: (c.end.bx + 0.5) * (BLOCK_SIZE / M), y: c.end.y, z: (c.end.bz + 0.5) * (BLOCK_SIZE / M) }));
+      if (end) return this.startAqueduct(end.end);
+    }
+    const post = this.tool !== 'aqueduct' && !this.start ? this.postClicked(this.ends, (e) => ({ x: e.x / M, y: e.y / M, z: e.z / M })) : null;
+    if (!this.hover && !post) return;
     if (this.tool === 'aqueduct') return this.clickAqueduct();
     if (!this.start) {
       // From a track's end (its way, its height), or from here (a straight).
-      const end = this.endNear(this.hover.x, this.hover.z);
-      this.start = end ? { x: end.x, z: end.z, y: end.y / M, heading: end.heading } : { x: Math.round(this.hover.x), z: Math.round(this.hover.z), y: this.hover.y, heading: null };
+      const end = post ?? this.endNear(this.hover!.x, this.hover!.z);
+      this.start = end ? { x: end.x, z: end.z, y: end.y / M, heading: end.heading } : { x: Math.round(this.hover!.x), z: Math.round(this.hover!.z), y: this.hover!.y, heading: null };
       this.note = end ? '' : this.tool === 'curve' ? "a curve goes on from a track's end: a straight from here first" : '';
       this.plan = null;
       this.askedKey = '';
@@ -603,7 +613,7 @@ export class TrackMode {
     }
     // Laid if it's been planned as aimed now, and can be.
     const current = this.plan && this.plan.key === this.askedKey ? this.plan : null;
-    if (!current?.plan || current.error || this.laying) return;
+    if (!current?.plan || current.error || this.laying || !this.hover) return;
     if (!this.hooks.canBuild()) {
       this.note = "you can't build here";
       return this.show();
@@ -617,18 +627,46 @@ export class TrackMode {
   }
 
   /** An aqueduct: the first click starts it (a head here, or on from an end near); the next, if it's planned as aimed and can be, builds to there. */
+  /** An aqueduct begun: on from an end (`end`), or (null) a new one's head where we're aiming. */
+  private startAqueduct(end: { aqueduct: number; bx: number; bz: number; y: number } | null): void {
+    const hover = this.hover;
+    if (!end && !hover) return;
+    this.aqStart = end ?? { aqueduct: null, ...this.blockOf(hover!.x, hover!.z), y: hover!.y };
+    this.note = end ? '' : 'a new aqueduct: its head here (it must be near a lake or river)';
+    this.aqPlan = null;
+    this.askedKey = '';
+    this.aim();
+    this.show();
+  }
+
+  /**
+   * Of `candidates`, the one whose post (POST_M tall, standing at `at`, metres where it is in the
+   * world) the mouse is on, on screen (within POST_PICK_PX): an end high over the ground (on
+   * piers, a bridge) is clicked on as it's seen, not by the ground behind it, far off.
+   */
+  private postClicked<T>(candidates: readonly T[], at: (c: T) => { x: number; y: number; z: number }): T | null {
+    if (!this.mouse) return null;
+    const r = this.overlay.getBoundingClientRect(), shift = this.hooks.shift?.() ?? 0;
+    const screen = (x: number, y: number, z: number) => {
+      const v = new THREE.Vector3(x + shift, y, z).project(this.view);
+      return v.z > 1 ? null : { x: r.left + ((v.x + 1) / 2) * r.width, y: r.top + ((1 - v.y) / 2) * r.height };
+    };
+    let best: T | null = null, bd = POST_PICK_PX;
+    for (const c of candidates) {
+      const p = at(c), a = screen(p.x, p.y, p.z), b = screen(p.x, p.y + POST_M, p.z);
+      if (!a || !b) continue;
+      // (How far from the post's line on screen, foot to top.)
+      const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+      const t = l2 ? Math.max(0, Math.min(1, ((this.mouse.x - a.x) * dx + (this.mouse.y - a.y) * dy) / l2)) : 0;
+      const d = Math.hypot(this.mouse.x - (a.x + t * dx), this.mouse.y - (a.y + t * dy));
+      if (d < bd) (bd = d), (best = c);
+    }
+    return best;
+  }
+
   private clickAqueduct(): void {
     const hover = this.hover!;
-    if (!this.aqStart) {
-      const end = this.aqueductEndNear(hover.x, hover.z);
-      this.aqStart = end ?? { aqueduct: null, ...this.blockOf(hover.x, hover.z), y: hover.y };
-      this.note = end ? '' : 'a new aqueduct: its head here (it must be near a lake or river)';
-      this.aqPlan = null;
-      this.askedKey = '';
-      this.aim();
-      this.show();
-      return;
-    }
+    if (!this.aqStart) return this.startAqueduct(this.aqueductEndNear(hover.x, hover.z));
     const current = this.aqPlan && this.aqPlan.key === this.askedKey ? this.aqPlan : null;
     if (!current?.plan || current.error || this.laying) return;
     if (!this.hooks.canBuild()) {
