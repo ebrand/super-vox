@@ -114,4 +114,15 @@ describe('aqueducts in a world', () => {
     expect(w.aqueductsChangedBy(broke2)).toBe(true);
     expect(w.cropList().find(([x, , z]) => x === fx && z === fz)?.[4]).toBeUndefined();
   }, 120_000);
+
+  it("go on from an end by a chunk's edge (its end's wall in the next chunk: its own, not something built)", async () => {
+    const w = lakeWorld();
+    // North from the head, its end a block from the edge of a chunk (z 5440 m): its end wall over it.
+    const a = await w.buildAqueductSegment({ aqueduct: null, from: { bx: 6374, bz: 5488 }, to: { bx: 6374, bz: 5440 }, fall: 1 / 50 });
+    if (typeof a === 'string') throw new Error(a);
+    for (const to of [{ bx: 6374, bz: 5420 }, { bx: 6390, bz: 5430 }, { bx: 6360, bz: 5425 }]) {
+      const on = w.planAqueductSegment({ aqueduct: a.aqueduct.id, from: { bx: 0, bz: 0 }, to, fall: 1 / 50 });
+      expect(typeof on === 'string' ? on : 'planned').toBe('planned');
+    }
+  }, 120_000);
 });

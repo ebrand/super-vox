@@ -951,12 +951,27 @@ export class World {
     const columns = aqueductColumns(shape, (p) => ask.aqueduct === null || (p.run && p.first === first));
     // Not through what players (or villages) have built: aqueducts' and railways' own columns aside.
     const P = CHUNK_SIZE, Q = BLOCK_SIZE / 4;
-    const ours = new Set([...this.trackList().flatMap((t) => t.columns), ...this.aqueductList().flatMap((a) => [...a.head, ...a.cells, ...a.outlet].map((c) => `${Math.floor((c.bx * BLOCK_SIZE) / P)},${Math.floor((c.bz * BLOCK_SIZE) / P)}`))]);
+    const ours = new Set([...this.trackList().flatMap((t) => t.columns), ...this.aqueductList().flatMap((a) => [...this.aqueductChunkColumns(a)])]);
     const built = new Set(this.protectedColumns().map((c) => `${c.cx},${c.cz}`).filter((k) => !ours.has(k)));
     const hit = columns.find((c) => built.has(`${Math.floor((c.qx * Q) / P)},${Math.floor((c.qz * Q) / P)}`));
     if (hit) return `it would go through what's been built near x ${Math.round((hit.qx * Q) / M)}, z ${Math.round((hit.qz * Q) / M)} m: go round it`;
     return { plan, columns, shape, cost: aqueductCost(columns, this.groundOver) };
   }
+
+  /**
+   * The chunk columns ("cx,cz") an aqueduct's stonework is in: its channel's and its walls' (not its
+   * cells' only: where it runs by a chunk's edge, its wall, and its end's, are in the next, and going
+   * on from there was refused as through what had been built). Kept while it's as it was.
+   */
+  private aqueductChunkColumns(a: Aqueduct): Set<string> {
+    const key = `${a.cells.length} ${a.legs?.length ?? 0} ${a.head.length} ${a.outlet.length}`, kept = this.aqueductColumnsKept.get(a.id);
+    if (kept?.key === key) return kept.columns;
+    const P = CHUNK_SIZE, Q = BLOCK_SIZE / 4, columns = new Set<string>();
+    for (const c of aqueductColumns(a)) columns.add(`${Math.floor((c.qx * Q) / P)},${Math.floor((c.qz * Q) / P)}`);
+    this.aqueductColumnsKept.set(a.id, { key, columns });
+    return columns;
+  }
+  private readonly aqueductColumnsKept = new Map<number, { key: string; columns: Set<string> }>();
 
   /** Builds a planned segment (see planAqueductSegment): the aqueduct, new or on, and what changed; or why not. */
   async buildAqueductSegment(ask: Parameters<World['planAqueductSegment']>[0]): Promise<{ aqueduct: Aqueduct; results: EditResult[] } | string> {
