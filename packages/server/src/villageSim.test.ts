@@ -479,4 +479,39 @@ describe('cottages of designs', () => {
     // (Its thatch, the design's, at its top; its door the design's front: the +z side, here.)
     expect(flat.some((p) => p.material === Material.Thatch)).toBe(true);
   });
+
+  it("a design that doesn't start at its bottom (its lowest voxels 1.5 m up, its floor narrower than its eaves): lowered onto the ground, cobblestone under all it stands on up to it, nothing under its eaves", () => {
+    const base = { ...cottageDesign(), item: 20002 };
+    // (The thatched cottage, 1.5 m up: as a design drawn over a lower course it never filled.)
+    const d = { ...base, size: [7, 8, 6] as [number, number, number], states: [{ name: 'built', voxels: base.states[0]!.voxels.map((v) => ({ ...v, y: v.y + 24 })) }] };
+    const c = { bx: 100, bz: 200, w: 7, d: 6, door: 2 as const, floor: 13, stage: 0, work: 0 };
+    const { groups } = designedCottage(c, d, () => 12);
+    const flat = groups.flat();
+    // Its lowest voxel in the floor's block (12), not 1.5 m over it.
+    const own = flat.filter((p) => p.material !== Material.Cobblestone);
+    expect(Math.min(...own.map((p) => p.y))).toBeLessThan(13 * 16);
+    // Under each column it stands on, stone up to its lowest voxel: no gap.
+    const cols = new Map<string, number>();
+    for (const p of own) {
+      const k = `${Math.floor(p.x / 16)},${Math.floor(p.z / 16)}`;
+      cols.set(k, Math.min(cols.get(k) ?? Infinity, p.y));
+    }
+    const lowestAll = Math.min(...cols.values());
+    for (const [k, low] of cols) {
+      const [x, z] = k.split(',').map(Number) as [number, number];
+      const stone = flat.filter((p) => p.material === Material.Cobblestone && Math.floor(p.x / 16) === x && Math.floor(p.z / 16) === z);
+      if (low >= lowestAll + 16) {
+        // (Its eaves: nothing under them.)
+        expect(stone).toHaveLength(0);
+        continue;
+      }
+      // Filled from the ground's top (block 12) to its lowest voxel, every quarter metre of it, the whole column across.
+      for (let y = 12 * 16; y < low; y += 4)
+        for (let dx = 0; dx < 16; dx += 4)
+          for (let dz = 0; dz < 16; dz += 4) {
+            const px = x * 16 + dx, pz = z * 16 + dz;
+            expect(stone.some((p) => px >= p.x && px < p.x + p.size && pz >= p.z && pz < p.z + p.size && y >= p.y && y < p.y + p.size)).toBe(true);
+          }
+    }
+  });
 });

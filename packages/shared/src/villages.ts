@@ -272,28 +272,44 @@ export const villagerName = (n: number) => VILLAGER_NAMES[n % VILLAGER_NAMES.len
 
 /**
  * A cottage built of a design (see Cottage.design): its voxels (its first state's) turned so its
- * front (+z) is the door's side, its y 0 (its bottom layer) on the ground at the highest point under
- * it (Cottage.floor - 1: the first block of air there), on cobblestone down to the ground wherever
- * that layer stands over lower ground.
+ * front (+z) is the door's side, its lowest voxels (lowered a block at a time, should the design
+ * not start at its bottom) in the block at the highest point of the ground under it (Cottage.floor -
+ * 1: the first block of air there); and under what it stands on (each column whose lowest voxel is
+ * within a block of its lowest: not the eaves), cobblestone down to the ground, up to that voxel
+ * (else a design standing on nothing in its bottom layer was built in the air).
  * Its site cleared first (and a block round it); its pieces in the order they go, a block's worth
  * at a time: from the bottom up. `ground`: the ground's top at a column (its first block of air).
  */
 export function designedCottage(c: Cottage, design: ObjectDesign, ground: (bx: number, bz: number) => number): { clear: VillagePiece[]; groups: VillagePiece[][] } {
-  const B = BLOCK_SIZE, y0 = c.floor - 1, voxels = designVoxels(design, 0, DOOR_FACING[c.door]);
+  const B = BLOCK_SIZE, y0 = c.floor - 1, turned = designVoxels(design, 0, DOOR_FACING[c.door]);
+  // (Down by whole blocks, so every voxel stays on its own grid.)
+  const drop = turned.length ? Math.floor(Math.min(...turned.map((v) => v.y)) / B) * B : 0;
+  const voxels = turned.map((v) => ({ ...v, y: v.y - drop }));
   const h = design.size[1], clear: VillagePiece[] = [];
   for (let x = c.bx - 1; x <= c.bx + c.w; x++)
     for (let z = c.bz - 1; z <= c.bz + c.d; z++) for (let y = Math.min(ground(x, z), y0); y < y0 + h + 1; y++) clear.push({ x: x * B, y: y * B, z: z * B, size: B, material: Material.Air });
-  const cells = new Map<string, { y: number; i: number; pieces: VillagePiece[] }>(), bottom = new Set<string>();
+  const cells = new Map<string, { y: number; i: number; pieces: VillagePiece[] }>(), lowest = new Map<string, number>();
   voxels.forEach((v, i) => {
     const wx = c.bx * B + v.x, wy = y0 * B + v.y, wz = c.bz * B + v.z, k = `${Math.floor(wx / B)},${Math.floor(wy / B)},${Math.floor(wz / B)}`;
-    if (v.y < B) bottom.add(`${Math.floor(wx / B)},${Math.floor(wz / B)}`);
+    const col = `${Math.floor(wx / B)},${Math.floor(wz / B)}`;
+    lowest.set(col, Math.min(lowest.get(col) ?? Infinity, v.y));
     const cell = cells.get(k) ?? cells.set(k, { y: Math.floor(wy / B), i, pieces: [] }).get(k)!;
     cell.pieces.push({ x: wx, y: wy, z: wz, size: v.size, material: v.material });
   });
   const groups: { y: number; i: number; pieces: VillagePiece[] }[] = [];
-  for (const k of bottom) {
+  const base = Math.min(...lowest.values());
+  for (const [k, low] of lowest) {
+    if (low >= base + B) continue;
     const [x, z] = k.split(',').map(Number) as [number, number];
     for (let y = ground(x, z); y < y0; y++) groups.push({ y, i: -1, pieces: [{ x: x * B, y: y * B, z: z * B, size: B, material: Material.Cobblestone }] });
+    // (Within the block, up to its lowest voxel: half and quarter metres.)
+    const pieces: VillagePiece[] = [];
+    for (let u = 0; u < low; ) {
+      const size = u % (B / 2) === 0 && u + B / 2 <= low ? B / 2 : B / 4;
+      for (let dx = 0; dx < B; dx += size) for (let dz = 0; dz < B; dz += size) pieces.push({ x: x * B + dx, y: y0 * B + u, z: z * B + dz, size, material: Material.Cobblestone });
+      u += size;
+    }
+    if (pieces.length) groups.push({ y: y0, i: -1, pieces });
   }
   groups.push(...cells.values());
   groups.sort((a, b) => a.y - b.y || a.i - b.i);
