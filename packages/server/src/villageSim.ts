@@ -89,6 +89,8 @@ const WHEAT_PER_NEWCOMER = 12;
 export interface VillageWorld {
   config: { widthUnits: number; depthUnits: number };
   terrainAt(x: number, z: number): { h: number; water: boolean; tree: boolean; land: boolean };
+  /** The ground's lowest point across a block column (units; see World.blockGroundLow): else terrainAt's, 4 by 4 over it. */
+  blockGroundLow?(bx: number, bz: number): number;
   buildWorks(clear: readonly VillagePiece[], place: readonly VillagePiece[]): Promise<EditResult[]>;
   editedNear(x: number, z: number, r: number): boolean;
   /** Something else there (a trading post): no village within `r` units. */
@@ -257,6 +259,8 @@ export class VillageSim {
   private readonly stages = new Map<string, { clear: VillagePiece[]; pieces: VillagePiece[][] }>();
   /** Ground looked up, by 4 m square (it doesn't change: it's the ground as generated). */
   private readonly ground = new Map<string, { h: number; ok: boolean; tree: boolean }>();
+  /** The ground under block columns (see blockGround). */
+  private readonly blocks = new Map<string, number>();
   /** Wanderers met looking for somewhere to found a village (see found). */
   private readonly searches = new SiteSearch<{ x: number; z: number }>(SITES_A_STEP, SITE_REST_MS);
 
@@ -335,6 +339,23 @@ export class VillageSim {
       if (this.ground.size > 200_000) this.ground.clear();
       const t = this.world.terrainAt(x, z);
       this.ground.set(k, (g = { h: t.h, ok: t.land && !t.water, tree: t.tree }));
+    }
+    return g;
+  }
+
+  /**
+   * The ground under a block column (block y): the block its lowest point is in (the first with air
+   * anywhere in it: on a slope, part-filled), looked at across the block (groundAt's one height a
+   * 4 m square is for walking: building on it, a footing stopped short of the ground downhill).
+   */
+  private blockGround(bx: number, bz: number): number {
+    const k = `${bx},${bz}`;
+    let g = this.blocks.get(k);
+    if (g === undefined) {
+      if (this.blocks.size > 50_000) this.blocks.clear();
+      let low = this.world.blockGroundLow?.(bx, bz) ?? Infinity;
+      if (!this.world.blockGroundLow) for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) low = Math.min(low, this.world.terrainAt(bx * B + i * 5, bz * B + j * 5).h);
+      this.blocks.set(k, (g = Math.floor(low / B)));
     }
     return g;
   }
@@ -981,7 +1002,7 @@ export class VillageSim {
   }
 
   /** The ground's top at a block column (block y). */
-  private top = (bx: number, bz: number) => Math.floor(this.groundAt((bx + 0.5) * B, (bz + 0.5) * B).h / B);
+  private top = (bx: number, bz: number) => this.blockGround(bx, bz);
 
   /** What a village is building now: a cottage going up; else (it's WALL_AT) the next section of its wall; else nothing. */
   private job(v: Village): Job | null {
@@ -993,7 +1014,7 @@ export class VillageSim {
       let st = this.stages.get(key);
       if (!st) {
         if (design) {
-          const { clear, groups } = designedCottage(c, design, (bx, bz) => Math.ceil(this.groundAt((bx + 0.5) * B, (bz + 0.5) * B).h / B));
+          const { clear, groups } = designedCottage(c, design, this.top);
           st = { clear, pieces: groups };
         } else {
           const { clear, place } = cottageStage(c, c.stage + 1, this.top);
@@ -1026,7 +1047,7 @@ export class VillageSim {
     const section = v.wall ?? 0, key = `${v.id} w${section}`;
     let st = this.stages.get(key);
     if (!st) {
-      const { clear, place } = wallStage(Math.floor(v.x / B), Math.floor(v.z / B), section, (bx, bz) => Math.ceil(this.groundAt((bx + 0.5) * B, (bz + 0.5) * B).h / B));
+      const { clear, place } = wallStage(Math.floor(v.x / B), Math.floor(v.z / B), section, this.top);
       this.stages.set(key, (st = { clear, pieces: stagePieces(place).map((p) => [p]) }));
     }
     return {

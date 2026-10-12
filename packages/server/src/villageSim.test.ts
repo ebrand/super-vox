@@ -412,6 +412,44 @@ describe('walking round cottages', () => {
 });
 
 describe('cottages of designs', () => {
+
+  it('on a hillside (the ground known a 4 m square at a time, for walking): its footing down to the ground under each block, wherever in the block it is lowest', async () => {
+    new DesignLibrary(null, true);
+    // (Rising an eighth of a metre a metre eastward, in whole units, as the generator's heights are.)
+    const h = (x: number) => 10 * M + Math.floor((x - 7990 * M) / 8);
+    const { w, built } = world();
+    w.terrainAt = (x) => ({ h: h(x), water: false, tree: false, land: true });
+    const raw = hamlet({ wood: 200, planks: 400, cobble: 400 });
+    raw.villages[0]!.cottages = [];
+    raw.villages[0]!.fields = [];
+    const sim = new VillageSim(w, raw);
+    const here = [{ x: 8000 * M, z: 8000 * M }];
+    let now = await run(sim, 5, T0, here);
+    const c = () => sim.list()[0]!.cottages[0]!;
+    expect(c().design).toBe('thatched-cottage');
+    for (let i = 0; i < 20 && c().stage < 3; i++) now = await run(sim, 60, now, here);
+    const { bx, bz, w: cw, d: cd, stage } = c();
+    expect(stage).toBe(3);
+    const B = 16, solid = built.flatMap((b) => b.place);
+    const col = (x: number, z: number) => solid.filter((p) => Math.floor(p.x / B) === x && Math.floor(p.z / B) === z);
+    const lowest = (x: number, z: number) => Math.min(...col(x, z).filter((p) => p.material !== Material.Cobblestone).map((p) => p.y));
+    let base = Infinity;
+    for (let x = bx; x < bx + cw; x++) for (let z = bz; z < bz + cd; z++) base = Math.min(base, lowest(x, z));
+    let checked = 0;
+    for (let x = bx; x < bx + cw; x++)
+      for (let z = bz; z < bz + cd; z++) {
+        // (What it stands on; not its eaves.)
+        const top = lowest(x, z);
+        if (top >= base + B) continue;
+        // (The block its lowest ground is in: part of it air, where the ground's lowest: its west edge.)
+        const air = Math.floor(h(x * B) / B), mine = col(x, z);
+        // Something in every quarter metre from there up to what it stands on.
+        for (let y = air * B; y < top; y += 4) expect(mine.some((p) => p.x === x * B && y >= p.y && y < p.y + p.size), `block ${x},${z} at ${y / B} m (ground ${h(x * B) / B})`).toBe(true);
+        checked++;
+      }
+    expect(checked).toBeGreaterThanOrEqual(20);
+  });
+
   it("a village's cottages are its designs (one of them each, turned to face the middle), built a block's worth at a time from the bottom, from its stock", async () => {
     // The built-in thatched cottage, and a hut of quarter voxels (a 1 m block of them: one piece).
     const lib = new DesignLibrary(null, true);

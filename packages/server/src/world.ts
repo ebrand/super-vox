@@ -1374,6 +1374,14 @@ export class World {
     };
   }
 
+  /** The natural ground's lowest point across block column (bx, bz) (units): sampled 4 by 4 over it. */
+  blockGroundLow(bx: number, bz: number): number {
+    const B = BLOCK_SIZE, s = this.generator.surfaceSamples(bx * B, bz * B, 5, 4);
+    let low = Infinity;
+    for (const h of s.heights) low = Math.min(low, h);
+    return low;
+  }
+
   /** Whether players have built (edited) within `r` units of (x, z): their chunk columns. */
   editedNear(x: number, z: number, r: number): boolean {
     const C = CHUNK_SIZE;
