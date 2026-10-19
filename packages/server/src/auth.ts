@@ -103,7 +103,13 @@ export class Auth {
   /** Who a request (or WebSocket upgrade) is signed in as, from its session cookie. */
   async signedIn(cookies: Record<string, string | undefined>): Promise<SignedIn | null> {
     const id = sessionAccountId(cookies[SESSION_COOKIE], this.config.sessionSecret);
-    const account = id ? await this.accounts.get(id) : null;
+    if (!id) return null;
+    // The accounts' database out of reach (a Supabase project paused, say): as if signed out, so
+    // the menu and play still work for them as for anyone, rather than every page failing.
+    const account = await this.accounts.get(id).catch((err: unknown) => {
+      console.error(`accounts unreachable; ${id} taken as signed out:`, err instanceof Error ? err.message : err);
+      return null;
+    });
     // (Banned: as if signed out; they can still look round, as anyone can.)
     return account && !account.banned ? { account, ...accessOf(account, this.config.adminEmails) } : null;
   }

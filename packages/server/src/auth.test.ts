@@ -107,6 +107,16 @@ describe('signing in', () => {
     expect(String(out.headers['set-cookie'])).toMatch(/sv_session=;/);
   });
 
+  it('takes someone as signed out when the accounts database is out of reach, not failing the page', async () => {
+    const { accounts } = await setup();
+    const { session } = await signIn();
+    accounts.get = () => Promise.reject(new Error('(ENOTFOUND) tenant/user postgres.x not found'));
+    const worlds = await app.inject({ method: 'GET', url: '/api/worlds', headers: { cookie: session! } });
+    expect(worlds.statusCode).toBe(200);
+    expect(worlds.json()).toMatchObject({ canCreate: false });
+    expect((await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: session! } })).json()).toEqual({ signedIn: false });
+  });
+
   it('refuses a callback without the matching state, and stays signed out when Google says no', async () => {
     await setup();
     const { stateCookie } = await signIn();
